@@ -1,0 +1,126 @@
+Configuring cluster memory to meet container memory and risk requirements
+
+As a cluster administrator, you can help your clusters operate efficiently through managing application memory by:
+
+Determining the memory and risk requirements of a containerized application
+component and configuring the container memory parameters to suit those
+requirements.
+
+Configuring containerized application runtimes (for example, OpenJDK) to adhere
+optimally to the configured container memory parameters.
+
+Diagnosing and resolving memory-related error conditions associated with
+running in a container.
+Understanding managing application memory
+It is recommended to fully read the overview of how "Red Hat OpenShift Container Platform" manages Compute Resources before proceeding.
+
+For each kind of resource (memory, CPU, storage), "Red Hat OpenShift Container Platform" allows optional request and limit values to be placed on each container in a pod.
+
+Note the following about memory requests and memory limits:
+
+Memory request
+
+Memory limit
+
+
+Managing application memory strategy
+The steps for sizing application memory on "Red Hat OpenShift Container Platform" are as follows:
+
+Determine expected container memory usage
+
+Determine risk appetite
+
+Set container memory request
+
+Set container memory limit, if required
+
+Ensure application is tuned
+Understanding OpenJDK settings for "Red Hat OpenShift Container Platform"
+The default OpenJDK settings do not work well with containerized environments. As a result, some additional Java memory settings must always be provided whenever running the OpenJDK in a container.
+
+The JVM memory layout is complex, version dependent, and describing it in detail is beyond the scope of this documentation. However, as a starting point for running OpenJDK in a container, at least the following three memory-related tasks are key:
+
+Overriding the JVM maximum heap size.
+
+Encouraging the JVM to release unused memory to the operating system, if
+appropriate.
+
+Ensuring all JVM processes within a container are appropriately configured.
+
+
+Optimally tuning JVM workloads for running in a container is beyond the scope of this documentation, and may involve setting multiple additional JVM options.
+
+Understanding how to override the JVM maximum heap size
+For many Java workloads, the JVM heap is the largest single consumer of memory. Currently, the OpenJDK defaults to allowing up to 1/4 (1/-XX:MaxRAMFraction) of the compute node's memory to be used for the heap, regardless of whether the OpenJDK is running in a container or not. It is therefore essential to override this behavior, especially if a container memory limit is also set.
+
+There are at least two ways the above can be achieved:
+
+If the container memory limit is set and the experimental options are
+supported by the JVM, set -XX:+UnlockExperimentalVMOptions
+-XX:+UseCGroupMemoryLimitForHeap.
+
+Directly override one of -XX:MaxRAM, -XX:MaxHeapSize or -Xmx.
+Understanding how to encourage the JVM to release unused memory to the operating system
+By default, the OpenJDK does not aggressively return unused memory to the operating system. This may be appropriate for many containerized Java workloads, but notable exceptions include workloads where additional active processes co-exist with a JVM within a container, whether those additional processes are native, additional JVMs, or a combination of the two.
+
+Java-based agents can use the following JVM arguments to encourage the JVM to release unused memory to the operating system:
+
+-XX:+UseParallelGC
+-XX:MinHeapFreeRatio=5 -XX:MaxHeapFreeRatio=10 -XX:GCTimeRatio=4
+-XX:AdaptiveSizePolicyWeight=90.
+These arguments are intended to return heap memory to the operating system whenever allocated memory exceeds 110% of in-use memory (-XX:MaxHeapFreeRatio), spending up to 20% of CPU time in the garbage collector (-XX:GCTimeRatio). At no time will the application heap allocation be less than the initial heap allocation (overridden by -XX:InitialHeapSize / -Xms). Detailed additional information is available Tuning Java's footprint in OpenShift (Part 1), Tuning Java's footprint in OpenShift (Part 2), and at OpenJDK and Containers.
+Understanding how to ensure all JVM processes within a container are appropriately configured
+In the case that multiple JVMs run in the same container, it is essential to ensure that they are all configured appropriately. For many workloads it will be necessary to grant each JVM a percentage memory budget, leaving a perhaps substantial additional safety margin.
+
+Many Java tools use different environment variables (JAVA_OPTS, GRADLE_OPTS, and so on) to configure their JVMs and it can be challenging to ensure that the right settings are being passed to the right JVM.
+
+The JAVA_TOOL_OPTIONS environment variable is always respected by the OpenJDK, and values specified in JAVA_TOOL_OPTIONS will be overridden by other options specified on the JVM command line. By default, to ensure that these options are used by default for all JVM workloads run in the Java-based agent image, the "Red Hat OpenShift Container Platform" Jenkins Maven agent image sets:
+
+JAVA_TOOL_OPTIONS="-XX:+UnlockExperimentalVMOptions
+-XX:+UseCGroupMemoryLimitForHeap -Dsun.zip.disableMemoryMapping=true"
+The UseCGroupMemoryLimitForHeap option has been removed in JDK 11. Use -XX:+UseContainerSupport instead.
+This does not guarantee that additional options are not required, but is intended to be a helpful starting point.
+Finding the memory request and limit from within a pod
+An application wishing to dynamically discover its memory request and limit from within a pod should use the Downward API.
+
+Configure the pod to add the MEMORY_REQUEST and MEMORY_LIMIT stanzas:
+
+
+Access the pod using a remote shell:
+
+Check that the requested values were applied:
+
+
+The memory limit value can also be read from inside the container by the /sys/fs/cgroup/memory/memory.limit_in_bytes file.
+Understanding OOM kill policy
+"Red Hat OpenShift Container Platform" can kill a process in a container if the total memory usage of all the processes in the container exceeds the memory limit, or in serious cases of node memory exhaustion.
+
+When a process is Out of Memory (OOM) killed, this might result in the container exiting immediately. If the container PID 1 process receives the SIGKILL, the container will exit immediately. Otherwise, the container behavior is dependent on the behavior of the other processes.
+
+For example, a container process exited with code 137, indicating it received a SIGKILL signal.
+
+If the container does not exit immediately, an OOM kill is detectable as follows:
+
+Access the pod using a remote shell:
+
+Run the following command to see the current OOM kill count in /sys/fs/cgroup/memory/memory.oom_control:
+
+Run the following command to provoke an OOM kill:
+
+Run the following command to view the exit status of the sed command:
+
+Run the following command to see that the OOM kill counter in /sys/fs/cgroup/memory/memory.oom_control incremented:
+Understanding pod eviction
+"Red Hat OpenShift Container Platform" may evict a pod from its node when the node's memory is exhausted. Depending on the extent of memory exhaustion, the eviction may or may not be graceful. Graceful eviction implies the main process (PID 1) of each container receiving a SIGTERM signal, then some time later a SIGKILL signal if the process has not exited already. Non-graceful eviction implies the main process of each container immediately receiving a SIGKILL signal.
+
+An evicted pod has phase Failed and reason Evicted. It will not be restarted, regardless of the value of restartPolicy. However, controllers such as the replication controller will notice the pod's failed status and create a new pod to replace the old one.
+
+$ oc get pod test
+NAME      READY     STATUS    RESTARTS   AGE
+test      0/1       Evicted   0          1m
+$ oc get pod test -o yaml
+...
+status:
+  message: 'Pod The node was low on resource: [MemoryPressure].'
+  phase: Failed
+  reason: Evicted

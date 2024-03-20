@@ -1,0 +1,156 @@
+Configuring an egress firewall for a project
+
+As a cluster administrator, you can create an egress firewall for a project that restricts egress traffic leaving your "Red Hat OpenShift Container Platform" cluster.
+How an egress firewall works in a project
+As a cluster administrator, you can use an egress firewall to limit the external hosts that some or all pods can access from within the cluster. An egress firewall supports the following scenarios:
+
+A pod can only connect to internal hosts and cannot initiate connections to
+the public internet.
+
+A pod can only connect to the public internet and cannot initiate connections
+to internal hosts that are outside the "Red Hat OpenShift Container Platform" cluster.
+
+A pod cannot reach specified internal subnets or hosts outside the "Red Hat OpenShift Container Platform" cluster.
+
+A pod can connect to only specific external hosts.
+
+
+For example, you can allow one project access to a specified IP range but deny the same access to a different project. Or you can restrict application developers from updating from Python pip mirrors, and force updates to come only from approved sources.
+
+Egress firewall does not apply to the host network namespace. Pods with host networking enabled are unaffected by egress firewall rules.
+You configure an egress firewall policy by creating an EgressNetworkPolicy custom resource (CR) object. The egress firewall matches network traffic that meets any of the following criteria:
+
+An IP address range in CIDR format
+
+A DNS name that resolves to an IP address
+
+
+If your egress firewall includes a deny rule for 0.0.0.0/0, access to your "Red Hat OpenShift Container Platform" API servers is blocked. You must either add allow rules for each IP address or use the nodeSelector type allow rule in your egress policy rules to connect to API servers.
+
+The following example illustrates the order of the egress firewall rules necessary to ensure API server access:
+
+apiVersion: network.openshift.io/v1
+kind: EgressNetworkPolicy
+metadata:
+  name: default
+  namespace: <namespace> 1
+spec:
+  egress:
+  - to:
+      cidrSelector: <api_server_address_range> 2
+    type: Allow
+# ...
+  - to:
+      cidrSelector: 0.0.0.0/0 3
+    type: Deny
+The namespace for the egress firewall.
+
+The IP address range that includes your "Red Hat OpenShift Container Platform" API servers.
+
+A global deny rule prevents access to the "Red Hat OpenShift Container Platform" API servers.
+
+
+To find the IP address for your API servers, run oc get ep kubernetes -n default.
+
+For more information, see BZ#1988324.
+You must have OpenShift SDN configured to use either the network policy or multitenant mode to configure an egress firewall.
+
+If you use network policy mode, an egress firewall is compatible with only one policy per namespace and will not work with projects that share a network, such as global projects.
+Egress firewall rules do not apply to traffic that goes through routers. Any user with permission to create a Route CR object can bypass egress firewall policy rules by creating a route that points to a forbidden destination.
+Limitations of an egress firewall
+An egress firewall has the following limitations:
+
+No project can have more than one EgressNetworkPolicy object.
+
+A maximum of one EgressNetworkPolicy object with a maximum of 1,000 rules can be defined per project.
+
+The default project cannot use an egress firewall.
+
+When using the OpenShift SDN network plugin in multitenant mode, the following limitations apply:
+
+
+Violating any of these restrictions results in a broken egress firewall for the project. Consequently, all external network traffic is dropped, which can cause security risks for your organization.
+
+An Egress Firewall resource can be created in the kube-node-lease, kube-public, kube-system, openshift and openshift- projects.
+Matching order for egress firewall policy rules
+The egress firewall policy rules are evaluated in the order that they are defined, from first to last. The first rule that matches an egress connection from a pod applies. Any subsequent rules are ignored for that connection.
+How Domain Name Server (DNS) resolution works
+If you use DNS names in any of your egress firewall policy rules, proper resolution of the domain names is subject to the following restrictions:
+
+Domain name updates are polled based on a time-to-live (TTL) duration. By default, the duration is 30 seconds. When the egress firewall controller queries the local name servers for a domain name, if the response includes a TTL that is less than 30 seconds, the controller sets the duration to the returned value. If the TTL in the response is greater than 30 minutes, the controller sets the duration to 30 minutes. If the TTL is between 30 seconds and 30 minutes, the controller ignores the value and sets the duration to 30 seconds.
+
+The pod must resolve the domain from the same local name servers when necessary. Otherwise the IP addresses for the domain known by the egress firewall controller and the pod can be different. If the IP addresses for a hostname differ, the egress firewall might not be enforced consistently.
+
+Because the egress firewall controller and pods asynchronously poll the same local name server, the pod might obtain the updated IP address before the egress controller does, which causes a race condition. Due to this current limitation, domain name usage in EgressNetworkPolicy objects is only recommended for domains with infrequent IP address changes.
+
+
+Using DNS names in your egress firewall policy does not affect local DNS resolution through CoreDNS.
+
+However, if your egress firewall policy uses domain names, and an external DNS server handles DNS resolution for an affected pod, you must include egress firewall rules that permit access to the IP addresses of your DNS server.
+EgressNetworkPolicy custom resource (CR) object
+You can define one or more rules for an egress firewall. A rule is either an Allow rule or a Deny rule, with a specification for the traffic that the rule applies to.
+
+The following YAML describes an EgressNetworkPolicy CR object:
+
+apiVersion: network.openshift.io/v1
+kind: EgressNetworkPolicy
+metadata:
+  name: <name> 1
+spec:
+  egress: 2
+    ...
+A name for your egress firewall policy.
+
+A collection of one or more egress network policy rules as described in the following section.
+
+
+EgressNetworkPolicy rules
+The following YAML describes an egress firewall rule object. The user can select either an IP address range in CIDR format, a domain name, or use the nodeSelector to allow or deny egress traffic. The egress stanza expects an array of one or more objects.
+
+egress:
+- type: <type> 1
+  to: 2
+    cidrSelector: <cidr> 3
+    dnsName: <dns_name> 4
+The type of rule. The value must be either Allow or Deny.
+
+A stanza describing an egress traffic match rule. A value for either the cidrSelector field or the dnsName field for the rule. You cannot use both fields in the same rule.
+
+An IP address range in CIDR format.
+
+A domain name.
+Example EgressNetworkPolicy CR objects
+The following example defines several egress firewall policy rules:
+
+apiVersion: network.openshift.io/v1
+kind: EgressNetworkPolicy
+metadata:
+  name: default
+spec:
+  egress: 1
+  - type: Allow
+    to:
+      cidrSelector: 1.2.3.0/24
+  - type: Allow
+    to:
+      dnsName: www.example.com
+  - type: Deny
+    to:
+      cidrSelector: 0.0.0.0/0
+A collection of egress firewall policy rule objects.
+Creating an egress firewall policy object
+As a cluster administrator, you can create an egress firewall policy object for a project.
+
+If the project already has an EgressNetworkPolicy object defined, you must edit the existing policy to make changes to the egress firewall rules.
+A cluster that uses the OpenShift SDN network plugin.
+
+Install the OpenShift CLI (oc).
+
+You must log in to the cluster as a cluster administrator.
+
+
+Create a policy rule:
+
+Enter the following command to create the policy object. Replace <policy_name> with the name of the policy and <project> with the project that the rule applies to.
+
+Optional: Save the <policy_name>.yaml file so that you can make changes later.

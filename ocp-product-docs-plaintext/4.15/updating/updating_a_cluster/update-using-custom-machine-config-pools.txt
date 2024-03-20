@@ -1,0 +1,124 @@
+Performing a canary rollout update
+
+A canary update is an update strategy where worker node updates are performed in discrete, sequential stages instead of updating all worker nodes at the same time. This strategy can be useful in the following scenarios:
+
+You want a more controlled rollout of worker node updates to ensure that mission-critical applications stay available during the whole update, even if the update process causes your applications to fail.
+
+You want to update a small subset of worker nodes, evaluate cluster and workload health over a period of time, and then update the remaining nodes.
+
+You want to fit worker node updates, which often require a host reboot, into smaller defined maintenance windows when it is not possible to take a large maintenance window to update the entire cluster at one time.
+
+
+In these scenarios, you can create multiple custom machine config pools (MCPs) to prevent certain worker nodes from updating when you update the cluster. After the rest of the cluster is updated, you can update those worker nodes in batches at appropriate times.
+Example Canary update strategy
+The following example describes a canary update strategy where you have a cluster with 100 nodes with 10% excess capacity, you have maintenance windows that must not exceed 4 hours, and you know that it takes no longer than 8 minutes to drain and reboot a worker node.
+
+The previous values are an example only. The time it takes to drain a node might vary depending on factors such as workloads.
+
+In order to organize the worker node updates into separate stages, you can begin by defining the following MCPs:
+
+workerpool-canary with 10 nodes
+
+workerpool-A with 30 nodes
+
+workerpool-B with 30 nodes
+
+workerpool-C with 30 nodes
+
+
+
+During your first maintenance window, you pause the MCPs for workerpool-A, workerpool-B, and workerpool-C, and then initiate the cluster update. This updates components that run on top of "Red Hat OpenShift Container Platform" and the 10 nodes that are part of the unpaused workerpool-canary MCP. The other three MCPs are not updated because they were paused.
+
+
+If for some reason you determine that your cluster or workload health was negatively affected by the workerpool-canary update, you then cordon and drain all nodes in that pool while still maintaining sufficient capacity until you have diagnosed and resolved the problem. When everything is working as expected, you evaluate the cluster and workload health before deciding to unpause, and thus update, workerpool-A, workerpool-B, and workerpool-C in succession during each additional maintenance window.
+
+Managing worker node updates using custom MCPs provides flexibility, however it can be a time-consuming process that requires you execute multiple commands. This complexity can result in errors that might affect the entire cluster. It is recommended that you carefully consider your organizational needs and carefully plan the implementation of the process before you start.
+
+Pausing a machine config pool prevents the Machine Config Operator from applying any configuration changes on the associated nodes. Pausing an MCP also prevents any automatically rotated certificates from being pushed to the associated nodes, including the automatic CA rotation of the kube-apiserver-to-kubelet-signer CA certificate.
+
+If the MCP is paused when the kube-apiserver-to-kubelet-signer CA certificate expires and the MCO attempts to automatically renew the certificate, the MCO cannot push the newly rotated certificates to those nodes. This causes failure in multiple oc commands, including oc debug, oc logs, oc exec, and oc attach. You receive alerts in the Alerting UI of the "Red Hat OpenShift Container Platform" web console if an MCP is paused when the certificates are rotated.
+
+Pausing an MCP should be done with careful consideration about the kube-apiserver-to-kubelet-signer CA certificate expiration and for short periods of time only.
+It is not recommended to update the MCPs to different "Red Hat OpenShift Container Platform" versions. For example, do not update one MCP from 4.y.10 to 4.y.11 and another to 4.y.12. This scenario has not been tested and might result in an undefined cluster state.
+About the canary rollout update process and MCPs
+In "Red Hat OpenShift Container Platform", nodes are not considered individually. Instead, they are grouped into machine config pools (MCPs). By default, nodes in an "Red Hat OpenShift Container Platform" cluster are grouped into two MCPs: one for the control plane nodes and one for the worker nodes. An "Red Hat OpenShift Container Platform" update affects all MCPs concurrently.
+
+During the update, the Machine Config Operator (MCO) drains and cordons all nodes within an MCP up to the specified maxUnavailable number of nodes, if a max number is specified. By default, maxUnavailable is set to 1. Draining and cordoning a node deschedules all pods on the node and marks the node as unschedulable.
+
+After the node is drained, the Machine Config Daemon applies a new machine configuration, which can include updating the operating system (OS). Updating the OS requires the host to reboot.
+
+
+To prevent specific nodes from being updated, you can create custom MCPs. Because the MCO does not update nodes within paused MCPs, you can pause the MCPs containing nodes that you do not want to update before initiating a cluster update.
+
+Using one or more custom MCPs can give you more control over the sequence in which you update your worker nodes. For example, after you update the nodes in the first MCP, you can verify the application compatibility and then update the rest of the nodes gradually to the new version.
+
+The default setting for maxUnavailable is 1 for all the machine config pools in "Red Hat OpenShift Container Platform". It is recommended to not change this value and update one control plane node at a time. Do not change this value to 3 for the control plane pool.
+To ensure the stability of the control plane, creating a custom MCP from the control plane nodes is not supported. The Machine Config Operator (MCO) ignores any custom MCP created for the control plane nodes.
+
+Give careful consideration to the number of MCPs that you create and the number of nodes in each MCP, based on your workload deployment topology. For example, if you must fit updates into specific maintenance windows, you must know how many nodes "Red Hat OpenShift Container Platform" can update within a given window. This number is dependent on your unique cluster and workload characteristics.
+
+You must also consider how much extra capacity is available in your cluster to determine the number of custom MCPs and the amount of nodes within each MCP. In a case where your applications fail to work as expected on newly updated nodes, you can cordon and drain those nodes in the pool, which moves the application pods to other nodes. However, you must determine whether the available nodes in the remaining MCPs can provide sufficient quality-of-service (QoS) for your applications.
+
+You can use this update process with all documented "Red Hat OpenShift Container Platform" update processes. However, the process does not work with Red Hat Enterprise Linux (RHEL) machines, which are updated using Ansible playbooks.
+About performing a canary rollout update
+The following steps outline the high-level workflow of the canary rollout update process:
+
+Create custom machine config pools (MCP) based on the worker pool.
+
+Add a node selector to the custom MCPs. For each node that you do not want to update simultaneously with the rest of the cluster, add a matching label to the nodes. This label associates the node to the MCP.
+
+Pause the MCPs you do not want to update as part of the update process.
+
+Perform the cluster update. The update process updates the MCPs that are not paused, including the control plane nodes.
+
+Test your applications on the updated nodes to ensure they are working as expected.
+
+Unpause one of the remaining MCPs, wait for the nodes in that pool to finish updating, and test the applications on those nodes.
+Repeat this process until all worker nodes are updated.
+
+Optional: Remove the custom label from updated nodes and delete the custom MCPs.
+Creating machine config pools to perform a canary rollout update
+To perform a canary rollout update, you must first create one or more custom machine config pools (MCP).
+
+List the worker nodes in your cluster by running the following command:
+
+For each node that you want to delay, add a custom label to the node by running the following command:
+
+Create the new MCP:
+
+View the list of MCPs in the cluster and their current state by running the following command:
+Pausing the machine config pools
+After you create your custom machine config pools (MCPs), you then pause those MCPs. Pausing an MCP prevents the Machine Config Operator (MCO) from updating the nodes associated with that MCP.
+
+Patch the MCP that you want paused by running the following command:
+Performing the cluster update
+After the machine config pools (MCP) enter a ready state, you can perform the cluster update. See one of the following update methods, as appropriate for your cluster:
+
+Updating a cluster using the web console
+
+Updating a cluster using the CLI
+
+
+After the cluster update is complete, you can begin to unpause the MCPs one at a time.
+Unpausing the machine config pools
+After the "Red Hat OpenShift Container Platform" update is complete, unpause your custom machine config pools (MCP) one at a time. Unpausing an MCP allows the Machine Config Operator (MCO) to update the nodes associated with that MCP.
+
+Patch the MCP that you want to unpause:
+
+Optional: Check the progress of the update by using one of the following options:
+
+Test your applications on the updated nodes to ensure that they are working as expected.
+
+Repeat this process for any other paused MCPs, one at a time.
+
+
+In case of a failure, such as your applications not working on the updated nodes, you can cordon and drain the nodes in the pool, which moves the application pods to other nodes to help maintain the quality-of-service for the applications. This first MCP should be no larger than the excess capacity.
+Moving a node to the original machine config pool
+After you update and verify applications on nodes in a custom machine config pool (MCP), move the nodes back to their original MCP by removing the custom label that you added to the nodes.
+
+A node must have a role to be properly functioning in the cluster.
+For each node in a custom MCP, remove the custom label from the node by running the following command:
+
+To ensure that node has been removed from the custom MCP, view the list of MCPs in the cluster and their current state by running the following command:
+
+Optional: Delete the custom MCP by running the following command:

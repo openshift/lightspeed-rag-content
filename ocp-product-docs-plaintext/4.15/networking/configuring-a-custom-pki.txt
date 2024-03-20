@@ -1,0 +1,113 @@
+Configuring a custom PKI
+
+Some platform components, such as the web console, use Routes for communication and must trust other components' certificates to interact with them. If you are using a custom public key infrastructure (PKI), you must configure it so its privately signed CA certificates are recognized across the cluster.
+
+You can leverage the Proxy API to add cluster-wide trusted CA certificates. You must do this either during installation or at runtime.
+
+During installation, configure the cluster-wide proxy. You must define your
+privately signed CA certificates in the install-config.yaml file's
+additionalTrustBundle setting.
+
+At runtime, modify the default Proxy object to include your privately signed CA certificates (part of cluster's proxy enablement workflow). This involves
+creating a ConfigMap that contains the privately signed CA certificates that
+should be trusted by the cluster, and then modifying the proxy resource with the
+trustedCA referencing the privately signed certificates' ConfigMap.
+
+
+The installer configuration's additionalTrustBundle field and the proxy resource's trustedCA field are used to manage the cluster-wide trust bundle; additionalTrustBundle is used at install time and the proxy's trustedCA is used at runtime.
+
+The trustedCA field is a reference to a ConfigMap containing the custom certificate and key pair used by the cluster component.
+Configuring the cluster-wide proxy during installation
+Production environments can deny direct access to the internet and instead have an HTTP or HTTPS proxy available. You can configure a new "Red Hat OpenShift Container Platform" cluster to use a proxy by configuring the proxy settings in the install-config.yaml file.
+
+You have an existing install-config.yaml file.
+
+You reviewed the sites that your cluster requires access to and determined whether any of them need to bypass the proxy. By default, all cluster egress traffic is proxied, including calls to hosting cloud provider APIs. You added sites to the Proxy object's spec.noProxy field to bypass the proxy if necessary.
+
+
+Edit your install-config.yaml file and add the proxy settings. For example:
+
+Save the file and reference it when installing "Red Hat OpenShift Container Platform".
+
+
+The installation program creates a cluster-wide proxy that is named cluster that uses the proxy settings in the provided install-config.yaml file. If no proxy settings are provided, a cluster Proxy object is still created, but it will have a nil spec.
+
+Only the Proxy object named cluster is supported, and no additional proxies can be created.
+Enabling the cluster-wide proxy
+The Proxy object is used to manage the cluster-wide egress proxy. When a cluster is installed or upgraded without the proxy configured, a Proxy object is still generated but it will have a nil spec. For example:
+
+apiVersion: config.openshift.io/v1
+kind: Proxy
+metadata:
+  name: cluster
+spec:
+  trustedCA:
+    name: ""
+status:
+A cluster administrator can configure the proxy for "Red Hat OpenShift Container Platform" by modifying this cluster Proxy object.
+
+Only the Proxy object named cluster is supported, and no additional proxies can be created.
+Cluster administrator permissions
+
+"Red Hat OpenShift Container Platform" oc CLI tool installed
+
+
+Create a config map that contains any additional CA certificates required for proxying HTTPS connections.
+
+Use the oc edit command to modify the Proxy object:
+
+Configure the necessary fields for the proxy:
+
+Save the file to apply the changes.
+Certificate injection using Operators
+Once your custom CA certificate is added to the cluster via ConfigMap, the Cluster Network Operator merges the user-provided and system CA certificates into a single bundle and injects the merged bundle into the Operator requesting the trust bundle injection.
+
+After adding a config.openshift.io/inject-trusted-cabundle="true" label to the config map, existing data in it is deleted. The Cluster Network Operator takes ownership of a config map and only accepts ca-bundle as data. You must use a separate config map to store service-ca.crt by using the service.beta.openshift.io/inject-cabundle=true annotation or a similar configuration. Adding a config.openshift.io/inject-trusted-cabundle="true" label and service.beta.openshift.io/inject-cabundle=true annotation on the same config map can cause issues.
+Operators request this injection by creating an empty ConfigMap with the following label:
+
+config.openshift.io/inject-trusted-cabundle="true"
+An example of the empty ConfigMap:
+
+apiVersion: v1
+data: {}
+kind: ConfigMap
+metadata:
+  labels:
+    config.openshift.io/inject-trusted-cabundle: "true"
+  name: ca-inject 1
+  namespace: apache
+Specifies the empty ConfigMap name.
+
+
+The Operator mounts this ConfigMap into the container's local trust store.
+
+Adding a trusted CA certificate is only needed if the certificate is not included in the Red Hat Enterprise Linux CoreOS (RHCOS) trust bundle.
+Certificate injection is not limited to Operators. The Cluster Network Operator injects certificates across any namespace when an empty ConfigMap is created with the config.openshift.io/inject-trusted-cabundle=true label.
+
+The ConfigMap can reside in any namespace, but the ConfigMap must be mounted as a volume to each container within a pod that requires a custom CA. For example:
+
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: my-example-custom-ca-deployment
+  namespace: my-example-custom-ca-ns
+spec:
+  ...
+    spec:
+      ...
+      containers:
+        - name: my-container-that-needs-custom-ca
+          volumeMounts:
+          - name: trusted-ca
+            mountPath: /etc/pki/ca-trust/extracted/pem
+            readOnly: true
+      volumes:
+      - name: trusted-ca
+        configMap:
+          name: trusted-ca
+          items:
+            - key: ca-bundle.crt 1
+              path: tls-ca-bundle.pem 2
+ca-bundle.crt is required as the ConfigMap key.
+
+tls-ca-bundle.pem is required as the ConfigMap path.

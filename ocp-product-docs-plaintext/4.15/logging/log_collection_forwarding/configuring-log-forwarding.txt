@@ -1,0 +1,667 @@
+Configuring log forwarding
+
+In a logging deployment, container and infrastructure logs are forwarded to the internal log store defined in the ClusterLogging custom resource (CR) by default.
+
+Audit logs are not forwarded to the internal log store by default because this does not provide secure storage. You are responsible for ensuring that the system to which you forward audit logs is compliant with your organizational and governmental regulations, and is properly secured.
+
+If this default configuration meets your needs, you do not need to configure a ClusterLogForwarder CR. If a ClusterLogForwarder CR exists, logs are not forwarded to the internal log store unless a pipeline is defined that contains the default output.
+About forwarding logs to third-party systems
+To send logs to specific endpoints inside and outside your "Red Hat OpenShift Container Platform" cluster, you specify a combination of outputs and pipelines in a ClusterLogForwarder custom resource (CR). You can also use inputs to forward the application logs associated with a specific project to an endpoint. Authentication is provided by a Kubernetes Secret object.
+
+
+pipeline
+Defines simple routing from one log type to one or more outputs, or which logs you want to send. The log types are one of the following:
+input
+Forwards the application logs associated with a specific project to a pipeline.
+Secret
+A key:value map that contains confidential data such as user credentials.
+
+
+Note the following:
+
+If you do not define a pipeline for a log type, the logs of the undefined types are dropped. For example, if you specify a pipeline for the application and audit types, but do not specify a pipeline for the infrastructure type, infrastructure logs are dropped.
+
+You can use multiple types of outputs in the ClusterLogForwarder custom resource (CR) to send logs to servers that support different protocols.
+
+
+The following example forwards the audit logs to a secure external Elasticsearch instance, the infrastructure logs to an insecure external Elasticsearch instance, the application logs to a Kafka broker, and the application logs from the my-apps-logs project to the internal Elasticsearch instance.
+
+apiVersion: "logging.openshift.io/v1"
+kind: ClusterLogForwarder
+metadata:
+  name: <log_forwarder_name> 1
+  namespace: <log_forwarder_namespace> 2
+spec:
+  serviceAccountName: <service_account_name> 3
+  outputs:
+   - name: elasticsearch-secure 4
+     type: "elasticsearch"
+     url: https://elasticsearch.secure.com:9200
+     secret:
+        name: elasticsearch
+   - name: elasticsearch-insecure 5
+     type: "elasticsearch"
+     url: http://elasticsearch.insecure.com:9200
+   - name: kafka-app 6
+     type: "kafka"
+     url: tls://kafka.secure.com:9093/app-topic
+  inputs: 7
+   - name: my-app-logs
+     application:
+        namespaces:
+        - my-project
+  pipelines:
+   - name: audit-logs 8
+     inputRefs:
+      - audit
+     outputRefs:
+      - elasticsearch-secure
+      - default
+     labels:
+       secure: "true" 9
+       datacenter: "east"
+   - name: infrastructure-logs 10
+     inputRefs:
+      - infrastructure
+     outputRefs:
+      - elasticsearch-insecure
+     labels:
+       datacenter: "west"
+   - name: my-app 11
+     inputRefs:
+      - my-app-logs
+     outputRefs:
+      - default
+   - inputRefs: 12
+      - application
+     outputRefs:
+      - kafka-app
+     labels:
+       datacenter: "south"
+In legacy implementations, the CR name must be instance. In multi log forwarder implementations, you can use any name.
+
+In legacy implementations, the CR namespace must be openshift-logging. In multi log forwarder implementations, you can use any namespace.
+
+The name of your service account. The service account is only required in multi log forwarder implementations if the log forwarder is not deployed in the openshift-logging namespace.
+
+Configuration for an secure Elasticsearch output using a secret with a secure URL.
+
+Configuration for an insecure Elasticsearch output:
+
+Configuration for a Kafka output using a client-authenticated TLS communication over a secure URL:
+
+Configuration for an input to filter application logs from the my-project namespace.
+
+Configuration for a pipeline to send audit logs to the secure external Elasticsearch instance:
+
+Optional: String. One or more labels to add to the logs. Quote values like "true" so they are recognized as string values, not as a boolean.
+
+Configuration for a pipeline to send infrastructure logs to the insecure external Elasticsearch instance.
+
+Configuration for a pipeline to send logs from the my-project project to the internal Elasticsearch instance.
+
+Configuration for a pipeline to send logs to the Kafka broker, with no pipeline name:
+
+
+
+If your external logging aggregator becomes unavailable and cannot receive logs, Fluentd continues to collect logs and stores them in a buffer. When the log aggregator becomes available, log forwarding resumes, including the buffered logs. If the buffer fills completely, Fluentd stops collecting logs. "Red Hat OpenShift Container Platform" rotates the logs and deletes them. You cannot adjust the buffer size or add a persistent volume claim (PVC) to the Fluentd daemon set or pods.
+
+
+Common key types are provided here. Some output types support additional specialized keys, documented with the output-specific configuration field. All secret keys are optional. Enable the security features you want by setting the relevant keys. You are responsible for creating and maintaining any additional configurations that external destinations might require, such as keys and secrets, service accounts, port openings, or global proxy configuration. Open Shift Logging will not attempt to verify a mismatch between authorization combinations.
+
+
+Transport Layer Security (TLS)
+Using a TLS URL (http://... or ssl://...) without a secret enables basic TLS server-side authentication. Additional TLS features are enabled by including a secret and setting the following optional fields:
+Username and Password
+
+Simple Authentication Security Layer (SASL)
+
+
+
+Creating a Secret
+You can create a secret in the directory that contains your certificate and key files by using the following command:
+
+$ oc create secret generic -n <namespace> <secret_name> \
+  --from-file=ca-bundle.crt=<your_bundle_file> \
+  --from-literal=username=<your_username> \
+  --from-literal=password=<your_password>
+Generic or opaque secrets are recommended for best results.
+Creating a log forwarder
+To create a log forwarder, you must create a ClusterLogForwarder CR that specifies the log input types that the service account can collect. You can also specify which outputs the logs can be forwarded to. If you are using the multi log forwarder feature, you must also reference the service account in the ClusterLogForwarder CR.
+
+If you are using the multi log forwarder feature on your cluster, you can create ClusterLogForwarder custom resources (CRs) in any namespace, using any name. If you are using a legacy implementation, the ClusterLogForwarder CR must be named instance, and must be created in the openshift-logging namespace.
+
+You need administrator permissions for the namespace where you create the ClusterLogForwarder CR.
+apiVersion: logging.openshift.io/v1
+kind: ClusterLogForwarder
+metadata:
+  name: <log_forwarder_name> 1
+  namespace: <log_forwarder_namespace> 2
+spec:
+  serviceAccountName: <service_account_name> 3
+  pipelines:
+   - inputRefs:
+     - <log_type> 4
+     outputRefs:
+     - <output_name> 5
+  outputs:
+  - name: <output_name> 6
+    type: <output_type> 5
+    url: <log_output_url> 7
+# ...
+In legacy implementations, the CR name must be instance. In multi log forwarder implementations, you can use any name.
+
+In legacy implementations, the CR namespace must be openshift-logging. In multi log forwarder implementations, you can use any namespace.
+
+The name of your service account. The service account is only required in multi log forwarder implementations if the log forwarder is not deployed in the openshift-logging namespace.
+
+The log types that are collected. The value for this field can be audit for audit logs, application for application logs, infrastructure for infrastructure logs, or a named input that has been defined for your application.
+
+The type of output that you want to forward logs to. The value of this field can be default, loki, kafka, elasticsearch, fluentdForward, syslog, or cloudwatch.
+
+A name for the output that you want to forward logs to.
+
+The URL of the output that you want to forward logs to.
+Enabling multi-line exception detection
+Enables multi-line error detection of container logs.
+
+Enabling this feature could have performance implications and may require additional computing resources or alternate logging solutions.
+Log parsers often incorrectly identify separate lines of the same exception as separate exceptions. This leads to extra log entries and an incomplete or inaccurate view of the traced information.
+
+java.lang.NullPointerException: Cannot invoke "String.toString()" because "<param1>" is null
+    at testjava.Main.handle(Main.java:47)
+    at testjava.Main.printMe(Main.java:19)
+    at testjava.Main.main(Main.java:10)
+To enable logging to detect multi-line exceptions and reassemble them into a single log entry, ensure that the ClusterLogForwarder Custom Resource (CR) contains a detectMultilineErrors field, with a value of true.
+
+
+apiVersion: logging.openshift.io/v1
+kind: ClusterLogForwarder
+metadata:
+  name: instance
+  namespace: openshift-logging
+spec:
+  pipelines:
+    - name: my-app-logs
+      inputRefs:
+        - application
+      outputRefs:
+        - default
+      detectMultilineErrors: true
+Details
+When log messages appear as a consecutive sequence forming an exception stack trace, they are combined into a single, unified log record. The first log message's content is replaced with the concatenated content of all the message fields in the sequence.
+Troubleshooting
+When enabled, the collector configuration will include a new section with type: detect_exceptions
+
+[transforms.detect_exceptions_app-logs]
+ type = "detect_exceptions"
+ inputs = ["application"]
+ languages = ["All"]
+ group_by = ["kubernetes.namespace_name","kubernetes.pod_name","kubernetes.container_name"]
+ expire_after_ms = 2000
+ multiline_flush_interval_ms = 1000
+<label @MULTILINE_APP_LOGS>
+  <match kubernetes.**>
+    @type detect_exceptions
+    remove_tag_prefix 'kubernetes'
+    message message
+    force_line_breaks true
+    multiline_flush_interval .2
+  </match>
+</label>
+Forwarding logs to Google Cloud Platform (GCP)
+You can forward logs to Google Cloud Logging in addition to, or instead of, the internal default "Red Hat OpenShift Container Platform" log store.
+
+Using this feature with Fluentd is not supported.
+Red Hat OpenShift Logging Operator 5.5.1 and later
+
+
+Create a secret using your Google service account key.
+
+Create a ClusterLogForwarder Custom Resource YAML using the template below:
+
+
+Google Cloud Billing Documentation
+
+Google Cloud Logging Query Language Documentation
+Forwarding logs to Splunk
+You can forward logs to the Splunk HTTP Event Collector (HEC) in addition to, or instead of, the internal default "Red Hat OpenShift Container Platform" log store.
+
+Using this feature with Fluentd is not supported.
+Red Hat OpenShift Logging Operator 5.6 or later
+
+A ClusterLogging instance with vector specified as the collector
+
+Base64 encoded Splunk HEC token
+
+
+Create a secret using your Base64 encoded Splunk HEC token.
+
+Create or edit the ClusterLogForwarder Custom Resource (CR) using the template below:
+Forwarding logs over HTTP
+Forwarding logs over HTTP is supported for both the Fluentd and Vector log collectors. To enable, specify http as the output type in the ClusterLogForwarder custom resource (CR).
+
+Create or edit the ClusterLogForwarder CR using the template below:
+Forwarding application logs from specific projects
+You can forward a copy of the application logs from specific projects to an external log aggregator, in addition to, or instead of, using the internal log store. You must also configure the external log aggregator to receive log data from "Red Hat OpenShift Container Platform".
+
+To configure forwarding application logs from a project, you must create a ClusterLogForwarder custom resource (CR) with at least one input from a project, optional outputs for other log aggregators, and pipelines that use those inputs and outputs.
+
+You must have a logging server that is configured to receive the logging data using the specified protocol or format.
+
+
+Create or edit a YAML file that defines the ClusterLogForwarder CR:
+
+Apply the ClusterLogForwarder CR by running the following command:
+Forwarding application logs from specific pods
+As a cluster administrator, you can use Kubernetes pod labels to gather log data from specific pods and forward it to a log collector.
+
+Suppose that you have an application composed of pods running alongside other pods in various namespaces. If those pods have labels that identify the application, you can gather and output their log data to a specific log collector.
+
+To specify the pod labels, you use one or more matchLabels key-value pairs. If you specify multiple key-value pairs, the pods must match all of them to be selected.
+
+Create or edit a YAML file that defines the ClusterLogForwarder CR object. In the file, specify the pod labels using simple equality-based selectors under inputs[].name.application.selector.matchLabels, as shown in the following example.
+
+Optional: To restrict the gathering of log data to specific namespaces, use inputs[].name.application.namespaces, as shown in the preceding example.
+
+Optional: You can send log data from additional applications that have different pod labels to the same pipeline.
+
+Create the CR object:
+
+
+For more information on matchLabels in Kubernetes, see Resources that support set-based requirements.
+Overview of API audit filter
+OpenShift API servers generate audit events for each API call, detailing the request, response, and the identity of the requester, leading to large volumes of data. The API Audit filter uses rules to enable the exclusion of non-essential events and the reduction of event size, facilitating a more manageable audit trail. Rules are checked in order, checking stops at the first match. How much data is included in an event is determined by the value of the level field:
+
+None: The event is dropped.
+
+Metadata: Audit metadata is included, request and response bodies are removed.
+
+Request: Audit metadata and the request body are included, the response body is removed.
+
+RequestResponse: All data is included: metadata, request body and response body. The response body can be very large. For example, oc get pods -A generates a response body containing the YAML description of every pod in the cluster.
+
+
+In logging 5.8 and later, the ClusterLogForwarder custom resource (CR) uses the same format as the standard Kubernetes audit policy, while providing the following additional functions:
+
+
+Wildcards
+Names of users, groups, namespaces, and resources can have a leading or trailing * asterisk character. For example, namespace openshift-\* matches openshift-apiserver or openshift-authentication. Resource \*/status matches Pod/status or Deployment/status.
+Default Rules
+Events that do not match any rule in the policy are filtered as follows:
+
+
+To disable these defaults, either end your rules list with a rule that has only a level field or add an empty rule.
+
+
+Omit Response Codes
+A list of integer status codes to omit. You can drop events based on the HTTP status code in the response by using the OmitResponseCodes field, a list of HTTP status code for which no events are created. The default value is [404, 409, 422, 429]. If the value is an empty list, [], then no status codes are omitted.
+
+
+The ClusterLogForwarder CR audit policy acts in addition to the "Red Hat OpenShift Container Platform" audit policy. The ClusterLogForwarder CR audit filter changes what the log collector forwards, and provides the ability to filter by verb, user, group, namespace, or resource. You can create multiple filters to send different summaries of the same audit stream to different places. For example, you can send a detailed stream to the local cluster log store, and a less detailed stream to a remote site.
+
+The example provided is intended to illustrate the range of rules possible in an audit policy and is not a recommended configuration.
+apiVersion: logging.openshift.io/v1
+kind: ClusterLogForwarder
+metadata:
+  name: instance
+  namespace: openshift-logging
+spec:
+  pipelines:
+    - name: my-pipeline
+      inputRefs: audit 1
+      filterRefs: my-policy 2
+      outputRefs: default
+  filters:
+    - name: my-policy
+      type: kubeAPIAudit
+      kubeAPIAudit:
+        # Don't generate audit events for all requests in RequestReceived stage.
+        omitStages:
+          - "RequestReceived"
+
+        rules:
+          # Log pod changes at RequestResponse level
+          - level: RequestResponse
+            resources:
+            - group: ""
+              resources: ["pods"]
+
+          # Log "pods/log", "pods/status" at Metadata level
+          - level: Metadata
+            resources:
+            - group: ""
+              resources: ["pods/log", "pods/status"]
+
+          # Don't log requests to a configmap called "controller-leader"
+          - level: None
+            resources:
+            - group: ""
+              resources: ["configmaps"]
+              resourceNames: ["controller-leader"]
+
+          # Don't log watch requests by the "system:kube-proxy" on endpoints or services
+          - level: None
+            users: ["system:kube-proxy"]
+            verbs: ["watch"]
+            resources:
+            - group: "" # core API group
+              resources: ["endpoints", "services"]
+
+          # Don't log authenticated requests to certain non-resource URL paths.
+          - level: None
+            userGroups: ["system:authenticated"]
+            nonResourceURLs:
+            - "/api*" # Wildcard matching.
+            - "/version"
+
+          # Log the request body of configmap changes in kube-system.
+          - level: Request
+            resources:
+            - group: "" # core API group
+              resources: ["configmaps"]
+            # This rule only applies to resources in the "kube-system" namespace.
+            # The empty string "" can be used to select non-namespaced resources.
+            namespaces: ["kube-system"]
+
+          # Log configmap and secret changes in all other namespaces at the Metadata level.
+          - level: Metadata
+            resources:
+            - group: "" # core API group
+              resources: ["secrets", "configmaps"]
+
+          # Log all other resources in core and extensions at the Request level.
+          - level: Request
+            resources:
+            - group: "" # core API group
+            - group: "extensions" # Version of group should NOT be included.
+
+          # A catch-all rule to log all other requests at the Metadata level.
+          - level: Metadata
+The log types that are collected. The value for this field can be audit for audit logs, application for application logs, infrastructure for infrastructure logs, or a named input that has been defined for your application.
+
+The name of your audit policy.
+Forwarding logs to an external Loki logging system
+You can forward logs to an external Loki logging system in addition to, or instead of, the default log store.
+
+To configure log forwarding to Loki, you must create a ClusterLogForwarder custom resource (CR) with an output to Loki, and a pipeline that uses the output. The output to Loki can use the HTTP (insecure) or HTTPS (secure HTTP) connection.
+
+You must have a Loki logging system running at the URL you specify with the url field in the CR.
+
+
+Create or edit a YAML file that defines the ClusterLogForwarder CR object:
+
+Apply the ClusterLogForwarder CR object by running the following command:
+
+
+Configuring Loki server
+Forwarding logs to an external Elasticsearch instance
+You can forward logs to an external Elasticsearch instance in addition to, or instead of, the internal log store. You are responsible for configuring the external log aggregator to receive log data from "Red Hat OpenShift Container Platform".
+
+To configure log forwarding to an external Elasticsearch instance, you must create a ClusterLogForwarder custom resource (CR) with an output to that instance, and a pipeline that uses the output. The external Elasticsearch output can use the HTTP (insecure) or HTTPS (secure HTTP) connection.
+
+To forward logs to both an external and the internal Elasticsearch instance, create outputs and pipelines to the external instance and a pipeline that uses the default output to forward logs to the internal instance.
+
+If you only want to forward logs to an internal Elasticsearch instance, you do not need to create a ClusterLogForwarder CR.
+You must have a logging server that is configured to receive the logging data using the specified protocol or format.
+
+
+Create or edit a YAML file that defines the ClusterLogForwarder CR:
+
+Apply the ClusterLogForwarder CR:
+
+
+You can use a secret that contains a username and password to authenticate a secure connection to an external Elasticsearch instance.
+
+For example, if you cannot use mutual TLS (mTLS) keys because a third party operates the Elasticsearch instance, you can use HTTP or HTTPS and set a secret that contains the username and password.
+
+Create a Secret YAML file similar to the following example. Use base64-encoded values for the username and password fields. The secret type is opaque by default.
+
+Create the secret:
+
+Specify the name of the secret in the ClusterLogForwarder CR:
+
+Apply the CR object:
+Forwarding logs using the Fluentd forward protocol
+You can use the Fluentd forward protocol to send a copy of your logs to an external log aggregator that is configured to accept the protocol instead of, or in addition to, the default Elasticsearch log store. You are responsible for configuring the external log aggregator to receive the logs from "Red Hat OpenShift Container Platform".
+
+To configure log forwarding using the forward protocol, you must create a ClusterLogForwarder custom resource (CR) with one or more outputs to the Fluentd servers, and pipelines that use those outputs. The Fluentd output can use a TCP (insecure) or TLS (secure TCP) connection.
+
+You must have a logging server that is configured to receive the logging data using the specified protocol or format.
+
+
+Create or edit a YAML file that defines the ClusterLogForwarder CR object:
+
+Create the CR object:
+
+
+Enabling nanosecond precision for Logstash to ingest data from fluentd
+For Logstash to ingest log data from fluentd, you must enable nanosecond precision in the Logstash configuration file.
+
+In the Logstash configuration file,  set nanosecond_precision to true.
+
+
+input { tcp { codec => fluent { nanosecond_precision => true } port => 24114 } }
+filter { }
+output { stdout { codec => rubydebug } }
+Forwarding logs using the syslog protocol
+You can use the syslog RFC3164 or RFC5424 protocol to send a copy of your logs to an external log aggregator that is configured to accept the protocol instead of, or in addition to, the default Elasticsearch log store. You are responsible for configuring the external log aggregator, such as a syslog server, to receive the logs from "Red Hat OpenShift Container Platform".
+
+To configure log forwarding using the syslog protocol, you must create a ClusterLogForwarder custom resource (CR) with one or more outputs to the syslog servers, and pipelines that use those outputs. The syslog output can use a UDP, TCP, or TLS connection.
+
+You must have a logging server that is configured to receive the logging data using the specified protocol or format.
+
+
+Create or edit a YAML file that defines the ClusterLogForwarder CR object:
+
+Create the CR object:
+
+
+Adding log source information to message output
+You can add namespace_name, pod_name, and container_name elements to the message field of the record by adding the AddLogSource field to your ClusterLogForwarder custom resource (CR).
+
+  spec:
+    outputs:
+    - name: syslogout
+      syslog:
+        addLogSource: true
+        facility: user
+        payloadKey: message
+        rfc: RFC3164
+        severity: debug
+        tag: mytag
+      type: syslog
+      url: tls://syslog-receiver.openshift-logging.svc:24224
+    pipelines:
+    - inputRefs:
+      - application
+      name: test-app
+      outputRefs:
+      - syslogout
+This configuration is compatible with both RFC3164 and RFC5424.
+<15>1 2020-11-15T17:06:14+00:00 fluentd-9hkb4 mytag - - -  {"msgcontent"=>"Message Contents", "timestamp"=>"2020-11-15 17:06:09", "tag_key"=>"rec_tag", "index"=>56}
+<15>1 2020-11-16T10:49:37+00:00 crc-j55b9-master-0 mytag - - -  namespace_name=clo-test-6327,pod_name=log-generator-ff9746c49-qxm7l,container_name=log-generator,message={"msgcontent":"My life is my message", "timestamp":"2020-11-16 10:49:36", "tag_key":"rec_tag", "index":76}
+Syslog parameters
+You can configure the following for the syslog outputs. For more information, see the syslog RFC3164 or RFC5424 RFC.
+
+facility: The syslog facility. The value can be a decimal integer or a case-insensitive keyword:
+
+Optional: payloadKey: The record field to use as payload for the syslog message.
+
+rfc: The RFC to be used for sending logs using syslog. The default is RFC5424.
+
+severity: The syslog severity to set on outgoing syslog records. The value can be a decimal integer or a case-insensitive keyword:
+
+tag: Tag specifies a record field to use as a tag on the syslog message.
+
+trimPrefix: Remove the specified prefix from the tag.
+Additional RFC5424 syslog parameters
+The following parameters apply to RFC5424:
+
+appName: The APP-NAME is a free-text string that identifies the application that sent the log. Must be specified for RFC5424.
+
+msgID: The MSGID is a free-text string that identifies the type of message. Must be specified for RFC5424.
+
+procID: The PROCID is a free-text string. A change in the value indicates a discontinuity in syslog reporting. Must be specified for RFC5424.
+Forwarding logs to a Kafka broker
+You can forward logs to an external Kafka broker in addition to, or instead of, the default log store.
+
+To configure log forwarding to an external Kafka instance, you must create a ClusterLogForwarder custom resource (CR) with an output to that instance, and a pipeline that uses the output. You can include a specific Kafka topic in the output or use the default. The Kafka output can use a TCP (insecure) or TLS (secure TCP) connection.
+
+Create or edit a YAML file that defines the ClusterLogForwarder CR object:
+
+Optional: To forward a single output to multiple Kafka brokers, specify an array of Kafka brokers as shown in the following example:
+
+Apply the ClusterLogForwarder CR by running the following command:
+Forwarding logs to Amazon CloudWatch
+You can forward logs to Amazon CloudWatch, a monitoring and log storage service hosted by Amazon Web Services (AWS). You can forward logs to CloudWatch in addition to, or instead of, the default log store.
+
+To configure log forwarding to CloudWatch, you must create a ClusterLogForwarder custom resource (CR) with an output for CloudWatch, and a pipeline that uses the output.
+
+Create a Secret YAML file that uses the aws_access_key_id and aws_secret_access_key fields to specify your base64-encoded AWS credentials. For example:
+
+Create the secret. For example:
+
+Create or edit a YAML file that defines the ClusterLogForwarder CR object. In the file, specify the name of the secret. For example:
+
+Create the CR object:
+
+
+Here, you see an example ClusterLogForwarder custom resource (CR) and the log data that it outputs to Amazon CloudWatch.
+
+Suppose that you are running an "Red Hat OpenShift Container Platform" cluster named mycluster. The following command returns the cluster's infrastructureName, which you will use to compose aws commands later on:
+
+$ oc get Infrastructure/cluster -ojson | jq .status.infrastructureName
+"mycluster-7977k"
+To generate log data for this example, you run a busybox pod in a namespace called app. The busybox pod writes a message to stdout every three seconds:
+
+$ oc run busybox --image=busybox -- sh -c 'while true; do echo "My life is my message"; sleep 3; done'
+$ oc logs -f busybox
+My life is my message
+My life is my message
+My life is my message
+...
+You can look up the UUID of the app namespace where the busybox pod runs:
+
+$ oc get ns/app -ojson | jq .metadata.uid
+"794e1e1a-b9f5-4958-a190-e76a9b53d7bf"
+In your ClusterLogForwarder custom resource (CR), you configure the infrastructure, audit, and application log types as inputs to the all-logs pipeline. You also connect this pipeline to cw output, which forwards the logs to a CloudWatch instance in the us-east-2 region:
+
+apiVersion: "logging.openshift.io/v1"
+kind: ClusterLogForwarder
+metadata:
+  name: instance
+  namespace: openshift-logging
+spec:
+  outputs:
+   - name: cw
+     type: cloudwatch
+     cloudwatch:
+       groupBy: logType
+       region: us-east-2
+     secret:
+        name: cw-secret
+  pipelines:
+    - name: all-logs
+      inputRefs:
+        - infrastructure
+        - audit
+        - application
+      outputRefs:
+        - cw
+Each region in CloudWatch contains three levels of objects:
+
+log group
+
+
+With groupBy: logType in the ClusterLogForwarding CR, the three log types in the inputRefs produce three log groups in Amazon Cloudwatch:
+
+$ aws --output json logs describe-log-groups | jq .logGroups[].logGroupName
+"mycluster-7977k.application"
+"mycluster-7977k.audit"
+"mycluster-7977k.infrastructure"
+Each of the log groups contains log streams:
+
+$ aws --output json logs describe-log-streams --log-group-name mycluster-7977k.application | jq .logStreams[].logStreamName
+"kubernetes.var.log.containers.busybox_app_busybox-da085893053e20beddd6747acdbaf98e77c37718f85a7f6a4facf09ca195ad76.log"
+$ aws --output json logs describe-log-streams --log-group-name mycluster-7977k.audit | jq .logStreams[].logStreamName
+"ip-10-0-131-228.us-east-2.compute.internal.k8s-audit.log"
+"ip-10-0-131-228.us-east-2.compute.internal.linux-audit.log"
+"ip-10-0-131-228.us-east-2.compute.internal.openshift-audit.log"
+...
+$ aws --output json logs describe-log-streams --log-group-name mycluster-7977k.infrastructure | jq .logStreams[].logStreamName
+"ip-10-0-131-228.us-east-2.compute.internal.kubernetes.var.log.containers.apiserver-69f9fd9b58-zqzw5_openshift-oauth-apiserver_oauth-apiserver-453c5c4ee026fe20a6139ba6b1cdd1bed25989c905bf5ac5ca211b7cbb5c3d7b.log"
+"ip-10-0-131-228.us-east-2.compute.internal.kubernetes.var.log.containers.apiserver-797774f7c5-lftrx_openshift-apiserver_openshift-apiserver-ce51532df7d4e4d5f21c4f4be05f6575b93196336be0027067fd7d93d70f66a4.log"
+"ip-10-0-131-228.us-east-2.compute.internal.kubernetes.var.log.containers.apiserver-797774f7c5-lftrx_openshift-apiserver_openshift-apiserver-check-endpoints-82a9096b5931b5c3b1d6dc4b66113252da4a6472c9fff48623baee761911a9ef.log"
+...
+Each log stream contains log events. To see a log event from the busybox Pod, you specify its log stream from the application log group:
+
+$ aws logs get-log-events --log-group-name mycluster-7977k.application --log-stream-name kubernetes.var.log.containers.busybox_app_busybox-da085893053e20beddd6747acdbaf98e77c37718f85a7f6a4facf09ca195ad76.log
+{
+    "events": [
+        {
+            "timestamp": 1629422704178,
+            "message": "{\"docker\":{\"container_id\":\"da085893053e20beddd6747acdbaf98e77c37718f85a7f6a4facf09ca195ad76\"},\"kubernetes\":{\"container_name\":\"busybox\",\"namespace_name\":\"app\",\"pod_name\":\"busybox\",\"container_image\":\"docker.io/library/busybox:latest\",\"container_image_id\":\"docker.io/library/busybox@sha256:0f354ec1728d9ff32edcd7d1b8bbdfc798277ad36120dc3dc683be44524c8b60\",\"pod_id\":\"870be234-90a3-4258-b73f-4f4d6e2777c7\",\"host\":\"ip-10-0-216-3.us-east-2.compute.internal\",\"labels\":{\"run\":\"busybox\"},\"master_url\":\"https://kubernetes.default.svc\",\"namespace_id\":\"794e1e1a-b9f5-4958-a190-e76a9b53d7bf\",\"namespace_labels\":{\"kubernetes_io/metadata_name\":\"app\"}},\"message\":\"My life is my message\",\"level\":\"unknown\",\"hostname\":\"ip-10-0-216-3.us-east-2.compute.internal\",\"pipeline_metadata\":{\"collector\":{\"ipaddr4\":\"10.0.216.3\",\"inputname\":\"fluent-plugin-systemd\",\"name\":\"fluentd\",\"received_at\":\"2021-08-20T01:25:08.085760+00:00\",\"version\":\"1.7.4 1.6.0\"}},\"@timestamp\":\"2021-08-20T01:25:04.178986+00:00\",\"viaq_index_name\":\"app-write\",\"viaq_msg_id\":\"NWRjZmUyMWQtZjgzNC00MjI4LTk3MjMtNTk3NmY3ZjU4NDk1\",\"log_type\":\"application\",\"time\":\"2021-08-20T01:25:04+00:00\"}",
+            "ingestionTime": 1629422744016
+        },
+...
+In the log group names, you can replace the default infrastructureName prefix, mycluster-7977k, with an arbitrary string like demo-group-prefix. To make this change, you update the groupPrefix field in the ClusterLogForwarding CR:
+
+cloudwatch:
+    groupBy: logType
+    groupPrefix: demo-group-prefix
+    region: us-east-2
+The value of groupPrefix replaces the default infrastructureName prefix:
+
+$ aws --output json logs describe-log-groups | jq .logGroups[].logGroupName
+"demo-group-prefix.application"
+"demo-group-prefix.audit"
+"demo-group-prefix.infrastructure"
+For each application namespace in your cluster, you can create a log group in CloudWatch whose name is based on the name of the application namespace.
+
+If you delete an application namespace object and create a new one that has the same name, CloudWatch continues using the same log group as before.
+
+If you consider successive application namespace objects that have the same name as equivalent to each other, use the approach described in this example. Otherwise, if you need to distinguish the resulting log groups from each other, see the following "Naming log groups for application namespace UUIDs" section instead.
+
+To create application log groups whose names are based on the names of the application namespaces, you set the value of the groupBy field to namespaceName in the ClusterLogForwarder CR:
+
+cloudwatch:
+    groupBy: namespaceName
+    region: us-east-2
+Setting groupBy to namespaceName affects the application log group only. It does not affect the audit and infrastructure log groups.
+
+In Amazon Cloudwatch, the namespace name appears at the end of each log group name. Because there is a single application namespace, "app", the following output shows a new mycluster-7977k.app log group instead of mycluster-7977k.application:
+
+$ aws --output json logs describe-log-groups | jq .logGroups[].logGroupName
+"mycluster-7977k.app"
+"mycluster-7977k.audit"
+"mycluster-7977k.infrastructure"
+If the cluster in this example had contained multiple application namespaces, the output would show multiple log groups, one for each namespace.
+
+The groupBy field affects the application log group only. It does not affect the audit and infrastructure log groups.
+
+For each application namespace in your cluster, you can create a log group in CloudWatch whose name is based on the UUID of the application namespace.
+
+If you delete an application namespace object and create a new one, CloudWatch creates a new log group.
+
+If you consider successive application namespace objects with the same name as different from each other, use the approach described in this example. Otherwise, see the preceding "Example: Naming log groups for application namespace names" section instead.
+
+To name log groups after application namespace UUIDs, you set the value of the groupBy field to namespaceUUID in the ClusterLogForwarder CR:
+
+cloudwatch:
+    groupBy: namespaceUUID
+    region: us-east-2
+In Amazon Cloudwatch, the namespace UUID appears at the end of each log group name. Because there is a single application namespace, "app", the following output shows a new mycluster-7977k.794e1e1a-b9f5-4958-a190-e76a9b53d7bf log group instead of mycluster-7977k.application:
+
+$ aws --output json logs describe-log-groups | jq .logGroups[].logGroupName
+"mycluster-7977k.794e1e1a-b9f5-4958-a190-e76a9b53d7bf" // uid of the "app" namespace
+"mycluster-7977k.audit"
+"mycluster-7977k.infrastructure"
+The groupBy field affects the application log group only. It does not affect the audit and infrastructure log groups.
+Creating a secret for AWS CloudWatch with an existing AWS role
+If you have an existing role for AWS, you can create a secret for AWS with STS using the oc create secret --from-literal command.
+
+In the CLI, enter the following to generate a secret for AWS:
+
+
+AWS STS API Reference

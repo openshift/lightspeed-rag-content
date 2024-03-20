@@ -1,0 +1,211 @@
+Configuring the Network Observability Operator
+
+You can update the Flow Collector API resource to configure the Network Observability Operator and its managed components. The  Flow Collector is explicitly created during installation. Since this resource operates cluster-wide, only a single FlowCollector is allowed, and it has to be named cluster.
+View the FlowCollector resource
+You can view and edit YAML directly in the "Red Hat OpenShift Container Platform" web console.
+
+In the web console, navigate to Operators -> Installed Operators.
+
+Under the Provided APIs heading for the NetObserv Operator, select Flow Collector.
+
+Select cluster then select the YAML tab. There, you can modify the FlowCollector resource to configure the Network Observability operator.
+
+
+The following example shows a sample FlowCollector resource for "Red Hat OpenShift Container Platform" Network Observability operator:
+
+apiVersion: flows.netobserv.io/v1beta2
+kind: FlowCollector
+metadata:
+  name: cluster
+spec:
+  namespace: netobserv
+  deploymentModel: Direct
+  agent:
+    type: eBPF                                1
+    ebpf:
+      sampling: 50                            2
+      logLevel: info
+      privileged: false
+      resources:
+        requests:
+          memory: 50Mi
+          cpu: 100m
+        limits:
+          memory: 800Mi
+  processor:               3
+    logLevel: info
+    resources:
+      requests:
+        memory: 100Mi
+        cpu: 100m
+      limits:
+        memory: 800Mi
+    logTypes: Flows
+    advanced:
+      conversationEndTimeout: 10s
+      conversationHeartbeatInterval: 30s
+  loki:                     4
+    mode: LokiStack         5
+  consolePlugin:
+    register: true
+    logLevel: info
+    portNaming:
+      enable: true
+      portNames:
+        "3100": loki
+    quickFilters:            6
+    - name: Applications
+      filter:
+        src_namespace!: 'openshift-,netobserv'
+        dst_namespace!: 'openshift-,netobserv'
+      default: true
+    - name: Infrastructure
+      filter:
+        src_namespace: 'openshift-,netobserv'
+        dst_namespace: 'openshift-,netobserv'
+    - name: Pods network
+      filter:
+        src_kind: 'Pod'
+        dst_kind: 'Pod'
+      default: true
+    - name: Services network
+      filter:
+        dst_kind: 'Service'
+The Agent specification, spec.agent.type, must be EBPF. eBPF is the only "Red Hat OpenShift Container Platform" supported option.
+
+You can set the Sampling specification, spec.agent.ebpf.sampling, to manage resources. Lower sampling values might consume a large amount of computational, memory and storage resources. You can mitigate this by specifying a sampling ratio value. A value of 100 means 1 flow every 100 is sampled. A value of 0 or 1 means all flows are captured. The lower the value, the increase in returned flows and the accuracy of derived metrics. By default, eBPF sampling is set to a value of 50, so 1 flow every 50 is sampled. Note that more sampled flows also means more storage needed. It is recommend to start with default values and refine empirically, to determine which setting your cluster can manage.
+
+The Processor specification spec.processor. can be set to enable conversation tracking. When enabled, conversation events are queryable in the web console. The spec.processor.logTypes value is Flows. The spec.processor.advanced values are Conversations, EndedConversations, or ALL. Storage requirements are highest for All and lowest for EndedConversations.
+
+The Loki specification, spec.loki, specifies the Loki client. The default values match the Loki install paths mentioned in the Installing the Loki Operator section. If you used another installation method for Loki, specify the appropriate client information for your install.
+
+The LokiStack mode automatically sets a few configurations: querierUrl, ingesterUrl and statusUrl, tenantID, and corresponding TLS configuration. Cluster roles and a cluster role binding are created for reading and writing logs to Loki. And authToken is set to Forward. You can set these manually using the Manual mode.
+
+The spec.quickFilters specification defines filters that show up in the web console. The Application filter keys,src_namespace and dst_namespace, are negated (!), so the Application filter shows all traffic that does not originate from, or have a destination to, any openshift- or netobserv namespaces. For more information, see Configuring quick filters below.
+
+
+For more information about conversation tracking, see Working with conversations.
+Configuring the Flow Collector resource with Kafka
+You can configure the FlowCollector resource to use Kafka for high-throughput and low-latency data feeds. A Kafka instance needs to be running, and a Kafka topic dedicated to "Red Hat OpenShift Container Platform" Network Observability must be created in that instance. For more information, see Kafka documentation with AMQ Streams.
+
+Kafka is installed. Red Hat supports Kafka with AMQ Streams Operator.
+
+
+In the web console, navigate to Operators → Installed Operators.
+
+Under the Provided APIs heading for the Network Observability Operator, select Flow Collector.
+
+Select the cluster and then click the YAML tab.
+
+Modify the FlowCollector resource for "Red Hat OpenShift Container Platform" Network Observability Operator to use Kafka, as shown in the following sample YAML:
+
+
+apiVersion: flows.netobserv.io/v1beta2
+kind: FlowCollector
+metadata:
+  name: cluster
+spec:
+  deploymentModel: Kafka                                    1
+  kafka:
+    address: "kafka-cluster-kafka-bootstrap.netobserv"      2
+    topic: network-flows                                    3
+    tls:
+      enable: false                                         4
+Set spec.deploymentModel to Kafka instead of Direct to enable the Kafka deployment model.
+
+spec.kafka.address refers to the Kafka bootstrap server address. You can specify a port if needed, for instance kafka-cluster-kafka-bootstrap.netobserv:9093 for using TLS on port 9093.
+
+spec.kafka.topic should match the name of a topic created in Kafka.
+
+spec.kafka.tls can be used to encrypt all communications to and from Kafka with TLS or mTLS. When enabled, the Kafka CA certificate must be available as a ConfigMap or a Secret, both in the namespace where the flowlogs-pipeline processor component is deployed (default: netobserv) and where the eBPF agents are deployed (default: netobserv-privileged). It must be referenced with spec.kafka.tls.caCert. When using mTLS, client secrets must be available in these namespaces as well (they can be generated for instance using the AMQ Streams User Operator) and referenced with spec.kafka.tls.userCert.
+Export enriched network flow data
+You can send network flows to Kafka, IPFIX, or both at the same time. Any processor or storage that supports Kafka or IPFIX input, such as Splunk, Elasticsearch, or Fluentd, can consume the enriched network flow data.
+
+Your Kafka or IPFIX collector endpoint(s) are available from Network Observability flowlogs-pipeline pods.
+
+
+In the web console, navigate to Operators -> Installed Operators.
+
+Under the Provided APIs heading for the NetObserv Operator, select Flow Collector.
+
+Select cluster and then select the YAML tab.
+
+Edit the FlowCollector to configure spec.exporters as follows:
+
+After configuration, network flows data can be sent to an available output in a JSON format. For more information, see Network flows format reference.
+
+
+For more information about specifying flow format, see Network flows format reference.
+Updating the Flow Collector resource
+As an alternative to editing YAML in the "Red Hat OpenShift Container Platform" web console, you can configure specifications, such as eBPF sampling, by patching the flowcollector custom resource (CR):
+
+Run the following command to patch the flowcollector CR and update the spec.agent.ebpf.sampling value:
+Configuring quick filters
+You can modify the filters in the FlowCollector resource. Exact matches are possible using double-quotes around values. Otherwise, partial matches are used for textual values. The bang (!) character, placed at the end of a key, means negation. See the sample FlowCollector resource for more context about modifying the YAML.
+
+The filter matching types "all of" or "any of" is a UI setting that the users can modify from the query options. It is not part of this resource configuration.
+Here is a list of all available filter keys:
+
+
+Universal keys filter for any of source or destination. For example, filtering name: 'my-pod' means all traffic from my-pod and all traffic to my-pod, regardless of the matching type used, whether Match all or Match any.
+Configuring monitoring for SR-IOV interface traffic
+In order to collect traffic from a cluster with a Single Root I/O Virtualization (SR-IOV) device, you must set the FlowCollector spec.agent.ebpf.privileged field to true. Then, the eBPF agent monitors other network namespaces in addition to the host network namespaces, which are monitored by default. When a pod with a virtual functions (VF) interface is created, a new network namespace is created. With SRIOVNetwork policy IPAM configurations specified, the VF interface is migrated from the host network namespace to the pod network namespace.
+
+Access to an "Red Hat OpenShift Container Platform" cluster with a SR-IOV device.
+
+The SRIOVNetwork custom resource (CR) spec.ipam configuration must be set with an IP address from the range that the interface lists or from other plugins.
+
+
+In the web console, navigate to Operators -> Installed Operators.
+
+Under the Provided APIs heading for the NetObserv Operator, select Flow Collector.
+
+Select cluster and then select the YAML tab.
+
+Configure the FlowCollector custom resource. A sample configuration is as follows:
+
+
+apiVersion: flows.netobserv.io/v1beta2
+kind: FlowCollector
+metadata:
+  name: cluster
+spec:
+  namespace: netobserv
+  deploymentModel: Direct
+  agent:
+    type: eBPF
+    ebpf:
+      privileged: true   1
+The spec.agent.ebpf.privileged field value must be set to true to enable SR-IOV monitoring.
+
+
+For more information about creating the SriovNetwork custom resource, see Creating an additional SR-IOV network attachment with the CNI VRF plugin.
+Resource management and performance considerations
+The amount of resources required by Network Observability depends on the size of your cluster and your requirements for the cluster to ingest and store observability data. To manage resources and set performance criteria for your cluster, consider configuring the following settings. Configuring these settings might meet your optimal setup and observability needs.
+
+The following settings can help you manage resources and performance from the outset:
+
+
+eBPF Sampling
+You can set the Sampling specification, spec.agent.ebpf.sampling, to manage resources. Smaller sampling values might consume a large amount of computational, memory and storage resources. You can mitigate this by specifying a sampling ratio value. A value of 100 means 1 flow every 100 is sampled. A value of 0 or 1 means all flows are captured. Smaller values result in an increase in returned flows and the accuracy of derived metrics. By default, eBPF sampling is set to a value of 50, so 1 flow every 50 is sampled. Note that more sampled flows also means more storage needed. Consider starting with the default values and refine empirically, in order to determine which setting your cluster can manage.
+Restricting or excluding interfaces
+Reduce the overall observed traffic by setting the values for spec.agent.ebpf.interfaces and spec.agent.ebpf.excludeInterfaces. By default, the agent fetches all the interfaces in the system, except the ones listed in excludeInterfaces and lo (local interface). Note that the interface names might vary according to the Container Network Interface (CNI) used.
+
+
+The following settings can be used to fine-tune performance after the Network Observability has been running for a while:
+
+
+Resource requirements and limits
+Adapt the resource requirements and limits to the load and memory usage you expect on your cluster by using the spec.agent.ebpf.resources and spec.processor.resources specifications. The default limits of 800MB might be sufficient for most medium-sized clusters.
+Cache max flows timeout
+Control how often flows are reported by the agents by using the eBPF agent's spec.agent.ebpf.cacheMaxFlows and spec.agent.ebpf.cacheActiveTimeout specifications. A larger value results in less traffic being generated by the agents, which correlates with a lower CPU load. However, a larger value leads to a slightly higher memory consumption, and might generate more latency in the flow collection.
+
+
+Resource considerations
+The following table outlines examples of resource considerations for clusters with certain workload sizes.
+
+The examples outlined in the table demonstrate scenarios that are tailored to specific workloads. Consider each example only as a baseline from which adjustments can be made to accommodate your workload needs.
+
+Tested with AWS M6i instances.
+
+In addition to this worker and its controller, 3 infra nodes (size M6i.12xlarge) and 1 workload node (size M6i.8xlarge) were tested.
