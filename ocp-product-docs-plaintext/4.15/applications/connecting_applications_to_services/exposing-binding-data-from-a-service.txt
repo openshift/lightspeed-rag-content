@@ -1,0 +1,387 @@
+Exposing binding data from a service
+
+Application developers need access to backing services to build and connect workloads. Connecting workloads to backing services is always a challenge because each service provider requires a different way to access their secrets and consume them in a workload.
+
+The Service Binding Operator enables application developers to easily bind workloads together with operator-managed backing services, without any manual procedures to configure the binding connection. For the Service Binding Operator to provide the binding data, as an Operator provider or user who creates backing services, you must expose the binding data to be automatically detected by the Service Binding Operator. Then, the Service Binding Operator automatically collects the binding data from the backing service and shares it with a workload to provide a consistent and predictable experience.
+Methods of exposing binding data
+This section describes the methods you can use to expose the binding data.
+
+Ensure that you know and understand your workload requirements and environment, and how it works with the provided services.
+
+Binding data is exposed under the following circumstances:
+
+Backing service is available as a provisioned service resource.
+
+Backing service is not available as a provisioned service resource.
+
+
+Provisioned service
+Provisioned service represents a backing service CR with a reference to a Secret resource placed in the .status.binding.name field of the backing service CR.
+
+As an Operator provider or the user who creates backing services, you can use this method to be compliant with the Service Binding specification, by creating a Secret resource and referencing it in the .status.binding.name section of the backing service CR. This Secret resource must provide all the binding data values required for a workload to connect to the backing service.
+
+The following examples show an AccountService CR that represents a backing service and a Secret resource referenced from the CR.
+
+apiVersion: example.com/v1alpha1
+kind: AccountService
+name: prod-account-service
+spec:
+# ...
+status:
+  binding:
+    name: hippo-pguser-hippo
+apiVersion: v1
+kind: Secret
+metadata:
+  name: hippo-pguser-hippo
+data:
+  password: "<password>"
+  user: "<username>"
+# ...
+When creating a service binding resource, you can directly give the details of the AccountService resource in the ServiceBinding specification as follows:
+
+apiVersion: binding.operators.coreos.com/v1alpha1
+kind: ServiceBinding
+metadata:
+  name: account-service
+spec:
+# ...
+  services:
+  - group: "example.com"
+    version: v1alpha1
+    kind: AccountService
+    name: prod-account-service
+  application:
+    name: spring-petclinic
+    group: apps
+    version: v1
+    resource: deployments
+apiVersion: servicebinding.io/v1beta1
+kind: ServiceBinding
+metadata:
+  name: account-service
+spec:
+# ...
+  service:
+    apiVersion: example.com/v1alpha1
+    kind: AccountService
+    name: prod-account-service
+  workload:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: spring-petclinic
+This method exposes all the keys in the hippo-pguser-hippo referenced Secret resource as binding data that is to be projected into the workload.
+Direct secret reference
+You can use this method, if all the required binding data values are available in a Secret resource that you can reference in your Service Binding definition. In this method, a ServiceBinding resource directly references a Secret resource to connect to a service. All the keys in the Secret resource are exposed as binding data.
+
+apiVersion: binding.operators.coreos.com/v1alpha1
+kind: ServiceBinding
+metadata:
+  name: account-service
+spec:
+# ...
+  services:
+  - group: ""
+    version: v1
+    kind: Secret
+    name: hippo-pguser-hippo
+apiVersion: servicebinding.io/v1beta1
+kind: ServiceBinding
+metadata:
+  name: account-service
+spec:
+# ...
+  service:
+    apiVersion: v1
+    kind: Secret
+    name: hippo-pguser-hippo
+Declaring binding data through CRD or CR annotations
+You can use this method to annotate the resources of the backing service to expose the binding data with specific annotations. Adding annotations under the metadata section alters the CRs and CRDs of the backing services. Service Binding Operator detects the annotations added to the CRs and CRDs and then creates a Secret resource with the values extracted based on the annotations.
+
+The following examples show the annotations that are added under the metadata section and a referenced ConfigMap object from a resource:
+
+apiVersion: postgres-operator.crunchydata.com/v1beta1
+kind: PostgresCluster
+metadata:
+  name: hippo
+  namespace: my-petclinic
+  annotations:
+    service.binding: 'path={.metadata.name}-pguser-{.metadata.name},objectType=Secret'
+# ...
+The previous example places the name of the secret name in the {.metadata.name}-pguser-{.metadata.name} template that resolves to hippo-pguser-hippo. The template can contain multiple JSONPath expressions.
+
+apiVersion: v1
+kind: Secret
+metadata:
+  name: hippo-pguser-hippo
+data:
+  password: "<password>"
+  user: "<username>"
+apiVersion: postgres-operator.crunchydata.com/v1beta1
+kind: PostgresCluster
+metadata:
+  name: hippo
+  namespace: my-petclinic
+  annotations:
+    service.binding: 'path={.metadata.name}-config,objectType=ConfigMap'
+# ...
+The previous example places the name of the config map in the {.metadata.name}-config template that resolves to hippo-config. The template can contain multiple JSONPath expressions.
+
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: hippo-config
+data:
+  db_timeout: "10s"
+  user: "hippo"
+Detection of binding data through owned resources
+You can use this method if your backing service owns one or more Kubernetes resources such as route, service, config map, or secret that you can use to detect the binding data. In this method, the Service Binding Operator detects the binding data from resources owned by the backing service CR.
+
+The following examples show the detectBindingResources API option set to true in the ServiceBinding CR:
+
+apiVersion: binding.operators.coreos.com/v1alpha1
+kind: ServiceBinding
+metadata:
+  name: spring-petclinic-detect-all
+  namespace: my-petclinic
+spec:
+  detectBindingResources: true
+  services:
+    - group: postgres-operator.crunchydata.com
+      version: v1beta1
+      kind: PostgresCluster
+      name: hippo
+  application:
+    name: spring-petclinic
+    group: apps
+    version: v1
+    resource: deployments
+In the previous example, PostgresCluster custom service resource owns one or more Kubernetes resources such as route, service, config map, or secret.
+
+The Service Binding Operator automatically detects the binding data exposed on each of the owned resources.
+Data model
+The data model used in the annotations follows specific conventions.
+
+Service binding annotations must use the following convention:
+
+service.binding(/<NAME>)?:
+    "<VALUE>|(path=<JSONPATH_TEMPLATE>(,objectType=<OBJECT_TYPE>)?(,elementType=<ELEMENT_TYPE>)?(,sourceKey=<SOURCE_KEY>)?(,sourceValue=<SOURCE_VALUE>)?)"
+where:
+
+
+<NAME>
+Specifies the name under which the binding value is to be exposed. You can exclude it only when the objectType parameter is set to Secret or ConfigMap.
+<VALUE>
+Specifies the constant value exposed when no path is set.
+
+
+The data model provides the details on the allowed values and semantic for the path, elementType, objectType, sourceKey, and sourceValue parameters.
+
+
+The sourceKey and sourceValue parameters are applicable only if the element indicated in the path parameter refers to a ConfigMap or Secret resource.
+Setting annotations mapping to be optional
+You can have optional fields in the annotations. For example, a path to the credentials might not be present if the service endpoint does not require authentication. In such cases, a field might not exist in the target path of the annotations. As a result, Service Binding Operator generates an error, by default.
+
+As a service provider, to indicate whether you require annotations mapping, you can set a value for the optional flag in your annotations when enabling services. Service Binding Operator provides annotations mapping only if the target path is available. When the target path is not available, the Service Binding Operator skips the optional mapping and continues with the projection of the existing mappings without throwing any errors.
+
+To make a field in the annotations optional, set the optional flag value to true:
+
+
+If you set the optional flag value to false and the Service Binding Operator is unable to find the target path, the Operator fails the annotations mapping.
+
+If the optional flag has no value set, the Service Binding Operator considers the value as false by default and fails the annotations mapping.
+RBAC requirements
+To expose the backing service binding data using the Service Binding Operator, you require certain Role-based access control (RBAC) permissions. Specify certain verbs under the rules field of the ClusterRole resource to grant the RBAC permissions for the backing service resources. When you define these rules, you allow the Service Binding Operator to read the binding data of the backing service resources throughout the cluster. If the users do not have permissions to read binding data or modify application resource, the Service Binding Operator prevents such users to bind services to application. Adhering to the RBAC requirements avoids unnecessary permission elevation for the user and prevents access to unauthorized services or applications.
+
+The Service Binding Operator performs requests against the Kubernetes API using a dedicated service account. By default, this account has permissions to bind services to workloads, both represented by the following standard Kubernetes or OpenShift objects:
+
+Deployments
+
+DaemonSets
+
+ReplicaSets
+
+StatefulSets
+
+DeploymentConfigs
+
+
+The Operator service account is bound to an aggregated cluster role, allowing Operator providers or cluster administrators to enable binding custom service resources to workloads. To grant the required permissions within a ClusterRole, label it with the servicebinding.io/controller flag and set the flag value to true. The following example shows how to allow the Service Binding Operator to get, watch, and list the custom resources (CRs) of Crunchy PostgreSQL Operator:
+
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: postgrescluster-reader
+  labels:
+     servicebinding.io/controller: "true"
+rules:
+- apiGroups:
+    - postgres-operator.crunchydata.com
+  resources:
+    - postgresclusters
+  verbs:
+    - get
+    - watch
+    - list
+  ...
+This cluster role can be deployed during the installation of the backing service Operator.
+Categories of exposable binding data
+The Service Binding Operator enables you to expose the binding data values from the backing service resources and custom resource definitions (CRDs).
+
+This section provides examples to show how you can use the various categories of exposable binding data. You must modify these examples to suit your work environment and requirements.
+
+Exposing a string from a resource
+The following example shows how to expose the string from the metadata.name field of the PostgresCluster custom resource (CR) as a username:
+
+apiVersion: postgres-operator.crunchydata.com/v1beta1
+kind: PostgresCluster
+metadata:
+  name: hippo
+  namespace: my-petclinic
+  annotations:
+    service.binding/username: path={.metadata.name}
+# ...
+Exposing a constant value as the binding item
+The following examples show how to expose a constant value from the PostgresCluster custom resource (CR):
+
+apiVersion: postgres-operator.crunchydata.com/v1beta1
+kind: PostgresCluster
+metadata:
+  name: hippo
+  namespace: my-petclinic
+  annotations:
+    "service.binding/type": "postgresql" 1
+Binding type to be exposed with the postgresql value.
+Exposing an entire config map or secret that is referenced from a resource
+The following examples show how to expose an entire secret through annotations:
+
+apiVersion: postgres-operator.crunchydata.com/v1beta1
+kind: PostgresCluster
+metadata:
+  name: hippo
+  namespace: my-petclinic
+  annotations:
+    service.binding: 'path={.metadata.name}-pguser-{.metadata.name},objectType=Secret'
+apiVersion: v1
+kind: Secret
+metadata:
+  name: hippo-pguser-hippo
+data:
+  password: "<password>"
+  user: "<username>"
+Exposing a specific entry from a config map or secret that is referenced from a resource
+The following examples show how to expose a specific entry from a config map through annotations:
+
+apiVersion: postgres-operator.crunchydata.com/v1beta1
+kind: PostgresCluster
+metadata:
+  name: hippo
+  namespace: my-petclinic
+  annotations:
+    service.binding: 'path={.metadata.name}-config,objectType=ConfigMap,sourceKey=user'
+The binding data should have a key with name as db_timeout and value as 10s:
+
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: hippo-config
+data:
+  db_timeout: "10s"
+  user: "hippo"
+Exposing a resource definition value
+The following example shows how to expose a resource definition value through annotations:
+
+apiVersion: postgres-operator.crunchydata.com/v1beta1
+kind: PostgresCluster
+metadata:
+  name: hippo
+  namespace: my-petclinic
+  annotations:
+    service.binding/username: path={.metadata.name}
+    ...
+Exposing entries of a collection with the key and value from each entry
+The following example shows how to expose the entries of a collection with the key and value from each entry through annotations:
+
+apiVersion: postgres-operator.crunchydata.com/v1beta1
+kind: PostgresCluster
+metadata:
+  name: hippo
+  namespace: my-petclinic
+  annotations:
+    "service.binding/uri": "path={.status.connections},elementType=sliceOfMaps,sourceKey=type,sourceValue=url"
+spec:
+# ...
+status:
+  connections:
+    - type: primary
+      url: primary.example.com
+    - type: secondary
+      url: secondary.example.com
+    - type: '404'
+      url: black-hole.example.com
+The following example shows how the previous entries of a collection in annotations are projected into the bound application.
+
+/bindings/<binding-name>/uri_primary => primary.example.com
+/bindings/<binding-name>/uri_secondary => secondary.example.com
+/bindings/<binding-name>/uri_404 => black-hole.example.com
+status:
+  connections:
+    - type: primary
+      url: primary.example.com
+    - type: secondary
+      url: secondary.example.com
+    - type: '404'
+      url: black-hole.example.com
+The previous example helps you to project all those values with keys such as primary, secondary, and so on.
+Exposing items of a collection with one key per item
+The following example shows how to expose the items of a collection with one key per item through annotations:
+
+apiVersion: postgres-operator.crunchydata.com/v1beta1
+kind: PostgresCluster
+metadata:
+  name: hippo
+  namespace: my-petclinic
+  annotations:
+    "service.binding/tags": "path={.spec.tags},elementType=sliceOfStrings"
+spec:
+    tags:
+      - knowledge
+      - is
+      - power
+The following example shows how the previous items of a collection in annotations are projected into the bound application.
+
+/bindings/<binding-name>/tags_0 => knowledge
+/bindings/<binding-name>/tags_1 => is
+/bindings/<binding-name>/tags_2 => power
+spec:
+  tags:
+  - knowledge
+  - is
+  - power
+Exposing values of collection entries with one key per entry value
+The following example shows how to expose the values of collection entries with one key per entry value through annotations:
+
+apiVersion: postgres-operator.crunchydata.com/v1beta1
+kind: PostgresCluster
+metadata:
+  name: hippo
+  namespace: my-petclinic
+  annotations:
+    "service.binding/url": "path={.spec.connections},elementType=sliceOfStrings,sourceValue=url"
+spec:
+  connections:
+    - type: primary
+      url: primary.example.com
+    - type: secondary
+      url: secondary.example.com
+    - type: '404'
+      url: black-hole.example.com
+The following example shows how the previous values of a collection in annotations are projected into the bound application.
+
+/bindings/<binding-name>/url_0 => primary.example.com
+/bindings/<binding-name>/url_1 => secondary.example.com
+/bindings/<binding-name>/url_2 => black-hole.example.com
+Additional resources
+Defining cluster service versions (CSVs).
+
+Projecting binding data.

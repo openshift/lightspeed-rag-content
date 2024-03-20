@@ -1,0 +1,123 @@
+CCO-based workflow for OLM-managed Operators with AWS STS
+
+When an "Red Hat OpenShift Container Platform" cluster running on AWS is in Security Token Service (STS) mode, it means the cluster is utilizing features of AWS and "Red Hat OpenShift Container Platform" to use IAM roles at an application level. STS enables applications to provide a JSON Web Token (JWT) that can assume an IAM role.
+
+The JWT includes an Amazon Resource Name (ARN) for the sts:AssumeRoleWithWebIdentity IAM action to allow temporarily-granted permission for the service account. The JWT contains the signing keys for the ProjectedServiceAccountToken that AWS IAM can validate. The service account token itself, which is signed, is used as the JWT required for assuming the AWS role.
+
+The Cloud Credential Operator (CCO) is a cluster Operator installed by default in "Red Hat OpenShift Container Platform" clusters running on cloud providers. For the purposes of STS, the CCO provides the following functions:
+
+Detects when it is running on an STS-enabled cluster
+
+Checks for the presence of fields in the CredentialsRequest object that provide the required information for granting Operators access to AWS resources
+
+
+The CCO performs this detection even when in manual mode. When properly configured, the CCO projects a Secret object with the required access information into the Operator namespace.
+
+Starting in "Red Hat OpenShift Container Platform" 4.14, the CCO can semi-automate this task through an expanded use of CredentialsRequest objects, which can request the creation of Secrets that contain the information required for STS workflows. Users can provide a role ARN when installing the Operator from either the web console or CLI.
+
+Subscriptions with automatic update approvals are not recommended because there might be permission changes to make prior to updating. Subscriptions with manual update approvals ensure that administrators have the opportunity to verify the permissions of the later version and take any necessary steps prior to update.
+As an Operator author preparing an Operator for use alongside the updated CCO in "Red Hat OpenShift Container Platform" 4.14 or later, you should instruct users and add code to handle the divergence from earlier CCO versions, in addition to handling STS token authentication (if your Operator is not already STS-enabled). The recommended method is to provide a CredentialsRequest object with correctly filled STS-related fields and let the CCO create the Secret for you.
+
+If you plan to support "Red Hat OpenShift Container Platform" clusters earlier than version 4.14, consider providing users with instructions on how to manually create a secret with the STS-enabling information by using the CCO utility (ccoctl). Earlier CCO versions are unaware of STS mode on the cluster and cannot create secrets for you.
+
+Your code should check for secrets that never appear and warn users to follow the fallback instructions you have provided. For more information, see the "Alternative method" subsection.
+OLM-managed Operator support for authentication with AWS STS
+
+Installing from OperatorHub using the web console
+
+Installing from OperatorHub using the CLI
+Enabling Operators to support CCO-based workflows with AWS STS
+As an Operator author designing your project to run on Operator Lifecycle Manager (OLM), you can enable your Operator to authenticate against AWS on STS-enabled "Red Hat OpenShift Container Platform" clusters by customizing your project to support the Cloud Credential Operator (CCO).
+
+With this method, the Operator is responsible for creating the CredentialsRequest object, which means the Operator requires RBAC permission to create these objects. Then, the Operator must be able to read the resulting Secret object.
+
+By default, pods related to the Operator deployment mount a serviceAccountToken volume so that the service account token can be referenced in the resulting Secret object.
+"Red Hat OpenShift Container Platform" 4.14 or later
+
+Cluster in STS mode
+
+OLM-based Operator project
+
+
+Update your Operator project's ClusterServiceVersion (CSV) object:
+
+Update your Operator project code:
+Role specification
+The Operator description should contain the specifics of the role required to be created before installation, ideally in the form of a script that the administrator can run. For example:
+
+#!/bin/bash
+set -x
+
+AWS_ACCOUNT_ID=$(aws sts get-caller-identity --query "Account" --output text)
+OIDC_PROVIDER=$(oc get authentication cluster -ojson | jq -r .spec.serviceAccountIssuer | sed -e "s/^https:\/\///")
+NAMESPACE=my-namespace
+SERVICE_ACCOUNT_NAME="my-service-account"
+POLICY_ARN_STRINGS="arn:aws:iam::aws:policy/AmazonS3FullAccess"
+
+
+read -r -d '' TRUST_RELATIONSHIP <<EOF
+{
+ "Version": "2012-10-17",
+ "Statement": [
+   {
+     "Effect": "Allow",
+     "Principal": {
+       "Federated": "arn:aws:iam::${AWS_ACCOUNT_ID}:oidc-provider/${OIDC_PROVIDER}"
+     },
+     "Action": "sts:AssumeRoleWithWebIdentity",
+     "Condition": {
+       "StringEquals": {
+         "${OIDC_PROVIDER}:sub": "system:serviceaccount:${NAMESPACE}:${SERVICE_ACCOUNT_NAME}"
+       }
+     }
+   }
+ ]
+}
+EOF
+
+echo "${TRUST_RELATIONSHIP}" > trust.json
+
+aws iam create-role --role-name "$SERVICE_ACCOUNT_NAME" --assume-role-policy-document file://trust.json --description "role for demo"
+
+while IFS= read -r POLICY_ARN; do
+   echo -n "Attaching $POLICY_ARN ... "
+   aws iam attach-role-policy \
+       --role-name "$SERVICE_ACCOUNT_NAME" \
+       --policy-arn "${POLICY_ARN}"
+   echo "ok."
+done <<< "$POLICY_ARN_STRINGS"
+Troubleshooting
+Authentication failure
+If authentication was not successful, ensure you can assume the role with web identity by using the token provided to the Operator.
+
+Extract the token from the pod:
+
+Extract the role ARN from the pod:
+
+Try assuming the role with the web identity token:
+Secret not mounting correctly
+Pods that run as non-root users cannot write to the /root directory where the AWS shared credentials file is expected to exist by default. If the secret is not mounting correctly to the AWS credentials file path, consider mounting the secret to a different location and enabling the shared credentials file option in the AWS SDK.
+Alternative method
+As an alternative method for Operator authors, you can indicate that the user is responsible for creating the CredentialsRequest object for the Cloud Credential Operator (CCO) before installing the Operator.
+
+The Operator instructions must indicate the following to users:
+
+Provide a YAML version of a CredentialsRequest object, either by providing the YAML inline in the instructions or pointing users to a download location
+
+Instruct the user to create the CredentialsRequest object
+
+
+In "Red Hat OpenShift Container Platform" 4.14 and later, after the CredentialsRequest object appears on the cluster with the appropriate STS information added, the Operator can then read the CCO-generated Secret or mount it, having defined the mount in the cluster service version (CSV).
+
+For earlier versions of "Red Hat OpenShift Container Platform", the Operator instructions must also indicate the following to users:
+
+Use the CCO utility (ccoctl) to generate the Secret YAML object from the CredentialsRequest object
+
+Apply the Secret object to the cluster in the appropriate namespace
+
+
+The Operator still must be able to consume the resulting secret to communicate with cloud APIs. Because in this case the secret is created by the user before the Operator is installed, the Operator can do either of the following:
+
+Define an explicit mount in the Deployment object within the CSV
+
+Programmatically read the Secret object from the API server, as shown in the recommended "Enabling Operators to support CCO-based workflows with AWS STS" method

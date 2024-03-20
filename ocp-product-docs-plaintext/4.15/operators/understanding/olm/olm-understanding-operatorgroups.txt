@@ -1,0 +1,177 @@
+Operator groups
+
+This guide outlines the use of Operator groups with Operator Lifecycle Manager (OLM) in "Red Hat OpenShift Container Platform".
+About Operator groups
+An Operator group, defined by the OperatorGroup resource, provides multitenant configuration to OLM-installed Operators. An Operator group selects target namespaces in which to generate required RBAC access for its member Operators.
+
+The set of target namespaces is provided by a comma-delimited string stored in the olm.targetNamespaces annotation of a cluster service version (CSV). This annotation is applied to the CSV instances of member Operators and is projected into their deployments.
+Operator group membership
+An Operator is considered a member of an Operator group if the following conditions are true:
+
+The CSV of the Operator exists in the same namespace as the Operator group.
+
+The install modes in the CSV of the Operator support the set of namespaces targeted by the Operator group.
+
+
+An install mode in a CSV consists of an InstallModeType field and a boolean Supported field. The spec of a CSV can contain a set of install modes of four distinct InstallModeTypes:
+
+
+If the spec of a CSV omits an entry of InstallModeType, then that type is considered unsupported unless support can be inferred by an existing entry that implicitly supports it.
+Target namespace selection
+You can explicitly name the target namespace for an Operator group using the spec.targetNamespaces parameter:
+
+apiVersion: operators.coreos.com/v1
+kind: OperatorGroup
+metadata:
+  name: my-group
+  namespace: my-namespace
+spec:
+  targetNamespaces:
+  - my-namespace
+You can alternatively specify a namespace using a label selector with the spec.selector parameter:
+
+apiVersion: operators.coreos.com/v1
+kind: OperatorGroup
+metadata:
+  name: my-group
+  namespace: my-namespace
+spec:
+  selector:
+    cool.io/prod: "true"
+Listing multiple namespaces via spec.targetNamespaces or use of a label selector via spec.selector is not recommended, as the support for more than one target namespace in an Operator group will likely be removed in a future release.
+If both spec.targetNamespaces and spec.selector are defined, spec.selector is ignored. Alternatively, you can omit both spec.selector and spec.targetNamespaces to specify a global Operator group, which selects all namespaces:
+
+apiVersion: operators.coreos.com/v1
+kind: OperatorGroup
+metadata:
+  name: my-group
+  namespace: my-namespace
+The resolved set of selected namespaces is shown in the status.namespaces parameter of an Opeator group. The status.namespace of a global Operator group contains the empty string (""), which signals to a consuming Operator that it should watch all namespaces.
+Operator group CSV annotations
+Member CSVs of an Operator group have the following annotations:
+
+
+All annotations except olm.targetNamespaces are included with copied CSVs. Omitting the olm.targetNamespaces annotation on copied CSVs prevents the duplication of target namespaces between tenants.
+Provided APIs annotation
+A group/version/kind (GVK) is a unique identifier for a Kubernetes API. Information about what GVKs are provided by an Operator group are shown in an olm.providedAPIs annotation. The value of the annotation is a string consisting of <kind>.<version>.<group> delimited with commas. The GVKs of CRDs and API services provided by all active member CSVs of an Operator group are included.
+
+Review the following example of an OperatorGroup object with a single active member CSV that provides the PackageManifest resource:
+
+apiVersion: operators.coreos.com/v1
+kind: OperatorGroup
+metadata:
+  annotations:
+    olm.providedAPIs: PackageManifest.v1alpha1.packages.apps.redhat.com
+  name: olm-operators
+  namespace: local
+  ...
+spec:
+  selector: {}
+  serviceAccount:
+    metadata:
+      creationTimestamp: null
+  targetNamespaces:
+  - local
+status:
+  lastUpdated: 2019-02-19T16:18:28Z
+  namespaces:
+  - local
+Role-based access control
+When an Operator group is created, three cluster roles are generated. Each contains a single aggregation rule with a cluster role selector set to match a label, as shown below:
+
+
+The following RBAC resources are generated when a CSV becomes an active member of an Operator group, as long as the CSV is watching all namespaces with the AllNamespaces install mode and is not in a failed state with reason InterOperatorGroupOwnerConflict:
+
+Cluster roles for each API resource from a CRD
+
+Cluster roles for each API resource from an API service
+
+Additional roles and role bindings
+
+
+
+
+If the CSV defines exactly one target namespace that contains *, then a cluster role and corresponding cluster role binding are generated for each permission defined in the permissions field of the CSV. All resources generated are given the olm.owner: <csv_name> and olm.owner.namespace: <csv_namespace> labels.
+
+If the CSV does not define exactly one target namespace that contains *, then all roles and role bindings in the Operator namespace with the olm.owner: <csv_name> and olm.owner.namespace: <csv_namespace> labels are copied into the target namespace.
+Copied CSVs
+OLM creates copies of all active member CSVs of an Operator group in each of the target namespaces of that Operator group. The purpose of a copied CSV is to tell users of a target namespace that a specific Operator is configured to watch resources created there.
+
+Copied CSVs have a status reason Copied and are updated to match the status of their source CSV. The olm.targetNamespaces annotation is stripped from copied CSVs before they are created on the cluster. Omitting the target namespace selection avoids the duplication of target namespaces between tenants.
+
+Copied CSVs are deleted when their source CSV no longer exists or the Operator group that their source CSV belongs to no longer targets the namespace of the copied CSV.
+
+By default, the disableCopiedCSVs field is disabled. After enabling a disableCopiedCSVs field, the OLM deletes existing copied CSVs on a cluster. When a disableCopiedCSVs field is disabled, the OLM adds copied CSVs again.
+
+Disable the disableCopiedCSVs field:
+
+Enable the disableCopiedCSVs field:
+Static Operator groups
+An Operator group is static if its spec.staticProvidedAPIs field is set to true. As a result, OLM does not modify the olm.providedAPIs annotation of an Operator group, which means that it can be set in advance. This is useful when a user wants to use an Operator group to prevent resource contention in a set of namespaces but does not have active member CSVs that provide the APIs for those resources.
+
+Below is an example of an Operator group that protects Prometheus resources in all namespaces with the something.cool.io/cluster-monitoring: "true" annotation:
+
+apiVersion: operators.coreos.com/v1
+kind: OperatorGroup
+metadata:
+  name: cluster-monitoring
+  namespace: cluster-monitoring
+  annotations:
+    olm.providedAPIs: Alertmanager.v1.monitoring.coreos.com,Prometheus.v1.monitoring.coreos.com,PrometheusRule.v1.monitoring.coreos.com,ServiceMonitor.v1.monitoring.coreos.com
+spec:
+  staticProvidedAPIs: true
+  selector:
+    matchLabels:
+      something.cool.io/cluster-monitoring: "true"
+Operator group intersection
+Two Operator groups are said to have intersecting provided APIs if the intersection of their target namespace sets is not an empty set and the intersection of their provided API sets, defined by olm.providedAPIs annotations, is not an empty set.
+
+A potential issue is that Operator groups with intersecting provided APIs can compete for the same resources in the set of intersecting namespaces.
+
+When checking intersection rules, an Operator group namespace is always included as part of its selected target namespaces.
+
+Each time an active member CSV synchronizes, OLM queries the cluster for the set of intersecting provided APIs between the Operator group of the CSV and all others. OLM then checks if that set is an empty set:
+
+If true and the CSV's provided APIs are a subset of the Operator group's:
+
+If true and the CSV's provided APIs are not a subset of the Operator group's:
+
+If false and the CSV's provided APIs are not a subset of the Operator group's:
+
+If false and the CSV's provided APIs are a subset of the Operator group's:
+
+
+Failure states caused by Operator groups are non-terminal.
+The following actions are performed each time an Operator group synchronizes:
+
+The set of provided APIs from active member CSVs is calculated from the cluster. Note that copied CSVs are ignored.
+
+The cluster set is compared to olm.providedAPIs, and if olm.providedAPIs contains any extra APIs, then those APIs are pruned.
+
+All CSVs that provide the same APIs across all namespaces are requeued. This notifies conflicting CSVs in intersecting groups that their conflict has possibly been resolved, either through resizing or through deletion of the conflicting CSV.
+Limitations for multitenant Operator management
+"Red Hat OpenShift Container Platform" provides limited support for simultaneously installing different versions of an Operator on the same cluster. Operator Lifecycle Manager (OLM) installs Operators multiple times in different namespaces. One constraint of this is that the Operator's API versions must be the same.
+
+Operators are control plane extensions due to their usage of CustomResourceDefinition objects (CRDs), which are global resources in Kubernetes. Different major versions of an Operator often have incompatible CRDs. This makes them incompatible to install simultaneously in different namespaces on a cluster.
+
+All tenants, or namespaces, share the same control plane of a cluster. Therefore, tenants in a multitenant cluster also share global CRDs, which limits the scenarios in which different instances of the same Operator can be used in parallel on the same cluster.
+
+The supported scenarios include the following:
+
+Operators of different versions that ship the exact same CRD definition (in case of versioned CRDs, the exact same set of versions)
+
+Operators of different versions that do not ship a CRD, and instead have their CRD available in a separate bundle on the OperatorHub
+
+
+All other scenarios are not supported, because the integrity of the cluster data cannot be guaranteed if there are multiple competing or overlapping CRDs from different Operator versions to be reconciled on the same cluster.
+
+Operator Lifecycle Manager (OLM) -> Multitenancy and Operator colocation
+
+Operators in multitenant clusters
+
+Allowing non-cluster administrators to install Operators
+Troubleshooting Operator groups
+
+An install plan's namespace must contain only one Operator group. When attempting to generate a cluster service version (CSV) in a namespace, an install plan considers an Operator group invalid in the following scenarios:
+
+If the install modes of a CSV do not support the target namespace selection of the Operator group in its namespace, the CSV transitions to a failure state with the reason UnsupportedOperatorGroup. CSVs in a failed state for this reason transition to pending after either the target namespace selection of the Operator group changes to a supported configuration, or the install modes of the CSV are modified to support the target namespace selection.

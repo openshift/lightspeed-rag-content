@@ -1,0 +1,184 @@
+Advanced OADP features and functionalities
+
+This document provides information about advanced features and functionalities of OpenShift API for Data Protection (OADP).
+Working with different Kubernetes API versions on the same cluster
+Listing the Kubernetes API group versions on a cluster
+A source cluster might offer multiple versions of an API, where one of these versions is the preferred API version. For example, a source cluster with an API named Example might be available in the example.com/v1 and example.com/v1beta2 API groups.
+
+If you use Velero to back up and restore such a source cluster, Velero backs up only the version of that resource that uses the preferred version of its Kubernetes API.
+
+To return to the above example, if example.com/v1 is the preferred API, then Velero only backs up the version of a resource that uses example.com/v1. Moreover, the target cluster needs to have example.com/v1 registered in its set of available API resources in order for Velero to restore the resource on the target cluster.
+
+Therefore, you need to generate a list of the Kubernetes API group versions on your target cluster to be sure the preferred API version is registered in its set of available API resources.
+
+Enter the following command:
+
+
+$ oc api-resources
+About Enable API Group Versions
+By default, Velero only backs up resources that use the preferred version of the Kubernetes API. However, Velero also includes a feature, Enable API Group Versions, that overcomes this limitation. When enabled on the source cluster, this feature causes Velero to back up all Kubernetes API group versions that are supported on the cluster, not only the preferred one. After the versions are stored in the backup .tar file, they are available to be restored on the destination cluster.
+
+For example, a source cluster with an API named Example might be available in the example.com/v1 and example.com/v1beta2 API groups, with example.com/v1 being the preferred API.
+
+Without the Enable API Group Versions feature enabled, Velero backs up only the preferred API group version for Example, which is example.com/v1. With the feature enabled, Velero also backs up example.com/v1beta2.
+
+When the Enable API Group Versions feature is enabled on the destination cluster, Velero selects the version to restore on the basis of the order of priority of API group versions.
+
+Enable API Group Versions is still in beta.
+Velero uses the following algorithm to assign priorities to API versions, with 1 as the top priority:
+
+Preferred version of the destination cluster
+
+Preferred version of the source_ cluster
+
+Common non-preferred supported version with the highest Kubernetes version priority
+
+
+Enable API Group Versions Feature
+Using Enable API Group Versions
+You can use Velero's Enable API Group Versions feature to back up all Kubernetes API group versions that are supported on a cluster, not only the preferred one.
+
+Enable API Group Versions is still in beta.
+Configure the EnableAPIGroupVersions feature flag:
+
+
+apiVersion: oadp.openshift.io/vialpha1
+kind: DataProtectionApplication
+...
+spec:
+  configuration:
+    velero:
+      featureFlags:
+      - EnableAPIGroupVersions
+Enable API Group Versions Feature
+Backing up data from one cluster and restoring it to another cluster
+About backing up data from one cluster and restoring it on another cluster
+OpenShift API for Data Protection (OADP) is designed to back up and restore application data in the same "Red Hat OpenShift Container Platform" cluster. Migration Toolkit for Containers (MTC) is designed to migrate containers, including application data, from one "Red Hat OpenShift Container Platform" cluster to another cluster.
+
+You can use OADP to back up application data from one "Red Hat OpenShift Container Platform" cluster and restore it on another cluster. However, doing so is more complicated than using MTC or using OADP to back up and restore on the same cluster.
+
+To successfully use OADP to back up data from one cluster and restore it to another cluster, you must take into account the following factors, in addition to the prerequisites and procedures that apply to using OADP to back up and restore data on the same cluster:
+
+Operators
+
+Use of Velero
+
+UID and GID ranges
+
+
+Operators
+You must exclude Operators from the backup of an application for backup and restore to succeed.
+Use of Velero
+Velero, which OADP is built upon, does not natively support migrating persistent volume snapshots across cloud providers. To migrate volume snapshot data between cloud platforms, you must either enable the Velero Restic file system backup option, which backs up volume contents at the file system level, or use the OADP Data Mover for CSI snapshots.
+
+In OADP 1.1 and earlier, the Velero Restic file system backup option is called restic. In OADP 1.2 and later, the Velero Restic file system backup option is called file-system-backup.
+You must also use Velero's File System Backup to migrate data between AWS regions or between Microsoft Azure regions.
+
+Velero does not support restoring data to a cluster with an earlier Kubernetes version than the source cluster.
+
+It is theoretically possible to migrate workloads to a destination with a later Kubernetes version than the source, but you must consider the compatibility of API groups between clusters for each custom resource. If a Kubernetes version upgrade breaks the compatibility of core or native API groups, you must first update the impacted custom resources.
+About determining which pod volumes to back up
+Before you start a backup operation by using File System Backup (FSB), you must specify which pods contain a volume that you want to back up. Velero refers to this process as "discovering" the appropriate pod volumes.
+
+Velero supports two approaches for determining pod volumes:
+
+Opt-in approach: The opt-in approach requires that you actively indicate that you want to include - opt-in - a volume in a backup. You do this by labelling each pod that contains a volume to be backed up with the name of the volume. When Velero finds a persistent volume (PV), it checks the pod that mounted the volume. If the pod is labelled with the name of the volume, Velero backs up the pod.
+
+Opt-out approach: With the opt-out approach, you must actively specify that you want to exclude a volume from a backup. You do this by labelling each pod that contains a volume you do not want to back up with the name of the volume. When Velero finds a PV, it checks the pod that mounted the volume. If the pod is labelled with the volume's name, Velero does not back up the pod.
+
+
+Limitations
+FSB does not support backing up and restoring hostpath volumes. However, FSB does support backing up and restoring local volumes.
+
+Velero uses a static, common encryption key for all backup repositories it creates. This static key means that anyone who can access your backup storage can also decrypt your backup data. It is essential that you limit access to backup storage.
+
+For PVCs, every incremental backup chain is maintained across pod reschedules.
+
+Even though backup data can be kept incrementally, backing up large files, such as a database, can take a long time. This is because FSB uses deduplication to find the difference that needs to be backed up.
+
+FSB reads and writes data from volumes by accessing the file system of the node on which the pod is running. For this reason, FSB can only back up volumes that are mounted from a pod and not directly from a PVC. Some Velero users have overcome this limitation by running a staging pod, such as a BusyBox or Alpine container with an infinite sleep, to mount these PVC and PV pairs before performing a Velero backup..
+
+FSB expects volumes to be mounted under <hostPath>/<pod UID>, with
+<hostPath> being configurable. Some Kubernetes systems, for example,
+vCluster, do not mount volumes under the <pod UID> subdirectory, and
+VFSB does not work with them as expected.
+Backing up pod volumes by using the opt-in method
+You can use the opt-in method to specify which volumes need to be backed up by File System Backup (FSB). You can do this by using the backup.velero.io/backup-volumes command.
+
+On each pod that contains one or more volumes that you want to back up, enter the following command:
+Backing up pod volumes by using the opt-out method
+When using the opt-out approach, all pod volumes are backed up by using File System Backup (FSB), although there are some exceptions:
+
+Volumes that mount the default service account token, secrets, and configuration maps.
+
+hostPath volumes
+
+
+You can use the opt-out method to specify which volumes not to back up. You can do this by using the backup.velero.io/backup-volumes-excludes command.
+
+On each pod that contains one or more volumes that you do not want to back up, run the following command:
+
+
+You can enable this behavior for all Velero backups by running the velero install command with the --default-volumes-to-fs-backup flag.
+UID and GID ranges
+If you back up data from one cluster and restore it to another cluster,  problems might occur with UID (User ID) and GID (Group ID) ranges. The following section explains these potential issues and mitigations:
+
+
+Summary of the issues
+The namespace UID and GID ranges might change depending on the destination cluster. OADP does not back up and restore OpenShift UID range metadata. If the backed up application requires a specific UID, ensure the range is availableupon restore. For more information about OpenShift's UID and GID ranges, see A Guide to OpenShift and UIDs.
+Detailed description of the issues
+When you create a namespace in "Red Hat OpenShift Container Platform" by using the shell command oc create namespace, "Red Hat OpenShift Container Platform" assigns the namespace a unique User ID (UID) range from its available pool of UIDs, a Supplemental Group (GID) range, and unique SELinux MCS labels. This information is stored in the metadata.annotations field of the cluster. This information is part of the Security Context Constraints (SCC) annotations, which comprise of the following components:
+
+
+When you use OADP to restore the namespace, it automatically uses the information in metadata.annotations without resetting it for the destination cluster. As a result, the workload might not have access to the backed up data if any of the following is true:
+
+There is an existing namespace with other SCC annotations, for example, on another cluster. In this case, OADP uses the existing namespace during the backup instead of the namespace you want to restore.
+
+A label selector was used during the backup, but the namespace in which the workloads are executed does not have the label. In this case, OADP does not back up the namespace, but creates a new namespace during the restore that does not contain the annotations of the backed up namespace. This results in a new UID range being assigned to the namespace.
+
+The UID of the container no longer matches the UID of the file owner.
+
+An error occurs because "Red Hat OpenShift Container Platform" has not changed the UID range of the destination cluster to match the backup cluster data. As a result, the backup cluster has a different UID than the destination cluster, which means that the application cannot read or write data on the destination cluster.
+
+Simple mitigations:
+
+Advanced mitigations:
+
+
+For an in-depth discussion of UID and GID ranges in "Red Hat OpenShift Container Platform" with an emphasis on overcoming issues in backing up data on one cluster and restoring it on another, see A Guide to OpenShift and UIDs.
+Backing up data from one cluster and restoring it to another cluster
+In general, you back up data from one "Red Hat OpenShift Container Platform" cluster and restore it on another "Red Hat OpenShift Container Platform" cluster in the same way that you back up and restore data to the same cluster. However, there are some additional prerequisites and differences in the procedure when backing up data from one "Red Hat OpenShift Container Platform" cluster and restoring it on another.
+
+All relevant prerequisites for backing up and restoring on your platform (for example, AWS, Microsoft Azure, GCP, and so on), especially the prerequisites for the Data Protection Application (DPA), are described in the relevant sections of this guide.
+
+
+Make the following additions to the procedures given for your platform:
+
+
+In OADP 1.2 and later, the Velero Restic option is called file-system-backup.
+OADP storage class mapping
+Storage class mapping
+Storage class mapping allows you to define rules or policies specifying which storage class should be applied to different types of data. This feature automates the process of determining storage classes based on access frequency, data importance, and cost considerations. It optimizes storage efficiency and cost-effectiveness by ensuring that data is stored in the most suitable storage class for its characteristics and usage patterns.
+
+You can use the change-storage-class-config field to change the storage class of your data objects, which lets you optimize costs and performance by moving data between different storage tiers, such as from standard to archival storage, based on your needs and access patterns.
+
+Storage class mapping with MTC
+You can use the Migration Toolkit for Containers (MTC) to migrate containers, including application data, from one "Red Hat OpenShift Container Platform" cluster to another cluster and for storage class mapping and conversion. You can convert the storage class of a persistent volume (PV) by migrating it within the same cluster. To do so, you must create and run a migration plan in the MTC web console.
+Mapping storage classes with OADP
+You can use OpenShift API for Data Protection (OADP)  with the Velero plugin v1.1.0 and later to change the storage class of a persistent volume (PV) during restores, by configuring a storage class mapping in the config map in the Velero namespace.
+
+To deploy ConfigMap with OADP, use the change-storage-class-config field. You must change the storage class mapping based on your cloud provider.
+
+Change the storage class mapping by running the following command:
+
+Create a config map in the Velero namespace as shown in the following example:
+
+Save your storage class mapping preferences by running the following command:
+Additional resources
+Working with different Kubernetes API versions on the same cluster.
+
+Using Data Mover for CSI snapshots.
+
+Backing up applications with File System Backup: Kopia or Restic.
+
+Migration converting storage classes.

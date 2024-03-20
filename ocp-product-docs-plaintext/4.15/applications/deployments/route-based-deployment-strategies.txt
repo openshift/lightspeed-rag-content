@@ -1,0 +1,124 @@
+Using route-based deployment strategies
+
+Deployment strategies provide a way for the application to evolve. Some strategies use Deployment objects to make changes that are seen by users of all routes that resolve to the application. Other advanced strategies, such as the ones described in this section, use router features in conjunction with Deployment objects to impact specific routes.
+
+The most common route-based strategy is to use a blue-green deployment. The new version (the green version) is brought up for testing and evaluation, while the users still use the stable version (the blue version). When ready, the users are switched to the green version. If a problem arises, you can switch back to the blue version.
+
+A common alternative strategy is to use A/B versions that are both active at the same time and some users use one version, and some users use the other version. This can be used for experimenting with user interface changes and other features to get user feedback. It can also be used to verify proper operation in a production context where problems impact a limited number of users.
+
+A canary deployment tests the new version but when a problem is detected it quickly falls back to the previous version. This can be done with both of the above strategies.
+
+The route-based deployment strategies do not scale the number of pods in the services. To maintain desired performance characteristics the deployment configurations might have to be scaled.
+Proxy shards and traffic splitting
+In production environments, you can precisely control the distribution of traffic that lands on a particular shard. When dealing with large numbers of instances, you can use the relative scale of individual shards to implement percentage based traffic. That combines well with a proxy shard, which forwards or splits the traffic it receives to a separate service or application running elsewhere.
+
+In the simplest configuration, the proxy forwards requests unchanged. In more complex setups, you can duplicate the incoming requests and send to both a separate cluster as well as to a local instance of the application, and compare the result. Other patterns include keeping the caches of a DR installation warm, or sampling incoming traffic for analysis purposes.
+
+Any TCP (or UDP) proxy could be run under the desired shard. Use the oc scale command to alter the relative number of instances serving requests under the proxy shard. For more complex traffic management, consider customizing the "Red Hat OpenShift Container Platform" router with proportional balancing capabilities.
+N-1 compatibility
+Applications that have new code and old code running at the same time must be careful to ensure that data written by the new code can be read and handled (or gracefully ignored) by the old version of the code. This is sometimes called schema evolution and is a complex problem.
+
+This can take many forms: data stored on disk, in a database, in a temporary cache, or that is part of a user's browser session. While most web applications can support rolling deployments, it is important to test and design your application to handle it.
+
+For some applications, the period of time that old code and new code is running side by side is short, so bugs or some failed user transactions are acceptable. For others, the failure pattern may result in the entire application becoming non-functional.
+
+One way to validate N-1 compatibility is to use an A/B deployment: run the old code and new code at the same time in a controlled way in a test environment, and verify that traffic that flows to the new deployment does not cause failures in the old deployment.
+Graceful termination
+"Red Hat OpenShift Container Platform" and Kubernetes give application instances time to shut down before removing them from load balancing rotations. However, applications must ensure they cleanly terminate user connections as well before they exit.
+
+On shutdown, "Red Hat OpenShift Container Platform" sends a TERM signal to the processes in the container. Application code, on receiving SIGTERM, stop accepting new connections. This ensures that load balancers route traffic to other active instances. The application code then waits until all open connections are closed, or gracefully terminate individual connections at the next opportunity, before exiting.
+
+After the graceful termination period expires, a process that has not exited is sent the KILL signal, which immediately ends the process. The terminationGracePeriodSeconds attribute of a pod or pod template controls the graceful termination period (default 30 seconds) and can be customized per application as necessary.
+Blue-green deployments
+Blue-green deployments involve running two versions of an application at the same time and moving traffic from the in-production version (the blue version) to the newer version (the green version). You can use a rolling strategy or switch services in a route.
+
+Because many applications depend on persistent data, you must have an application that supports N-1 compatibility, which means it shares data and implements live migration between the database, store, or disk by creating two copies of the data layer.
+
+Consider the data used in testing the new version. If it is the production data, a bug in the new version can break the production version.
+
+Setting up a blue-green deployment
+Blue-green deployments use two Deployment objects. Both are running, and the one in production depends on the service the route specifies, with each Deployment object exposed to a different service.
+
+Routes are intended for web (HTTP and HTTPS) traffic, so this technique is best suited for web applications.
+You can create a new route to the new version and test it. When ready, change the service in the production route to point to the new service and the new (green) version is live.
+
+If necessary, you can roll back to the older (blue) version by switching the service back to the previous version.
+
+Create two independent application components.
+
+Create a route that points to the old service:
+
+Browse to the application at bluegreen-example-<project>.<router_domain> to verify you see the v1 image.
+
+Edit the route and change the service name to example-green:
+
+To verify that the route has changed, refresh the browser until you see the v2 image.
+A/B deployments
+The A/B deployment strategy lets you try a new version of the application in a limited way in the production environment. You can specify that the production version gets most of the user requests while a limited fraction of requests go to the new version.
+
+Because you control the portion of requests to each version, as testing progresses you can increase the fraction of requests to the new version and ultimately stop using the previous version. As you adjust the request load on each version, the number of pods in each service might have to be scaled as well to provide the expected performance.
+
+In addition to upgrading software, you can use this feature to experiment with versions of the user interface. Since some users get the old version and some the new, you can evaluate the user's reaction to the different versions to inform design decisions.
+
+For this to be effective, both the old and new versions must be similar enough that both can run at the same time. This is common with bug fix releases and when new features do not interfere with the old. The versions require N-1 compatibility to properly work together.
+
+"Red Hat OpenShift Container Platform" supports N-1 compatibility through the web console as well as the CLI.
+
+Load balancing for A/B testing
+The user sets up a route with multiple services. Each service handles a version of the application.
+
+Each service is assigned a weight and the portion of requests to each service is the service_weight divided by the sum_of_weights. The weight for each service is distributed to the service's endpoints so that the sum of the endpoint weights is the service weight.
+
+The route can have up to four services. The weight for the service can be between 0 and 256. When the weight is 0, the service does not participate in load-balancing but continues to serve existing persistent connections. When the service weight is not 0, each endpoint has a minimum weight of 1. Because of this, a service with a lot of endpoints can end up with higher weight than intended. In this case, reduce the number of pods to get the expected load balance weight.
+
+To set up the A/B environment:
+
+Create the two applications and give them different names. Each creates a Deployment object. The applications are versions of the same program; one is usually the current production version and the other the proposed new version.
+
+Make the application available externally via a route. At this point, you can expose either. It can be convenient to expose the current production version first and later modify the route to add the new version.
+
+When you deploy the route, the router balances the traffic according to the weights specified for the services. At this point, there is a single service with default weight=1 so all requests go to it. Adding the other service as an alternateBackends and adjusting the weights brings the A/B setup to life. This can be done by the oc set route-backends command or by editing the route.
+
+
+Managing weights of an existing route using the web console
+Navigate to the Networking -> Routes page.
+
+Click the Actions menu  next to the route you want to edit and select Edit Route.
+
+Edit the YAML file. Update the weight to be an integer between 0 and 256 that specifies the relative weight of the target against other target reference objects. The value 0 suppresses requests to this back end. The default is 100. Run oc explain routes.spec.alternateBackends for more information about the options.
+
+Click Save.
+Managing weights of an new route using the web console
+Navigate to the Networking -> Routes page.
+
+Click Create Route.
+
+Enter the route Name.
+
+Select the Service.
+
+Click Add Alternate Service.
+
+Enter a value for Weight and Alternate Service Weight. Enter a number between 0 and 255 that depicts relative weight compared with other targets. The default is 100.
+
+Select the Target Port.
+
+Click Create.
+Managing weights using the CLI
+To manage the services and corresponding weights load balanced by the route, use the oc set route-backends command:
+
+Run the command with no flags to verify the current configuration:
+
+To alter the weight of an individual service relative to itself or to the primary service, use the --adjust flag. Specifying a percentage adjusts the service relative to either the primary or the first alternate (if you specify the primary). If there are other backends, their weights are kept proportional to the changed.
+One service, multiple Deployment objects
+Create a new application, adding a label ab-example=true that will be common to all shards:
+
+Make the application available via a route, or use the service IP directly:
+
+Browse to the application at ab-example-<project_name>.<router_domain> to verify you see the v1 image.
+
+Create a second shard based on the same source image and label as the first shard, but with a different tagged version and unique environment variables:
+
+At this point, both sets of pods are being served under the route. However, because both browsers (by leaving a connection open) and the router (by default, through a cookie) attempt to preserve your connection to a back-end server, you might not see both shards being returned to you.
+
+If you trigger a deployment on either shard, only the pods in that shard are affected. You can trigger a deployment by changing the SUBTITLE environment variable in either Deployment object:
