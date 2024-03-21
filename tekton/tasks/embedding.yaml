@@ -1,0 +1,143 @@
+apiVersion: tekton.dev/v1beta1
+kind: Task
+metadata:
+  name: embedding
+spec:
+  description: >-
+    These task emmbedes the folder files into a vector db 
+
+  workspaces:
+    - name: source
+      description: shared Workspace containing the data to embed
+    - name: output
+      description: persisting data output 
+  params:
+    - name: plain-text-folder
+      type: string
+      description: plain text folder path
+
+    - name: input_folders
+      description: List of folders for processing.
+      type: array
+
+    - name: vector-db
+      type: string
+      description: type of vector db[local,chromadb,chromadb-local, milvus]
+      default: local
+
+    - name: vector-host
+      type: string
+      description: vector db url  
+      default: "."
+
+    - name: vector-port
+      type: string
+      description: vector db port  
+      default: "."
+
+    - name: vector-header
+      type: string
+      default: "."
+      description: authentication headers per vectorDB requirements 
+
+    - name: model-name
+      type: string
+      description: LLM model used for emmbadning [local,llama2, or any other supported by llama_index]
+      default: local
+
+    - name: collection-name
+      type: string
+      description: collection name in vector DB
+
+    - name: include-evaluation
+      type: string
+      description: perform evaluation  
+      default: "True"
+
+    - name: question-folder
+      type: string
+      description: plain text folder path used for question 
+
+    - name: output-folder
+      type: string
+      description: collection name in vector DB
+
+    - name: chunk-size
+      type: string
+      default: "500"
+      description: chunk size for embedding
+
+    - name: chunk-overlap
+      type: string
+      default: "50"
+      description: chunk overlap for embedding
+
+  results:
+    - name: status
+      description: task status 
+    - name: folders
+      description: folders list convert to string 
+  steps:
+    - name: convert-to-string
+      image: registry.access.redhat.com/ubi9/ubi-minimal:9.3-1552
+      args:
+        - $(params.input_folders[*])
+      script: |
+        #!/bin/bash
+        for folder in $@
+        do
+          folders_string+="$folder "
+        done
+
+        echo "FOLDERS='${folders_string}'" > /tekton/results/folders 
+        cat /tekton/results/folders 
+
+
+    - name: embedded
+      image: "quay.io/redhat_emp1/rag-pipeline-tasks"
+      imagePullPolicy: Always
+      envFrom:
+          - secretRef:
+              name: secret-openai
+      env:
+      - name: VECTOR_DB_TYPE
+        value: "$(params.vector-db)"
+      - name: HOST
+        value: "$(params.vector-host)"
+      - name: PORT
+        value: $(params.vector-port)
+      - name: HEADERS
+        value: $(params.vector-header)
+      - name: MODEL_NAME
+        value: $(params.model-name)
+      - name: FOLDER
+        value: $(params.plain-text-folder)
+      - name: COLLECTION_NAME
+        value: $(params.collection-name)
+      - name: WORKSPACE_OUTPUT_PATH
+        value: $(workspaces.output.path)/data/$(params.output-folder)
+
+      - name: QUESTION_FOLDER
+        value: $(params.question-folder)
+      - name: TOKENIZERS_PARALLELISM
+        value: "false"
+      - name: CHUNK_SIZE
+        value: $(params.chunk-size)
+      - name: CHUNK_OVERLAP
+        value: $(params.chunk-overlap)
+      script: |
+        #!/usr/bin/env sh
+        set -eu
+
+        source /tekton/results/folders
+
+        python embedding.py --vector-type ${VECTOR_DB_TYPE} \
+                            --url ${HOST} --port ${PORT} \
+                            --auth ${HEADERS} \
+                            --model ${MODEL_NAME} \
+                            --folders "${FOLDERS} " \
+                            --collection-name ${COLLECTION_NAME} -o ${WORKSPACE_OUTPUT_PATH} --question-folder ${QUESTION_FOLDER} -c ${CHUNK_SIZE} -l ${CHUNK_OVERLAP}
+
+        mv ${WORKSPACE_OUTPUT_PATH}/metadata.md $(workspaces.output.path)
+        cd $(workspaces.output.path)/data && zip -r $(params.output-folder).zip $(params.output-folder)
+
