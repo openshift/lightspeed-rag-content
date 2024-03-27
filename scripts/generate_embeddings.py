@@ -4,12 +4,33 @@ import argparse
 import json
 import os
 import time
+from typing import Dict
 
 import faiss
 from llama_index.core import Settings, SimpleDirectoryReader, VectorStoreIndex
 from llama_index.core.storage.storage_context import StorageContext
 from llama_index.embeddings.huggingface import HuggingFaceEmbedding
 from llama_index.vector_stores.faiss import FaissVectorStore
+
+OCP_DOCS_ROOT_URL = "https://docs.openshift.com/container-platform/"
+OCP_DOCS_VERSION = "4.15"
+OCP_VERSION_DOCS_ROOT_URL = OCP_DOCS_ROOT_URL + OCP_DOCS_VERSION
+
+
+def file_metadata_func(file_path: str) -> Dict:
+    """Populate the docs_url metadata element with the corresponding OCP docs URL.
+
+    Args:
+        file_path: str: file path in str
+    """
+    docs_url = (
+        OCP_VERSION_DOCS_ROOT_URL
+        + file_path.removeprefix(EMBEDDINGS_ROOT_DIR).removesuffix("txt")
+        + "html"
+    )
+    print(docs_url)
+    return {"docs_url": docs_url}
+
 
 if __name__ == "__main__":
 
@@ -40,6 +61,9 @@ if __name__ == "__main__":
     args = parser.parse_args()
 
     PERSIST_FOLDER = args.output
+    EMBEDDINGS_ROOT_DIR = os.path.abspath(args.folder)
+    if EMBEDDINGS_ROOT_DIR.endswith("/"):
+        EMBEDDINGS_ROOT_DIR = EMBEDDINGS_ROOT_DIR[:-1]
 
     os.environ["HF_HOME"] = args.model_dir
     os.environ["TRANSFORMERS_OFFLINE"] = "1"
@@ -53,7 +77,9 @@ if __name__ == "__main__":
     vector_store = FaissVectorStore(faiss_index=faiss_index)
     storage_context = StorageContext.from_defaults(vector_store=vector_store)
 
-    documents = SimpleDirectoryReader(args.folder, recursive=True).load_data()
+    documents = SimpleDirectoryReader(
+        args.folder, recursive=True, file_metadata=file_metadata_func
+    ).load_data()
 
     index = VectorStoreIndex.from_documents(
         documents,
