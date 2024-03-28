@@ -20,7 +20,7 @@ RUN python download_embeddings_model.py -l ./embeddings_model -r ${EMBEDDING_MOD
 COPY scripts/generate_embeddings.py .
 RUN python generate_embeddings.py -f ocp-product-docs-plaintext/${OCP_VERSION} -md embeddings_model \
     -mn ${EMBEDDING_MODEL} -o vector_db/ocp_product_docs/${OCP_VERSION} \
-    -i ocp-product-docs-$(echo $OCP_VERSION | sed 's/\./_/g')
+    -i ocp-product-docs-$(echo $OCP_VERSION | sed 's/\./_/g') -v ${OCP_VERSION}
 
 FROM scratch
 ARG OCP_VERSION
