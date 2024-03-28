@@ -47,7 +47,6 @@ if __name__ == "__main__":
     parser.add_argument(
         "-mn",
         "--model-name",
-        default="BAAI/bge-base-en",
         help="HF repo id of the embedding model",
     )
     parser.add_argument(

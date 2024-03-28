@@ -1,17 +1,15 @@
 ARG OCP_VERSION=4.15
-ARG EMBEDDING_MODEL=BAAI/bge-base-en
+ARG EMBEDDING_MODEL=sentence-transformers/all-mpnet-base-v2
 
 FROM registry.access.redhat.com/ubi9/python-311 as lightspeed-rag-builder
 ARG OCP_VERSION
 ARG EMBEDDING_MODEL
 
 USER 0
-RUN dnf install -y --nodocs --setopt=keepcache=0 --setopt=tsflags=nodocs git ruby gem
 RUN pip install torch --index-url https://download.pytorch.org/whl/cpu
 RUN pip install PyYAML huggingface_hub llama_index langchain_community \
                 faiss-cpu llama-index-vector-stores-faiss sentence_transformers \
                 llama-index-embeddings-huggingface
-RUN gem install asciidoctor
 
 WORKDIR /workdir
 COPY ocp-product-docs-plaintext ./ocp-product-docs-plaintext

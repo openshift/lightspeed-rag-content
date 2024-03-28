@@ -12,7 +12,7 @@ if __name__ == "__main__":
         "-l", "--local-dir", required=True, help="Directory to download model to"
     )
     parser.add_argument(
-        "-r", "--hf-repo-id", required=True, help="Model repo id, ex. BAAI/bge-base-en"
+        "-r", "--hf-repo-id", required=True, help="Model repo id"
     )
     args = parser.parse_args()
 
