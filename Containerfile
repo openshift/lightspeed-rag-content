@@ -6,12 +6,11 @@ ARG OCP_VERSION
 ARG EMBEDDING_MODEL
 
 USER 0
-RUN pip install torch --index-url https://download.pytorch.org/whl/cpu
-RUN pip install PyYAML huggingface_hub llama_index langchain_community \
-                faiss-cpu llama-index-vector-stores-faiss sentence_transformers \
-                llama-index-embeddings-huggingface
-
 WORKDIR /workdir
+
+COPY requirements.txt requirements_torch.txt .
+RUN pip install -r requirements.txt
+
 COPY ocp-product-docs-plaintext ./ocp-product-docs-plaintext
 
 COPY scripts/download_embeddings_model.py .

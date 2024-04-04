@@ -9,16 +9,21 @@ import sys
 
 import yaml
 
+def node_in_distro(node, distro: str) -> bool:
+    return (node.get("Distros","") == "" or distro in node.get("Distros","").split(','))
 
-def process_node(node, dir="", file_list=[]):
+
+def process_node(node, distro: str, dir="", file_list=[]):
     """Process YAML node from the topic map."""
     currentdir = dir
     if "Topics" in node:
-        currentdir = os.path.join(currentdir, node["Dir"])
-        for subnode in node["Topics"]:
-            file_list = process_node(subnode, dir=currentdir, file_list=file_list)
+        if node_in_distro(node, distro):
+            currentdir = os.path.join(currentdir, node["Dir"])
+            for subnode in node["Topics"]:
+                file_list = process_node(subnode, distro, dir=currentdir, file_list=file_list)
     else:
-        file_list.append(os.path.join(currentdir, node["File"]))
+        if node_in_distro(node, distro):
+            file_list.append(os.path.join(currentdir, node["File"]))
     return file_list
 
 
@@ -35,6 +40,9 @@ if __name__ == "__main__":
         help="The input directory for the openshift-docs repo",
     )
     parser.add_argument("--topic-map", "-t", required=True, help="The topic map file")
+    parser.add_argument(
+        "--distro", "-d", required=True, help="OpenShift distro the docs are for, ex. openshift-enterprise"
+    )
     parser.add_argument(
         "--output-dir", "-o", required=True, help="The output directory for text"
     )
@@ -56,7 +64,7 @@ if __name__ == "__main__":
         mega_file_list = []
         for map in topic_map:
             file_list = []
-            file_list = process_node(map, file_list=file_list)
+            file_list = process_node(map, args.distro, file_list=file_list)
             mega_file_list = mega_file_list + file_list
 
     output_dir = os.path.normpath(args.output_dir)
