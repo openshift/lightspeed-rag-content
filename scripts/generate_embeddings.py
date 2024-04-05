@@ -89,10 +89,10 @@ if __name__ == "__main__":
         help="HF repo id of the embedding model",
     )
     parser.add_argument(
-        "-c", "--chunk", type=int, default="1500", help="Chunk size for embedding"
+        "-c", "--chunk", type=int, default="500", help="Chunk size for embedding"
     )
     parser.add_argument(
-        "-l", "--overlap", type=int, default="10", help="Chunk overlap for embedding"
+        "-l", "--overlap", type=int, default="50", help="Chunk overlap for embedding"
     )
     parser.add_argument("-o", "--output", help="Vector DB output folder")
     parser.add_argument("-i", "--index", help="Product index")
@@ -104,6 +104,7 @@ if __name__ == "__main__":
     if EMBEDDINGS_ROOT_DIR.endswith("/"):
         EMBEDDINGS_ROOT_DIR = EMBEDDINGS_ROOT_DIR[:-1]
     OCP_DOCS_VERSION = args.ocp_version
+    print(f"*** PERSIST_FOLDER {PERSIST_FOLDER}")
 
     os.environ["HF_HOME"] = args.model_dir
     os.environ["TRANSFORMERS_OFFLINE"] = "1"
@@ -134,6 +135,7 @@ if __name__ == "__main__":
         storage_context=storage_context,
     )
     index.set_index_id(args.index)
+ 
     index.storage_context.persist(persist_dir=PERSIST_FOLDER)
 
     metadata: dict = {}

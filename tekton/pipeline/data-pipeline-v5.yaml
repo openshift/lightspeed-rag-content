@@ -1,0 +1,261 @@
+apiVersion: tekton.dev/v1
+kind: Pipeline
+metadata:
+  name: rag-data-pipeline-v4
+spec: 
+      params:
+      - name: repo
+        type: string
+        default: git@github.com:ilan-pinto/lightspeed-rag-documents.git
+        description: Plain text source repo git 
+      - name: branch-name
+        type: string
+        description: The git branch to clone.
+        default: main
+      - name: plain-text-folder
+        type: string
+        description: Plain text folder path
+        default: ""
+
+      - name: input-folders
+        description: List of folders for processing.
+        type: array
+        default: ["/workspace/source/ocp-product-docs-4_14","/workspace/source/ocp-product-docs-4_15"]
+
+      - name: include-evalution
+        type: string
+        default: "true"
+        description: run auto evaluation 
+
+      - name: relese
+        type: string
+        default: "true"
+        description: release artifact true/false
+
+      - name: question-folder
+        type: string
+        description: Plain text question-folder path
+        default: /workspace/source/ocp-product-docs-4_14/installing/installing_aws
+
+      - name: tag
+        type: string
+        description: rag results base tag
+        default: "chunk-10-overlap-10"
+
+      - name: chunk-size
+        type: string
+        description: chunk size for embedding
+        default: "512"
+
+      - name: chunk-overlap
+        type: string
+        default: "50"
+        description: chunk overlap for embedding
+
+      - name: similarity
+        type: string
+        default: "1"
+
+      - name: number-of-questions
+        type: string
+        default: "10"
+        description: number of questions genarated for evaluation 
+
+      workspaces:     
+        - name: shared-workspace  
+
+      tasks:
+      - name: git-clone
+        taskRef:
+          name: git-clone
+        workspaces:
+            - name: source
+              workspace: shared-workspace 
+        params:
+          - name: url
+            value:  "$(params.repo)"    #git@gitlab.cee.redhat.com:ilpinto/rover-bot.git
+          - name: revision 
+            value: "$(params.branch-name)"  
+          - name: subdirectory
+            value: ""
+          - name: deleteExisting
+            value: "true"
+
+      - name: local-embedding
+        taskRef:
+          name: embedding
+        runAfter:
+          - git-clone
+        workspaces:
+          - name: source
+            workspace: shared-workspace  
+          - name: output
+            workspace: shared-workspace 
+        params:
+            - name: vector-db
+              value: "local"
+
+            - name: model-name
+              value: local:sentence-transformers/all-mpnet-base-v2
+
+            - name: plain-text-folder
+              value: "$(params.plain-text-folder)"
+
+            - name: collection-name
+              value: ocp-local
+
+            - name: output-folder
+              value: local
+
+            - name: question-folder
+              value: "$(params.question-folder)"
+
+            - name: chunk-size
+              value: "$(params.chunk-size)" 
+
+            - name: chunk-overlap
+              value: "$(params.chunk-overlap)" 
+
+            - name: input_folders
+              value: "$(params.input-folders[*])" 
+
+      - name: bam-chat-v2-evaluation
+        taskRef:
+          name: evaluation
+        when:
+          - input: "$(params.include-evalution)"
+            operator: in     
+            values: ["true"]
+        runAfter:
+          - local-embedding
+        workspaces:
+          - name: persist-source
+            workspace: shared-workspace  
+          - name: output
+            workspace: shared-workspace 
+          - name: source
+            workspace: shared-workspace  
+        params:
+            - name: provider
+              value: "bam"
+
+            - name: model
+              value: ibm/granite-13b-chat-v2
+
+            - name: product-index
+              value: "ocp-product-docs-4_14"
+
+            - name: input-persist-dir
+              value: "$(workspaces.output.path)/data/local"
+
+            - name: question-folder
+              value: "$(params.question-folder)" 
+
+            - name: chunk-size
+              value: "$(params.chunk-size)" 
+
+            - name: chunk-overlap
+              value: "$(params.chunk-overlap)" 
+
+            - name: similarity
+              value: "$(params.similarity)" 
+
+            - name: number-of-questions
+              value: "$(params.number-of-questions)"  
+
+      - name: openai-gpt-3-5-turbo-evaluation
+        taskRef:
+          name: evaluation
+        when:
+          - input: "$(params.include-evalution)"
+            operator: in
+            values: ["true"]
+        runAfter:
+          - local-embedding
+        workspaces:
+          - name: persist-source
+            workspace: shared-workspace  
+          - name: output
+            workspace: shared-workspace 
+          - name: source
+            workspace: shared-workspace  
+        params:
+            - name: provider
+              value: "openai"
+
+            - name: model
+              value: gpt-3.5-turbo-1106
+
+            - name: product-index
+              value: "ocp-product-docs-4_15"
+
+            - name: input-persist-dir
+              value: "$(workspaces.output.path)/data/local"
+
+            - name: question-folder
+              value: "$(params.question-folder)"
+
+            - name: chunk-size
+              value: "$(params.chunk-size)" 
+
+            - name: chunk-overlap
+              value: "$(params.chunk-overlap)" 
+
+            - name: similarity
+              value: "$(params.similarity)"  
+
+            - name: number-of-questions
+              value: "$(params.number-of-questions)"  
+
+      - name: create-docker-file
+        taskRef:
+          name: create-docker-file
+        runAfter:
+            - bam-chat-v2-evaluation
+            - openai-gpt-3-5-turbo-evaluation
+  
+        workspaces:
+          - name: output
+            workspace: shared-workspace 
+
+      - name: push-to-quay
+        taskRef:
+          name: buildah
+        runAfter:
+          - create-docker-file
+        when:
+          - input: "$(params.relese)"
+            operator: in
+            values: ["true"]
+        workspaces:
+          - name: output
+            workspace: shared-workspace  
+        params:
+            - name: IMAGE
+              value: quay.io/redhat_emp1/lightspeed-rag
+            - name: DOCKERFILE
+              value: dockerfile.output
+
+      - name: create-github-release
+        taskRef:
+          name: create-github-release
+        runAfter:
+            - bam-chat-v2-evaluation
+            - openai-gpt-3-5-turbo-evaluation
+        when:
+          - input: "$(params.relese)"
+            operator: in
+            values: ["true"]
+        workspaces:
+          - name: source
+            workspace: shared-workspace  
+          - name: release-notes
+            workspace: shared-workspace 
+          - name: output
+            workspace: shared-workspace 
+        params:
+            - name: TAG
+              value: $(params.tag)
+            - name: REVISION
+              value: "main"
+

@@ -4,7 +4,7 @@ import json
 import os
 import time
 import nest_asyncio
-from llama_index.evaluation import (
+from llama_index.core.evaluation import (
     FaithfulnessEvaluator,
     RelevancyEvaluator,
     CorrectnessEvaluator,
@@ -12,8 +12,10 @@ from llama_index.evaluation import (
     DatasetGenerator,
     RelevancyEvaluator
 )
-from llama_index import ServiceContext, SimpleDirectoryReader, StorageContext, load_index_from_storage
+from llama_index.core import Settings,  ServiceContext, SimpleDirectoryReader, StorageContext, load_index_from_storage
 from llms.llm_loader import LLMLoader
+from llama_index.embeddings.huggingface import HuggingFaceEmbedding
+from llama_index.vector_stores.faiss import FaissVectorStore
 
 # Constant
 
@@ -77,7 +79,7 @@ async def main():
         description="evaluation cli for task execution"
     )
     parser.add_argument("-p", "--provider",   default="bam", help="LLM provider supported value: bam, openai")
-    parser.add_argument("-m", "--model",   default="local:sentence-transformers/all-mpnet-base-v2", help="the valid models are:\
+    parser.add_argument("-m", "--model",   default="local:BAAI/bge-base-en", help="the valid models are:\
                                                                     - ibm/granite-13b-chat-v1, ibm/granite-13b-chat-v2, ibm/granite-20b-code-instruct-v1 for bam \
                                                                     - gpt-3.5-turbo-1106, gpt-3.5-turbo for openai"
                         )    
@@ -87,40 +89,47 @@ async def main():
     parser.add_argument("-n", "--number-of-questions" ,type=int, default="5" , help="number of questions used for evaluation")
     parser.add_argument("-s", "--similarity" , type=int,  default="5" , help="similarity_top_k")
     parser.add_argument("-c", "--chunk", type=int ,  default="500", help="chunk size for embedding")
-    parser.add_argument("-l", "--overlap", type=int,  default="100", help="chunk overlap for embedding")
+    parser.add_argument("-l", "--overlap", type=int,  default="50", help="chunk overlap for embedding")
     parser.add_argument("-o", "--output", help="persist folder")
+    parser.add_argument(
+                    "-md",
+                    "--model-dir",
+                    default="embeddings_model",
+                    help="Directory containing the embedding model",
+                    )
 
     # execute 
     args = parser.parse_args() 
     
+    print("** settings context")
     PERSIST_FOLDER = args.output
     PRODUCT_INDEX=args.product_index
     PRODUCT_DOCS_PERSIST_DIR = args.input_persist_dir
     NUM_OF_QUESTIONS=args.number_of_questions
     SIMILARITY=args.similarity
-    CHUNK_SIZE=args.chunk
-    CHUNK_OVERLAP=args.overlap
-    
+
+    os.environ["HF_HOME"] = args.model_dir
+    os.environ["TRANSFORMERS_OFFLINE"] = "1"
+    Settings.chunk_size = args.chunk
+    Settings.chunk_overlap = args.overlap
+    Settings.embed_model = HuggingFaceEmbedding(model_name=args.model_dir)
+        
     print("** settings params")
         
-    embed_model = "local:BAAI/bge-base-en"    
-    bare_llm = LLMLoader(args.provider, args.model).llm
+    # Settings.embed_model = "local:BAAI/bge-base-en"        
+    Settings.llm = LLMLoader(args.provider, args.model).llm    
+    service_context =ServiceContext.from_defaults()         
     
-    service_context = ServiceContext.from_defaults(
-            chunk_size=CHUNK_SIZE, chunk_overlap=CHUNK_OVERLAP, llm=bare_llm, embed_model=embed_model
-        )
-    
-    print("** settings context")
-    storage_context = StorageContext.from_defaults( persist_dir=PRODUCT_DOCS_PERSIST_DIR) 
-
     print("** load embeddings evaluating")
 
-    index = load_index_from_storage(
-        storage_context=storage_context,
-        index_id=PRODUCT_INDEX,
-        service_context=service_context       
+    # load index from disk
+    vector_store = FaissVectorStore.from_persist_dir(PRODUCT_DOCS_PERSIST_DIR)
+    storage_context = StorageContext.from_defaults(
+        vector_store=vector_store, persist_dir=PRODUCT_DOCS_PERSIST_DIR
     )
-    
+    index = load_index_from_storage(storage_context=storage_context)
+
+
     print("** starting model evaluating")
     nest_asyncio.apply()
     
@@ -129,8 +138,9 @@ async def main():
     reader = SimpleDirectoryReader(question_folder)
     question = reader.load_data()
     data_generator = DatasetGenerator.from_documents(question)
-    eval_questions = data_generator.generate_questions_from_nodes(num=NUM_OF_QUESTIONS)
-    print( eval_questions)
+    eval_questions = data_generator.generate_dataset_from_nodes(num=NUM_OF_QUESTIONS)
+    print(eval_questions.questions)
+    
     
     print("*** start evaluation")
     faithfulness = FaithfulnessEvaluator(service_context=service_context)
@@ -138,15 +148,11 @@ async def main():
     correctness = CorrectnessEvaluator(service_context=service_context,score_threshold=2.0 ,parser_function=eval_parser)
 
     runner = BatchEvalRunner(
-                                { "faithfulness": faithfulness, "relevancy": relevancy 
-                                    
-                                },
-                                    workers=100, show_progress=True
+                                { "faithfulness": faithfulness, "relevancy": relevancy},
+                                    workers=8, show_progress=True
                             )
     
-    eval_results = await runner.aevaluate_queries( index.as_query_engine(similarity_top_k=SIMILARITY, \
-                                                                        service_context=service_context), \
-                                                                        queries=eval_questions ) 
+    eval_results = await runner.aevaluate_queries(  index.as_query_engine(), eval_questions.questions )
     
     evaluation_results = {}
     evaluation_results["faithfulness"] = get_eval_results("faithfulness", eval_results)
@@ -157,7 +163,7 @@ async def main():
     
     total_correctness_score = []
     res_table = []
-    for query in eval_questions: 
+    for query in eval_questions.questions: 
         res_row ={}                
         summary = engine.query(query)
         referenced_documents = "\n".join(
@@ -197,7 +203,7 @@ async def main():
     metadata["llm"] = args.provider
     metadata["model"] = args.model 
     metadata["index_id"] = PRODUCT_INDEX
-    metadata["eval_questions"] = eval_questions
+    metadata["eval_questions"] = eval_questions.questions
     metadata["correctness-results"] = sum(total_correctness_score) / len(total_correctness_score)
     metadata["evaluation_results"] = evaluation_results
     json_metadata = json.dumps(metadata)
