@@ -3,6 +3,8 @@
 import argparse
 import json
 import os
+import requests
+import sys
 import time
 from typing import Dict
 
@@ -14,6 +16,23 @@ from llama_index.vector_stores.faiss import FaissVectorStore
 
 OCP_DOCS_ROOT_URL = "https://docs.openshift.com/container-platform/"
 OCP_DOCS_VERSION = "4.15"
+
+def ping_url(url: str) -> bool:
+    try:
+        response = requests.get(url)
+        return response.status_code == 200
+    except requests.exceptions.RequestException:
+        return False
+
+
+def get_file_title(file_path: str) -> str:
+    title = ""
+    try:
+        with open(file_path, 'r') as file:
+            title = file.readline().rstrip('\n')
+    except Exception:
+        pass
+    return title
 
 
 def file_metadata_func(file_path: str) -> Dict:
@@ -27,8 +46,13 @@ def file_metadata_func(file_path: str) -> Dict:
         + file_path.removeprefix(EMBEDDINGS_ROOT_DIR).removesuffix("txt")
         + "html"
     )
-    print(docs_url)
-    return {"docs_url": docs_url}
+    msg = docs_url
+    if not ping_url(docs_url):
+        sys.exit(f"invalid docs_url {docs_url}")
+    title = get_file_title(file_path)
+    msg += f", title: {title}"
+    print(msg)
+    return {"docs_url": docs_url, "title": title}
 
 
 if __name__ == "__main__":
