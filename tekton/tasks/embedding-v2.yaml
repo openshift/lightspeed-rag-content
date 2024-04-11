@@ -1,0 +1,99 @@
+apiVersion: tekton.dev/v1beta1
+kind: Task
+metadata:
+  name: embedding-v2
+spec:
+  description: >-
+    These task emmbedes the folder files into a vector db 
+
+  workspaces:
+    - name: source
+      description: shared Workspace containing the data to embed
+    - name: output
+      description: persisting data output 
+  params:
+    - name: plain-text-folder
+      type: string
+      description: plain text folder path
+
+    - name: input-folders
+      description: List of folders for processing.
+      type: array
+      default: [" "]
+
+    - name: model-name
+      type: string
+      description: LLM model used for embedding  
+      default: local:BAAI/bge-base-en
+
+
+    - name: output-folder
+      type: string
+      description: collection name in vector DB
+
+    - name: chunk-size
+      type: string
+      default: "500"
+      description: chunk size for embedding
+
+    - name: chunk-overlap
+      type: string
+      default: "50"
+      description: chunk overlap for embedding
+
+  results:
+    - name: status
+      description: task status 
+    - name: folders
+      description: folders list convert to string 
+  steps:
+    - name: convert-to-string
+      image: registry.access.redhat.com/ubi9/ubi-minimal:9.3-1552
+      args:
+        - $(params.input-folders[*])
+      script: |
+        #!/bin/bash
+        for folder in $@
+        do
+          folders_string+="$folder "
+        done
+
+        echo "FOLDERS='${folders_string}'" > /tekton/results/folders 
+        cat /tekton/results/folders 
+
+
+    - name: embedded
+      image: "quay.io/redhat_emp1/rag-pipeline-tasks:10"
+      imagePullPolicy: Always
+      envFrom:
+          - secretRef:
+              name: secret-openai
+      env:
+
+      - name: MODEL_NAME
+        value: $(params.model-name)
+      - name: FOLDER
+        value: $(params.plain-text-folder)
+
+      - name: WORKSPACE_OUTPUT_PATH
+        value: $(workspaces.output.path)/data/$(params.output-folder)
+
+      - name: TOKENIZERS_PARALLELISM
+        value: "false"
+      - name: CHUNK_SIZE
+        value: $(params.chunk-size)
+      - name: CHUNK_OVERLAP
+        value: $(params.chunk-overlap)
+      script: |
+        #!/usr/bin/env sh
+        set -eu
+        source /tekton/results/folders
+        python generate_embeddings.py -mn ${MODEL_NAME} \
+                                      -md embeddings_model \
+                                      -f ${FOLDER} \
+                                      --folders "${FOLDERS} " \
+                                      -o ${WORKSPACE_OUTPUT_PATH} \
+                                      -c ${CHUNK_SIZE} -l ${CHUNK_OVERLAP} 
+
+        cd $(workspaces.output.path)/data && zip -r $(params.output-folder).zip $(params.output-folder)
+

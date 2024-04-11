@@ -77,6 +77,7 @@ if __name__ == "__main__":
 
     parser = argparse.ArgumentParser(description="embedding cli for task execution")
     parser.add_argument("-f", "--folder", help="Plain text folder path")
+    parser.add_argument("-fo", "--folders", help="Plain text folder paths separated by space")
     parser.add_argument(
         "-md",
         "--model-dir",
