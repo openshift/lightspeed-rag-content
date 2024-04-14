@@ -105,7 +105,14 @@ if __name__ == "__main__":
     if EMBEDDINGS_ROOT_DIR.endswith("/"):
         EMBEDDINGS_ROOT_DIR = EMBEDDINGS_ROOT_DIR[:-1]
     OCP_DOCS_VERSION = args.ocp_version
-    print(f"*** PERSIST_FOLDER {PERSIST_FOLDER}")
+    
+    folder_list = []
+    if args.folder:
+        folder_list.append(args.folder)
+    if args.folders: 
+        folder_list = folder_list + args.folders.split()
+    
+    print(f" --> List of folders: {folder_list}")
 
     os.environ["HF_HOME"] = args.model_dir
     os.environ["TRANSFORMERS_OFFLINE"] = "1"
@@ -157,3 +164,37 @@ if __name__ == "__main__":
         sys.exit(
             "There were documents with unreachable URLs, grep the log for UNREACHABLE"
         )
+
+    
+    for folder in folder_list: 
+        if not os.path.exists(folder):
+            print(f" --> Couldn't fine path for folder: {folder}")
+        else:     
+            print(f" --> Starting embedding for: {folder}")
+            documents = SimpleDirectoryReader(folder, recursive=True).load_data()
+            index = VectorStoreIndex.from_documents(
+                documents,
+                storage_context=storage_context,
+            )
+            folder_index = folder.split("/")[-1]
+            index.set_index_id(folder_index)
+            print(f" --> Setting index {folder_index}")
+        
+            index.storage_context.persist(persist_dir=PERSIST_FOLDER)
+            metadata = {}
+            metadata["execution-time"] = time.time() - start_time
+            metadata["llm"] = "None"
+            metadata["folder"] = folder
+            metadata["embedding-model"] = args.model_name
+            metadata["index-id"] = folder_index
+            metadata["vector-db"] = "faiss"
+            metadata["embedding-dimension"] = embedding_dimension
+            metadata["chunk"] = args.chunk
+            metadata["overlap"] = args.overlap
+            metadata["total-embedded-files"] = len(documents)
+
+            with open(os.path.join(PERSIST_FOLDER, f"metadata_{folder_index}.json"), "w") as file:
+                file.write(json.dumps(metadata))
+            
+    print(f" --> Completed embedding generation")
+
