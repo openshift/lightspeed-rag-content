@@ -16,6 +16,7 @@ from llama_index.vector_stores.faiss import FaissVectorStore
 
 OCP_DOCS_ROOT_URL = "https://docs.openshift.com/container-platform/"
 OCP_DOCS_VERSION = "4.15"
+UNREACHABLE_DOCS: bool = False
 
 def ping_url(url: str) -> bool:
     try:
@@ -46,11 +47,12 @@ def file_metadata_func(file_path: str) -> Dict:
         + file_path.removeprefix(EMBEDDINGS_ROOT_DIR).removesuffix("txt")
         + "html"
     )
-    msg = docs_url
-    if not ping_url(docs_url):
-        sys.exit(f"invalid docs_url {docs_url}")
     title = get_file_title(file_path)
-    msg += f", title: {title}"
+    msg = f"file_path: {file_path}, title: {title}, docs_url: {docs_url}"
+    if not ping_url(docs_url):
+        global UNREACHABLE_DOCS
+        UNREACHABLE_DOCS = True
+        msg += ", UNREACHABLE"
     print(msg)
     return {"docs_url": docs_url, "title": title}
 
@@ -125,3 +127,6 @@ if __name__ == "__main__":
 
     with open(os.path.join(PERSIST_FOLDER, "metadata.json"), "w") as file:
         file.write(json.dumps(metadata))
+
+    if UNREACHABLE_DOCS:
+        sys.exit("There were documents with unreachable URLs, grep the log for UNREACHABLE")
