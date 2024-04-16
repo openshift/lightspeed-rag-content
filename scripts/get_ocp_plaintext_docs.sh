@@ -5,6 +5,8 @@ OCP_VERSION=$1
 
 trap "rm -rf openshift-docs" EXIT
 
+rm -rf ocp-product-docs-plaintext
+
 git clone --single-branch --branch enterprise-${OCP_VERSION} https://github.com/openshift/openshift-docs.git
 
 echo "product-version: $OCP_VERSION" >> scripts/asciidoctor-text/attributes.yaml
