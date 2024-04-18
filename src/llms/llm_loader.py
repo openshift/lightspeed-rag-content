@@ -2,6 +2,7 @@ import inspect
 import os
 import warnings
 
+from genai import Client
 from langchain.callbacks.manager import CallbackManager
 from langchain.callbacks.streaming_stdout import StreamingStdOutCallbackHandler
 
@@ -116,7 +117,7 @@ class LLMLoader:
             # BAM Research lab
             from genai.extensions.langchain import LangChainInterface
             from genai.credentials import Credentials
-            from genai.schemas import GenerateParams
+            from genai.schema import TextGenerationParameters
         except Exception:
             self.logger.error(
                 "ERROR: Missing ibm-generative-ai libraries. Skipping loading backend LLM."
@@ -151,10 +152,10 @@ class LLMLoader:
         # remove none BAM params from dictionary
         for k in ["model", "api_key", "api_endpoint"]:
             _ = bam_params.pop(k, None)
-        params = GenerateParams(**bam_params)
-
+        params = TextGenerationParameters(**bam_params)
+        client = Client(credentials=creds)
         self.llm = LangChainInterface(
-            model=self.model, params=params, credentials=creds
+            model_id=self.model, params=params, client=client,
         )
         self.logger.debug(f"[{inspect.stack()[0][3]}] BAM LLM instance {self.llm}")
 

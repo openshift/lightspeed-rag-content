@@ -119,8 +119,8 @@ if __name__ == "__main__":
     Settings.chunk_size = args.chunk
     Settings.chunk_overlap = args.overlap
     Settings.embed_model = HuggingFaceEmbedding(model_name=args.model_dir)
-    Settings.llm = resolve_llm(None)
 
+    
     embedding_dimension = len(Settings.embed_model.get_text_embedding("random text"))
     faiss_index = faiss.IndexFlatL2(embedding_dimension)
     vector_store = FaissVectorStore(faiss_index=faiss_index)

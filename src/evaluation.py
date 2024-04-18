@@ -3,6 +3,7 @@ import asyncio
 import json
 import os
 import time
+import uuid
 import nest_asyncio
 from llama_index.core.evaluation import (
     FaithfulnessEvaluator,
@@ -10,10 +11,12 @@ from llama_index.core.evaluation import (
     CorrectnessEvaluator,
     BatchEvalRunner,
     DatasetGenerator,
-    RelevancyEvaluator
+    RelevancyEvaluator,
+    QueryResponseDataset
 )
 from llama_index.core import Settings,  ServiceContext, SimpleDirectoryReader, StorageContext, load_index_from_storage
 from llms.llm_loader import LLMLoader
+
 from llama_index.embeddings.huggingface import HuggingFaceEmbedding
 from llama_index.vector_stores.faiss import FaissVectorStore
 
@@ -61,6 +64,18 @@ def eval_parser(eval_response: str) :
     if eval_len > 3 : 
         return 0, eval_response
 
+def load_question_from_folder(folder):
+    with open(folder, 'r') as file:
+        question_object  = json.load(file)
+        queries = {}
+        for dir in question_object["evaluation-results"]: 
+
+            for q in dir.get("questions"): 
+                cur_queries = {
+                    str(uuid.uuid4()): q
+                }
+                queries.update(cur_queries)
+        return  QueryResponseDataset(queries=queries)  
 
 def get_eval_results(key, eval_results):
     results = eval_results[key]
@@ -85,7 +100,9 @@ async def main():
                         )    
     parser.add_argument("-x", "--product-index" ,default="product" , help="storage product index")
     parser.add_argument("-i", "--input-persist-dir" , help="path to persist file dir")
-    parser.add_argument("-q", "--question-folder",   default="", help="docs folder for questions gen")
+    parser.add_argument("-gq", "--generate-questions", type=bool,   default="", help="should generate question")    
+    parser.add_argument("-q", "--question-doc-folder",   default="", help="docs folder for questions gen")
+    parser.add_argument("-lq", "--load-question-file",   default="", help="load question from folder")
     parser.add_argument("-n", "--number-of-questions" ,type=int, default="5" , help="number of questions used for evaluation")
     parser.add_argument("-s", "--similarity" , type=int,  default="5" , help="similarity_top_k")
     parser.add_argument("-c", "--chunk", type=int ,  default="500", help="chunk size for embedding")
@@ -101,7 +118,7 @@ async def main():
     # execute 
     args = parser.parse_args() 
     
-    print("** settings context")
+    print(" --> settings context")
     PERSIST_FOLDER = args.output
     PRODUCT_INDEX=args.product_index
     PRODUCT_DOCS_PERSIST_DIR = args.input_persist_dir
@@ -114,35 +131,39 @@ async def main():
     Settings.chunk_overlap = args.overlap
     Settings.embed_model = HuggingFaceEmbedding(model_name=args.model_dir)
         
-    print("** settings params")
+    print(" --> settings params")
         
-    # Settings.embed_model = "local:BAAI/bge-base-en"        
-    Settings.llm = LLMLoader(args.provider, args.model).llm    
-    service_context =ServiceContext.from_defaults()         
+    embed_model = "local:BAAI/bge-base-en"        
+    Settings.llm = LLMLoader(args.provider, args.model).llm  
+    bare_llm = LLMLoader(args.provider, args.model).llm
+    service_context = ServiceContext.from_defaults(llm=bare_llm, embed_model=embed_model)         
     
-    print("** load embeddings evaluating")
+    print(" --> load embeddings evaluating")
 
     # load index from disk
     vector_store = FaissVectorStore.from_persist_dir(PRODUCT_DOCS_PERSIST_DIR)
     storage_context = StorageContext.from_defaults(
         vector_store=vector_store, persist_dir=PRODUCT_DOCS_PERSIST_DIR
     )
-    index = load_index_from_storage(storage_context=storage_context)
+    index = load_index_from_storage(storage_context=storage_context,index_id=PRODUCT_INDEX)
 
 
-    print("** starting model evaluating")
+    print(" --> starting model evaluating")
     nest_asyncio.apply()
     
-    print("*** generating questions ")        
-    question_folder = args.folder if args.question_folder is None else args.question_folder
-    reader = SimpleDirectoryReader(question_folder)
-    question = reader.load_data()
-    data_generator = DatasetGenerator.from_documents(question)
-    eval_questions = data_generator.generate_dataset_from_nodes(num=NUM_OF_QUESTIONS)
-    print(eval_questions.questions)
+    print(" --> generating questions") 
+    if args.generate_questions:       
+        question_folder = args.folder if args.question_doc_folder is None else args.question_doc_folder
+        reader = SimpleDirectoryReader(question_folder)
+        question = reader.load_data()
+        data_generator = DatasetGenerator.from_documents(question)
+        eval_questions = data_generator.generate_dataset_from_nodes(num=NUM_OF_QUESTIONS)
+        
+    if args.load_question_file: 
+        eval_questions = load_question_from_folder(args.load_question_file) 
     
     
-    print("*** start evaluation")
+    print(" --> start evaluation")
     faithfulness = FaithfulnessEvaluator(service_context=service_context)
     relevancy = RelevancyEvaluator(service_context=service_context)
     correctness = CorrectnessEvaluator(service_context=service_context,score_threshold=2.0 ,parser_function=eval_parser)
@@ -151,15 +172,17 @@ async def main():
                                 { "faithfulness": faithfulness, "relevancy": relevancy},
                                     workers=8, show_progress=True
                             )
-    
-    eval_results = await runner.aevaluate_queries(  index.as_query_engine(), eval_questions.questions )
+
+    eval_results = await runner.aevaluate_queries(  index.as_chat_engine(), eval_questions.questions[:5] )
     
     evaluation_results = {}
     evaluation_results["faithfulness"] = get_eval_results("faithfulness", eval_results)
     evaluation_results["relevancy"] = get_eval_results("relevancy", eval_results)
     
     # correctness test
-    engine = index.as_query_engine(similarity_top_k=SIMILARITY, service_context=service_context)
+    engine = index.as_chat_engine(similarity_top_k=SIMILARITY, service_context=service_context)
+        
+
     
     total_correctness_score = []
     res_table = []
@@ -176,14 +199,14 @@ async def main():
         result =correctness.evaluate(
             query=query,
             response=summary.response,
-            reference=summary.source_nodes[0].text,
+            reference=summary.source_nodes[0].text if len(summary.source_nodes)>0 else None 
             )
         
         res_row["question"] = query
         res_row["response"] = summary.response
         res_row["ref"] = referenced_documents 
-        res_row["ref_doc"] = summary.source_nodes[0].text
-        res_row["ref_doc_score"] = summary.source_nodes[0].score
+        res_row["ref_doc"] = summary.source_nodes[0].text if len(summary.source_nodes)>0 else None 
+        res_row["ref_doc_score"] = summary.source_nodes[0].score if len(summary.source_nodes)>0 else None 
         res_row["passing"] = result.passing
         res_row["feedback"] = result.feedback
         res_row["score"] = result.score
