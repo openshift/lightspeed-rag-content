@@ -61,6 +61,15 @@ def file_metadata_func(file_path: str) -> Dict:
     return {"docs_url": docs_url, "title": title}
 
 
+def got_whitespace(text: str) -> bool:
+    """Indicate if the parameter string contains whitespace."""
+
+    for c in node.text:
+        if c.isspace():
+            return True
+    return False
+
+
 if __name__ == "__main__":
 
     start_time = time.time()
@@ -111,8 +120,16 @@ if __name__ == "__main__":
         args.folder, recursive=True, file_metadata=file_metadata_func
     ).load_data()
 
-    index = VectorStoreIndex.from_documents(
-        documents,
+    good_nodes = []
+    nodes = Settings.text_splitter.get_nodes_from_documents(documents)
+    for node in nodes:
+        if got_whitespace(node.text):
+            good_nodes.append(node)
+        else:
+            print("skipping bad node: " + node.__repr__())
+
+    index = VectorStoreIndex(
+        good_nodes,
         storage_context=storage_context,
     )
     index.set_index_id(args.index)
