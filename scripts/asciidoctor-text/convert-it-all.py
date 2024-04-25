@@ -9,18 +9,22 @@ import sys
 
 import yaml
 
-def node_in_distro(node, distro: str) -> bool:
-    return (node.get("Distros","") == "" or distro in node.get("Distros","").split(','))
+
+def node_in_distro(node: dict, distro: str) -> bool:
+    """Check if a node is in a distro."""
+    return node.get("Distros", "") == "" or distro in node.get("Distros", "").split(",")
 
 
-def process_node(node, distro: str, dir="", file_list=[]):
+def process_node(node: dict, distro: str, dir: str = "", file_list: list = []) -> list:
     """Process YAML node from the topic map."""
     currentdir = dir
     if "Topics" in node:
         if node_in_distro(node, distro):
             currentdir = os.path.join(currentdir, node["Dir"])
             for subnode in node["Topics"]:
-                file_list = process_node(subnode, distro, dir=currentdir, file_list=file_list)
+                file_list = process_node(
+                    subnode, distro, dir=currentdir, file_list=file_list
+                )
     else:
         if node_in_distro(node, distro):
             file_list.append(os.path.join(currentdir, node["File"]))
@@ -41,7 +45,10 @@ if __name__ == "__main__":
     )
     parser.add_argument("--topic-map", "-t", required=True, help="The topic map file")
     parser.add_argument(
-        "--distro", "-d", required=True, help="OpenShift distro the docs are for, ex. openshift-enterprise"
+        "--distro",
+        "-d",
+        required=True,
+        help="OpenShift distro the docs are for, ex. openshift-enterprise",
     )
     parser.add_argument(
         "--output-dir", "-o", required=True, help="The output directory for text"
@@ -52,7 +59,7 @@ if __name__ == "__main__":
 
     args = parser.parse_args(sys.argv[1:])
 
-    attribute_list = []
+    attribute_list: list = []
     if args.attributes is not None:
         with open(args.attributes, "r") as fin:
             attributes = yaml.safe_load(fin)
@@ -61,9 +68,9 @@ if __name__ == "__main__":
 
     with open(args.topic_map, "r") as fin:
         topic_map = yaml.safe_load_all(fin)
-        mega_file_list = []
+        mega_file_list: list = []
         for map in topic_map:
-            file_list = []
+            file_list: list = []
             file_list = process_node(map, args.distro, file_list=file_list)
             mega_file_list = mega_file_list + file_list
 

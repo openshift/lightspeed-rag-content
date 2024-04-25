@@ -3,13 +3,15 @@
 import argparse
 import json
 import os
-import requests
 import sys
 import time
 from typing import Dict
 
 import faiss
+import requests
 from llama_index.core import Settings, SimpleDirectoryReader, VectorStoreIndex
+from llama_index.core.llms.utils import resolve_llm
+from llama_index.core.schema import TextNode
 from llama_index.core.storage.storage_context import StorageContext
 from llama_index.embeddings.huggingface import HuggingFaceEmbedding
 from llama_index.vector_stores.faiss import FaissVectorStore
@@ -18,9 +20,9 @@ OCP_DOCS_ROOT_URL = "https://docs.openshift.com/container-platform/"
 OCP_DOCS_VERSION = "4.15"
 UNREACHABLE_DOCS: bool = False
 
+
 def ping_url(url: str) -> bool:
     """Check if the URL parameter is live."""
-
     try:
         response = requests.get(url, timeout=30)
         return response.status_code == 200
@@ -30,12 +32,11 @@ def ping_url(url: str) -> bool:
 
 def get_file_title(file_path: str) -> str:
     """Extract title from the plaintext doc file."""
-
     title = ""
     try:
-        with open(file_path, 'r') as file:
-            title = file.readline().rstrip('\n')
-    except Exception:
+        with open(file_path, "r") as file:
+            title = file.readline().rstrip("\n")
+    except Exception:  # noqa: S110
         pass
     return title
 
@@ -47,7 +48,8 @@ def file_metadata_func(file_path: str) -> Dict:
         file_path: str: file path in str
     """
     docs_url = (
-        OCP_DOCS_ROOT_URL + OCP_DOCS_VERSION
+        OCP_DOCS_ROOT_URL
+        + OCP_DOCS_VERSION
         + file_path.removeprefix(EMBEDDINGS_ROOT_DIR).removesuffix("txt")
         + "html"
     )
@@ -63,8 +65,7 @@ def file_metadata_func(file_path: str) -> Dict:
 
 def got_whitespace(text: str) -> bool:
     """Indicate if the parameter string contains whitespace."""
-
-    for c in node.text:
+    for c in text:
         if c.isspace():
             return True
     return False
@@ -109,7 +110,7 @@ if __name__ == "__main__":
     Settings.chunk_size = args.chunk
     Settings.chunk_overlap = args.overlap
     Settings.embed_model = HuggingFaceEmbedding(model_name=args.model_dir)
-    Settings.llm = None
+    Settings.llm = resolve_llm(None)
 
     embedding_dimension = len(Settings.embed_model.get_text_embedding("random text"))
     faiss_index = faiss.IndexFlatL2(embedding_dimension)
@@ -123,7 +124,7 @@ if __name__ == "__main__":
     good_nodes = []
     nodes = Settings.text_splitter.get_nodes_from_documents(documents)
     for node in nodes:
-        if got_whitespace(node.text):
+        if isinstance(node, TextNode) and got_whitespace(node.text):
             good_nodes.append(node)
         else:
             print("skipping bad node: " + node.__repr__())
@@ -135,7 +136,7 @@ if __name__ == "__main__":
     index.set_index_id(args.index)
     index.storage_context.persist(persist_dir=PERSIST_FOLDER)
 
-    metadata = {}
+    metadata: dict = {}
     metadata["execution-time"] = time.time() - start_time
     metadata["llm"] = "None"
     metadata["embedding-model"] = args.model_name
@@ -150,4 +151,6 @@ if __name__ == "__main__":
         file.write(json.dumps(metadata))
 
     if UNREACHABLE_DOCS:
-        sys.exit("There were documents with unreachable URLs, grep the log for UNREACHABLE")
+        sys.exit(
+            "There were documents with unreachable URLs, grep the log for UNREACHABLE"
+        )

@@ -11,9 +11,7 @@ if __name__ == "__main__":
     parser.add_argument(
         "-l", "--local-dir", required=True, help="Directory to download model to"
     )
-    parser.add_argument(
-        "-r", "--hf-repo-id", required=True, help="Model repo id"
-    )
+    parser.add_argument("-r", "--hf-repo-id", required=True, help="Model repo id")
     args = parser.parse_args()
 
     os.environ["HF_HUB_DISABLE_PROGRESS_BARS"] = "1"
