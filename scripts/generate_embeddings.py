@@ -19,14 +19,18 @@ OCP_DOCS_VERSION = "4.15"
 UNREACHABLE_DOCS: bool = False
 
 def ping_url(url: str) -> bool:
+    """Check if the URL parameter is live."""
+
     try:
-        response = requests.get(url)
+        response = requests.get(url, timeout=30)
         return response.status_code == 200
     except requests.exceptions.RequestException:
         return False
 
 
 def get_file_title(file_path: str) -> str:
+    """Extract title from the plaintext doc file."""
+
     title = ""
     try:
         with open(file_path, 'r') as file:
