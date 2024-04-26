@@ -73,26 +73,30 @@ Use this command if the KMM Operator was installed using the OpenShift CLI.
 
 Run the following command to uninstall the KMM Operator:
 Kernel module deployment
-For each Module resource, Kernel Module Management (KMM) can create a number of DaemonSet resources:
+Kernel Module Management (KMM) monitors Node and Module resources in the cluster to determine if a kernel module should be loaded on or unloaded from a node.
 
-One ModuleLoader DaemonSet per compatible kernel version running in the cluster.
+To be eligible for a module, a node must contain the following:
 
-One device plugin DaemonSet, if configured.
+Labels that match the module's .spec.selector field.
+
+A kernel version matching one of the items in the module's .spec.moduleLoader.container.kernelMappings field.
+
+If ordered upgrade (ordered_upgrade.md) is configured in the module, a label that matches its .spec.moduleLoader.container.version field.
 
 
-The module loader daemon set resources run ModuleLoader images to load kernel modules. A module loader image is an OCI image that contains the .ko files and both the modprobe and sleep binaries.
+When KMM reconciles nodes with the desired state as configured in the Module resource, it creates worker pods on the target nodes to run the necessary action. The KMM Operator monitors the outcome of the pods and records the information. The Operator uses this information to label the Node objects when the module is successfully loaded, and to run the device plugin, if configured.
 
-When the module loader pod is created, the pod runs modprobe to insert the specified module into the kernel. It then enters a sleep state until it is terminated. When that happens, the ExecPreStop hook runs modprobe -r to unload the kernel module.
+Worker pods run the KMM worker binary that performs the following tasks:
 
-If the .spec.devicePlugin attribute is configured in a Module resource, then KMM creates a device plugin daemon set in the cluster. That daemon set targets:
+Pulls the kmod image configured in the Module resource. Kmod images are standard OCI images that  contain .ko files.
 
-Nodes that match the .spec.selector of the Module resource.
+Extracts the image in the pod's filesystem.
 
-Nodes with the kernel module loaded (where the module loader pod is in the Ready condition).
+Runs modprobe with the specified arguments to perform the necessary action.
 
 
 The Module custom resource definition
-The Module custom resource definition (CRD) represents a kernel module that can be loaded on all or select nodes in the cluster, through a module loader image. A Module custom resource (CR) specifies one or more kernel versions with which it is compatible, and a node selector.
+The Module custom resource definition (CRD) represents a kernel module that can be loaded on all or select nodes in the cluster, through a kmod image. A Module custom resource (CR) specifies one or more kernel versions with which it is compatible, and a node selector.
 
 The compatible versions for a Module resource are listed under .spec.moduleLoader.container.kernelMappings. A kernel mapping can either match a literal version, or use regexp to match many of them at the same time.
 
@@ -108,7 +112,7 @@ Run garbage-collect on:
 Set soft dependencies between kernel modules
 Some configurations require that several kernel modules be loaded in a specific order to work properly, even though the modules do not directly depend on each other through symbols. These are called soft dependencies. depmod is usually not aware of these dependencies, and they do not appear in the files it produces. For example, if mod_a has a soft dependency on mod_b, modprobe mod_a will not load mod_b.
 
-You can resolve these situations by declaring soft dependencies in the Module Custom Resource Definition (CRD) using the modulesLoadingOrder field.
+You can resolve these situations by declaring soft dependencies in the Module custom resource definition (CRD) using the modulesLoadingOrder field.
 
 # ...
 spec:
@@ -123,12 +127,7 @@ spec:
         modulesLoadingOrder:
           - mod_a
           - mod_b
-In the configuration above:
-
-The loading order is mod_b, then mod_a.
-
-The unloading order is mod_a, then mod_b.
-
+In the configuration above, the worker pod will first try to unload the in-tree mod_b before loading mod_a from the kmod image. When the worker pod is terminated and mod_a is unloaded, mod_b will not be loaded again.
 
 The first value in the list, to be loaded last, must be equivalent to the moduleName.
 Security and permissions
@@ -146,7 +145,7 @@ If those fields are not set, then:
 openshift-kmm is a trusted namespace.
 
 When setting up RBAC permissions, remember that any user or ServiceAccount creating a Module resource in the openshift-kmm namespace results in KMM automatically running privileged workloads on potentially all nodes in the cluster.
-To allow any ServiceAccount to use the privileged SCC and therefore to run module loader or device plugin pods, use the following command:
+To allow any ServiceAccount to use the privileged SCC and run worker or device plugin pods, you can use the oc adm policy command, as in the following example:
 
 $ oc adm policy add-scc-to-user privileged -z "${serviceAccountName}" [ -n "${namespace}" ]
 Pod security standards
@@ -291,19 +290,21 @@ Optional.
 Optional.
 
 Optional: Used to pull module loader and device plugin images.
-Using a ModuleLoader image
-Kernel Module Management (KMM) works with purpose-built module loader images. These are standard OCI images that must satisfy the following requirements:
+Creating a kmod image
+Kernel Module Management (KMM) works with purpose-built kmod images, which are standard OCI images that contain .ko files. The location of the .ko files must match the following pattern: <prefix>/lib/modules/[kernel-version]/.
 
-.ko files must be located in /opt/lib/modules/${KERNEL_VERSION}.
+Keep the following in mind when working with the .ko files:
 
-modprobe and sleep binaries must be defined in the $PATH variable.
+In most cases, <prefix> should be equal to /opt. This is the Module CRD's default value.
+
+kernel-version must not be empty and must be equal to the kernel version the kernel modules were built for.
 
 
 Running depmod
-If your module loader image contains several kernel modules and if one of the modules depends on another module, it is best practice to run depmod at the end of the build process to generate dependencies and map files.
+It is recommended to run depmod at the end of the build process to generate modules.dep and .map files. This is especially useful if your kmod image contains several kernel modules and if one of the modules depends on another module.
 
 You must have a Red Hat subscription to download the kernel-devel package.
-To generate modules.dep and .map files for a specific kernel version, run depmod -b /opt ${KERNEL_VERSION}.
+Generate modules.dep and .map files for a specific kernel version by running the following command:
 
 
 Example Dockerfile
@@ -332,7 +333,7 @@ data:
     RUN depmod -b /opt ${KERNEL_VERSION}
 Driver Toolkit
 Building in the cluster
-KMM can build module loader images in the cluster. Follow these guidelines:
+KMM can build kmod images in the cluster. Follow these guidelines:
 
 Provide build instructions using the build section of a kernel mapping.
 
@@ -383,7 +384,7 @@ Build configuration resources
 
 Preflight validation for Kernel Module Management (KMM) Modules
 Using the Driver Toolkit
-The Driver Toolkit (DTK) is a convenient base image for building build module loader images. It contains tools and libraries for the OpenShift version currently running in the cluster.
+The Driver Toolkit (DTK) is a convenient base image for building build kmod loader images. It contains tools and libraries for the OpenShift version currently running in the cluster.
 
 Use DTK as the first stage of a multi-stage Dockerfile.
 
@@ -426,49 +427,53 @@ After you have added the keys, you must check them to ensure they are set correc
 Check to ensure the public key secret is set correctly:
 
 Check to ensure the private key secret is set correctly:
-Signing a pre-built driver container
+Signing kmods in a pre-built image
 Use this procedure if you have a pre-built image, such as an image either distributed by a hardware vendor or built elsewhere.
 
 The following YAML file adds the public/private key-pair as secrets with the required key names - key for the private key, cert for the public key. The cluster then pulls down the unsignedImage image, opens it, signs the kernel modules listed in filesToSign, adds them back, and pushes the resulting image as containerImage.
 
-Kernel Module Management (KMM) should then deploy the DaemonSet that loads the signed kmods onto all the nodes that match the selector. The driver containers should run successfully on any nodes that have the public key in their MOK database, and any nodes that are not secure-boot enabled, which ignore the signature. They should fail to load on any that have secure-boot enabled but do not have that key in their MOK database.
+KMM then loads the signed kmods onto all the nodes with that match the selector. The kmods are successfully loaded on any nodes that have the public key in their MOK database, and any nodes that are not secure-boot enabled, which will ignore the signature.
 
-The keySecret and certSecret secrets have been created.
+The keySecret and certSecret secrets have been created in the same namespace as the rest of the resources.
 
 
 Apply the YAML file:
 
 
-modprobe - The name of the kmod to load.
-Building and signing a ModuleLoader container image
+The name of the kmod to load.
+
+The name of the container image. For example, quay.io/myuser/my-driver:<kernelversion.
+
+The name of the unsigned image. For example, quay.io/myuser/my-driver:<kernelversion.
+Building and signing a kmod image
 Use this procedure if you have source code and must build your image first.
 
 The following YAML file builds a new container image using the source code from the repository. The image produced is saved back in the registry with a temporary name, and this temporary image is then signed using the parameters in the sign section.
 
 The temporary image name is based on the final image name and is set to be <containerImage>:<tag>-<namespace>_<module name>_kmm_unsigned.
 
-For example, using the following YAML file, Kernel Module Management (KMM) builds an image named example.org/repository/minimal-driver:final-default_example-module_kmm_unsigned containing the build with unsigned kmods and push it to the registry. Then it creates a second image named example.org/repository/minimal-driver:final that contains the signed kmods. It is this second image that is loaded by the DaemonSet object and deploys the kmods to the cluster nodes.
+For example, using the following YAML file, Kernel Module Management (KMM) builds an image named example.org/repository/minimal-driver:final-default_example-module_kmm_unsigned containing the build with unsigned kmods and pushes it to the registry. Then it creates a second image named example.org/repository/minimal-driver:final that contains the signed kmods. It is this second image that is pulled by the worker pods and contains the kmods to be loaded on the cluster nodes.
 
-After it is signed, the temporary image can be safely deleted from the registry. It will be rebuilt, if needed.
+After it is signed, you can safely delete the temporary image from the registry. It will be rebuilt, if needed.
 
-The keySecret and certSecret secrets have been created.
+The keySecret and certSecret secrets have been created in the same namespace as the rest of the resources.
 
 
 Apply the YAML file:
 
 
-namespace - Replace default with a valid namespace.
+Replace default with a valid namespace.
 
-serviceAccountName - The default serviceAccountName does not have the required permissions to run a module that is privileged. For information on creating a service account, see "Creating service accounts" in the "Additional resources" of this section.
+The default serviceAccountName does not have the required permissions to run a module that is privileged. For information on creating a service account, see "Creating service accounts" in the "Additional resources" of this section.
 
-imageRepoSecret - Used as imagePullSecrets in the DaemonSet object and to pull and push for the build and sign features.
+Used as imagePullSecrets in the DaemonSet object and to pull and push for the build and sign features.
 
 
 Creating service accounts.
 KMM hub and spoke
 In hub and spoke scenarios, many spoke clusters are connected to a central, powerful hub cluster. Kernel Module Management (KMM) depends on Red Hat Advanced Cluster Management (RHACM) to operate in hub and spoke environments.
 
-KMM is compatible with hub and spoke environments through decoupling KMM features. A ManagedClusterModule Custom Resource Definition (CRD) is provided to wrap the existing Module CRD and extend it to select Spoke clusters. Also provided is KMM-Hub, a new standalone controller that builds images and signs modules on the hub cluster.
+KMM is compatible with hub and spoke environments through decoupling KMM features. A ManagedClusterModule custom resource definition (CRD) is provided to wrap the existing Module CRD and extend it to select Spoke clusters. Also provided is KMM-Hub, a new standalone controller that builds images and signs modules on the hub cluster.
 
 In hub and spoke setups, spokes are focused, resource-constrained clusters that are centrally managed by a hub cluster. Spokes run the single-cluster edition of KMM, with those resource-intensive features disabled. To adapt KMM to this environment, you should reduce the workload running on the spokes to the minimum, while the hub takes care of the expensive tasks.
 
@@ -487,7 +492,7 @@ Installing KMM
 Installing KMM-Hub
 You can use one of the following methods to install KMM-Hub:
 
-Using the Operator Lifecycle Manager (OLM)
+With the Operator Lifecycle Manager (OLM)
 
 Creating KMM resources
 
@@ -685,14 +690,11 @@ If the kmods in your driver container are not signed or are signed with the wron
 
 modprobe: ERROR: could not insert '<your_kmod_name>': Required key not available
 KMM firmware support
-Kernel modules sometimes need to load firmware files from the file system. KMM supports copying firmware files from the ModuleLoader image to the node's file system.
+Kernel modules sometimes need to load firmware files from the file system. KMM supports copying firmware files from the kmod image to the node's file system.
 
 The contents of .spec.moduleLoader.container.modprobe.firmwarePath are copied into the /var/lib/firmware path on the node before running the modprobe command to insert the kernel module.
 
 All files and empty directories are removed from that location before running the modprobe -r command to unload the kernel module, when the pod is terminated.
-
-Creating a ModuleLoader image
-
 
 Configuring the lookup path on nodes
 On "Red Hat OpenShift Container Platform" nodes, the set of default lookup paths for firmwares does not include the /var/lib/firmware path.
@@ -703,13 +705,44 @@ By applying the MachineConfig CR, the nodes are automatically rebooted.
 
 
 Machine Config Operator
-Building a ModuleLoader image
+Building a kmod image
 In addition to building the kernel module itself, include the binary firmware in the builder image:
 Tuning the Module resource
 Set .spec.moduleLoader.container.modprobe.firmwarePath in the Module custom resource (CR):
 Troubleshooting KMM
 When troubleshooting KMM installation issues, you can monitor logs to determine at which stage issues occur. Then, retrieve diagnostic data relevant to that stage.
 
+Reading Operator logs
+You can use the oc logs command to read Operator logs, as in the following examples.
+
+$ oc logs -fn openshift-kmm deployments/kmm-operator-controller
+$ oc logs -fn openshift-kmm-hub deployments/kmm-operator-hub-controller
+Observing events
+Use the following methods to view KMM events.
+
+
+KMM publishes events whenever it starts a kmod image build or observes its outcome. These events are attached to Module objects and are available at the end of the output of oc describe module command, as in the following example:
+
+$ oc describe modules.kmm.sigs.x-k8s.io kmm-ci-a
+[...]
+Events:
+  Type    Reason          Age                From  Message
+  ----    ------          ----               ----  -------
+  Normal  BuildCreated    2m29s              kmm   Build created for kernel 6.6.2-201.fc39.x86_64
+  Normal  BuildSucceeded  63s                kmm   Build job succeeded for kernel 6.6.2-201.fc39.x86_64
+  Normal  SignCreated     64s (x2 over 64s)  kmm   Sign created for kernel 6.6.2-201.fc39.x86_64
+  Normal  SignSucceeded   57s                kmm   Sign job succeeded for kernel 6.6.2-201.fc39.x86_64
+
+KMM publishes events whenever it successfully loads or unloads a kernel module on a node. These events are attached to Node objects and are available at the end of the output of oc describe node command, as in the following example:
+
+$ oc describe node my-node
+[...]
+Events:
+  Type    Reason          Age    From  Message
+  ----    ------          ----   ----  -------
+[...]
+  Normal  ModuleLoaded    4m17s  kmm   Module default/kmm-ci-a loaded into the kernel
+  Normal  ModuleUnloaded  2s     kmm   Module default/kmm-ci-a unloaded from the kernel
 Using the must-gather tool
 The oc adm must-gather command is the preferred way to collect a support bundle and provide debugging information to Red Hat Support. Collect specific information by running the command with the appropriate arguments as described in the following sections.
 
