@@ -6,7 +6,6 @@ import os
 import sys
 import time
 from typing import Dict
-
 import faiss
 import requests
 from llama_index.core import Settings, SimpleDirectoryReader, VectorStoreIndex
@@ -17,7 +16,7 @@ from llama_index.embeddings.huggingface import HuggingFaceEmbedding
 from llama_index.vector_stores.faiss import FaissVectorStore
 
 OCP_DOCS_ROOT_URL = "https://docs.openshift.com/container-platform/"
-OCP_DOCS_VERSION = "4.15"
+OCP_DOCS_VERSION = " "
 UNREACHABLE_DOCS: bool = False
 
 
@@ -56,6 +55,7 @@ def file_metadata_func(file_path: str) -> Dict:
     title = get_file_title(file_path)
     msg = f"file_path: {file_path}, title: {title}, docs_url: {docs_url}"
     if not ping_url(docs_url):
+        print("--> unreachable: {docs_url} ")
         global UNREACHABLE_DOCS
         UNREACHABLE_DOCS = True
         msg += ", UNREACHABLE"
@@ -71,13 +71,29 @@ def got_whitespace(text: str) -> bool:
     return False
 
 
+def gen_metadata_file(start_time, args, embedding_dimension, folder, folder_index, PERSIST_FOLDER, documents):
+    metadata = {}
+    metadata["execution-time"] = time.time() - start_time
+    metadata["llm"] = "None"
+    metadata["folder"] = folder
+    metadata["embedding-model"] = args.model_name
+    metadata["index-id"] = folder_index
+    metadata["vector-db"] = "faiss"
+    metadata["embedding-dimension"] = embedding_dimension
+    metadata["chunk"] = args.chunk
+    metadata["overlap"] = args.overlap
+    metadata["total-embedded-files"] = len(documents)
+
+    with open(os.path.join(PERSIST_FOLDER, f"metadata_{folder_index}.json"), "w") as file:
+        file.write(json.dumps(metadata))
+
 if __name__ == "__main__":
 
     start_time = time.time()
 
     parser = argparse.ArgumentParser(description="embedding cli for task execution")
     parser.add_argument("-f", "--folder", help="Plain text folder path")
-    parser.add_argument("-fo", "--folders", help="Plain text folder paths separated by space")
+    parser.add_argument("-fo", "--folders", help="Multiple plain text folders paths separated by space]")
     parser.add_argument(
         "-md",
         "--model-dir",
@@ -90,29 +106,15 @@ if __name__ == "__main__":
         help="HF repo id of the embedding model",
     )
     parser.add_argument(
-        "-c", "--chunk", type=int, default="500", help="Chunk size for embedding"
+        "-c", "--chunk", type=int, default="1500", help="Chunk size for embedding"
     )
     parser.add_argument(
-        "-l", "--overlap", type=int, default="50", help="Chunk overlap for embedding"
+        "-l", "--overlap", type=int, default="10", help="Chunk overlap for embedding"
     )
     parser.add_argument("-o", "--output", help="Vector DB output folder")
     parser.add_argument("-i", "--index", help="Product index")
     parser.add_argument("-v", "--ocp-version", help="OCP version")
     args = parser.parse_args()
-
-    PERSIST_FOLDER = args.output
-    EMBEDDINGS_ROOT_DIR = os.path.abspath(args.folder)
-    if EMBEDDINGS_ROOT_DIR.endswith("/"):
-        EMBEDDINGS_ROOT_DIR = EMBEDDINGS_ROOT_DIR[:-1]
-    OCP_DOCS_VERSION = args.ocp_version
-    
-    folder_list = []
-    if args.folder:
-        folder_list.append(args.folder)
-    if args.folders: 
-        folder_list = folder_list + args.folders.split()
-    
-    print(f" --> List of folders: {folder_list}")
 
     os.environ["HF_HOME"] = args.model_dir
     os.environ["TRANSFORMERS_OFFLINE"] = "1"
@@ -120,12 +122,18 @@ if __name__ == "__main__":
     Settings.chunk_overlap = args.overlap
     Settings.embed_model = HuggingFaceEmbedding(model_name=args.model_dir)
 
-    
     embedding_dimension = len(Settings.embed_model.get_text_embedding("random text"))
     faiss_index = faiss.IndexFlatL2(embedding_dimension)
     vector_store = FaissVectorStore(faiss_index=faiss_index)
     storage_context = StorageContext.from_defaults(vector_store=vector_store)
 
+    folder_list = []
+    if args.folder:
+        folder_list.append(args.folder)
+    if args.folders: 
+        folder_list = folder_list + args.folders.split()
+    
+    print(f" --> List of folders: {folder_list}")
     documents = SimpleDirectoryReader(
         args.folder, recursive=True, file_metadata=file_metadata_func
     ).load_data()
@@ -166,35 +174,44 @@ if __name__ == "__main__":
         )
 
     
+        sys.exit("There were documents with unreachable URLs, grep the log for UNREACHABLE")
+
     for folder in folder_list: 
         if not os.path.exists(folder):
             print(f" --> Couldn't fine path for folder: {folder}")
         else:     
+            folder_index = folder.split("/")[-1]
+
+            PERSIST_FOLDER = args.output
+            EMBEDDINGS_ROOT_DIR = os.path.abspath(folder)
+            if EMBEDDINGS_ROOT_DIR.endswith("/"):
+                EMBEDDINGS_ROOT_DIR = EMBEDDINGS_ROOT_DIR[:-1]
+
+            OCP_DOCS_VERSION = folder.split("/")[-1]
+            output_folder = os.path.join(PERSIST_FOLDER,folder_index)
+
+            os.makedirs(output_folder)
             print(f" --> Starting embedding for: {folder}")
-            documents = SimpleDirectoryReader(folder, recursive=True).load_data()
-            index = VectorStoreIndex.from_documents(
-                documents,
+            documents = SimpleDirectoryReader(folder, recursive=True, file_metadata=file_metadata_func).load_data()
+            good_nodes = []
+            nodes = Settings.text_splitter.get_nodes_from_documents(documents)
+            for node in nodes:
+                if isinstance(node, TextNode) and got_whitespace(node.text):
+                    good_nodes.append(node)
+                else:
+                    print("skipping bad node: " + node.__repr__())
+
+            index = VectorStoreIndex(
+                good_nodes,
                 storage_context=storage_context,
             )
-            folder_index = folder.split("/")[-1]
-            index.set_index_id(folder_index)
-            print(f" --> Setting index {folder_index}")
-        
-            index.storage_context.persist(persist_dir=PERSIST_FOLDER)
-            metadata = {}
-            metadata["execution-time"] = time.time() - start_time
-            metadata["llm"] = "None"
-            metadata["folder"] = folder
-            metadata["embedding-model"] = args.model_name
-            metadata["index-id"] = folder_index
-            metadata["vector-db"] = "faiss"
-            metadata["embedding-dimension"] = embedding_dimension
-            metadata["chunk"] = args.chunk
-            metadata["overlap"] = args.overlap
-            metadata["total-embedded-files"] = len(documents)
-
-            with open(os.path.join(PERSIST_FOLDER, f"metadata_{folder_index}.json"), "w") as file:
-                file.write(json.dumps(metadata))
             
+            print(f" --> Setting index {folder_index}")  
+            index.set_index_id(folder_index.replace(".","_"))
+            index.storage_context.persist(persist_dir= output_folder)
+
+            print(f" --> List of folders: {folder_list}")
+            gen_metadata_file(start_time, args, embedding_dimension, folder, folder_index, PERSIST_FOLDER, documents)
+
     print(f" --> Completed embedding generation")
 

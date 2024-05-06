@@ -143,9 +143,9 @@ class LLMLoader:
             "max_new_tokens": 512,
             "min_new_tokens": 1,
             "random_seed": 42,
-            "top_k": 10,
-            "top_p": 0.95,
-            "repetition_penalty": 1.03,
+            "top_k": 50,
+            "top_p": 0.85,
+            "repetition_penalty": 1.05,
             "temperature": 0.05,
         }
         bam_params.update(self.llm_params)  # override parameters
@@ -155,7 +155,7 @@ class LLMLoader:
         params = TextGenerationParameters(**bam_params)
         client = Client(credentials=creds)
         self.llm = LangChainInterface(
-            model_id=self.model, params=params, client=client,
+            model_id=self.model, parameters=params, client=client,
         )
         self.logger.debug(f"[{inspect.stack()[0][3]}] BAM LLM instance {self.llm}")
 
