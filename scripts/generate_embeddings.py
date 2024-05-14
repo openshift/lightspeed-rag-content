@@ -113,7 +113,7 @@ if __name__ == "__main__":
     Settings.llm = resolve_llm(None)
 
     embedding_dimension = len(Settings.embed_model.get_text_embedding("random text"))
-    faiss_index = faiss.IndexFlatL2(embedding_dimension)
+    faiss_index = faiss.IndexFlatIP(embedding_dimension)
     vector_store = FaissVectorStore(faiss_index=faiss_index)
     storage_context = StorageContext.from_defaults(vector_store=vector_store)
 
@@ -141,7 +141,7 @@ if __name__ == "__main__":
     metadata["llm"] = "None"
     metadata["embedding-model"] = args.model_name
     metadata["index-id"] = args.index
-    metadata["vector-db"] = "faiss"
+    metadata["vector-db"] = "faiss.IndexFlatIP"
     metadata["embedding-dimension"] = embedding_dimension
     metadata["chunk"] = args.chunk
     metadata["overlap"] = args.overlap
