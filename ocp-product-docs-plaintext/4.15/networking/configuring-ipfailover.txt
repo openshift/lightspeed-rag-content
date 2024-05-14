@@ -2,12 +2,21 @@ Configuring IP failover
 
 This topic describes configuring IP failover for pods and services on your "Red Hat OpenShift Container Platform" cluster.
 
-IP failover manages a pool of Virtual IP (VIP) addresses on a set of nodes. Every VIP in the set is serviced by a node selected from the set. As long a single node is available, the VIPs are served. There is no way to explicitly distribute the VIPs over the nodes, so there can be nodes with no VIPs and other nodes with many VIPs. If there is only one node, all VIPs are on it.
+IP failover uses Keepalived to host a set of externally accessible Virtual IP (VIP) addresses on a set of hosts. Each VIP address is only serviced by a single host at a time. Keepalived uses the Virtual Router Redundancy Protocol (VRRP) to determine which host, from the set of hosts, services which VIP. If a host becomes unavailable, or if the service that Keepalived is watching does not respond, the VIP is switched to another host from the set. This means a VIP is always serviced as long as a host is available.
 
-The VIPs must be routable from outside the cluster.
+Every VIP in the set is serviced by a node selected from the set. If a single node is available, the VIPs are served. There is no way to explicitly distribute the VIPs over the nodes, so there can be nodes with no VIPs and other nodes with many VIPs. If there is only one node, all VIPs are on it.
+
+The administrator must ensure that all of the VIP addresses meet the following requirements:
+
+Accessible on the configured hosts from outside the cluster.
+
+Not used for any other purpose within the cluster.
+
+
+Keepalived on each node determines whether the needed service is running. If it is, VIPs are supported and Keepalived participates in the negotiation to determine which node serves the VIP. For a node to participate, the service must be listening on the watch port on a VIP or the check must be disabled.
+
+Each VIP in the set might be served by a different node.
 IP failover monitors a port on each VIP to determine whether the port is reachable on the node. If the port is not reachable, the VIP is not assigned to the node. If the port is set to 0, this check is suppressed. The check script does the needed testing.
-
-IP failover uses Keepalived to host a set of externally accessible VIP addresses on a set of hosts. Each VIP is only serviced by a single host at a time. Keepalived uses the Virtual Router Redundancy Protocol (VRRP) to determine which host, from the set of hosts, services which VIP. If a host becomes unavailable, or if the service that Keepalived is watching does not respond, the VIP is switched to another host from the set. This means a VIP is always serviced as long as a host is available.
 
 When a node running Keepalived passes the check script, the VIP on that node can enter the master state based on its priority and the priority of the current master and as determined by the preemption strategy.
 
@@ -17,18 +26,17 @@ You can create an IP failover deployment configuration on "Red Hat OpenShift Con
 
 When using VIPs to access a pod with host networking, the application pod runs on all nodes that are running the IP failover pods. This enables any of the IP failover nodes to become the master and service the VIPs when needed. If application pods are not running on all nodes with IP failover, either some IP failover nodes never service the VIPs or some application pods never receive any traffic. Use the same selector and replication count, for both IP failover and the application pods, to avoid this mismatch.
 
-While using VIPs to access a service, any of the nodes can be in the IP failover set of nodes, since the service is reachable on all nodes, no matter where the application pod is running. Any of the IP failover nodes can become master at any time. The service can either use external IPs and a service port or it can use a NodePort.
+While using VIPs to access a service, any of the nodes can be in the IP failover set of nodes, since the service is reachable on all nodes, no matter where the application pod is running. Any of the IP failover nodes can become master at any time. The service can either use external IPs and a service port or it can use a NodePort. Setting up a NodePort is a privileged operation.
 
 When using external IPs in the service definition, the VIPs are set to the external IPs, and the IP failover monitoring port is set to the service port. When using a node port, the port is open on every node in the cluster, and the service load-balances traffic from whatever node currently services the VIP. In this case, the IP failover monitoring port is set to the NodePort in the service definition.
 
-Setting up a NodePort is a privileged operation.
 Even though a service VIP is highly available, performance can still be affected. Keepalived makes sure that each of the VIPs is serviced by some node in the configuration, and several VIPs can end up on the same node even when other nodes have none. Strategies that externally load-balance across a set of VIPs can be thwarted when IP failover puts multiple VIPs on the same node.
-When you use ingressIP, you can set up IP failover to have the same VIP range as the ingressIP range. You can also disable the monitoring port. In this case, all the VIPs appear on same node in the cluster. Any user can set up a service with an ingressIP and have it highly available.
+When you use ExternalIP, you can set up IP failover to have the same VIP range as the ExternalIP range. You can also disable the monitoring port. In this case, all of the VIPs appear on same node in the cluster. Any user can set up a service with an ExternalIP and make it highly available.
 
 There are a maximum of 254 VIPs in the cluster.
 IP failover environment variables
 The following table contains the variables used to configure IP failover.
-Configuring IP failover
+Configuring IP failover in your cluster
 As a cluster administrator, you can configure IP failover on an entire cluster, or on a subset of nodes, as defined by the label selector. You can also configure multiple IP failover deployment configurations in your cluster, where each one is independent of the others.
 
 The IP failover deployment configuration ensures that a failover pod runs on each of the nodes matching the constraints or the label used.
@@ -47,29 +55,24 @@ Create an IP failover service account:
 Update security context constraints (SCC) for hostNetwork:
 
 Create a deployment YAML file to configure IP failover:
-About virtual IP addresses
-Keepalived manages a set of virtual IP addresses (VIP). The administrator must make sure that all of these addresses:
-
-Are accessible on the configured hosts from outside the cluster.
-
-Are not used for any other purpose within the cluster.
-
-
-Keepalived on each node determines whether the needed service is running. If it is, VIPs are supported and Keepalived participates in the negotiation to determine which node serves the VIP. For a node to participate, the service must be listening on the watch port on a VIP or the check must be disabled.
-
-Each VIP in the set may end up being served by a different node.
 Configuring check and notify scripts
-Keepalived monitors the health of the application by periodically running an optional user supplied check script. For example, the script can test a web server by issuing a request and verifying the response.
+Keepalived monitors the health of the application by periodically running an optional user-supplied check script. For example, the script can test a web server by issuing a request and verifying the response. As cluster administrator, you can provide an optional notify script, which is called whenever the state changes.
+
+The check and notify scripts run in the IP failover pod and use the pod file system, not the host file system. However, the IP failover pod makes the host file system available under the /hosts mount path. When configuring a check or notify script, you must provide the full path to the script. The recommended approach for providing the scripts is to use a ConfigMap object.
+
+The full path names of the check and notify scripts are added to the Keepalived configuration file, _/etc/keepalived/keepalived.conf, which is loaded every time Keepalived starts. The scripts can be added to the pod with a ConfigMap object as described in the following methods.
+
+Check script
 
 When a check script is not provided, a simple default script is run that tests the TCP connection. This default test is suppressed when the monitor port is 0.
 
-Each IP failover pod manages a Keepalived daemon that manages one or more virtual IPs (VIP) on the node where the pod is running. The Keepalived daemon keeps the state of each VIP for that node. A particular VIP on a particular node may be in master, backup, or fault state.
+Each IP failover pod manages a Keepalived daemon that manages one or more virtual IP (VIP) addresses on the node where the pod is running. The Keepalived daemon keeps the state of each VIP for that node. A particular VIP on a particular node might be in master, backup, or fault state.
 
-When the check script for that VIP on the node that is in master state fails, the VIP on that node enters the fault state, which triggers a renegotiation. During renegotiation, all VIPs on a node that are not in the fault state participate in deciding which node takes over the VIP. Ultimately, the VIP enters the master state on some node, and the VIP stays in the backup state on the other nodes.
+If the check script returns non-zero, the node enters the backup state, and any VIPs it holds are reassigned.
 
-When a node with a VIP in backup state fails, the VIP on that node enters the fault state. When the check script passes again for a VIP on a node in the fault state, the VIP on that node exits the fault state and negotiates to enter the master state. The VIP on that node may then enter either the master or the backup state.
+Notify script
 
-As cluster administrator, you can provide an optional notify script, which is called whenever the state changes. Keepalived passes the following three parameters to the script:
+Keepalived passes the following three parameters to the notify script:
 
 $1 - group or instance
 
@@ -78,30 +81,21 @@ $2 - Name of the group or instance
 $3 - The new state: master, backup, or fault
 
 
-The check and notify scripts run in the IP failover pod and use the pod file system, not the host file system. However, the IP failover pod makes the host file system available under the /hosts mount path. When configuring a check or notify script, you must provide the full path to the script. The recommended approach for providing the scripts is to use a config map.
-
-The full path names of the check and notify scripts are added to the Keepalived configuration file, _/etc/keepalived/keepalived.conf, which is loaded every time Keepalived starts. The scripts can be added to the pod with a config map as follows.
-
 You installed the OpenShift CLI (oc).
 
 You are logged in to the cluster with a user with cluster-admin privileges.
 
 
-Create the desired script and create a config map to hold it. The script has no input arguments and must return 0 for OK and 1 for fail.
+Create the desired script and create a ConfigMap object to hold it. The script has no input arguments and must return 0 for OK and 1 for fail.
 
-Create the config map:
+Create the ConfigMap object :
 
-Add the script to the pod. The defaultMode for the mounted config map files must able to run by using oc commands or by editing the deployment configuration. A value of 0755, 493 decimal, is typical:
+Add the script to the pod. The defaultMode for the mounted ConfigMap object files must able to run by using oc commands or by editing the deployment configuration. A value of 0755, 493 decimal, is typical:
 Configuring VRRP preemption
-When a Virtual IP (VIP) on a node leaves the fault state by passing the check script, the VIP on the node enters the backup state if it has lower priority than the VIP on the node that is currently in the master state. However, if the VIP on the node that is leaving fault state has a higher priority, the preemption strategy determines its role in the cluster.
-
-The nopreempt strategy does not move master from the lower priority VIP on the host to the higher priority VIP on the host. With preempt_delay 300, the default, Keepalived waits the specified 300 seconds and moves master to the higher priority VIP on the host.
-
-You installed the OpenShift CLI (oc).
-
+When a Virtual IP (VIP) on a node leaves the fault state by passing the check script, the VIP on the node enters the backup state if it has lower priority than the VIP on the node that is currently in the master state. The nopreempt strategy does not move master from the lower priority VIP on the host to the higher priority VIP on the host. With preempt_delay 300, the default, Keepalived waits the specified 300 seconds and moves master to the higher priority VIP on the host.
 
 To specify preemption enter oc edit deploy ipfailover-keepalived to edit the router deployment configuration:
-About VRRP ID offset
+Deploying multiple IP failover instances
 Each IP failover pod managed by the IP failover deployment configuration, 1 pod per node or replica, runs a Keepalived daemon. As more IP failover deployment configurations are configured, more pods are created and more daemons join into the common Virtual Router Redundancy Protocol (VRRP) negotiation. This negotiation is done by all the Keepalived daemons and it determines which nodes service which virtual IPs (VIP).
 
 Internally, Keepalived assigns a unique vrrp-id to each VIP. The negotiation uses this set of vrrp-ids, when a decision is made, the VIP corresponding to the winning vrrp-id is serviced on the winning node.
@@ -123,12 +117,12 @@ To change the number of IP addresses assigned to each group, change the value fo
 
 
 If the number of groups set by OPENSHIFT_HA_VIP_GROUPS is fewer than the number of IP addresses set to fail over, the group contains more than one IP address, and all of the addresses move as a single unit.
-High availability for ingressIP
-In non-cloud clusters, IP failover and ingressIP to a service can be combined. The result is high availability services for users that create services using ingressIP.
+High availability For ExternalIP
+In non-cloud clusters, IP failover and ExternalIP to a service can be combined. The result is high availability services for users that create services using ExternalIP.
 
-The approach is to specify an ingressIPNetworkCIDR range and then use the same range in creating the IP failover configuration.
+The approach is to specify an spec.ExternalIP.autoAssignCIDRs range of the cluster network configuration, and then use the same range in creating the IP failover configuration.
 
-Because IP failover can support up to a maximum of 255 VIPs for the entire cluster, the ingressIPNetworkCIDR must be /24 or smaller.
+Because IP failover can support up to a maximum of 255 VIPs for the entire cluster, the spec.ExternalIP.autoAssignCIDRs must be /24 or smaller.
 Removing IP failover
 When IP failover is initially configured, the worker nodes in the cluster are modified with an iptables rule that explicitly allows multicast packets on 224.0.0.18 for Keepalived. Because of the change to the nodes, removing IP failover requires running a job to remove the iptables rule and removing the virtual IP addresses used by Keepalived.
 
