@@ -123,9 +123,10 @@ if __name__ == "__main__":
     Settings.embed_model = HuggingFaceEmbedding(model_name=args.model_dir)
 
     embedding_dimension = len(Settings.embed_model.get_text_embedding("random text"))
-    faiss_index = faiss.IndexFlatL2(embedding_dimension)
+    faiss_index = faiss.IndexFlatIP(embedding_dimension)
     vector_store = FaissVectorStore(faiss_index=faiss_index)
     storage_context = StorageContext.from_defaults(vector_store=vector_store)
+
 
     folder_list = []
     if args.folder:
@@ -178,4 +179,3 @@ if __name__ == "__main__":
             gen_metadata_file(start_time, args, embedding_dimension, folder, folder_index, PERSIST_FOLDER, documents)
 
     print(f" --> Completed embedding generation")
-
