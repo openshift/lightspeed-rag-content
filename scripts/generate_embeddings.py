@@ -132,49 +132,7 @@ if __name__ == "__main__":
         folder_list.append(args.folder)
     if args.folders: 
         folder_list = folder_list + args.folders.split()
-    
     print(f" --> List of folders: {folder_list}")
-    documents = SimpleDirectoryReader(
-        args.folder, recursive=True, file_metadata=file_metadata_func
-    ).load_data()
-
-    good_nodes = []
-    nodes = Settings.text_splitter.get_nodes_from_documents(documents)
-    for node in nodes:
-        if isinstance(node, TextNode) and got_whitespace(node.text):
-            good_nodes.append(node)
-        else:
-            print("skipping bad node: " + node.__repr__())
-
-    index = VectorStoreIndex(
-        good_nodes,
-        storage_context=storage_context,
-    )
-    index.set_index_id(args.index)
- 
-    index.storage_context.persist(persist_dir=PERSIST_FOLDER)
-
-    metadata: dict = {}
-    metadata["execution-time"] = time.time() - start_time
-    metadata["llm"] = "None"
-    metadata["embedding-model"] = args.model_name
-    metadata["index-id"] = args.index
-    metadata["vector-db"] = "faiss"
-    metadata["embedding-dimension"] = embedding_dimension
-    metadata["chunk"] = args.chunk
-    metadata["overlap"] = args.overlap
-    metadata["total-embedded-files"] = len(documents)
-
-    with open(os.path.join(PERSIST_FOLDER, "metadata.json"), "w") as file:
-        file.write(json.dumps(metadata))
-
-    if UNREACHABLE_DOCS:
-        sys.exit(
-            "There were documents with unreachable URLs, grep the log for UNREACHABLE"
-        )
-
-    
-        sys.exit("There were documents with unreachable URLs, grep the log for UNREACHABLE")
 
     for folder in folder_list: 
         if not os.path.exists(folder):
@@ -193,6 +151,12 @@ if __name__ == "__main__":
             os.makedirs(output_folder)
             print(f" --> Starting embedding for: {folder}")
             documents = SimpleDirectoryReader(folder, recursive=True, file_metadata=file_metadata_func).load_data()
+
+            if UNREACHABLE_DOCS:
+                sys.exit(
+                    "There were documents with unreachable URLs, grep the log for UNREACHABLE"
+                )
+
             good_nodes = []
             nodes = Settings.text_splitter.get_nodes_from_documents(documents)
             for node in nodes:
