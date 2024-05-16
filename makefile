@@ -1,3 +1,7 @@
+VERSION := latest
+IMAGE_REPO := quay.io/redhat_emp1
+EMBEDDING_MODEL := sentence-transformers/all-mpnet-base-v2
+
 install-tools: ## Install required utilities/tools
 	@command -v pdm > /dev/null || { echo >&2 "pdm is not installed. Installing..."; pip install pdm; }
 
@@ -39,3 +43,42 @@ help: ## Show this help screen
 	@grep -E '^[ a-zA-Z0-9_-]+:.*?## .*$$' $(MAKEFILE_LIST) | \
 		awk 'BEGIN {FS = ":.*?## "}; {printf "\033[36m%-25s\033[0m %s\n", $$1, $$2}'
 	@echo ''
+
+build-tekton-test:
+	podman build -f "Containerfile.tekton" -t rag-pipeline-tasks:test . 
+	podman tag  rag-pipeline-tasks:${VERSION} ${IMAGE_REPO}/rag-pipeline-tasks:test 
+	podman push ${IMAGE_REPO}/rag-pipeline-tasks:test 
+
+build-tekton-lateast: 
+	podman build --arch=x86_64 -f "Containerfile.tekton" -t rag-pipeline-tasks:${VERSION} . 
+	podman tag  rag-pipeline-tasks:${VERSION} ${IMAGE_REPO}/rag-pipeline-tasks:${VERSION} 
+	podman push ${IMAGE_REPO}/rag-pipeline-tasks:${VERSION} 
+
+local-dev-env: 
+	python scripts/download_embeddings_model.py -l ./embeddings_model -r ${EMBEDDING_MODEL}
+
+test-generate-embeddings: 
+	podman run --env-file=.env -v  ./persist-dir:/workdir/output localhost/rag-pipeline-tasks:latest python generate_embeddings.py \
+																						-f ocp-product-docs-plaintext/4.15 \
+																						-md embeddings_model \
+																						-o /workdir/output \
+																						-mn sentence-transformers/all-mpnet-base-v2 \
+																						-v 4.15
+																						
+
+test-generate-embeddings-folders: 
+	podman run --env-file=.env -v ./output:/workdir/output localhost/rag-pipeline-tasks:latest python generate_embeddings.py \
+																						-fo 'ocp-product-docs-plaintext/4.15 ocp-product-docs-plaintext/4.16'\
+																						-md embeddings_model \
+																						-mn sentence-transformers/all-mpnet-base-v2 \
+																						-o /workdir/output
+
+test-evaluation: 
+	podman run -v ./output:/workdir/output localhost/rag-pipeline-tasks:latest python evaluation.py \
+	                                                                                    -p bam\
+																						-i /workdir/output/4.15 \
+																						-x 4_15 \
+																						-m ibm/granite-13b-chat-v2 \
+																						-lq questions/openai-gpt-3.5-turbo_no_eval.json \
+																						-o /workdir/output \
+																						-n 5
