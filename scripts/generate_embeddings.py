@@ -127,7 +127,7 @@ if __name__ == "__main__":
         if isinstance(node, TextNode) and got_whitespace(node.text):
             good_nodes.append(node)
         else:
-            print("skipping bad node: " + node.__repr__())
+            print("skipping node without whitespace: " + node.__repr__())
 
     index = VectorStoreIndex(
         good_nodes,
