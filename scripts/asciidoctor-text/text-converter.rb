@@ -58,6 +58,7 @@ class Converter::TextConverter < Converter::Base
         gsub('&gt;', '>').
         gsub('&#43;', '+').      # plus sign; alternately could use \c(pl
         gsub('&#160;', ' ').    # non-breaking space
+        gsub('&#174;', '(R)').    # registered trademark        
         gsub('&#8201;', ' ').    # thin space
         gsub('&#8211;', '-'). # en dash
         gsub('&#8212;', '-'). # em dash
