@@ -3,7 +3,6 @@
 import argparse
 import json
 import os
-import sys
 import time
 from typing import Dict
 
@@ -151,6 +150,7 @@ if __name__ == "__main__":
         file.write(json.dumps(metadata))
 
     if UNREACHABLE_DOCS:
-        sys.exit(
-            "There were documents with unreachable URLs, grep the log for UNREACHABLE"
+        raise Exception(
+            "There were documents with unreachable URLs, grep the log for UNREACHABLE.\n"
+            "Please update the plain text."
         )
