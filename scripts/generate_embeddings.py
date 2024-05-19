@@ -3,7 +3,6 @@
 import argparse
 import json
 import os
-import sys
 import time
 from typing import Dict
 import faiss
@@ -127,7 +126,6 @@ if __name__ == "__main__":
     vector_store = FaissVectorStore(faiss_index=faiss_index)
     storage_context = StorageContext.from_defaults(vector_store=vector_store)
 
-
     folder_list = []
     if args.folder:
         folder_list.append(args.folder)
@@ -154,8 +152,9 @@ if __name__ == "__main__":
             documents = SimpleDirectoryReader(folder, recursive=True, file_metadata=file_metadata_func).load_data()
 
             if UNREACHABLE_DOCS:
-                sys.exit(
-                    "There were documents with unreachable URLs, grep the log for UNREACHABLE"
+                raise Exception(
+                    "There were documents with unreachable URLs, grep the log for UNREACHABLE.\n"
+                    "Please update the plain text."
                 )
 
             good_nodes = []
@@ -164,7 +163,7 @@ if __name__ == "__main__":
                 if isinstance(node, TextNode) and got_whitespace(node.text):
                     good_nodes.append(node)
                 else:
-                    print("skipping bad node: " + node.__repr__())
+                    print("skipping node without whitespace: " + node.__repr__())
 
             index = VectorStoreIndex(
                 good_nodes,
@@ -179,3 +178,4 @@ if __name__ == "__main__":
             gen_metadata_file(start_time, args, embedding_dimension, folder, folder_index, PERSIST_FOLDER, documents)
 
     print(f" --> Completed embedding generation")
+
