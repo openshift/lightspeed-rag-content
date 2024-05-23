@@ -26,7 +26,9 @@ verify: ## Verify the code using various linters
 	ruff check scripts --per-file-ignores=scripts/*:S101
 
 update-ocp-docs: ## Update the plaintext OCP docs in ocp-product-docs-plaintext/
-	scripts/get_ocp_plaintext_docs.sh 4.15
+	@set -e && for OCP_VERSION in $$(ls -1 ocp-product-docs-plaintext); do \
+		scripts/get_ocp_plaintext_docs.sh $$OCP_VERSION; \
+	done
 
 build-image: ## Build a rag-content container image.
 	podman build -t rag-content .
