@@ -1,0 +1,215 @@
+About MetalLB and the MetalLB Operator
+
+As a cluster administrator, you can add the MetalLB Operator to your cluster so that when a service of type LoadBalancer is added to the cluster, MetalLB can add an external IP address for the service. The external IP address is added to the host network for your cluster.
+When to use MetalLB
+Using MetalLB is valuable when you have a bare-metal cluster, or an infrastructure that is like bare metal, and you want fault-tolerant access to an application through an external IP address.
+
+You must configure your networking infrastructure to ensure that network traffic for the external IP address is routed from clients to the host network for the cluster.
+
+After deploying MetalLB with the MetalLB Operator, when you add a service of type LoadBalancer, MetalLB provides a platform-native load balancer.
+
+MetalLB operating in layer2 mode provides support for failover by utilizing a mechanism similar to IP failover. However, instead of relying on the virtual router redundancy protocol (VRRP) and keepalived, MetalLB leverages a gossip-based protocol to identify instances of node failure. When a failover is detected, another node assumes the role of the leader node, and a gratuitous ARP message is dispatched to broadcast this change.
+
+MetalLB operating in layer3 or border gateway protocol (BGP) mode delegates failure detection to the network. The BGP router or routers that the Red Hat OpenShift Container Platform nodes have established a connection with will identify any node failure and terminate the routes to that node.
+
+Using MetalLB instead of IP failover is preferable for ensuring high availability of pods and services.
+MetalLB Operator custom resources
+The MetalLB Operator monitors its own namespace for the following custom resources:
+
+
+MetalLB
+When you add a MetalLB custom resource to the cluster, the MetalLB Operator deploys MetalLB on the cluster.
+The Operator only supports a single instance of the custom resource.
+If the instance is deleted, the Operator removes MetalLB from the cluster.
+IPAddressPool
+MetalLB requires one or more pools of IP addresses that it can assign to a service when you add a service of type LoadBalancer.
+An IPAddressPool includes a list of IP addresses.
+The list can be a single IP address that is set using a range, such as 1.1.1.1-1.1.1.1, a range specified in CIDR notation, a range specified as a starting and ending address separated by a hyphen, or a combination of the three.
+An IPAddressPool requires a name.
+The documentation uses names like doc-example, doc-example-reserved, and doc-example-ipv6.
+The MetalLB controller assigns IP addresses from a pool of addresses in an IPAddressPool.
+L2Advertisement and BGPAdvertisement custom resources enable the advertisement of a given IP from a given pool.
+You can assign IP addresses from an IPAddressPool to services and namespaces by using the spec.serviceAllocation specification in the IPAddressPool custom resource.
+BGPPeer
+The BGP peer custom resource identifies the BGP router for MetalLB to communicate with, the AS number of the router, the AS number for MetalLB, and customizations for route advertisement.
+MetalLB advertises the routes for service load-balancer IP addresses to one or more BGP peers.
+BFDProfile
+The BFD profile custom resource configures Bidirectional Forwarding Detection (BFD) for a BGP peer.
+BFD provides faster path failure detection than BGP alone provides.
+L2Advertisement
+The L2Advertisement custom resource advertises an IP coming from an IPAddressPool using the L2 protocol.
+BGPAdvertisement
+The BGPAdvertisement custom resource advertises an IP coming from an IPAddressPool using the BGP protocol.
+
+
+After you add the MetalLB custom resource to the cluster and the Operator deploys MetalLB, the controller and speaker MetalLB software components begin running.
+
+MetalLB validates all relevant custom resources.
+MetalLB software components
+When you install the MetalLB Operator, the metallb-operator-controller-manager deployment starts a pod. The pod is the implementation of the Operator. The pod monitors for changes to all the relevant resources.
+
+When the Operator starts an instance of MetalLB, it starts a controller deployment and a speaker daemon set.
+
+You can configure deployment specifications in the MetalLB custom resource to manage how controller and speaker pods deploy and run in your cluster. For more information about these deployment specifications, see the Additional Resources section.
+
+controller
+The Operator starts the deployment and a single pod. When you add a service of type LoadBalancer, Kubernetes uses the controller to allocate an IP address from an address pool.
+In case of a service failure, verify you have the following entry in your controller pod logs:
+speaker
+The Operator starts a daemon set for speaker pods. By default, a pod is started on each node in your cluster. You can limit the pods to specific nodes by specifying a node selector in the MetalLB custom resource when you start MetalLB. If the controller allocated the IP address to the service and service is still unavailable, read the speaker pod logs. If the speaker pod is unavailable, run the oc describe pod -n command.
+
+
+For Border Gateway Protocol (BGP) mode, after the controller allocates an IP address for the service, each speaker pod advertises the load balancer IP address with its BGP peers. You can configure which nodes start BGP sessions with BGP peers.
+
+Requests for the load balancer IP address are routed to the node with the speaker that announces the IP address. After the node receives the packets, the service proxy routes the packets to an endpoint for the service. The endpoint can be on the same node in the optimal case, or it can be on another node. The service proxy chooses an endpoint each time a connection is established.
+MetalLB and external traffic policy
+With layer 2 mode, one node in your cluster receives all the traffic for the service IP address. With BGP mode, a router on the host network opens a connection to one of the nodes in the cluster for a new client connection. How your cluster handles the traffic after it enters the node is affected by the external traffic policy.
+
+
+cluster
+This is the default value for spec.externalTrafficPolicy.
+local
+With the local traffic policy, after the node receives the traffic, the service proxy only sends traffic to the pods on the same node.
+For example, if the speaker pod on node A announces the external service IP, then all traffic is sent to node A.
+After the traffic enters node A, the service proxy only sends traffic to pods for the service that are also on node A.
+Pods for the service that are on additional nodes do not receive any traffic from node A.
+Pods for the service on additional nodes act as replicas in case failover is needed.
+
+
+The following information is important when configuring the external traffic policy in BGP mode.
+
+Although MetalLB advertises the load balancer IP address from all the eligible nodes, the number of nodes loadbalancing the service can be limited by the capacity of the router to establish equal-cost multipath (ECMP) routes. If the number of nodes advertising the IP is greater than the ECMP group limit of the router, the router will use less nodes than the ones advertising the IP.
+
+For example, if the external traffic policy is set to local and the router has an ECMP group limit set to 16 and the pods implementing a LoadBalancer service are deployed on 30 nodes, this would result in pods deployed on 14 nodes not receiving any traffic. In this situation, it would be preferable to set the external traffic policy for the service to cluster.
+MetalLB concepts for layer 2 mode
+In layer 2 mode, the speaker pod on one node announces the external IP address for a service to the host network. From a network perspective, the node appears to have multiple IP addresses assigned to a network interface.
+
+In layer 2 mode, MetalLB relies on ARP and NDP. These protocols implement local address resolution within a specific subnet. In this context, the client must be able to reach the VIP assigned by MetalLB that exists on the same subnet as the nodes announcing the service in order for MetalLB to work.
+The speaker pod responds to ARP requests for IPv4 services and NDP requests for IPv6.
+
+In layer 2 mode, all traffic for a service IP address is routed through one node. After traffic enters the node, the service proxy for the CNI network provider distributes the traffic to all the pods for the service.
+
+Because all traffic for a service enters through a single node in layer 2 mode, in a strict sense, MetalLB does not implement a load balancer for layer 2. Rather, MetalLB implements a failover mechanism for layer 2 so that when a speaker pod becomes unavailable, a speaker pod on a different node can announce the service IP address.
+
+When a node becomes unavailable, failover is automatic. The speaker pods on the other nodes detect that a node is unavailable and a new speaker pod and node take ownership of the service IP address from the failed node.
+
+
+The preceding graphic shows the following concepts related to MetalLB:
+
+An application is available through a service that has a cluster IP on the 172.130.0.0/16 subnet.
+That IP address is accessible from inside the cluster.
+The service also has an external IP address that MetalLB assigned to the service, 192.168.100.200.
+
+Nodes 1 and 3 have a pod for the application.
+
+The speaker daemon set runs a pod on each node.
+The MetalLB Operator starts these pods.
+
+Each speaker pod is a host-networked pod.
+The IP address for the pod is identical to the IP address for the node on the host network.
+
+The speaker pod on node 1 uses ARP to announce the external IP address for the service, 192.168.100.200.
+The speaker pod that announces the external IP address must be on the same node as an endpoint for the service and the endpoint must be in the Ready condition.
+
+Client traffic is routed to the host network and connects to the 192.168.100.200 IP address.
+After traffic enters the node, the service proxy sends the traffic to the application pod on the same node or another node according to the external traffic policy that you set for the service.
+
+If node 1 becomes unavailable, the external IP address fails over to another node.
+On another node that has an instance of the application pod and service endpoint, the speaker pod begins to announce the external IP address, 192.168.100.200 and the new node receives the client traffic.
+In the diagram, the only candidate is node 3.
+MetalLB concepts for BGP mode
+In BGP mode, by default each speaker pod advertises the load balancer IP address for a service to each BGP peer. It is also possible to advertise the IPs coming from a given pool to a specific set of peers by adding an optional list of BGP peers. BGP peers are commonly network routers that are configured to use the BGP protocol. When a router receives traffic for the load balancer IP address, the router picks one of the nodes with a speaker pod that advertised the IP address. The router sends the traffic to that node. After traffic enters the node, the service proxy for the CNI network plugin distributes the traffic to all the pods for the service.
+
+The directly-connected router on the same layer 2 network segment as the cluster nodes can be configured as a BGP peer. If the directly-connected router is not configured as a BGP peer, you need to configure your network so that packets for load balancer IP addresses are routed between the BGP peers and the cluster nodes that run the speaker pods.
+
+Each time a router receives new traffic for the load balancer IP address, it creates a new connection to a node. Each router manufacturer has an implementation-specific algorithm for choosing which node to initiate the connection with. However, the algorithms commonly are designed to distribute traffic across the available nodes for the purpose of balancing the network load.
+
+If a node becomes unavailable, the router initiates a new connection with another node that has a speaker pod that advertises the load balancer IP address.
+
+
+The preceding graphic shows the following concepts related to MetalLB:
+
+An application is available through a service that has an IPv4 cluster IP on the 172.130.0.0/16 subnet.
+That IP address is accessible from inside the cluster.
+The service also has an external IP address that MetalLB assigned to the service, 203.0.113.200.
+
+Nodes 2 and 3 have a pod for the application.
+
+The speaker daemon set runs a pod on each node.
+The MetalLB Operator starts these pods.
+You can configure MetalLB to specify which nodes run the speaker pods.
+
+Each speaker pod is a host-networked pod.
+The IP address for the pod is identical to the IP address for the node on the host network.
+
+Each speaker pod starts a BGP session with all BGP peers and advertises the load balancer IP addresses or aggregated routes to the BGP peers.
+The speaker pods advertise that they are part of Autonomous System 65010.
+The diagram shows a router, R1, as a BGP peer within the same Autonomous System.
+However, you can configure MetalLB to start BGP sessions with peers that belong to other Autonomous Systems.
+
+All the nodes with a speaker pod that advertises the load balancer IP address can receive traffic for the service.
+
+You can configure MetalLB to control which speaker pods start BGP sessions with specific BGP peers by specifying a node selector when you add a BGP peer custom resource.
+
+Any routers, such as R1, that are configured to use BGP can be set as BGP peers.
+
+Client traffic is routed to one of the nodes on the host network.
+After traffic enters the node, the service proxy sends the traffic to the application pod on the same node or another node according to the external traffic policy that you set for the service.
+
+If a node becomes unavailable, the router detects the failure and initiates a new connection with another node.
+You can configure MetalLB to use a Bidirectional Forwarding Detection (BFD) profile for BGP peers.
+BFD provides faster link failure detection so that routers can initiate new connections earlier than without BFD.
+Limitations and restrictions
+Infrastructure considerations for MetalLB
+MetalLB is primarily useful for on-premise, bare metal installations because these installations do not include a native load-balancer capability. In addition to bare metal installations, installations of Red Hat OpenShift Container Platform on some infrastructures might not include a native load-balancer capability. For example, the following infrastructures can benefit from adding the MetalLB Operator:
+
+Bare metal
+
+VMware vSphere
+
+IBM Z(R) and IBM(R) LinuxONE
+
+IBM Z(R) and IBM(R) LinuxONE for Red Hat Enterprise Linux (RHEL) KVM
+
+IBM Power(R)
+
+
+MetalLB Operator and MetalLB are supported with the OpenShift SDN and OVN-Kubernetes network providers.
+Limitations for layer 2 mode
+Single-node bottleneck
+MetalLB routes all traffic for a service through a single node, the node can become a bottleneck and limit performance.
+
+Layer 2 mode limits the ingress bandwidth for your service to the bandwidth of a single node. This is a fundamental limitation of using ARP and NDP to direct traffic.
+Slow failover performance
+Failover between nodes depends on cooperation from the clients. When a failover occurs, MetalLB sends gratuitous ARP packets to notify clients that the MAC address associated with the service IP has changed.
+
+Most client operating systems handle gratuitous ARP packets correctly and update their neighbor caches promptly. When clients update their caches quickly, failover completes within a few seconds. Clients typically fail over to a new node within 10 seconds. However, some client operating systems either do not handle gratuitous ARP packets at all or have outdated implementations that delay the cache update.
+
+Recent versions of common operating systems such as Windows, macOS, and Linux implement layer 2 failover correctly. Issues with slow failover are not expected except for older and less common client operating systems.
+
+To minimize the impact from a planned failover on outdated clients, keep the old node running for a few minutes after flipping leadership. The old node can continue to forward traffic for outdated clients until their caches refresh.
+
+During an unplanned failover, the service IPs are unreachable until the outdated clients refresh their cache entries.
+Additional Network and MetalLB cannot use same network
+Using the same VLAN for both MetalLB and an additional network interface set up on a source pod might result in a connection failure. This occurs when both the MetalLB IP and the source pod reside on the same node.
+
+To avoid connection failures, place the MetalLB IP in a different subnet from the one where the source pod resides. This configuration ensures that traffic from the source pod will take the default gateway. Consequently, the traffic can effectively reach its destination by using the OVN overlay network, ensuring that the connection functions as intended.
+Limitations for BGP mode
+Node failure can break all active connections
+MetalLB shares a limitation that is common to BGP-based load balancing. When a BGP session terminates, such as when a node fails or when a speaker pod restarts, the session termination might result in resetting all active connections. End users can experience a Connection reset by peer message.
+
+The consequence of a terminated BGP session is implementation-specific for each router manufacturer. However, you can anticipate that a change in the number of speaker pods affects the number of BGP sessions and that active connections with BGP peers will break.
+
+To avoid or reduce the likelihood of a service interruption, you can specify a node selector when you add a BGP peer. By limiting the number of nodes that start BGP sessions, a fault on a node that does not have a BGP session has no affect on connections to the service.
+Support for a single ASN and a single router ID only
+When you add a BGP peer custom resource, you specify the spec.myASN field to identify the Autonomous System Number (ASN) that MetalLB belongs to. Red Hat OpenShift Container Platform uses an implementation of BGP with MetalLB that requires MetalLB to belong to a single ASN. If you attempt to add a BGP peer and specify a different value for spec.myASN than an existing BGP peer custom resource, you receive an error.
+
+Similarly, when you add a BGP peer custom resource, the spec.routerID field is optional. If you specify a value for this field, you must specify the same value for all other BGP peer custom resources that you add.
+
+The limitation to support a single ASN and single router ID is a difference with the community-supported implementation of MetalLB.
+Additional resources
+Comparison: Fault tolerant access to external IP addresses
+
+Removing IP failover
+
+Deployment specifications for MetalLB

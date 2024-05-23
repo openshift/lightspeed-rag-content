@@ -1,0 +1,210 @@
+Understanding custom metrics autoscaler triggers
+
+Triggers, also known as scalers, provide the metrics that the Custom Metrics Autoscaler Operator uses to scale your pods.
+
+The custom metrics autoscaler currently supports only the Prometheus, CPU, memory, and Apache Kafka triggers.
+
+You use a ScaledObject or ScaledJob custom resource to configure triggers for specific objects, as described in the sections that follow.
+Understanding the Prometheus trigger
+You can scale pods based on Prometheus metrics, which can use the installed Red Hat OpenShift Container Platform monitoring or an external Prometheus server as the metrics source. See "Additional resources" for information on the configurations required to use the Red Hat OpenShift Container Platform monitoring as a source for metrics.
+
+If Prometheus is collecting metrics from the application that the custom metrics autoscaler is scaling, do not set the minimum replicas to 0 in the custom resource. If there are no application pods, the custom metrics autoscaler does not have any metrics to scale on.
+apiVersion: keda.sh/v1alpha1
+kind: ScaledObject
+metadata:
+  name: prom-scaledobject
+  namespace: my-namespace
+spec:
+# ...
+  triggers:
+  - type: prometheus 1
+    metadata:
+      serverAddress: https://thanos-querier.openshift-monitoring.svc.cluster.local:9092 2
+      namespace: kedatest 3
+      metricName: http_requests_total 4
+      threshold: '5' 5
+      query: sum(rate(http_requests_total{job="test-app"}[1m])) 6
+      authModes: basic 7
+      cortexOrgID: my-org 8
+      ignoreNullValues: "false" 9
+      unsafeSsl: "false" 10
+Specifies Prometheus as the trigger type.
+
+Specifies the address of the Prometheus server. This example uses  Red Hat OpenShift Container Platform monitoring.
+
+Optional: Specifies the namespace of the object you want to scale. This parameter is mandatory if using Red Hat OpenShift Container Platform monitoring as a source for the metrics.
+
+Specifies the name to identify the metric in the external.metrics.k8s.io API. If you are using more than one trigger, all metric names must be unique.
+
+Specifies the value that triggers scaling. Must be specified as a quoted string value.
+
+Specifies the Prometheus query to use.
+
+Specifies the authentication method to use. Prometheus scalers support bearer authentication (bearer), basic authentication (basic), or TLS authentication (tls). You configure the specific authentication parameters in a trigger authentication, as discussed in a following section. As needed, you can also use a secret.
+
+Optional: Passes the X-Scope-OrgID header to multi-tenant Cortex or Mimir storage for Prometheus. This parameter is required only with multi-tenant Prometheus storage, to indicate which data Prometheus should return.
+
+Optional: Specifies how the trigger should proceed if the Prometheus target is lost.
+
+Optional: Specifies whether the certificate check should be skipped. For example, you might skip the check if you use self-signed certificates at the Prometheus endpoint.
+
+
+Configuring the custom metrics autoscaler to use Red Hat OpenShift Container Platform monitoring
+You can use the installed Red Hat OpenShift Container Platform Prometheus monitoring as a source for the metrics used by the custom metrics autoscaler. However, there are some additional configurations you must perform.
+
+These steps are not required for an external Prometheus source.
+You must perform the following tasks, as described in this section:
+
+Create a service account to get a token.
+
+Create a role.
+
+Add that role to the service account.
+
+Reference the token in the trigger authentication object used by Prometheus.
+
+
+Red Hat OpenShift Container Platform monitoring must be installed.
+
+Monitoring of user-defined workloads must be enabled in Red Hat OpenShift Container Platform monitoring, as described in the Creating a user-defined workload monitoring config map section.
+
+The Custom Metrics Autoscaler Operator must be installed.
+
+
+Change to the project with the object you want to scale:
+
+Use the following command to create a service account, if your cluster does not have one:
+
+Use the following command to locate the token assigned to the service account:
+
+Create a trigger authentication with the service account token:
+
+Create a role for reading Thanos metrics:
+
+Create a role binding for reading Thanos metrics:
+
+
+You can now deploy a scaled object or scaled job to enable autoscaling for your application, as described in "Understanding how to add custom metrics autoscalers". To use Red Hat OpenShift Container Platform monitoring as the source, in the trigger, or scaler, you must include the following parameters:
+
+triggers.type must be prometheus
+
+triggers.metadata.serverAddress must be https://thanos-querier.openshift-monitoring.svc.cluster.local:9092
+
+triggers.metadata.authModes must be bearer
+
+triggers.metadata.namespace must be set to the namespace of the object to scale
+
+triggers.authenticationRef must point to the trigger authentication resource specified in the previous step
+Understanding the CPU trigger
+You can scale pods based on CPU metrics. This trigger uses cluster metrics as the source for metrics.
+
+The custom metrics autoscaler scales the pods associated with an object to maintain the CPU usage that you specify. The autoscaler increases or decreases the number of replicas between the minimum and maximum numbers to maintain the specified CPU utilization across all pods. The memory trigger considers the memory utilization of the entire pod. If the pod has multiple containers, the memory trigger considers the total memory utilization of all containers in the pod.
+
+This trigger cannot be used with the ScaledJob custom resource.
+
+When using a memory trigger to scale an object, the object does not scale to 0, even if you are using multiple triggers.
+apiVersion: keda.sh/v1alpha1
+kind: ScaledObject
+metadata:
+  name: cpu-scaledobject
+  namespace: my-namespace
+spec:
+# ...
+  triggers:
+  - type: cpu 1
+    metricType: Utilization 2
+    metadata:
+      value: '60' 3
+  minReplicaCount: 1 4
+Specifies CPU as the trigger type.
+
+Specifies the type of metric to use, either Utilization or AverageValue.
+
+Specifies the value that triggers scaling. Must be specified as a quoted string value.
+
+Specifies the minimum number of replicas when scaling down. For a CPU trigger, enter a value of 1 or greater, because the HPA cannot scale to zero if you are using only CPU metrics.
+Understanding the memory trigger
+You can scale pods based on memory metrics. This trigger uses cluster metrics as the source for metrics.
+
+The custom metrics autoscaler scales the pods associated with an object to maintain the average memory usage that you specify. The autoscaler increases and decreases the number of replicas between the minimum and maximum numbers to maintain the specified memory utilization across all pods. The memory trigger considers the memory utilization of entire pod. If the pod has multiple containers, the memory utilization is the sum of all of the containers.
+
+This trigger cannot be used with the ScaledJob custom resource.
+
+When using a memory trigger to scale an object, the object does not scale to 0, even if you are using multiple triggers.
+apiVersion: keda.sh/v1alpha1
+kind: ScaledObject
+metadata:
+  name: memory-scaledobject
+  namespace: my-namespace
+spec:
+# ...
+  triggers:
+  - type: memory 1
+    metricType: Utilization 2
+    metadata:
+      value: '60' 3
+      containerName: api 4
+Specifies memory as the trigger type.
+
+Specifies the type of metric to use, either Utilization or AverageValue.
+
+Specifies the value that triggers scaling. Must be specified as a quoted string value.
+
+Optional: Specifies an individual container to scale, based on the memory utilization of only that container, rather than the entire pod. In this example, only the container named api is to be scaled.
+Understanding the Kafka trigger
+You can scale pods based on an Apache Kafka topic or other services that support the Kafka protocol. The custom metrics autoscaler does not scale higher than the number of Kafka partitions, unless you set the allowIdleConsumers parameter to true in the scaled object or scaled job.
+
+If the number of consumer groups exceeds the number of partitions in a topic, the extra consumer groups remain idle. To avoid this, by default the number of replicas does not exceed:
+
+The number of partitions on a topic, if a topic is specified
+
+The number of partitions of all topics in the consumer group, if no topic is specified
+
+The maxReplicaCount specified in scaled object or scaled job CR
+
+
+You can use the allowIdleConsumers parameter to disable these default behaviors.
+apiVersion: keda.sh/v1alpha1
+kind: ScaledObject
+metadata:
+  name: kafka-scaledobject
+  namespace: my-namespace
+spec:
+# ...
+  triggers:
+  - type: kafka 1
+    metadata:
+      topic: my-topic 2
+      bootstrapServers: my-cluster-kafka-bootstrap.openshift-operators.svc:9092 3
+      consumerGroup: my-group 4
+      lagThreshold: '10' 5
+      activationLagThreshold: '5' 6
+      offsetResetPolicy: latest 7
+      allowIdleConsumers: true 8
+      scaleToZeroOnInvalidOffset: false 9
+      excludePersistentLag: false 10
+      version: '1.0.0' 11
+      partitionLimitation: '1,2,10-20,31' 12
+Specifies Kafka as the trigger type.
+
+Specifies the name of the Kafka topic on which Kafka is processing the offset lag.
+
+Specifies a comma-separated list of Kafka brokers to connect to.
+
+Specifies the name of the Kafka consumer group used for checking the offset on the topic and processing the related lag.
+
+Optional: Specifies the average target value that triggers scaling. Must be specified as a quoted string value. The default is 5.
+
+Optional: Specifies the target value for the activation phase. Must be specified as a quoted string value.
+
+Optional: Specifies the Kafka offset reset policy for the Kafka consumer. The available values are: latest and earliest. The default is latest.
+
+Optional: Specifies whether the number of Kafka replicas can exceed the number of partitions on a topic.
+
+Specifies how the trigger behaves when a Kafka partition does not have a valid offset.
+
+Optional: Specifies whether the trigger includes or excludes partition lag for partitions whose current offset is the same as the current offset of the previous polling cycle.
+
+Optional: Specifies the version of your Kafka brokers. Must be specified as a quoted string value. The default is 1.0.0.
+
+Optional: Specifies a comma-separated list of partition IDs to scope the scaling on. If set, only the listed IDs are considered when calculating lag. Must be specified as a quoted string value. The default is to consider all partitions.
