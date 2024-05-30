@@ -1,0 +1,128 @@
+Configuring an Red Hat OpenShift Container Platform cluster for pods
+
+As an administrator, you can create and maintain an efficient cluster for pods.
+
+By keeping your cluster efficient, you can provide a better environment for your developers using such tools as what a pod does when it exits, ensuring that the required number of pods is always running, when to restart pods designed to run only once, limit the bandwidth available to pods, and how to keep pods running during disruptions.
+Configuring how pods behave after restart
+A pod restart policy determines how Red Hat OpenShift Container Platform responds when Containers in that pod exit. The policy applies to all Containers in that pod.
+
+The possible values are:
+
+Always - Tries restarting a successfully exited Container on the pod continuously, with an exponential back-off delay (10s, 20s, 40s) capped at 5 minutes. The default is Always.
+
+OnFailure - Tries restarting a failed Container on the pod with an exponential back-off delay (10s, 20s, 40s) capped at 5 minutes.
+
+Never - Does not try to restart exited or failed Containers on the pod. Pods immediately fail and exit.
+
+
+After the pod is bound to a node, the pod will never be bound to another node. This means that a controller is necessary in order for a pod to survive node failure:
+
+
+If a Container on a pod fails and the restart policy is set to OnFailure, the pod stays on the node and the Container is restarted. If you do not want the Container to restart, use a restart policy of Never.
+
+If an entire pod fails, Red Hat OpenShift Container Platform starts a new pod. Developers must address the possibility that applications might be restarted in a new pod. In particular, applications must handle temporary files, locks, incomplete output, and so forth caused by previous runs.
+
+Kubernetes architecture expects reliable endpoints from cloud providers. When a cloud provider is down, the kubelet prevents Red Hat OpenShift Container Platform from restarting.
+
+If the underlying cloud provider endpoints are not reliable, do not install a cluster using cloud provider integration. Install the cluster as if it was in a no-cloud environment. It is not recommended to toggle cloud provider integration on or off in an installed cluster.
+For details on how Red Hat OpenShift Container Platform uses restart policy with failed Containers, see the Example States in the Kubernetes documentation.
+Limiting the bandwidth available to pods
+You can apply quality-of-service traffic shaping to a pod and effectively limit its available bandwidth. Egress traffic (from the pod) is handled by policing, which simply drops packets in excess of the configured rate. Ingress traffic (to the pod) is handled by shaping queued packets to effectively handle data. The limits you place on a pod do not affect the bandwidth of other pods.
+
+To limit the bandwidth on a pod:
+
+Write an object definition JSON file, and specify the data traffic speed using
+kubernetes.io/ingress-bandwidth and kubernetes.io/egress-bandwidth
+annotations. For example, to limit both pod egress and ingress bandwidth to 10M/s:
+
+Create the pod using the object definition:
+Understanding how to use pod disruption budgets to specify the number of pods that must be up
+A pod disruption budget allows the specification of safety constraints on pods during operations, such as draining a node for maintenance.
+
+PodDisruptionBudget is an API object that specifies the minimum number or percentage of replicas that must be up at a time. Setting these in projects can be helpful during node maintenance (such as scaling a cluster down or a cluster upgrade) and is only honored on voluntary evictions (not on node failures).
+
+A PodDisruptionBudget object's configuration consists of the following key parts:
+
+A label selector, which is a label query over a set of pods.
+
+An availability level, which specifies the minimum number of pods that must be
+available simultaneously, either:
+
+
+Available refers to the number of pods that has condition Ready=True. Ready=True refers to the pod that is able to serve requests and should be added to the load balancing pools of all matching services.
+
+A maxUnavailable of 0% or 0 or a minAvailable of 100% or equal to the number of replicas is permitted but can block nodes from being drained.
+The default setting for maxUnavailable is 1 for all the machine config pools in Red Hat OpenShift Container Platform. It is recommended to not change this value and update one control plane node at a time. Do not change this value to 3 for the control plane pool.
+You can check for pod disruption budgets across all projects with the following:
+
+$ oc get poddisruptionbudget --all-namespaces
+The following example contains some values that are specific to Red Hat OpenShift Container Platform on AWS.
+NAMESPACE                              NAME                                    MIN AVAILABLE   MAX UNAVAILABLE   ALLOWED DISRUPTIONS   AGE
+openshift-apiserver                    openshift-apiserver-pdb                 N/A             1                 1                     121m
+openshift-cloud-controller-manager     aws-cloud-controller-manager            1               N/A               1                     125m
+openshift-cloud-credential-operator    pod-identity-webhook                    1               N/A               1                     117m
+openshift-cluster-csi-drivers          aws-ebs-csi-driver-controller-pdb       N/A             1                 1                     121m
+openshift-cluster-storage-operator     csi-snapshot-controller-pdb             N/A             1                 1                     122m
+openshift-cluster-storage-operator     csi-snapshot-webhook-pdb                N/A             1                 1                     122m
+openshift-console                      console                                 N/A             1                 1                     116m
+#...
+The PodDisruptionBudget is considered healthy when there are at least minAvailable pods running in the system. Every pod above that limit can be evicted.
+
+Depending on your pod priority and preemption settings, lower-priority pods might be removed despite their pod disruption budget requirements.
+Specifying the number of pods that must be up with pod disruption budgets
+You can use a PodDisruptionBudget object to specify the minimum number or percentage of replicas that must be up at a time.
+
+To configure a pod disruption budget:
+
+Create a YAML file with the an object definition similar to the following:
+
+Run the following command to add the object to project:
+Specifying the eviction policy for unhealthy pods
+When you use pod disruption budgets (PDBs) to specify how many pods must be available simultaneously, you can also define the criteria for how unhealthy pods are considered for eviction.
+
+You can choose one of the following policies:
+
+
+IfHealthyBudget
+Running pods that are not yet healthy can be evicted only if the guarded application is not disrupted.
+AlwaysAllow
+Running pods that are not yet healthy can be evicted regardless of whether the criteria in the pod disruption budget is met. This policy can help evict malfunctioning applications, such as ones with pods stuck in the CrashLoopBackOff state or failing to report the Ready status.
+
+
+Create a YAML file that defines a PodDisruptionBudget object and specify the unhealthy pod eviction policy:
+
+Create the PodDisruptionBudget object by running the following command:
+
+
+With a PDB that has the AlwaysAllow unhealthy pod eviction policy set, you can now drain nodes and evict the pods for a malfunctioning application guarded by this PDB.
+
+Enabling features using feature gates
+
+Unhealthy Pod Eviction Policy in the Kubernetes documentation
+Preventing pod removal using critical pods
+There are a number of core components that are critical to a fully functional cluster, but, run on a regular cluster node rather than the master. A cluster might stop working properly if a critical add-on is evicted.
+
+Pods marked as critical are not allowed to be evicted.
+
+To make a pod critical:
+
+Create a Pod spec or edit existing pods to include the system-cluster-critical priority class:
+
+Create the pod:
+Reducing pod timeouts when using persistent volumes with high file counts
+If a storage volume contains many files (~1,000,000 or greater), you might experience pod timeouts.
+
+This can occur because, when volumes are mounted, Red Hat OpenShift Container Platform recursively changes the ownership and permissions of the contents of each volume in order to match the fsGroup specified in a pod's securityContext. For large volumes, checking and changing the ownership and permissions can be time consuming, resulting in a very slow pod startup.
+
+You can reduce this delay by applying one of the following workarounds:
+
+Use a security context constraint (SCC) to skip the SELinux relabeling for a volume.
+
+Use the fsGroupChangePolicy field inside an SCC to control the way that Red Hat OpenShift Container Platform checks and manages ownership and permissions for a volume.
+
+Use the Cluster Resource Override Operator to automatically apply an SCC to skip the SELinux relabeling.
+
+Use a runtime class to skip the SELinux relabeling for a volume.
+
+
+For information, see When using Persistent Volumes with high file counts in OpenShift, why do pods fail to start or take an excessive amount of time to achieve "Ready" state?.

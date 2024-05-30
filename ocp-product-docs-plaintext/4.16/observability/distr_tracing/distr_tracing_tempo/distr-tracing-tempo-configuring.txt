@@ -1,0 +1,355 @@
+Configuring
+
+The Tempo Operator uses a custom resource definition (CRD) file that defines the architecture and configuration settings to be used when creating and deploying the distributed tracing platform (Tempo) resources. You can install the default configuration or modify the file.
+Customizing your deployment
+Default configuration options
+The Tempo custom resource (CR) defines the architecture and settings to be used when creating the distributed tracing platform (Tempo) resources. You can modify these parameters to customize your distributed tracing platform (Tempo) implementation to your business needs.
+
+apiVersion: tempo.grafana.com/v1alpha1
+kind: TempoStack
+metadata:
+  name: name
+spec:
+  storage: {}
+  resources: {}
+  storageSize: 200M
+  replicationFactor: 1
+  retention: {}
+  template:
+      distributor:{}
+      ingester: {}
+      compactor: {}
+      querier: {}
+      queryFrontend: {}
+      gateway: {}
+
+The following is the required minimum for creating a distributed tracing platform (Tempo) deployment with the default settings:
+
+apiVersion: tempo.grafana.com/v1alpha1
+kind: TempoStack
+metadata:
+  name: simplest
+spec:
+  storage: 1
+    secret:
+      name: minio
+      type: s3
+  resources:
+    total:
+      limits:
+        memory: 2Gi
+        cpu: 2000m
+  template:
+    queryFrontend:
+      jaegerQuery:
+        enabled: true
+        ingress:
+          type: route
+This section specifies the deployed object storage back end, which requires a created secret with credentials for access to the object storage.
+Storage configuration
+You can configure object storage for the distributed tracing platform (Tempo) in the TempoStack custom resource under spec.storage. You can choose from among several storage providers that are supported.
+Query configuration options
+Two components of the distributed tracing platform (Tempo), the querier and query frontend, manage queries. You can configure both of these components.
+
+The querier component finds the requested trace ID in the ingesters or back-end storage. Depending on the set parameters, the querier component can query both the ingesters and pull bloom or indexes from the back end to search blocks in object storage. The querier component exposes an HTTP endpoint at GET /querier/api/traces/<trace_id>, but it is not expected to be used directly. Queries must be sent to the query frontend.
+
+
+The query frontend component is responsible for sharding the search space for an incoming query. The query frontend exposes traces via a simple HTTP endpoint: GET /api/traces/<trace_id>. Internally, the query frontend component splits the blockID space into a configurable number of shards and then queues these requests. The querier component connects to the query frontend component via a streaming gRPC connection to process these sharded queries.
+
+
+apiVersion: tempo.grafana.com/v1alpha1
+kind: TempoStack
+metadata:
+  name: simplest
+spec:
+  storage:
+    secret:
+      name: minio
+      type: s3
+  storageSize: 200M
+  resources:
+    total:
+      limits:
+        memory: 2Gi
+        cpu: 2000m
+  template:
+    queryFrontend:
+      jaegerQuery:
+        enabled: true
+        ingress:
+          route:
+            termination: edge
+          type: route
+Additional resources
+Understanding taints and tolerations
+Configuration of the monitor tab in Jaeger UI
+Trace data contains rich information, and the data is normalized across instrumented languages and frameworks. Therefore, request rate, error, and duration (RED) metrics can be extracted from traces. The metrics can be visualized in Jaeger console in the Monitor tab.
+
+The metrics are derived from spans in the OpenTelemetry Collector that are scraped from the Collector by the Prometheus deployed in the user-workload monitoring stack. The Jaeger UI queries these metrics from the Prometheus endpoint and visualizes them.
+
+OpenTelemetry Collector configuration
+The OpenTelemetry Collector requires configuration of the spanmetrics connector that derives metrics from traces and exports the metrics in the Prometheus format.
+
+kind: OpenTelemetryCollector
+apiVersion: opentelemetry.io/v1alpha1
+metadata:
+  name: otel
+spec:
+  mode: deployment
+  observability:
+    metrics:
+      enableMetrics: true 1
+  config: |
+    connectors:
+      spanmetrics: 2
+        metrics_flush_interval: 15s
+
+    receivers:
+      otlp: 3
+        protocols:
+          grpc:
+          http:
+
+    exporters:
+      prometheus: 4
+        endpoint: 0.0.0.0:8889
+        add_metric_suffixes: false
+        resource_to_telemetry_conversion:
+          enabled: true # by default resource attributes are dropped
+
+      otlp:
+        endpoint: "tempo-simplest-distributor:4317"
+        tls:
+          insecure: true
+
+    service:
+      pipelines:
+        traces:
+          receivers: [otlp]
+          exporters: [otlp, spanmetrics] 5
+        metrics:
+          receivers: [spanmetrics] 6
+          exporters: [prometheus]
+Creates the ServiceMonitor custom resource to enable scraping of the Prometheus exporter.
+
+The Spanmetrics connector receives traces and exports metrics.
+
+The OTLP receiver to receive spans in the OpenTelemetry protocol.
+
+The Prometheus exporter is used to export metrics in the Prometheus format.
+
+The Spanmetrics connector is configured as exporter in traces pipeline.
+
+The Spanmetrics connector is configured as receiver in metrics pipeline.
+Tempo configuration
+The TempoStack custom resource must specify the following: the Monitor tab is enabled, and the Prometheus endpoint is set to the Thanos querier service to query the data from the user-defined monitoring stack.
+
+kind:  TempoStack
+apiVersion: tempo.grafana.com/v1alpha1
+metadata:
+  name: simplest
+spec:
+  template:
+    queryFrontend:
+      jaegerQuery:
+        enabled: true
+        monitorTab:
+          enabled: true 1
+          prometheusEndpoint: https://thanos-querier.openshift-monitoring.svc.cluster.local:9091 2
+        ingress:
+          type: route
+Enables the monitoring tab in the Jaeger console.
+
+The service name for Thanos Querier from user-workload monitoring.
+Span RED metrics and alerting rules
+The metrics generated by the spanmetrics connector are usable with alerting rules. For example, for alerts about a slow service or to define service level objectives (SLOs), the connector creates a duration_bucket histogram and the calls counter metric. These metrics have labels that identify the service, API name, operation type, and other attributes.
+
+
+apiVersion: monitoring.coreos.com/v1
+kind: PrometheusRule
+metadata:
+  name: span-red
+spec:
+  groups:
+  - name: server-side-latency
+    rules:
+    - alert: SpanREDFrontendAPIRequestLatency
+      expr: histogram_quantile(0.95, sum(rate(duration_bucket{service_name="frontend", span_kind="SPAN_KIND_SERVER"}[5m])) by (le, service_name, span_name)) > 2000 1
+      labels:
+        severity: Warning
+      annotations:
+        summary: "High request latency on {{$labels.service_name}} and {{$labels.span_name}}"
+        description: "{{$labels.instance}} has 95th request latency above 2s (current value: {{$value}}s)"
+The expression for checking if 95% of the front-end server response time values are below 2000 ms. The time range ([5m]) must be at least four times the scrape interval and long enough to accommodate a change in the metric.
+Multitenancy
+Multitenancy with authentication and authorization is provided in the Tempo Gateway service. The authentication uses OpenShift OAuth and the Kubernetes TokenReview API. The authorization uses the Kubernetes SubjectAccessReview API.
+
+apiVersion: tempo.grafana.com/v1alpha1
+kind:  TempoStack
+metadata:
+  name: simplest
+spec:
+  tenants:
+    mode: openshift 1
+    authentication: 2
+      - tenantName: dev 3
+        tenantId: "1610b0c3-c509-4592-a256-a1871353dbfa" 4
+      - tenantName: prod
+        tenantId: "1610b0c3-c509-4592-a256-a1871353dbfb"
+  template:
+    gateway:
+      enabled: true 5
+    queryFrontend:
+      jaegerQuery:
+        enabled: true
+Must be set to openshift.
+
+The list of tenants.
+
+The tenant name. Must be provided in the X-Scope-OrgId header when ingesting the data.
+
+A unique tenant ID.
+
+Enables a gateway that performs authentication and authorization. The Jaeger UI is exposed at http://<gateway-ingress>/api/traces/v1/<tenant-name>/search.
+
+
+The authorization configuration uses the ClusterRole and ClusterRoleBinding of the Kubernetes Role-Based Access Control (RBAC). By default, no users have read or write permissions.
+
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: tempostack-traces-reader
+rules:
+  - apiGroups:
+      - 'tempo.grafana.com'
+    resources: 1
+      - dev
+      - prod
+    resourceNames:
+      - traces
+    verbs:
+      - 'get' 2
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: tempostack-traces-reader
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: tempostack-traces-reader
+subjects:
+  - kind: Group
+    apiGroup: rbac.authorization.k8s.io
+    name: system:authenticated 3
+Lists the tenants.
+
+The get value enables the read operation.
+
+Grants all authenticated users the read permissions for trace data.
+
+
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: otel-collector 1
+  namespace: otel
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: tempostack-traces-write
+rules:
+  - apiGroups:
+      - 'tempo.grafana.com'
+    resources: 2
+      - dev
+    resourceNames:
+      - traces
+    verbs:
+      - 'create' 3
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: tempostack-traces
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: tempostack-traces-write
+subjects:
+  - kind: ServiceAccount
+    name: otel-collector
+    namespace: otel
+The service account name for the client to use when exporting trace data. The client must send the service account token, /var/run/secrets/kubernetes.io/serviceaccount/token, as the bearer token header.
+
+Lists the tenants.
+
+The create value enables the write operation.
+
+
+Trace data can be sent to the Tempo instance from the OpenTelemetry Collector that uses the service account with RBAC for writing the data.
+
+apiVersion: opentelemetry.io/v1alpha1
+kind: OpenTelemetryCollector
+metadata:
+  name: cluster-collector
+  namespace: tracing-system
+spec:
+  mode: deployment
+  serviceAccount: otel-collector
+  config: |
+      extensions:
+        bearertokenauth:
+          filename: "/var/run/secrets/kubernetes.io/serviceaccount/token"
+      exporters:
+        otlp/dev:
+          endpoint: tempo-simplest-gateway.tempo.svc.cluster.local:8090
+          tls:
+            insecure: false
+            ca_file: "/var/run/secrets/kubernetes.io/serviceaccount/service-ca.crt"
+          auth:
+            authenticator: bearertokenauth
+          headers:
+            X-Scope-OrgID: "dev"
+      service:
+        extensions: [bearertokenauth]
+        pipelines:
+          traces:
+            exporters: [otlp/dev]
+Configuring monitoring and alerts
+The Tempo Operator supports monitoring and alerts about each TempoStack component such as distributor, ingester, and so on, and exposes upgrade and operational metrics about the Operator itself.
+
+Configuring the TempoStack metrics and alerts
+You can enable metrics and alerts of TempoStack instances.
+
+Monitoring for user-defined projects is enabled in the cluster.
+
+
+To enable metrics of a TempoStack instance, set the spec.observability.metrics.createServiceMonitors field to true:
+
+To enable alerts for a TempoStack instance, set the spec.observability.metrics.createPrometheusRules field to true:
+
+
+You can use the Administrator view of the web console to verify successful configuration:
+
+Go to Observe -> Targets, filter for Source: User, and check that ServiceMonitors in the format tempo-<instance_name>-<component> have the Up status.
+
+To verify that alerts are set up correctly, go to Observe -> Alerting -> Alerting rules, filter for Source: User, and check that the Alert rules for the TempoStack instance components are available.
+
+
+Additional resources
+Enabling monitoring for user-defined projects
+Configuring the Tempo Operator metrics and alerts
+When installing the Tempo Operator from the web console, you can select the Enable Operator recommended cluster monitoring on this Namespace checkbox, which enables creating metrics and alerts of the Tempo Operator.
+
+If the checkbox was not selected during installation, you can manually enable metrics and alerts even after installing the Tempo Operator.
+
+Add the openshift.io/cluster-monitoring: "true" label in the project where the Tempo Operator is installed, which is openshift-tempo-operator by default.
+
+
+You can use the Administrator view of the web console to verify successful configuration:
+
+Go to Observe -> Targets, filter for Source: Platform, and search for tempo-operator, which must have the Up status.
+
+To verify that alerts are set up correctly, go to Observe -> Alerting -> Alerting rules, filter for Source: Platform, and locate the Alert rules for the Tempo Operator.

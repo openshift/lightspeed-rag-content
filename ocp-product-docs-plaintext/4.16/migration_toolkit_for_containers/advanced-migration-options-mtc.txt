@@ -1,0 +1,495 @@
+Advanced migration options
+
+You can automate your migrations and modify the MigPlan and MigrationController custom resources in order to perform large-scale migrations and to improve performance.
+Terminology
+
+1  Called the target cluster in the MTC web console.
+Migrating applications by using the command line
+You can migrate applications with the MTC API by using the command line interface (CLI) in order to automate the migration.
+
+Migration prerequisites
+You must be logged in as a user with cluster-admin privileges on all clusters.
+
+
+You must ensure that the secure OpenShift image registry of the source cluster is exposed.
+
+You must create a route to the exposed registry.
+
+
+If your clusters use proxies, you must configure an Stunnel TCP proxy.
+
+
+The source cluster must be upgraded to the latest MTC z-stream release.
+
+The MTC version must be the same on all clusters.
+
+
+The clusters have unrestricted network access to each other and to the replication repository.
+
+If you copy the persistent volumes with move, the clusters must have unrestricted network access to the remote volumes.
+
+You must enable the following ports on an Red Hat OpenShift Container Platform 4 cluster:
+
+You must enable port 443 on the replication repository if you are using TLS.
+
+
+The PVs must be valid.
+
+The PVs must be bound to persistent volume claims.
+
+If you use snapshots to copy the PVs, the following additional prerequisites apply:
+Creating a registry route for direct image migration
+For direct image migration, you must create a route to the exposed OpenShift image registry on all remote clusters.
+
+The OpenShift image registry must be exposed to external traffic on all remote clusters.
+
+
+To create a route to an Red Hat OpenShift Container Platform 4 registry, run the following command:
+Proxy configuration
+For Red Hat OpenShift Container Platform 4.1 and earlier versions, you must configure proxies in the MigrationController custom resource (CR) manifest after you install the Migration Toolkit for Containers Operator because these versions do not support a cluster-wide proxy object.
+
+For Red Hat OpenShift Container Platform 4.2 to 4.16, the Migration Toolkit for Containers (MTC) inherits the cluster-wide proxy settings. You can change the proxy parameters if you want to override the cluster-wide proxy settings.
+
+Direct volume migration
+Direct Volume Migration (DVM) was introduced in MTC 1.4.2. DVM supports only one proxy. The source cluster cannot access the route of the target cluster if the target cluster is also behind a proxy.
+
+If you want to perform a DVM from a source cluster behind a proxy, you must configure a TCP proxy that works at the transport layer and forwards the SSL connections transparently without decrypting and re-encrypting them with their own SSL certificates. A Stunnel proxy is an example of such a proxy.
+
+TCP proxy setup for DVM
+You can set up a direct connection between the source and the target cluster through a TCP proxy and configure the stunnel_tcp_proxy variable in the MigrationController CR to use the proxy:
+
+apiVersion: migration.openshift.io/v1alpha1
+kind: MigrationController
+metadata:
+  name: migration-controller
+  namespace: openshift-migration
+spec:
+  [...]
+  stunnel_tcp_proxy: http://username:password@ip:port
+Direct volume migration (DVM) supports only basic authentication for the proxy. Moreover, DVM works only from behind proxies that can tunnel a TCP connection transparently. HTTP/HTTPS proxies in man-in-the-middle mode do not work. The existing cluster-wide proxies might not support this behavior. As a result, the proxy settings for DVM are intentionally kept different from the usual proxy configuration in MTC.
+Why use a TCP proxy instead of an HTTP/HTTPS proxy?
+You can enable DVM by running Rsync between the source and the target cluster over an OpenShift route.  Traffic is encrypted using Stunnel, a TCP proxy. The Stunnel running on the source cluster initiates a TLS connection with the target Stunnel and transfers data over an encrypted channel.
+
+Cluster-wide HTTP/HTTPS proxies in OpenShift are usually configured in man-in-the-middle mode where they negotiate their own TLS session with the outside servers. However, this does not work with Stunnel. Stunnel requires that its TLS session be untouched by the proxy, essentially making the proxy a transparent tunnel which simply forwards the TCP connection as-is. Therefore, you must use a TCP proxy.
+Known issue
+The migration Controller uses the SPDY protocol to execute commands within remote pods. If the remote cluster is behind a proxy or a firewall that does not support the SPDY protocol, the migration controller fails to execute remote commands. The migration fails with the error message Upgrade request required. Workaround: Use a proxy that supports the SPDY protocol.
+
+In addition to supporting the SPDY protocol, the proxy or firewall also must pass the Upgrade HTTP header to the API server. The client uses this header to open a websocket connection with the API server. If the Upgrade header is blocked by the proxy or firewall, the migration fails with the error message Upgrade request required. Workaround: Ensure that the proxy forwards the Upgrade header.
+Tuning network policies for migrations
+OpenShift supports restricting traffic to or from pods using NetworkPolicy or EgressFirewalls based on the network plugin used by the cluster. If any of the source namespaces involved in a migration use such mechanisms to restrict network traffic to pods, the restrictions might inadvertently stop traffic to Rsync pods during migration.
+
+Rsync pods running on both the source and the target clusters must connect to each other over an OpenShift Route. Existing NetworkPolicy or EgressNetworkPolicy objects can be configured to automatically exempt Rsync pods from these traffic restrictions.
+
+NetworkPolicy configuration
+Egress traffic from Rsync pods
+You can use the unique labels of Rsync pods to allow egress traffic to pass from them if the NetworkPolicy configuration in the source or destination namespaces blocks this type of traffic. The following policy allows all egress traffic from Rsync pods in the namespace:
+
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-all-egress-from-rsync-pods
+spec:
+  podSelector:
+    matchLabels:
+      owner: directvolumemigration
+      app: directvolumemigration-rsync-transfer
+  egress:
+  - {}
+  policyTypes:
+  - Egress
+Ingress traffic to Rsync pods
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-all-egress-from-rsync-pods
+spec:
+  podSelector:
+    matchLabels:
+      owner: directvolumemigration
+      app: directvolumemigration-rsync-transfer
+  ingress:
+  - {}
+  policyTypes:
+  - Ingress
+EgressNetworkPolicy configuration
+The EgressNetworkPolicy object or Egress Firewalls are OpenShift constructs designed to block egress traffic leaving the cluster.
+
+Unlike the NetworkPolicy object, the Egress Firewall works at a project level because it applies to all pods in the namespace. Therefore, the unique labels of Rsync pods do not exempt only Rsync pods from the restrictions. However, you can add the CIDR ranges of the source or target cluster to the Allow rule of the policy so that a direct connection can be setup between two clusters.
+
+Based on which cluster the Egress Firewall is present in, you can add the CIDR range of the other cluster to allow egress traffic between the two:
+
+apiVersion: network.openshift.io/v1
+kind: EgressNetworkPolicy
+metadata:
+  name: test-egress-policy
+  namespace: <namespace>
+spec:
+  egress:
+  - to:
+      cidrSelector: <cidr_of_source_or_target_cluster>
+    type: Deny
+Choosing alternate endpoints for data transfer
+By default, DVM uses an Red Hat OpenShift Container Platform route as an endpoint to transfer PV data to destination clusters. You can choose another type of supported endpoint, if cluster topologies allow.
+
+For each cluster, you can configure an endpoint by setting the rsync_endpoint_type variable on the appropriate destination cluster in your MigrationController CR:
+
+apiVersion: migration.openshift.io/v1alpha1
+kind: MigrationController
+metadata:
+  name: migration-controller
+  namespace: openshift-migration
+spec:
+  [...]
+  rsync_endpoint_type: [NodePort|ClusterIP|Route]
+Configuring supplemental groups for Rsync pods
+When your PVCs use a shared storage, you can configure the access to that storage by adding supplemental groups to Rsync pod definitions in order for the pods to allow access:
+
+
+The MigrationController CR can be updated to set values for these supplemental groups:
+
+spec:
+  src_supplemental_groups: "1000,2000"
+  target_supplemental_groups: "2000,3000"
+Configuring proxies
+You must be logged in as a user with cluster-admin privileges on all clusters.
+
+
+Get the MigrationController CR manifest:
+
+Update the proxy parameters:
+
+Save the manifest as migration-controller.yaml.
+
+Apply the updated manifest:
+Migrating an application by using the MTC API
+You can migrate an application from the command line by using the Migration Toolkit for Containers (MTC) API.
+
+Create a MigCluster CR manifest for the host cluster:
+
+Create a Secret object manifest for each remote cluster:
+
+Create a MigCluster CR manifest for each remote cluster:
+
+Verify that all clusters are in a Ready state:
+
+Create a Secret object manifest for the replication repository:
+
+Create a MigStorage CR manifest for the replication repository:
+
+Verify that the MigStorage CR is in a Ready state:
+
+Create a MigPlan CR manifest:
+
+Verify that the MigPlan instance is in a Ready state:
+
+Create a MigMigration CR manifest to start the migration defined in the MigPlan instance:
+
+Verify the migration by watching the MigMigration CR progress:
+State migration
+You can perform repeatable, state-only migrations by using Migration Toolkit for Containers (MTC) to migrate persistent volume claims (PVCs) that constitute an application's state. You migrate specified PVCs by excluding other PVCs from the migration plan. You can map the PVCs to ensure that the source and the target PVCs are synchronized. Persistent volume (PV) data is copied to the target cluster. The PV references are not moved, and the application pods continue to run on the source cluster.
+
+State migration is specifically designed to be used in conjunction with external CD mechanisms, such as OpenShift Gitops. You can migrate application manifests using GitOps while migrating the state using MTC.
+
+If you have a CI/CD pipeline, you can migrate stateless components by deploying them on the target cluster. Then you can migrate stateful components by using MTC.
+
+You can perform a state migration between clusters or within the same cluster.
+
+State migration migrates only the components that constitute an application's state. If you want to migrate an entire namespace, use stage or cutover migration.
+The state of the application on the source cluster is persisted in PersistentVolumes provisioned through PersistentVolumeClaims.
+
+The manifests of the application are available in a central repository that is accessible from both the source and the target clusters.
+
+
+Migrate persistent volume data from the source to the target cluster.
+
+Quiesce the source application.
+
+Clone application manifests to the target cluster.
+
+Migrate the remaining volume data from the source to the target cluster.
+
+If the cloned application is in a quiesced state, unquiesce it.
+
+Switch the DNS record to the target cluster to re-direct user traffic to the migrated application.
+
+
+MTC 1.6 cannot quiesce applications automatically when performing state migration. It can only migrate PV data. Therefore, you must use your CD mechanisms for quiescing or unquiescing applications.
+
+MTC 1.7 introduces explicit Stage and Cutover flows. You can use staging to perform initial data transfers as many times as needed. Then you can perform a cutover, in which the source applications are quiesced automatically.
+
+See Excluding PVCs from migration to select PVCs for state migration.
+
+See Mapping PVCs to migrate source PV data to provisioned PVCs on the destination cluster.
+
+See Migrating Kubernetes objects to migrate the Kubernetes objects that constitute an application's state.
+Migration hooks
+You can add up to four migration hooks to a single migration plan, with each hook running at a different phase of the migration. Migration hooks perform tasks such as customizing application quiescence, manually migrating unsupported data types, and updating applications after migration.
+
+A migration hook runs on a source or a target cluster at one of the following migration steps:
+
+PreBackup: Before resources are backed up on the source cluster.
+
+PostBackup: After resources are backed up on the source cluster.
+
+PreRestore: Before resources are restored on the target cluster.
+
+PostRestore: After resources are restored on the target cluster.
+
+
+You can create a hook by creating an Ansible playbook that runs with the default Ansible image or with a custom hook container.
+
+The Ansible playbook is mounted on a hook container as a config map. The hook container runs as a job, using the cluster, service account, and namespace specified in the MigPlan custom resource. The job continues to run until it reaches the default limit of 6 retries or a successful completion. This continues even if the initial pod is evicted or killed.
+
+The default Ansible runtime image is registry.redhat.io/rhmtc/openshift-migration-hook-runner-rhel7:1.8. This image is based on the Ansible Runner image and includes python-openshift for Ansible Kubernetes resources and an updated oc binary.
+
+You can use a custom hook container instead of the default Ansible image.
+
+Writing an Ansible playbook for a migration hook
+You can write an Ansible playbook to use as a migration hook. The hook is added to a migration plan by using the MTC web console or by specifying values for the spec.hooks parameters in the MigPlan custom resource (CR) manifest.
+
+The Ansible playbook is mounted onto a hook container as a config map. The hook container runs as a job, using the cluster, service account, and namespace specified in the MigPlan CR. The hook container uses a specified service account token so that the tasks do not require authentication before they run in the cluster.
+
+Ansible modules
+You can use the Ansible shell module to run oc commands.
+
+- hosts: localhost
+  gather_facts: false
+  tasks:
+  - name: get pod name
+    shell: oc get po --all-namespaces
+You can use kubernetes.core modules, such as k8s_info, to interact with Kubernetes resources.
+
+- hosts: localhost
+  gather_facts: false
+  tasks:
+  - name: Get pod
+    k8s_info:
+      kind: pods
+      api: v1
+      namespace: openshift-migration
+      name: "{{ lookup( 'env', 'HOSTNAME') }}"
+    register: pods
+
+  - name: Print pod name
+    debug:
+      msg: "{{ pods.resources[0].metadata.name }}"
+You can use the fail module to produce a non-zero exit status in cases where a non-zero exit status would not normally be produced, ensuring that the success or failure of a hook is detected. Hooks run as jobs and the success or failure status of a hook is based on the exit status of the job container.
+
+- hosts: localhost
+  gather_facts: false
+  tasks:
+  - name: Set a boolean
+    set_fact:
+      do_fail: true
+
+  - name: "fail"
+    fail:
+      msg: "Cause a failure"
+    when: do_fail
+Environment variables
+The MigPlan CR name and migration namespaces are passed as environment variables to the hook container. These variables are accessed by using the lookup plugin.
+
+- hosts: localhost
+  gather_facts: false
+  tasks:
+  - set_fact:
+      namespaces: "{{ (lookup( 'env', 'MIGRATION_NAMESPACES')).split(',') }}"
+
+  - debug:
+      msg: "{{ item }}"
+    with_items: "{{ namespaces }}"
+
+  - debug:
+      msg: "{{ lookup( 'env', 'MIGRATION_PLAN_NAME') }}"
+Migration plan options
+You can exclude, edit, and map components in the MigPlan custom resource (CR).
+
+Excluding resources
+You can exclude resources, for example, image streams, persistent volumes (PVs), or subscriptions, from a Migration Toolkit for Containers (MTC) migration plan to reduce the resource load for migration or to migrate images or PVs with a different tool.
+
+By default, the MTC excludes service catalog resources and Operator Lifecycle Manager (OLM) resources from migration. These resources are parts of the service catalog API group and the OLM API group, neither of which is supported for migration at this time.
+
+Edit the MigrationController custom resource manifest:
+
+Update the spec section by adding parameters to exclude specific resources. For those resources that do not have their own exclusion parameters, add the additional_excluded_resources parameter:
+
+Wait two minutes for the MigrationController pod to restart so that the changes are applied.
+
+Verify that the resource is excluded:
+Mapping namespaces
+If you map namespaces in the MigPlan custom resource (CR), you must ensure that the namespaces are not duplicated on the source or the destination clusters because the UID and GID ranges of the namespaces are copied during migration.
+
+spec:
+  namespaces:
+    - namespace_2
+    - namespace_1:namespace_2
+If you want the source namespace to be mapped to a namespace of the same name, you do not need to create a mapping. By default, a source namespace and a target namespace have the same name.
+
+spec:
+  namespaces:
+    - namespace_1:namespace_1
+spec:
+  namespaces:
+    - namespace_1
+Excluding persistent volume claims
+You select persistent volume claims (PVCs) for state migration by excluding the PVCs that you do not want to migrate. You exclude PVCs by setting the spec.persistentVolumes.pvc.selection.action parameter of the MigPlan custom resource (CR) after the persistent volumes (PVs) have been discovered.
+
+MigPlan CR is in a Ready state.
+
+
+Add the spec.persistentVolumes.pvc.selection.action parameter to the MigPlan CR and set it to skip:
+Mapping persistent volume claims
+You can migrate persistent volume (PV) data from the source cluster to persistent volume claims (PVCs) that are already provisioned in the destination cluster in the MigPlan CR by mapping the PVCs. This mapping ensures that the destination PVCs of migrated applications are synchronized with the source PVCs.
+
+You map PVCs by updating the spec.persistentVolumes.pvc.name parameter in the MigPlan custom resource (CR) after the PVs have been discovered.
+
+MigPlan CR is in a Ready state.
+
+
+Update the spec.persistentVolumes.pvc.name parameter in the MigPlan CR:
+Editing persistent volume attributes
+After you create a MigPlan custom resource (CR), the MigrationController CR discovers the persistent volumes (PVs). The spec.persistentVolumes block and the status.destStorageClasses block are added to the MigPlan CR.
+
+You can edit the values in the spec.persistentVolumes.selection block. If you change values outside the spec.persistentVolumes.selection block, the values are overwritten when the MigPlan CR is reconciled by the MigrationController CR.
+
+The default value for the spec.persistentVolumes.selection.storageClass parameter is determined by the following logic:
+
+If the source cluster PV is Gluster or NFS, the default is either cephfs, for accessMode: ReadWriteMany, or cephrbd, for accessMode: ReadWriteOnce.
+
+If the PV is neither Gluster nor NFS or if cephfs or cephrbd are not available, the default is a storage class for the same provisioner.
+
+If a storage class for the same provisioner is not available, the default is the default storage class of the destination cluster.
+
+
+You can change the storageClass value to the value of any name parameter in the status.destStorageClasses block of the MigPlan CR.
+
+If the storageClass value is empty, the PV will have no storage class after migration. This option is appropriate if, for example, you want to move the PV to an NFS volume on the destination cluster.
+MigPlan CR is in a Ready state.
+
+
+Edit the spec.persistentVolumes.selection values in the MigPlan CR:
+Converting storage classes in the MTC web console
+You can convert the storage class of a persistent volume (PV) by migrating it within the same cluster. To do so, you must create and run a migration plan in the Migration Toolkit for Containers (MTC) web console.
+
+You must be logged in as a user with cluster-admin privileges on the cluster on which MTC is running.
+
+You must add the cluster to the MTC web console.
+
+
+In the left-side navigation pane of the Red Hat OpenShift Container Platform web console, click Projects.
+
+In the list of projects, click your project.
+
+Click the DeploymentConfig name. Note the name of its running pod.
+
+Open the YAML tab of the project. Find the PVs and note the names of their corresponding persistent volume claims (PVCs).
+
+In the MTC web console, click Migration plans.
+
+Click Add migration plan.
+
+Enter the Plan name.
+
+From the Migration type menu, select Storage class conversion.
+
+From the Source cluster list, select the desired cluster for storage class conversion.
+
+Click Next.
+
+Select the required project.
+
+Click Next.
+
+For each PV, select the desired target storage class.
+
+Click Next.
+
+Click Close.
+
+To start the conversion, click the options menu of the new plan.
+
+Select the desired option.
+
+Click Migrate.
+
+To see the status of the current migration, click the number in the Migrations column.
+
+To see more details on the current migration and monitor its progress, select the migration from the Type column.
+
+In the breadcrumb bar, click Stage or Cutover and wait for all steps to complete.
+
+Open the PersistentVolumeClaims tab of the Red Hat OpenShift Container Platform web console.
+
+In the left-side navigation pane, click Pods. See that the pod of your project is running again.
+
+
+
+For details about the move and copy actions, see MTC workflow.
+
+For details about the skip action, see Excluding PVCs from migration.
+
+For details about the file system and snapshot copy methods, see About data copy methods.
+Performing a state migration of Kubernetes objects by using the MTC API
+After you migrate all the PV data, you can use the Migration Toolkit for Containers (MTC) API to perform a one-time state migration of Kubernetes objects that constitute an application.
+
+You do this by configuring MigPlan custom resource (CR) fields to provide a list of Kubernetes resources with an additional label selector to further filter those resources, and then performing a migration by creating a MigMigration CR. The MigPlan resource is closed after the migration.
+
+Selecting Kubernetes resources is an API-only feature. You must update the MigPlan CR and create a MigMigration CR for it by using the CLI. The MTC web console does not support migrating Kubernetes objects.
+After migration, the closed parameter of the MigPlan CR is set to true. You cannot create another MigMigration CR for this MigPlan CR.
+You add Kubernetes objects to the MigPlan CR by using one of the following options:
+
+Adding the Kubernetes objects to the includedResources section. When the includedResources field is specified in the MigPlan CR, the plan takes a list of group-kind as input. Only resources present in the list are included in the migration.
+
+Adding the optional labelSelector parameter to filter the includedResources in the MigPlan. When this field is specified, only resources matching the label selector are included in the migration. For example, you can filter a list of Secret and ConfigMap resources by using the label app: frontend as a filter.
+
+
+Update the MigPlan CR to include Kubernetes resources and, optionally, to filter the included resources by adding the labelSelector parameter:
+
+Create a MigMigration CR to migrate the selected Kubernetes resources. Verify that the correct MigPlan is referenced in migPlanRef:
+Migration controller options
+You can edit migration plan limits, enable persistent volume resizing, or enable cached Kubernetes clients in the MigrationController custom resource (CR) for large migrations and improved performance.
+
+Increasing limits for large migrations
+You can increase the limits on migration objects and container resources for large migrations with the Migration Toolkit for Containers (MTC).
+
+You must test these changes before you perform a migration in a production environment.
+Edit the MigrationController custom resource (CR) manifest:
+
+Update the following parameters:
+
+Create a migration plan that uses the updated parameters to verify the changes.
+Enabling persistent volume resizing for direct volume migration
+You can enable persistent volume (PV) resizing for direct volume migration to avoid running out of disk space on the destination cluster.
+
+When the disk usage of a PV reaches a configured level, the MigrationController custom resource (CR) compares the requested storage capacity of a persistent volume claim (PVC) to its actual provisioned capacity. Then, it calculates the space required on the destination cluster.
+
+A pv_resizing_threshold parameter determines when PV resizing is used. The default threshold is 3%. This means that PV resizing occurs when the disk usage of a PV is more than 97%. You can increase this threshold so that PV resizing occurs at a lower disk usage level.
+
+PVC capacity is calculated according to the following criteria:
+
+If the requested storage capacity (spec.resources.requests.storage) of the PVC is not equal to its actual provisioned capacity (status.capacity.storage), the greater value is used.
+
+If a PV is provisioned through a PVC and then subsequently changed so that its PV and PVC capacities no longer match, the greater value is used.
+
+
+The PVCs must be attached to one or more running pods so that the MigrationController CR can execute commands.
+
+
+Log in to the host cluster.
+
+Enable PV resizing by patching the MigrationController CR:
+
+Optional: Update the pv_resizing_threshold parameter to increase the threshold:
+Enabling cached Kubernetes clients
+You can enable cached Kubernetes clients in the MigrationController custom resource (CR) for improved performance during migration. The greatest performance benefit is displayed when migrating between clusters in different regions or with significant network latency.
+
+Delegated tasks, for example, Rsync backup for direct volume migration or Velero backup and restore, however, do not show improved performance with cached clients.
+Cached clients require extra memory because the MigrationController CR caches all API resources that are required for interacting with MigCluster CRs. Requests that are normally sent to the API server are directed to the cache instead. The cache watches the API server for updates.
+
+You can increase the memory limits and requests of the MigrationController CR if OOMKilled errors occur after you enable cached clients.
+
+Enable cached clients by running the following command:
+
+Optional: Increase the MigrationController CR memory limits by running the following command:
+
+Optional: Increase the MigrationController CR memory requests by running the following command:

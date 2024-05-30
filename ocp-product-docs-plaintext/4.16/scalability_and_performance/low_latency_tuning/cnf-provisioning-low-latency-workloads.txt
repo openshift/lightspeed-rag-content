@@ -1,0 +1,151 @@
+Provisioning real-time and low latency workloads
+
+Many organizations need high performance computing and low, predictable latency, especially in the financial and telecommunications industries.
+
+Red Hat OpenShift Container Platform provides the Node Tuning Operator to implement automatic tuning to achieve low latency performance and consistent response time for Red Hat OpenShift Container Platform applications. You use the performance profile configuration to make these changes. You can update the kernel to kernel-rt, reserve CPUs for cluster and operating system housekeeping duties, including pod infra containers, isolate CPUs for application containers to run the workloads, and disable unused CPUs to reduce power consumption.
+
+When writing your applications, follow the general recommendations described in RHEL for Real Time processes and threads.
+Tuning nodes for low latency with the performance profile
+Scheduling a low latency workload onto a worker with real-time capabilities
+You can schedule low latency workloads onto a worker node where a performance profile that configures real-time capabilities is applied.
+
+To schedule the workload on specific nodes, use label selectors in the Pod custom resource (CR). The label selectors must match the nodes that are attached to the machine config pool that was configured for low latency by the Node Tuning Operator.
+You have installed the OpenShift CLI (oc).
+
+You have logged in as a user with cluster-admin privileges.
+
+You have applied a performance profile in the cluster that tunes worker nodes for low latency workloads.
+
+
+Create a Pod CR for the low latency workload and apply it in the cluster, for example:
+
+Enter the pod runtimeClassName in the form performance-<profile_name>, where <profile_name> is the name from the PerformanceProfile YAML.
+In the previous example, the name is performance-dynamic-low-latency-profile.
+
+Ensure the pod is running correctly. Status should be running, and the correct cnf-worker node should be set:
+
+Get the CPUs that the pod configured for IRQ dynamic load balancing runs on:
+
+
+Ensure the node configuration is applied correctly.
+
+Log in to the node to verify the configuration.
+
+Verify that you can use the node file system:
+
+Ensure the default system CPU affinity mask does not include the dynamic-low-latency-pod CPUs, for example, CPUs 2 and 3.
+
+Ensure the system IRQs are not configured to run on the dynamic-low-latency-pod CPUs:
+
+
+When you tune nodes for low latency, the usage of execution probes in conjunction with applications that require guaranteed CPUs can cause latency spikes. Use other probes, such as a properly configured set of network probes, as an alternative.
+Placing pods on specific nodes using node selectors
+
+Assigning pods to nodes
+Creating a pod with a guaranteed QoS class
+Keep the following in mind when you create a pod that is given a QoS class of Guaranteed:
+
+Every container in the pod must have a memory limit and a memory request, and they must be the same.
+
+Every container in the pod must have a CPU limit and a CPU request, and they must be the same.
+
+
+The following example shows the configuration file for a pod that has one container. The container has a memory limit and a memory request, both equal to 200 MiB. The container has a CPU limit and a CPU request, both equal to 1 CPU.
+
+apiVersion: v1
+kind: Pod
+metadata:
+  name: qos-demo
+  namespace: qos-example
+spec:
+  securityContext:
+    runAsNonRoot: true
+    seccompProfile:
+      type: RuntimeDefault
+  containers:
+  - name: qos-demo-ctr
+    image: <image-pull-spec>
+    resources:
+      limits:
+        memory: "200Mi"
+        cpu: "1"
+      requests:
+        memory: "200Mi"
+        cpu: "1"
+    securityContext:
+      allowPrivilegeEscalation: false
+      capabilities:
+        drop: [ALL]
+Create the pod:
+
+View detailed information about the pod:
+Disabling CPU load balancing in a Pod
+Functionality to disable or enable CPU load balancing is implemented on the CRI-O level. The code under the CRI-O disables or enables CPU load balancing only when the following requirements are met.
+
+The pod must use the performance-<profile-name> runtime class. You can get the proper name by looking at the status of the performance profile, as shown here:
+
+
+The Node Tuning Operator is responsible for the creation of the high-performance runtime handler config snippet under relevant nodes and for creation of the high-performance runtime class under the cluster. It will have the same content as the default runtime handler except that it enables the CPU load balancing configuration functionality.
+
+To disable the CPU load balancing for the pod, the Pod specification must include the following fields:
+
+apiVersion: v1
+kind: Pod
+metadata:
+  #...
+  annotations:
+    #...
+    cpu-load-balancing.crio.io: "disable"
+    #...
+  #...
+spec:
+  #...
+  runtimeClassName: performance-<profile_name>
+  #...
+Only disable CPU load balancing when the CPU manager static policy is enabled and for pods with guaranteed QoS that use whole CPUs. Otherwise, disabling CPU load balancing can affect the performance of other containers in the cluster.
+Disabling power saving mode for high priority pods
+You can configure pods to ensure that high priority workloads are unaffected when you configure power saving for the node that the workloads run on.
+
+When you configure a node with a power saving configuration, you must configure high priority workloads with performance configuration at the pod level, which means that the configuration applies to all the cores used by the pod.
+
+By disabling P-states and C-states at the pod level, you can configure high priority workloads for best performance and lowest latency.
+
+
+You have configured power saving in the performance profile for the node where the high priority workload pods are scheduled.
+
+
+Add the required annotations to your high priority workload pods. The annotations override the default settings.
+
+Restart the pods to apply the annotation.
+
+
+Configuring power saving for nodes that run colocated high and low priority workloads
+Disabling CPU CFS quota
+To eliminate CPU throttling for pinned pods, create a pod with the cpu-quota.crio.io: "disable" annotation. This annotation disables the CPU completely fair scheduler (CFS) quota when the pod runs.
+
+apiVersion: v1
+kind: Pod
+metadata:
+  annotations:
+      cpu-quota.crio.io: "disable"
+spec:
+    runtimeClassName: performance-<profile_name>
+#...
+Only disable CPU CFS quota when the CPU manager static policy is enabled and for pods with guaranteed QoS that use whole CPUs. For example, pods that contain CPU-pinned containers. Otherwise, disabling CPU CFS quota can affect the performance of other containers in the cluster.
+Recommended firmware configuration for vDU cluster hosts
+Disabling interrupt processing for CPUs where pinned containers are running
+To achieve low latency for workloads, some containers require that the CPUs they are pinned to do not process device interrupts. A pod annotation, irq-load-balancing.crio.io, is used to define whether device interrupts are processed or not on the CPUs where the pinned containers are running. When configured, CRI-O disables device interrupts where the pod containers are running.
+
+To disable interrupt processing for CPUs where containers belonging to individual pods are pinned, ensure that globallyDisableIrqLoadBalancing is set to false in the performance profile. Then, in the pod specification, set the irq-load-balancing.crio.io pod annotation to disable.
+
+The following pod specification contains this annotation:
+
+apiVersion: performance.openshift.io/v2
+kind: Pod
+metadata:
+  annotations:
+      irq-load-balancing.crio.io: "disable"
+spec:
+    runtimeClassName: performance-<profile_name>
+...
+Managing device interrupt processing for guaranteed pod isolated CPUs

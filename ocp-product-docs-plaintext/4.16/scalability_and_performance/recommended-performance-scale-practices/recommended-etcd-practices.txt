@@ -1,0 +1,181 @@
+Recommended etcd practices
+
+This topic provides recommended performance and scalability practices for etcd in Red Hat OpenShift Container Platform.
+Recommended etcd practices
+Because etcd writes data to disk and persists proposals on disk, its performance depends on disk performance. Although etcd is not particularly I/O intensive, it requires a low latency block device for optimal performance and stability. Because etcd's consensus protocol depends on persistently storing metadata to a log (WAL), etcd is sensitive to disk-write latency. Slow disks and disk activity from other processes can cause long fsync latencies.
+
+Those latencies can cause etcd to miss heartbeats, not commit new proposals to the disk on time, and ultimately experience request timeouts and temporary leader loss. High write latencies also lead to an OpenShift API slowness, which affects cluster performance. Because of these reasons, avoid colocating other workloads on the control-plane nodes that are I/O sensitive or intensive and share the same underlying I/O infrastructure.
+
+In terms of latency, run etcd on top of a block device that can write at least 50 IOPS of 8000 bytes long sequentially. That is, with a latency of 10ms, keep in mind that uses fdatasync to synchronize each write in the WAL. For heavy loaded clusters, sequential 500 IOPS of 8000 bytes (2 ms) are recommended. To measure those numbers, you can use a benchmarking tool, such as fio.
+
+To achieve such performance, run etcd on machines that are backed by SSD or NVMe disks with low latency and high throughput. Consider single-level cell (SLC) solid-state drives (SSDs), which provide 1 bit per memory cell, are durable and reliable, and are ideal for write-intensive workloads.
+
+The load on etcd arises from static factors, such as the number of nodes and pods, and dynamic factors, including changes in endpoints due to pod autoscaling, pod restarts, job executions, and other workload-related events. To accurately size your etcd setup, you must analyze the specific requirements of your workload. Consider the number of nodes, pods, and other relevant factors that impact the load on etcd.
+The following hard drive practices provide optimal etcd performance:
+
+Use dedicated etcd drives. Avoid drives that communicate over the network, such as iSCSI. Do not place log files or other heavy workloads on etcd drives.
+
+Prefer drives with low latency to support fast read and write operations.
+
+Prefer high-bandwidth writes for faster compactions and defragmentation.
+
+Prefer high-bandwidth reads for faster recovery from failures.
+
+Use solid state drives as a minimum selection. Prefer NVMe drives for production environments.
+
+Use server-grade hardware for increased reliability.
+
+
+Avoid NAS or SAN setups and spinning drives. Ceph Rados Block Device (RBD) and other types of network-attached storage can result in unpredictable network latency. To provide fast storage to etcd nodes at scale, use PCI passthrough to pass NVM devices directly to the nodes.
+Always benchmark by using utilities such as fio. You can use such utilities to continuously monitor the cluster performance as it increases.
+
+Avoid using the Network File System (NFS) protocol or other network based file systems.
+Some key metrics to monitor on a deployed Red Hat OpenShift Container Platform cluster are p99 of etcd disk write ahead log duration and the number of etcd leader changes. Use Prometheus to track these metrics.
+
+The etcd member database sizes can vary in a cluster during normal operations. This difference does not affect cluster upgrades, even if the leader size is different from the other members.
+To validate the hardware for etcd before or after you create the Red Hat OpenShift Container Platform cluster, you can use fio.
+
+Container runtimes such as Podman or Docker are installed on the machine that you are testing.
+
+Data is written to the /var/lib/etcd path.
+
+
+Run fio and analyze the results:
+
+
+The output reports whether the disk is fast enough to host etcd by comparing the 99th percentile of the fsync metric captured from the run to see if it is less than 10 ms. A few of the most important etcd metrics that might affected by I/O performance are as follow:
+
+etcd_disk_wal_fsync_duration_seconds_bucket metric reports the etcd's WAL fsync duration
+
+etcd_disk_backend_commit_duration_seconds_bucket  metric reports the etcd backend commit latency duration
+
+etcd_server_leader_changes_seen_total metric reports the leader changes
+
+
+Because etcd replicates the requests among all the members, its performance strongly depends on network input/output (I/O) latency. High network latencies result in etcd heartbeats taking longer than the election timeout, which results in leader elections that are disruptive to the cluster. A key metric to monitor on a deployed Red Hat OpenShift Container Platform cluster is the 99th percentile of etcd network peer latency on each etcd cluster member. Use Prometheus to track the metric.
+
+The histogram_quantile(0.99, rate(etcd_network_peer_round_trip_time_seconds_bucket[2m])) metric reports the round trip time for etcd to finish replicating the client requests between the members. Ensure that it is less than 50 ms.
+
+How to use fio to check etcd disk performance in Red Hat OpenShift Container Platform
+
+etcd performance troubleshooting guide for Red Hat OpenShift Container Platform
+Moving etcd to a different disk
+You can move etcd from a shared disk to a separate disk to prevent or resolve performance issues.
+
+The Machine Config Operator (MCO) is responsible for mounting a secondary disk for Red Hat OpenShift Container Platform 4.16 container storage.
+
+This encoded script only supports device names for the following device types:
+
+
+SCSI or SATA
+/dev/sd*
+Virtual device
+/dev/vd*
+NVMe
+/dev/nvme*[0-9]*n*
+When the new disk is attached to the cluster, the etcd database is part of the root mount. It is not part of the secondary disk or the intended disk when the primary node is recreated. As a result, the primary node will not create a separate /var/lib/etcd mount.
+
+
+You have a backup of your cluster's etcd data.
+
+You have installed the OpenShift CLI (`oc`).
+
+You have access to the cluster with cluster-admin privileges.
+
+Add additional disks before uploading the machine configuration.
+
+The MachineConfigPool must match metadata.labels[machineconfiguration.openshift.io/role]. This applies to a controller, worker, or a custom pool.
+
+
+This procedure does not move parts of the root file system, such as /var/, to another disk or partition on an installed node.
+This procedure is not supported when using control plane machine sets.
+Attach the new disk to the cluster and verify that the disk is detected in the node by running the lsblk command in a debug shell:
+
+Decode and replace the device name in the script according to your environment.
+
+Create a MachineConfig YAML file named etcd-mc.yml with contents such as the following:
+
+
+Run the grep /var/lib/etcd /proc/mounts command in a debug shell for the node to ensure that the disk is mounted:
+
+
+Red Hat Enterprise Linux CoreOS (RHCOS)
+Defragmenting etcd data
+For large and dense clusters, etcd can suffer from poor performance if the keyspace grows too large and exceeds the space quota. Periodically maintain and defragment etcd to free up space in the data store. Monitor Prometheus for etcd metrics and defragment it when required; otherwise, etcd can raise a cluster-wide alarm that puts the cluster into a maintenance mode that accepts only key reads and deletes.
+
+Monitor these key metrics:
+
+etcd_server_quota_backend_bytes, which is the current quota limit
+
+etcd_mvcc_db_total_size_in_use_in_bytes, which indicates the actual database usage after a history compaction
+
+etcd_mvcc_db_total_size_in_bytes, which shows the database size, including free space waiting for defragmentation
+
+
+Defragment etcd data to reclaim disk space after events that cause disk fragmentation, such as etcd history compaction.
+
+History compaction is performed automatically every five minutes and leaves gaps in the back-end database. This fragmented space is available for use by etcd, but is not available to the host file system. You must defragment etcd to make this space available to the host file system.
+
+Defragmentation occurs automatically, but you can also trigger it manually.
+
+Automatic defragmentation is good for most cases, because the etcd operator uses cluster information to determine the most efficient operation for the user.
+Automatic defragmentation
+The etcd Operator automatically defragments disks. No manual intervention is needed.
+
+Verify that the defragmentation process is successful by viewing one of these logs:
+
+etcd logs
+
+cluster-etcd-operator pod
+
+operator status error log
+
+
+Automatic defragmentation can cause leader election failure in various OpenShift core components, such as the Kubernetes controller manager, which triggers a restart of the failing component. The restart is harmless and either triggers failover to the next running instance or the component resumes work again after the restart.
+etcd member has been defragmented: <member_name>, memberID: <member_id>
+failed defrag on member: <member_name>, memberID: <member_id>: <error_message>
+Manual defragmentation
+A Prometheus alert indicates when you need to use manual defragmentation. The alert is displayed in two cases:
+
+When etcd uses more than 50% of its available space for more than 10 minutes
+
+When etcd is actively using less than 50% of its total database size for more than 10 minutes
+
+
+You can also determine whether defragmentation is needed by checking the etcd database size in MB that will be freed by defragmentation with the PromQL expression: (etcd_mvcc_db_total_size_in_bytes - etcd_mvcc_db_total_size_in_use_in_bytes)/1024/1024
+
+Defragmenting etcd is a blocking action. The etcd member will not respond until defragmentation is complete. For this reason, wait at least one minute between defragmentation actions on each of the pods to allow the cluster to recover.
+Follow this procedure to defragment etcd data on each etcd member.
+
+You have access to the cluster as a user with the cluster-admin role.
+
+
+Determine which etcd member is the leader, because the leader should be defragmented last.
+
+Defragment an etcd member.
+
+If any NOSPACE alarms were triggered due to the space quota being exceeded, clear them.
+Setting tuning parameters for etcd
+You can set the control plane hardware speed to "Standard", "Slower", or the default, which is "".
+
+The default setting allows the system to decide which speed to use. This value enables upgrades from versions where this feature does not exist, as the system can select values from previous versions.
+
+By selecting one of the other values, you are overriding the default. If you see many leader elections due to timeouts or missed heartbeats and your system is set to "" or "Standard", set the hardware speed to "Slower" to make the system more tolerant to the increased latency.
+
+Changing hardware speed tolerance
+To change the hardware speed tolerance for etcd, complete the following steps.
+
+Check to see what the current value is by entering the following command:
+
+Change the value by entering the following command. Replace <value> with one of the valid values: "", "Standard", or "Slower":
+
+Review the output:
+
+Verify that the value was changed by entering the following command:
+
+Wait for etcd pods to roll out:
+
+Enter the following command to review to the values:
+
+
+Understanding feature gates

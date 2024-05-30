@@ -1,0 +1,175 @@
+Creating a Windows machine set on vSphere
+
+You can create a Windows MachineSet object to serve a specific purpose in your Red Hat OpenShift Container Platform cluster on VMware vSphere. For example, you might create infrastructure Windows machine sets and related machines so that you can move supporting Windows workloads to the new Windows machines.
+
+
+You installed the Windows Machine Config Operator (WMCO) using Operator Lifecycle Manager (OLM).
+
+You are using a supported Windows Server as the operating system image.
+Machine API overview
+The Machine API is a combination of primary resources that are based on the upstream Cluster API project and custom Red Hat OpenShift Container Platform resources.
+
+For Red Hat OpenShift Container Platform 4.16 clusters, the Machine API performs all node host provisioning management actions after the cluster installation finishes. Because of this system, Red Hat OpenShift Container Platform 4.16 offers an elastic, dynamic provisioning method on top of public or private cloud infrastructure.
+
+The two primary resources are:
+
+
+Machines
+A fundamental unit that describes the host for a node. A machine has a providerSpec specification, which describes the types of compute nodes that are offered for different cloud platforms. For example, a machine type for a compute node might define a specific machine type and required metadata.
+Machine sets
+MachineSet resources are groups of compute machines. Compute machine sets are to compute machines as replica sets are to pods. If you need more compute machines or must scale them down, you change the replicas field on the MachineSet resource to meet your compute need.
+
+
+The following custom resources add more capabilities to your cluster:
+
+
+Machine autoscaler
+The MachineAutoscaler resource automatically scales compute machines in a cloud. You can set the minimum and maximum scaling boundaries for nodes in a specified compute machine set, and the machine autoscaler maintains that range of nodes.
+Cluster autoscaler
+This resource is based on the upstream cluster autoscaler project. In the Red Hat OpenShift Container Platform implementation, it is integrated with the Machine API by extending the compute machine set API. You can use the cluster autoscaler to manage your cluster in the following ways:
+Machine health check
+The MachineHealthCheck resource detects when a machine is unhealthy, deletes it, and, on supported platforms, makes a new machine.
+
+
+In Red Hat OpenShift Container Platform version 3.11, you could not roll out a multi-zone architecture easily because the cluster did not manage machine provisioning. Beginning with Red Hat OpenShift Container Platform version 4.1, this process is easier. Each compute machine set is scoped to a single zone, so the installation program sends out compute machine sets across availability zones on your behalf. And then because your compute is dynamic, and in the face of a zone failure, you always have a zone for when you must rebalance your machines. In global Azure regions that do not have multiple availability zones, you can use availability sets to ensure high availability. The autoscaler provides best-effort balancing over the life of a cluster.
+Preparing your vSphere environment for Windows container workloads
+You must prepare your vSphere environment for Windows container workloads by creating the vSphere Windows VM golden image and enabling communication with the internal API server for the WMCO.
+
+Creating the vSphere Windows VM golden image
+Create a vSphere Windows virtual machine (VM) golden image.
+
+You have created a private/public key pair, which is used to configure key-based authentication in the OpenSSH server. The private key must also be configured in the Windows Machine Config Operator (WMCO) namespace. This is required to allow the WMCO to communicate with the Windows VM. See the "Configuring a secret for the Windows Machine Config Operator" section for more details.
+
+
+You must use Microsoft PowerShell commands in several cases when creating your Windows VM. PowerShell commands in this guide are distinguished by the PS C:\> prefix.
+Select a compatible Windows Server version. Currently, the Windows Machine Config Operator (WMCO) stable version supports Windows Server 2022 Long-Term Servicing Channel with the OS-level container networking patch KB5012637.
+
+Create a new VM in the vSphere client using the VM golden image with a compatible Windows Server version. For more information about compatible versions, see the "Windows Machine Config Operator prerequisites" section of the "Red Hat OpenShift support for Windows Containers release notes."
+
+Install and configure VMware Tools version 11.0.6 or greater on the Windows VM. See the VMware Tools documentation for more information.
+
+After installing VMware Tools on the Windows VM, verify the following:
+
+Install and configure the OpenSSH Server on the Windows VM. See Microsoft's documentation on installing OpenSSH for more details.
+
+Set up SSH access for an administrative user. See Microsoft's documentation on the Administrative user to do this.
+
+You must create a new firewall rule in the Windows VM that allows incoming connections for container logs. Run the following PowerShell command to create the firewall rule on TCP port 10250:
+
+Clone the Windows VM so it is a reusable image. Follow the VMware documentation on how to clone an existing virtual machine for more details.
+
+In the cloned Windows VM, run the Windows Sysprep tool:
+
+Convert the Windows VM to a template in vCenter.
+
+
+Additional resources
+Configuring a secret for the Windows Machine Config Operator
+
+VMware vSphere infrastructure requirements
+Enabling communication with the internal API server for the WMCO on vSphere
+The Windows Machine Config Operator (WMCO) downloads the Ignition config files from the internal API server endpoint. You must enable communication with the internal API server so that your Windows virtual machine (VM) can download the Ignition config files, and the kubelet on the configured VM can only communicate with the internal API server.
+
+You have installed a cluster on vSphere.
+
+
+Add a new DNS entry for api-int.<cluster_name>.<base_domain> that points to the external API server URL api.<cluster_name>.<base_domain>. This can be a CNAME or an additional A record.
+
+
+The external API endpoint was already created as part of the initial cluster installation on vSphere.
+Sample YAML for a Windows MachineSet object on vSphere
+This sample YAML defines a Windows MachineSet object running on VMware vSphere that the Windows Machine Config Operator (WMCO) can react upon.
+
+apiVersion: machine.openshift.io/v1beta1
+kind: MachineSet
+metadata:
+  labels:
+    machine.openshift.io/cluster-api-cluster: <infrastructure_id> 1
+  name: <windows_machine_set_name> 2
+  namespace: openshift-machine-api
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      machine.openshift.io/cluster-api-cluster: <infrastructure_id> 1
+      machine.openshift.io/cluster-api-machineset: <windows_machine_set_name> 2
+  template:
+    metadata:
+      labels:
+        machine.openshift.io/cluster-api-cluster: <infrastructure_id> 1
+        machine.openshift.io/cluster-api-machine-role: worker
+        machine.openshift.io/cluster-api-machine-type: worker
+        machine.openshift.io/cluster-api-machineset: <windows_machine_set_name> 2
+        machine.openshift.io/os-id: Windows 3
+    spec:
+      metadata:
+        labels:
+          node-role.kubernetes.io/worker: "" 4
+      providerSpec:
+        value:
+          apiVersion: vsphereprovider.openshift.io/v1beta1
+          credentialsSecret:
+            name: vsphere-cloud-credentials
+          diskGiB: 128 5
+          kind: VSphereMachineProviderSpec
+          memoryMiB: 16384
+          network:
+            devices:
+            - networkName: "<vm_network_name>" 6
+          numCPUs: 4
+          numCoresPerSocket: 1
+          snapshot: ""
+          template: <windows_vm_template_name> 7
+          userDataSecret:
+            name: windows-user-data 8
+          workspace:
+             datacenter: <vcenter_datacenter_name> 9
+             datastore: <vcenter_datastore_name> 10
+             folder: <vcenter_vm_folder_path> 11
+             resourcePool: <vsphere_resource_pool> 12
+             server: <vcenter_server_ip> 13
+Specify the infrastructure ID that is based on the cluster ID that you set when you provisioned the cluster. You can obtain the infrastructure ID by running the following command:
+
+Specify the Windows compute machine set name. The compute machine set name cannot be more than 9 characters long, due to the way machine names are generated in vSphere.
+
+Configure the compute machine set as a Windows machine.
+
+Configure the Windows node as a compute machine.
+
+Specify the size of the vSphere Virtual Machine Disk (VMDK).
+
+Specify the vSphere VM network to deploy the compute machine set to. This VM network must be where other Linux compute machines reside in the cluster.
+
+Specify the full path of the Windows vSphere VM template to use, such as golden-images/windows-server-template. The name must be unique.
+
+The windows-user-data is created by the WMCO when the first Windows machine is configured. After that, the windows-user-data is available for all subsequent compute machine sets to consume.
+
+Specify the vCenter Datacenter to deploy the compute machine set on.
+
+Specify the vCenter Datastore to deploy the compute machine set on.
+
+Specify the path to the vSphere VM folder in vCenter, such as /dc1/vm/user-inst-5ddjd.
+
+Optional: Specify the vSphere resource pool for your Windows VMs.
+
+Specify the vCenter server IP or fully qualified domain name.
+Creating a compute machine set
+In addition to the compute machine sets created by the installation program, you can create your own to dynamically manage the machine compute resources for specific workloads of your choice.
+
+Deploy an Red Hat OpenShift Container Platform cluster.
+
+Install the OpenShift CLI (oc).
+
+Log in to oc as a user with cluster-admin permission.
+
+
+Create a new YAML file that contains the compute machine set custom resource (CR) sample and is named <file_name>.yaml.
+
+Optional: If you are not sure which value to set for a specific field, you can check an existing compute machine set from your cluster.
+
+Create a MachineSet CR by running the following command:
+
+
+View the list of compute machine sets by running the following command:
+Additional resources
+Overview of machine management

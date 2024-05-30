@@ -1,0 +1,234 @@
+Manual mode with short-term credentials for components
+
+During installation, you can configure the Cloud Credential Operator (CCO) to operate in manual mode and use the CCO utility (ccoctl) to implement short-term security credentials for individual components that are created and managed outside the Red Hat OpenShift Container Platform cluster.
+
+This credentials strategy is supported for Amazon Web Services (AWS), Google Cloud Platform (GCP), and global Microsoft Azure only. The strategy must be configured during installation of a new Red Hat OpenShift Container Platform cluster. You cannot configure an existing cluster that uses a different credentials strategy to use this feature.
+Cloud providers use different terms for their implementation of this authentication method.
+AWS Security Token Service
+In manual mode with STS, the individual Red Hat OpenShift Container Platform cluster components use the AWS Security Token Service (STS) to assign components IAM roles that provide short-term, limited-privilege security credentials. These credentials are associated with IAM roles that are specific to each component that makes AWS API calls.
+
+Configuring an AWS cluster to use short-term credentials
+
+
+AWS Security Token Service authentication process
+The AWS Security Token Service (STS) and the AssumeRole API action allow pods to retrieve access keys that are defined by an IAM role policy.
+
+The Red Hat OpenShift Container Platform cluster includes a Kubernetes service account signing service. This service uses a private key to sign service account JSON web tokens (JWT). A pod that requires a service account token requests one through the pod specification. When the pod is created and assigned to a node, the node retrieves a signed service account from the service account signing service and mounts it onto the pod.
+
+Clusters that use STS contain an IAM role ID in their Kubernetes configuration secrets. Workloads assume the identity of this IAM role ID. The signed service account token issued to the workload aligns with the configuration in AWS, which allows AWS STS to grant access keys for the specified IAM role to the workload.
+
+AWS STS grants access keys only for requests that include service account tokens that meet the following conditions:
+
+The token name and namespace match the service account name and namespace.
+
+The token is signed by a key that matches the public key.
+
+
+The public key pair for the service account signing key used by the cluster is stored in an AWS S3 bucket. AWS STS federation validates that the service account token signature aligns with the public key stored in the S3 bucket.
+
+Authentication flow for AWS STS
+The following diagram illustrates the authentication flow between AWS and the Red Hat OpenShift Container Platform cluster when using AWS STS.
+
+Token signing is the Kubernetes service account signing service on the Red Hat OpenShift Container Platform cluster.
+
+The Kubernetes service account in the pod is the signed service account token.
+
+
+
+Requests for new and refreshed credentials are automated by using an appropriately configured AWS IAM OpenID Connect (OIDC) identity provider combined with AWS IAM roles. Service account tokens that are trusted by AWS IAM are signed by Red Hat OpenShift Container Platform and can be projected into a pod and used for authentication.
+Token refreshing for AWS STS
+The signed service account token that a pod uses expires after a period of time. For clusters that use AWS STS, this time period is 3600 seconds, or one hour.
+
+The kubelet on the node that the pod is assigned to ensures that the token is refreshed. The kubelet attempts to rotate a token when it is older than 80 percent of its time to live.
+OpenID Connect requirements for AWS STS
+You can store the public portion of the encryption keys for your OIDC configuration in a public or private S3 bucket.
+
+The OIDC spec requires the use of HTTPS. AWS services require a public endpoint to expose the OIDC documents in the form of JSON web key set (JWKS) public keys. This allows AWS services to validate the bound tokens signed by Kubernetes and determine whether to trust certificates. As a result, both S3 bucket options require a public HTTPS endpoint and private endpoints are not supported.
+
+To use AWS STS, the public AWS backbone for the AWS STS service must be able to communicate with a public S3 bucket or a private S3 bucket with a public CloudFront endpoint. You can choose which type of bucket to use when you process CredentialsRequest objects during installation:
+
+By default, the CCO utility (ccoctl) stores the OIDC configuration files in a public S3 bucket and uses the S3 URL as the public OIDC endpoint.
+
+As an alternative, you can have the ccoctl utility store the OIDC configuration in a private S3 bucket that is accessed by the IAM identity provider through a public CloudFront distribution URL.
+AWS component secret formats
+Using manual mode with the AWS Security Token Service (STS) changes the content of the AWS credentials that are provided to individual Red Hat OpenShift Container Platform components. Compare the following secret formats:
+
+apiVersion: v1
+kind: Secret
+metadata:
+  namespace: <target_namespace> 1
+  name: <target_secret_name> 2
+data:
+  aws_access_key_id: <base64_encoded_access_key_id>
+  aws_secret_access_key: <base64_encoded_secret_access_key>
+The namespace for the component.
+
+The name of the component secret.
+
+
+apiVersion: v1
+kind: Secret
+metadata:
+  namespace: <target_namespace> 1
+  name: <target_secret_name> 2
+stringData:
+  credentials: |-
+    [default]
+    sts_regional_endpoints = regional
+    role_name: <operator_role_name> 3
+    web_identity_token_file: <path_to_token> 4
+The namespace for the component.
+
+The name of the component secret.
+
+The IAM role for the component.
+
+The path to the service account token inside the pod. By convention, this is /var/run/secrets/openshift/serviceaccount/token for Red Hat OpenShift Container Platform components.
+AWS component secret permissions requirements
+Red Hat OpenShift Container Platform components require the following permissions. These values are in the CredentialsRequest custom resource (CR) for each component.
+
+These permissions apply to all resources. Unless specified, there are no request conditions on these permissions.
+
+Request condition: kms:GrantIsForAWSResource: true
+OLM-managed Operator support for authentication with AWS STS
+In addition to Red Hat OpenShift Container Platform cluster components, some Operators managed by the Operator Lifecycle Manager (OLM) on AWS clusters can use manual mode with STS. These Operators authenticate with limited-privilege, short-term credentials that are managed outside the cluster. To determine if an Operator supports authentication with AWS STS, see the Operator description in OperatorHub.
+
+CCO-based workflow for OLM-managed Operators with AWS STS
+GCP Workload Identity
+In manual mode with GCP Workload Identity, the individual Red Hat OpenShift Container Platform cluster components use the GCP workload identity provider to allow components to impersonate GCP service accounts using short-term, limited-privilege credentials.
+
+Configuring a GCP cluster to use short-term credentials
+
+
+GCP Workload Identity authentication process
+Requests for new and refreshed credentials are automated by using an appropriately configured OpenID Connect (OIDC) identity provider combined with IAM service accounts. Service account tokens that are trusted by GCP are signed by Red Hat OpenShift Container Platform and can be projected into a pod and used for authentication. Tokens are refreshed after one hour.
+
+The following diagram details the authentication flow between GCP and the Red Hat OpenShift Container Platform cluster when using GCP Workload Identity.
+GCP component secret formats
+Using manual mode with GCP Workload Identity changes the content of the GCP credentials that are provided to individual Red Hat OpenShift Container Platform components. Compare the following secret content:
+
+apiVersion: v1
+kind: Secret
+metadata:
+  namespace: <target_namespace> 1
+  name: <target_secret_name> 2
+data:
+  service_account.json: <service_account> 3
+The namespace for the component.
+
+The name of the component secret.
+
+The Base64 encoded service account.
+
+
+{
+   "type": "service_account", 1
+   "project_id": "<project_id>",
+   "private_key_id": "<private_key_id>",
+   "private_key": "<private_key>", 2
+   "client_email": "<client_email_address>",
+   "client_id": "<client_id>",
+   "auth_uri": "https://accounts.google.com/o/oauth2/auth",
+   "token_uri": "https://oauth2.googleapis.com/token",
+   "auth_provider_x509_cert_url": "https://www.googleapis.com/oauth2/v1/certs",
+   "client_x509_cert_url": "https://www.googleapis.com/robot/v1/metadata/x509/<client_email_address>"
+}
+The credential type is service_account.
+
+The private RSA key that is used to authenticate to GCP. This key must be kept secure and is not rotated.
+
+
+{
+   "type": "external_account", 1
+   "audience": "//iam.googleapis.com/projects/123456789/locations/global/workloadIdentityPools/test-pool/providers/test-provider", 2
+   "subject_token_type": "urn:ietf:params:oauth:token-type:jwt",
+   "token_url": "https://sts.googleapis.com/v1/token",
+   "service_account_impersonation_url": "https://iamcredentials.googleapis.com/v1/projects/-/serviceAccounts/<client_email_address>:generateAccessToken", 3
+   "credential_source": {
+      "file": "<path_to_token>", 4
+      "format": {
+         "type": "text"
+      }
+   }
+}
+The credential type is external_account.
+
+The target audience is the GCP Workload Identity provider.
+
+The resource URL of the service account that can be impersonated with these credentials.
+
+The path to the service account token inside the pod. By convention, this is /var/run/secrets/openshift/serviceaccount/token for Red Hat OpenShift Container Platform components.
+Microsoft Entra Workload ID
+In manual mode with Microsoft Entra Workload ID, the individual Red Hat OpenShift Container Platform cluster components use the Workload ID provider to assign components short-term security credentials.
+
+Configuring a global Microsoft Azure cluster to use short-term credentials
+
+
+Microsoft Entra Workload ID authentication process
+The following diagram details the authentication flow between Azure and the Red Hat OpenShift Container Platform cluster when using Microsoft Entra Workload ID.
+Azure component secret formats
+Using manual mode with Microsoft Entra Workload ID changes the content of the Azure credentials that are provided to individual Red Hat OpenShift Container Platform components. Compare the following secret formats:
+
+apiVersion: v1
+kind: Secret
+metadata:
+  namespace: <target_namespace> 1
+  name: <target_secret_name> 2
+data:
+  azure_client_id: <client_id> 3
+  azure_client_secret: <client_secret> 4
+  azure_region: <region>
+  azure_resource_prefix: <resource_group_prefix> 5
+  azure_resourcegroup: <resource_group_prefix>-rg 6
+  azure_subscription_id: <subscription_id>
+  azure_tenant_id: <tenant_id>
+type: Opaque
+The namespace for the component.
+
+The name of the component secret.
+
+The client ID of the Microsoft Entra ID identity that the component uses to authenticate.
+
+The component secret that is used to authenticate with Microsoft Entra ID for the <client_id> identity.
+
+The resource group prefix.
+
+The resource group. This value is formed by the <resource_group_prefix> and the suffix -rg.
+
+
+apiVersion: v1
+kind: Secret
+metadata:
+  namespace: <target_namespace> 1
+  name: <target_secret_name> 2
+data:
+  azure_client_id: <client_id> 3
+  azure_federated_token_file: <path_to_token_file> 4
+  azure_region: <region>
+  azure_subscription_id: <subscription_id>
+  azure_tenant_id: <tenant_id>
+type: Opaque
+The namespace for the component.
+
+The name of the component secret.
+
+The client ID of the user-assigned managed identity that the component uses to authenticate.
+
+The path to the mounted service account token file.
+Azure component secret permissions requirements
+Red Hat OpenShift Container Platform components require the following permissions. These values are in the CredentialsRequest custom resource (CR) for each component.
+
+
+This component requires a role rather than a set of permissions.
+OLM-managed Operator support for authentication with Microsoft Entra Workload ID
+In addition to Red Hat OpenShift Container Platform cluster components, some Operators managed by the Operator Lifecycle Manager (OLM) on Azure clusters can use manual mode with Microsoft Entra Workload ID. These Operators authenticate with short-term credentials that are managed outside the cluster. To determine if an Operator supports authentication with Workload ID, see the Operator description in OperatorHub.
+
+CCO-based workflow for OLM-managed Operators with Microsoft Entra Workload ID
+Additional resources
+Configuring an AWS cluster to use short-term credentials
+
+Configuring a GCP cluster to use short-term credentials
+
+Configuring a global Microsoft Azure cluster to use short-term credentials
+
+Preparing to update a cluster with manually maintained credentials

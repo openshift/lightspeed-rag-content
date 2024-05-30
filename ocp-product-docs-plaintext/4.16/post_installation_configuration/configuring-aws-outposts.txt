@@ -1,0 +1,352 @@
+Extending an AWS VPC cluster into an AWS Outpost
+
+After installing a cluster on Amazon Web Services (AWS) into an existing Amazon Virtual Private Cloud (VPC), you can create a compute machine set that deploys compute machines in AWS Outposts. AWS Outposts is an AWS edge compute service that enables using many features of a cloud-based AWS deployment with the reduced latency of an on-premise environment. For more information, see the AWS Outposts documentation.
+AWS Outposts on Red Hat OpenShift Container Platform requirements and limitations
+You can manage the resources on your AWS Outpost similarly to those on a cloud-based AWS cluster if you configure your Red Hat OpenShift Container Platform cluster to accommodate the following requirements and limitations:
+
+To extend an Red Hat OpenShift Container Platform cluster on AWS into an Outpost, you must have installed the cluster into an existing Amazon Virtual Private Cloud (VPC).
+
+The infrastructure of an Outpost is tied to an availability zone in an AWS region and uses a dedicated subnet.
+Edge compute machines deployed into an Outpost must use the Outpost subnet and the availability zone that the Outpost is tied to.
+
+When the AWS Kubernetes cloud controller manager discovers an Outpost subnet, it attempts to create service load balancers in the Outpost subnet.
+AWS Outposts do not support running service load balancers.
+To prevent the cloud controller manager from creating unsupported services in the Outpost subnet, you must include the kubernetes.io/cluster/unmanaged tag in the Outpost subnet configuration.
+This requirement is a workaround in Red Hat OpenShift Container Platform version 4.16.
+For more information, see OCPBUGS-30041.
+
+Red Hat OpenShift Container Platform clusters on AWS include the gp3-csi and gp2-csi storage classes.
+These classes correspond to Amazon Elastic Block Store (EBS) gp3 and gp2 volumes.
+Red Hat OpenShift Container Platform clusters use the gp3-csi storage class by default, but AWS Outposts does not support EBS gp3 volumes.
+
+This implementation uses the node-role.kubernetes.io/outposts taint to prevent spreading regular cluster workloads to the Outpost nodes.
+To schedule user workloads in the Outpost, you must specify a corresponding toleration in the Deployment resource for your application.
+Reserving the AWS Outpost infrastructure for user workloads avoids additional configuration requirements, such as updating the default CSI to gp2-csi so that it is compatible.
+
+To create a volume in the Outpost, the CSI driver requires the Outpost Amazon Resource Name (ARN).
+The driver uses the topology keys stored on the CSINode objects to determine the Outpost ARN.
+To ensure that the driver uses the correct topology values, you must set the volume binding mode to WaitForConsumer and avoid setting allowed topologies on any new storage classes that you create.
+
+When you extend an AWS VPC cluster into an Outpost, you have two types of compute resources.
+The Outpost has edge compute nodes, while the VPC has cloud-based compute nodes.
+The cloud-based AWS Elastic Block volume cannot attach to Outpost edge compute nodes, and the Outpost volumes cannot attach to cloud-based compute nodes.
+
+AWS Outposts does not support AWS Network Load Balancers or AWS Classic Load Balancers.
+You must use AWS Application Load Balancers to enable load balancing for edge compute resources in the AWS Outposts environment.
+
+
+Using the AWS Load Balancer Operator in an AWS VPC cluster extended into an Outpost
+Obtaining information about your environment
+To extend an AWS VPC cluster to your Outpost, you must provide information about your Red Hat OpenShift Container Platform cluster and your Outpost environment. You use this information to complete network configuration tasks and configure a compute machine set that creates compute machines in your Outpost. You can use command-line tools to gather the required details.
+
+Obtaining information from your Red Hat OpenShift Container Platform cluster
+You can use the OpenShift CLI (`oc`) to obtain information from your Red Hat OpenShift Container Platform cluster.
+
+You might find it convenient to store some or all of these values as environment variables by using the export command.
+You have installed an Red Hat OpenShift Container Platform cluster into a custom VPC on AWS.
+
+You have access to the cluster using an account with cluster-admin permissions.
+
+You have installed the OpenShift CLI (`oc`).
+
+
+List the infrastructure ID for the cluster by running the following command. Retain this value.
+
+Obtain details about the compute machine sets that the installation program created by running the following commands:
+Obtaining information from your AWS account
+You can use the AWS CLI (aws) to obtain information from your AWS account.
+
+You might find it convenient to store some or all of these values as environment variables by using the export command.
+You have an AWS Outposts site with the required hardware setup complete.
+
+Your Outpost is connected to your AWS account.
+
+You have access to your AWS account by using the AWS CLI (aws) as a user with permissions to perform the required tasks.
+
+
+List the Outposts that are connected to your AWS account by running the following command:
+
+Retain the following values from the output of the aws outposts list-outposts command:
+
+Using the value of the Outpost ID, show the instance types that are available in your Outpost by running the following command. Retain the values of the available instance types.
+
+Using the value of the Outpost ARN, show the subnet ID for the Outpost by running the following command. Retain this value.
+Configuring your network for your Outpost
+To extend your VPC cluster into an Outpost, you must complete the following network configuration tasks:
+
+Change the Cluster Network MTU.
+
+Create a subnet in your Outpost.
+
+
+Changing the cluster network MTU to support AWS Outposts
+During installation, the maximum transmission unit (MTU) for the cluster network is detected automatically based on the MTU of the primary network interface of nodes in the cluster. You might need to decrease the MTU value for the cluster network to support an AWS Outposts subnet.
+
+The migration is disruptive and nodes in your cluster might be temporarily unavailable as the MTU update takes effect.
+For more details about the migration process, including important service interruption considerations, see "Changing the MTU for the cluster network" in the additional resources for this procedure.
+
+You have installed the OpenShift CLI (`oc`).
+
+You have access to the cluster using an account with cluster-admin permissions.
+
+You have identified the target MTU for your cluster. The MTU for the OVN-Kubernetes network plugin must be set to 100 less than the lowest hardware MTU value in your cluster.
+
+
+To obtain the current MTU for the cluster network, enter the following command:
+
+To begin the MTU migration, specify the migration configuration by entering the following command. The Machine Config Operator performs a rolling reboot of the nodes in the cluster in preparation for the MTU change.
+
+As the Machine Config Operator updates machines in each machine config pool, it reboots each node one by one. You must wait until all the nodes are updated. Check the machine config pool status by entering the following command:
+
+Confirm the status of the new machine configuration on the hosts:
+
+To finalize the MTU migration, enter the following command for the OVN-Kubernetes network plugin:
+
+After finalizing the MTU migration, each machine config pool node is rebooted one by one. You must wait until all the nodes are updated. Check the machine config pool status by entering the following command:
+
+
+Verify that the node in your cluster uses the MTU that you specified by entering the following command:
+
+
+Changing the MTU for the cluster network
+Creating subnets for AWS edge compute services
+Before you configure a machine set for edge compute nodes in your Red Hat OpenShift Container Platform cluster, you must create a subnet in AWS Outposts.
+
+You can use the provided CloudFormation template and create a CloudFormation stack. You can then use this stack to custom provision a subnet.
+
+If you do not use the provided CloudFormation template to create your AWS infrastructure, you must review the provided information and manually create the infrastructure. If your cluster does not initialize correctly, you might have to contact Red Hat support with your installation logs.
+You configured an AWS account.
+
+You added your AWS keys and region to your local AWS profile by running aws configure.
+
+You have obtained the required information about your environment from your Red Hat OpenShift Container Platform cluster, Outpost, and AWS account.
+
+
+Go to the section of the documentation named "CloudFormation template for the VPC subnet", and copy the syntax from the template. Save the copied template syntax as a YAML file on your local system. This template describes the VPC that your cluster requires.
+
+Run the following command to deploy the CloudFormation template, which creates a stack of AWS resources that represent the VPC:
+
+
+Confirm that the template components exist by running the following command:
+CloudFormation template for the VPC subnet
+You can use the following CloudFormation template to deploy the Outpost subnet.
+
+AWSTemplateFormatVersion: 2010-09-09
+Description: Template for Best Practice Subnets (Public and Private)
+
+Parameters:
+  VpcId:
+    Description: VPC ID that comprises all the target subnets.
+    Type: String
+    AllowedPattern: ^(?:(?:vpc)(?:-[a-zA-Z0-9]+)?\b|(?:[0-9]{1,3}\.){3}[0-9]{1,3})$
+    ConstraintDescription: VPC ID must be with valid name, starting with vpc-.*.
+  ClusterName:
+    Description: Cluster name or prefix name to prepend the Name tag for each subnet.
+    Type: String
+    AllowedPattern: ".+"
+    ConstraintDescription: ClusterName parameter must be specified.
+  ZoneName:
+    Description: Zone Name to create the subnets, such as us-west-2-lax-1a.
+    Type: String
+    AllowedPattern: ".+"
+    ConstraintDescription: ZoneName parameter must be specified.
+  PublicRouteTableId:
+    Description: Public Route Table ID to associate the public subnet.
+    Type: String
+    AllowedPattern: ".+"
+    ConstraintDescription: PublicRouteTableId parameter must be specified.
+  PublicSubnetCidr:
+    AllowedPattern: ^(([0-9]|[1-9][0-9]|1[0-9]{2}|2[0-4][0-9]|25[0-5])\.){3}([0-9]|[1-9][0-9]|1[0-9]{2}|2[0-4][0-9]|25[0-5])(\/(1[6-9]|2[0-4]))$
+    ConstraintDescription: CIDR block parameter must be in the form x.x.x.x/16-24.
+    Default: 10.0.128.0/20
+    Description: CIDR block for public subnet.
+    Type: String
+  PrivateRouteTableId:
+    Description: Private Route Table ID to associate the private subnet.
+    Type: String
+    AllowedPattern: ".+"
+    ConstraintDescription: PrivateRouteTableId parameter must be specified.
+  PrivateSubnetCidr:
+    AllowedPattern: ^(([0-9]|[1-9][0-9]|1[0-9]{2}|2[0-4][0-9]|25[0-5])\.){3}([0-9]|[1-9][0-9]|1[0-9]{2}|2[0-4][0-9]|25[0-5])(\/(1[6-9]|2[0-4]))$
+    ConstraintDescription: CIDR block parameter must be in the form x.x.x.x/16-24.
+    Default: 10.0.128.0/20
+    Description: CIDR block for private subnet.
+    Type: String
+  PrivateSubnetLabel:
+    Default: "private"
+    Description: Subnet label to be added when building the subnet name.
+    Type: String
+  PublicSubnetLabel:
+    Default: "public"
+    Description: Subnet label to be added when building the subnet name.
+    Type: String
+  OutpostArn:
+    Default: ""
+    Description: OutpostArn when creating subnets on AWS Outpost.
+    Type: String
+
+Conditions:
+  OutpostEnabled: !Not [!Equals [!Ref "OutpostArn", ""]]
+
+Resources:
+  PublicSubnet:
+    Type: "AWS::EC2::Subnet"
+    Properties:
+      VpcId: !Ref VpcId
+      CidrBlock: !Ref PublicSubnetCidr
+      AvailabilityZone: !Ref ZoneName
+      OutpostArn: !If [ OutpostEnabled, !Ref OutpostArn, !Ref "AWS::NoValue"]
+      Tags:
+      - Key: Name
+        Value: !Join ['-', [ !Ref ClusterName, !Ref PublicSubnetLabel, !Ref ZoneName]]
+      - Key: kubernetes.io/cluster/unmanaged 1
+        Value: true
+
+  PublicSubnetRouteTableAssociation:
+    Type: "AWS::EC2::SubnetRouteTableAssociation"
+    Properties:
+      SubnetId: !Ref PublicSubnet
+      RouteTableId: !Ref PublicRouteTableId
+
+  PrivateSubnet:
+    Type: "AWS::EC2::Subnet"
+    Properties:
+      VpcId: !Ref VpcId
+      CidrBlock: !Ref PrivateSubnetCidr
+      AvailabilityZone: !Ref ZoneName
+      OutpostArn: !If [ OutpostEnabled, !Ref OutpostArn, !Ref "AWS::NoValue"]
+      Tags:
+      - Key: Name
+        Value: !Join ['-', [!Ref ClusterName, !Ref PrivateSubnetLabel, !Ref ZoneName]]
+      - Key: kubernetes.io/cluster/unmanaged 2
+        Value: true
+
+  PrivateSubnetRouteTableAssociation:
+    Type: "AWS::EC2::SubnetRouteTableAssociation"
+    Properties:
+      SubnetId: !Ref PrivateSubnet
+      RouteTableId: !Ref PrivateRouteTableId
+
+Outputs:
+  PublicSubnetId:
+    Description: Subnet ID of the public subnets.
+    Value:
+      !Join ["", [!Ref PublicSubnet]]
+
+  PrivateSubnetId:
+    Description: Subnet ID of the private subnets.
+    Value:
+      !Join ["", [!Ref PrivateSubnet]]
+You must include the kubernetes.io/cluster/unmanaged tag in the public subnet configuration for AWS Outposts.
+
+You must include the kubernetes.io/cluster/unmanaged tag in the private subnet configuration for AWS Outposts.
+Creating a compute machine set that deploys edge compute machines on an Outpost
+To create edge compute machines on AWS Outposts, you must create a new compute machine set with a compatible configuration.
+
+You have an AWS Outposts site.
+
+You have installed an Red Hat OpenShift Container Platform cluster into a custom VPC on AWS.
+
+You have access to the cluster using an account with cluster-admin permissions.
+
+You have installed the OpenShift CLI (`oc`).
+
+
+List the compute machine sets in your cluster by running the following command:
+
+Record the names of the existing compute machine sets.
+
+Create a YAML file that contains the values for a new compute machine set custom resource (CR) by using one of the following methods:
+
+Configure the new compute machine set to create edge compute machines in the Outpost by editing the <new_machine_set_name_1>.yaml file:
+
+Save your changes.
+
+Create a compute machine set CR by running the following command:
+
+
+To verify that the compute machine set is created, list the compute machine sets in your cluster by running the following command:
+
+To list the machines that are managed by the new compute machine set, run the following command:
+
+To verify that a machine created by the new compute machine set has the correct configuration, examine the relevant fields in the CR for one of the new machines by running the following command:
+Creating user workloads in an Outpost
+After you extend an Red Hat OpenShift Container Platform in an AWS VPC cluster into an Outpost, you can use edge compute nodes with the label node-role.kubernetes.io/outposts to create user workloads in the Outpost.
+
+You have extended an AWS VPC cluster into an Outpost.
+
+You have access to the cluster using an account with cluster-admin permissions.
+
+You have installed the OpenShift CLI (`oc`).
+
+You have created a compute machine set that deploys edge compute machines compatible with the Outpost environment.
+
+
+Configure a Deployment resource file for an application that you want to deploy to the edge compute node in the edge subnet.
+
+Create the Deployment resource by running the following command:
+
+Configure a Service object that exposes a pod from a targeted edge compute node to services that run inside your edge network.
+
+Create the Service CR by running the following command:
+Scheduling workloads on edge and cloud-based AWS compute resources
+When you extend an AWS VPC cluster into an Outpost, the Outpost uses edge compute nodes and the VPC uses cloud-based compute nodes. The following load balancer considerations apply to an AWS VPC cluster extended into an Outpost:
+
+Outposts cannot run AWS Network Load Balancers or AWS Classic Load Balancers, but a Classic Load Balancer for a VPC cluster extended into an Outpost can attach to the Outpost edge compute nodes.
+For more information, see Using AWS Classic Load Balancers in an AWS VPC cluster extended into an Outpost.
+
+To run a load balancer on an Outpost instance, you must use an AWS Application Load Balancer.
+You can use the AWS Load Balancer Operator to deploy an instance of the AWS Load Balancer Controller.
+The controller provisions AWS Application Load Balancers for Kubernetes Ingress resources.
+For more information, see Using the AWS Load Balancer Operator in an AWS VPC cluster extended into an Outpost.
+
+
+Using AWS Classic Load Balancers in an AWS VPC cluster extended into an Outpost
+AWS Outposts infrastructure cannot run AWS Classic Load Balancers, but Classic Load Balancers in the AWS VPC cluster can target edge compute nodes in the Outpost if edge and cloud-based subnets are in the same availability zone. As a result, Classic Load Balancers on the VPC cluster might schedule pods on either of these node types.
+
+Scheduling the workloads on edge compute nodes and cloud-based compute nodes can introduce latency. If you want to prevent a Classic Load Balancer in the VPC cluster from targeting Outpost edge compute nodes, you can apply labels to the cloud-based compute nodes and configure the Classic Load Balancer to only schedule on nodes with the applied labels.
+
+If you do not need to prevent a Classic Load Balancer in the VPC cluster from targeting Outpost edge compute nodes, you do not need to complete these steps.
+You have extended an AWS VPC cluster into an Outpost.
+
+You have access to the cluster using an account with cluster-admin permissions.
+
+You have installed the OpenShift CLI (`oc`).
+
+You have created a user workload in the Outpost with tolerations that match the taints for your edge compute machines.
+
+
+Optional: Verify that the edge compute nodes have the location=outposts label by running the following command and verifying that the output includes only the edge compute nodes in your Outpost:
+
+Label the cloud-based compute nodes in the VPC cluster with a key-value pair by running the following command:
+
+Optional: Verify that the cloud-based compute nodes have the specified label by running the following command and confirming that the output includes all cloud-based compute nodes in your VPC cluster:
+
+Configure the Classic Load Balancer service by adding the cloud-based subnet information to the annotations field of the Service manifest:
+
+Create the Service CR by running the following command:
+
+
+Verify the status of the service resource to show the host of the provisioned Classic Load Balancer by running the following command:
+
+Verify the status of the provisioned Classic Load Balancer host by running the following command:
+
+In the AWS console, verify that only the labeled instances appear as the targeted instances for the load balancer.
+Using the AWS Load Balancer Operator in an AWS VPC cluster extended into an Outpost
+You can configure the AWS Load Balancer Operator to provision an AWS Application Load Balancer in an AWS VPC cluster extended into an Outpost. AWS Outposts does not support AWS Network Load Balancers. As a result, the AWS Load Balancer Operator cannot provision Network Load Balancers in an Outpost.
+
+You can create an AWS Application Load Balancer either in the cloud subnet or in the Outpost subnet. An Application Load Balancer in the cloud can attach to cloud-based compute nodes and an Application Load Balancer in the Outpost can attach to edge compute nodes. You must annotate Ingress resources with the Outpost subnet or the VPC subnet, but not both.
+
+You have extended an AWS VPC cluster into an Outpost.
+
+You have installed the OpenShift CLI (`oc`).
+
+You have installed the AWS Load Balancer Operator and created the AWS Load Balancer Controller.
+
+
+Configure the Ingress resource to use a specified subnet:
+
+
+Creating an instance of the AWS Load Balancer Controller using AWS Load Balancer Operator
+Additional resources
+Installing a cluster on AWS into an existing VPC
