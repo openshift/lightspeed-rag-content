@@ -1,24 +1,113 @@
-Forwarding traces to a TempoStack instance
+# Forwarding traces to a TempoStack instance
+
 To configure forwarding traces to a TempoStack instance, you can deploy and configure the OpenTelemetry Collector. You can deploy the OpenTelemetry Collector in the deployment mode by using the specified processors, receivers, and exporters. For other modes, see the OpenTelemetry Collector documentation linked in Additional resources.
 
-The Red Hat build of OpenTelemetry Operator is installed.
+* The Red Hat build of OpenTelemetry Operator is installed.
+* The Tempo Operator is installed.
+* A TempoStack instance is deployed on the cluster.
 
-The Tempo Operator is installed.
+1. Create a service account for the OpenTelemetry Collector.
+Example ServiceAccount
 
-A TempoStack instance is deployed on the cluster.
+```yaml
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: otel-collector-deployment
+```
+
+2. Create a cluster role for the service account.
+Example ClusterRole
+
+```yaml
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: otel-collector
+rules:
+  1
+  2
+- apiGroups: ["", "config.openshift.io"]
+  resources: ["pods", "namespaces", "infrastructures", "infrastructures/status"]
+  verbs: ["get", "watch", "list"]
+```
+
+The k8sattributesprocessor requires permissions for pods and namespaces resources.
+The resourcedetectionprocessor requires permissions for infrastructures and status.
+3. Bind the cluster role to the service account.
+Example ClusterRoleBinding
+
+```yaml
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: otel-collector
+subjects:
+- kind: ServiceAccount
+  name: otel-collector-deployment
+  namespace: otel-collector-example
+roleRef:
+  kind: ClusterRole
+  name: otel-collector
+  apiGroup: rbac.authorization.k8s.io
+```
+
+4. Create the YAML file to define the OpenTelemetryCollector custom resource (CR).
+Example OpenTelemetryCollector
+
+```yaml
+apiVersion: opentelemetry.io/v1alpha1
+kind: OpenTelemetryCollector
+metadata:
+  name: otel
+spec:
+  mode: deployment
+  serviceAccount: otel-collector-deployment
+  config: |
+    receivers:
+      jaeger:
+        protocols:
+          grpc:
+          thrift_binary:
+          thrift_compact:
+          thrift_http:
+      opencensus:
+      otlp:
+        protocols:
+          grpc:
+          http:
+      zipkin:
+    processors:
+      batch:
+      k8sattributes:
+      memory_limiter:
+        check_interval: 1s
+        limit_percentage: 50
+        spike_limit_percentage: 30
+      resourcedetection:
+        detectors: [openshift]
+    exporters:
+      otlp:
+        endpoint: "tempo-simplest-distributor:4317" 1
+        tls:
+          insecure: true
+    service:
+      pipelines:
+        traces:
+          receivers: [jaeger, opencensus, otlp, zipkin] 2
+          processors: [memory_limiter, k8sattributes, resourcedetection, batch]
+          exporters: [otlp]
+```
+
+The Collector exporter is configured to export OTLP and points to the Tempo distributor endpoint, "tempo-simplest-distributor:4317" in this example, which is already created.
+The Collector is configured with a receiver for Jaeger traces, OpenCensus traces over the OpenCensus protocol, Zipkin traces over the Zipkin protocol, and OTLP traces over the GRPC protocol.
 
 
-Create a service account for the OpenTelemetry Collector.
-
-Create a cluster role for the service account.
-
-Bind the cluster role to the service account.
-
-Create the YAML file to define the OpenTelemetryCollector custom resource (CR).
-
-
+[TIP]
+----
 You can deploy telemetrygen as a test:
 
+```yaml
 apiVersion: batch/v1
 kind: Job
 metadata:
@@ -37,6 +126,9 @@ spec:
             - --workers=1
       restartPolicy: Never
   backoffLimit: 4
-OpenTelemetry Collector documentation
+```
 
-Deployment examples on GitHub
+----
+
+* OpenTelemetry Collector documentation
+* Deployment examples on GitHub

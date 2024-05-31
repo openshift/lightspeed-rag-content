@@ -1,139 +1,555 @@
-Installer-provisioned postinstallation configuration
+# Installer-provisioned postinstallation configuration
+
 
 After successfully deploying an installer-provisioned cluster, consider the following postinstallation procedures.
-Optional: Configuring NTP for disconnected clusters
-Red Hat OpenShift Container Platform installs the chrony Network Time Protocol (NTP) service on the cluster nodes. Use the following procedure to configure NTP servers on the control plane nodes and configure worker nodes as NTP clients of the control plane nodes after a successful deployment.
 
+# Optional: Configuring NTP for disconnected clusters
+
+Red Hat OpenShift Container Platform installs the chrony Network Time Protocol (NTP) service on the cluster nodes.
+Use the following procedure to configure NTP servers on the control plane nodes and configure worker nodes as NTP clients of the control plane nodes after a successful deployment.
+
+![Configuring NTP for disconnected clusters]
 
 Red Hat OpenShift Container Platform nodes must agree on a date and time to run properly. When worker nodes retrieve the date and time from the NTP servers on the control plane nodes, it enables the installation and operation of clusters that are not connected to a routable network and thereby do not have access to a higher stratum NTP server.
 
-Create a Butane config, 99-master-chrony-conf-override.bu, including the contents of the chrony.conf file for the control plane nodes.
+1. Create a Butane config, 99-master-chrony-conf-override.bu, including the contents of the chrony.conf file for the control plane nodes.
 
-Use Butane to generate a MachineConfig object file, 99-master-chrony-conf-override.yaml, containing the configuration to be delivered to the control plane nodes:
+[NOTE]
+----
+See "Creating machine configs with Butane" for information about Butane.
+----
+Butane config example
 
-Create a Butane config, 99-worker-chrony-conf-override.bu, including the contents of the chrony.conf file for the worker nodes that references the NTP servers on the control plane nodes.
+```yaml
+variant: openshift
+version: 4.16.0
+metadata:
+  name: 99-master-chrony-conf-override
+  labels:
+    machineconfiguration.openshift.io/role: master
+storage:
+  files:
+    - path: /etc/chrony.conf
+      mode: 0644
+      overwrite: true
+      contents:
+        inline: |
+          # Use public servers from the pool.ntp.org project.
+          # Please consider joining the pool (https://www.pool.ntp.org/join.html).
 
-Use Butane to generate a MachineConfig object file, 99-worker-chrony-conf-override.yaml, containing the configuration to be delivered to the worker nodes:
+          # The Machine Config Operator manages this file
+          server openshift-master-0.<cluster-name>.<domain> iburst 1
+          server openshift-master-1.<cluster-name>.<domain> iburst
+          server openshift-master-2.<cluster-name>.<domain> iburst
 
-Apply the 99-master-chrony-conf-override.yaml policy to the control plane nodes.
+          stratumweight 0
+          driftfile /var/lib/chrony/drift
+          rtcsync
+          makestep 10 3
+          bindcmdaddress 127.0.0.1
+          bindcmdaddress ::1
+          keyfile /etc/chrony.keys
+          commandkey 1
+          generatecommandkey
+          noclientlog
+          logchange 0.5
+          logdir /var/log/chrony
 
-Apply the 99-worker-chrony-conf-override.yaml policy to the worker nodes.
+          # Configure the control plane nodes to serve as local NTP servers
+          # for all worker nodes, even if they are not in sync with an
+          # upstream NTP server.
 
-Check the status of the applied NTP settings.
-Enabling a provisioning network after installation
-The assisted installer and installer-provisioned installation for bare metal clusters provide the ability to deploy a cluster without a provisioning network. This capability is for scenarios such as proof-of-concept clusters or deploying exclusively with Redfish virtual media when each node's baseboard management controller is routable via the baremetal network.
+          # Allow NTP client access from the local network.
+          allow all
+          # Serve time even if not synchronized to a time source.
+          local stratum 3 orphan
+```
+
+You must replace <cluster-name> with the name of the cluster and replace <domain> with the fully qualified domain name.
+2. Use Butane to generate a MachineConfig object file, 99-master-chrony-conf-override.yaml, containing the configuration to be delivered to the control plane nodes:
+
+```terminal
+$ butane 99-master-chrony-conf-override.bu -o 99-master-chrony-conf-override.yaml
+```
+
+3. Create a Butane config, 99-worker-chrony-conf-override.bu, including the contents of the chrony.conf file for the worker nodes that references the NTP servers on the control plane nodes.
+Butane config example
+
+```yaml
+variant: openshift
+version: 4.16.0
+metadata:
+  name: 99-worker-chrony-conf-override
+  labels:
+    machineconfiguration.openshift.io/role: worker
+storage:
+  files:
+    - path: /etc/chrony.conf
+      mode: 0644
+      overwrite: true
+      contents:
+        inline: |
+          # The Machine Config Operator manages this file.
+          server openshift-master-0.<cluster-name>.<domain> iburst 1
+          server openshift-master-1.<cluster-name>.<domain> iburst
+          server openshift-master-2.<cluster-name>.<domain> iburst
+
+          stratumweight 0
+          driftfile /var/lib/chrony/drift
+          rtcsync
+          makestep 10 3
+          bindcmdaddress 127.0.0.1
+          bindcmdaddress ::1
+          keyfile /etc/chrony.keys
+          commandkey 1
+          generatecommandkey
+          noclientlog
+          logchange 0.5
+          logdir /var/log/chrony
+```
+
+You must replace <cluster-name> with the name of the cluster and replace <domain> with the fully qualified domain name.
+4. Use Butane to generate a MachineConfig object file, 99-worker-chrony-conf-override.yaml, containing the configuration to be delivered to the worker nodes:
+
+```terminal
+$ butane 99-worker-chrony-conf-override.bu -o 99-worker-chrony-conf-override.yaml
+```
+
+5. Apply the 99-master-chrony-conf-override.yaml policy to the control plane nodes.
+
+```terminal
+$ oc apply -f 99-master-chrony-conf-override.yaml
+```
+
+Example output
+
+```terminal
+machineconfig.machineconfiguration.openshift.io/99-master-chrony-conf-override created
+```
+
+6. Apply the 99-worker-chrony-conf-override.yaml policy to the worker nodes.
+
+```terminal
+$ oc apply -f 99-worker-chrony-conf-override.yaml
+```
+
+Example output
+
+```terminal
+machineconfig.machineconfiguration.openshift.io/99-worker-chrony-conf-override created
+```
+
+7. Check the status of the applied NTP settings.
+
+```terminal
+$ oc describe machineconfigpool
+```
+
+
+# Enabling a provisioning network after installation
+
+The assisted installer and installer-provisioned installation for bare metal clusters provide the ability to deploy a cluster without a provisioning network. This capability is for scenarios such as proof-of-concept clusters or deploying exclusively with Redfish virtual media when each node&#8217;s baseboard management controller is routable via the baremetal network.
 
 You can enable a provisioning network after installation using the Cluster Baremetal Operator (CBO).
 
-A dedicated physical network must exist, connected to all worker and control plane nodes.
+* A dedicated physical network must exist, connected to all worker and control plane nodes.
+* You must isolate the native, untagged physical network.
+* The network cannot have a DHCP server when the provisioningNetwork configuration setting is set to Managed.
+* You can omit the provisioningInterface setting in Red Hat OpenShift Container Platform 4.10 to use the bootMACAddress configuration setting.
 
-You must isolate the native, untagged physical network.
+1. When setting the provisioningInterface setting, first identify the provisioning interface name for the cluster nodes. For example, eth0 or eno1.
+2. Enable the Preboot eXecution Environment (PXE) on the provisioning network interface of the cluster nodes.
+3. Retrieve the current state of the provisioning network and save it to a provisioning custom resource (CR) file:
 
-The network cannot have a DHCP server when the provisioningNetwork configuration setting is set to Managed.
+```terminal
+$ oc get provisioning -o yaml > enable-provisioning-nw.yaml
+```
 
-You can omit the provisioningInterface setting in Red Hat OpenShift Container Platform 4.10 to use the bootMACAddress configuration setting.
+4. Modify the provisioning CR file:
+
+```terminal
+$ vim ~/enable-provisioning-nw.yaml
+```
 
 
-When setting the provisioningInterface setting, first identify the provisioning interface name for the cluster nodes. For example, eth0 or eno1.
+Scroll down to the provisioningNetwork configuration setting and change it from Disabled to Managed. Then, add the provisioningIP, provisioningNetworkCIDR, provisioningDHCPRange, provisioningInterface, and watchAllNameSpaces configuration settings after the provisioningNetwork setting. Provide appropriate values for each setting.
 
-Enable the Preboot eXecution Environment (PXE) on the provisioning network interface of the cluster nodes.
+```yaml
+apiVersion: v1
+items:
+- apiVersion: metal3.io/v1alpha1
+  kind: Provisioning
+  metadata:
+    name: provisioning-configuration
+  spec:
+    provisioningNetwork: 1
+    provisioningIP: 2
+    provisioningNetworkCIDR: 3
+    provisioningDHCPRange: 4
+    provisioningInterface: 5
+    watchAllNameSpaces: 6
+```
 
-Retrieve the current state of the provisioning network and save it to a provisioning custom resource (CR) file:
+The provisioningNetwork is one of Managed, Unmanaged, or Disabled. When set to Managed, Metal3 manages the provisioning network and the CBO deploys the Metal3 pod with a configured DHCP server. When set to Unmanaged, the system administrator configures the DHCP server manually.
+The provisioningIP is the static IP address that the DHCP server and ironic use to provision the network. This static IP address must be within the provisioning subnet, and outside of the DHCP range. If you configure this setting, it must have a valid IP address even if the provisioning network is Disabled. The static IP address is bound to the metal3 pod. If the metal3 pod fails and moves to another server, the static IP address also moves to the new server.
+The Classless Inter-Domain Routing (CIDR) address. If you configure this setting, it must have a valid CIDR address even if the provisioning network is Disabled. For example: 192.168.0.1/24.
+The DHCP range. This setting is only applicable to a Managed provisioning network. Omit this configuration setting if the provisioning network is Disabled. For example: 192.168.0.64, 192.168.0.253.
+The NIC name for the provisioning interface on cluster nodes. The provisioningInterface setting is only applicable to Managed and Unmanaged provisioning networks. Omit the provisioningInterface configuration setting if the provisioning network is Disabled. Omit the provisioningInterface configuration setting to use the bootMACAddress configuration setting instead.
+Set this setting to true if you want metal3 to watch namespaces other than the default openshift-machine-api namespace. The default value is false.
+5. Save the changes to the provisioning CR file.
+6. Apply the provisioning CR file to the cluster:
 
-Modify the provisioning CR file:
+```terminal
+$ oc apply -f enable-provisioning-nw.yaml
+```
 
-Save the changes to the provisioning CR file.
 
-Apply the provisioning CR file to the cluster:
-Services for a user-managed load balancer
-You can configure an Red Hat OpenShift Container Platform cluster to use a user-managed load balancer in place of the default load balancer.
+# Services for a user-managed load balancer
 
+You can configure an Red Hat OpenShift Container Platform cluster
+to use a user-managed load balancer in place of the default load balancer.
+
+
+[IMPORTANT]
+----
 Configuring a user-managed load balancer depends on your vendor's load balancer.
-
 The information and examples in this section are for guideline purposes only. Consult the vendor documentation for more specific information about the vendor's load balancer.
+----
+
 Red Hat supports the following services for a user-managed load balancer:
 
-Ingress Controller
-
-OpenShift API
-
-OpenShift MachineConfig API
-
+* Ingress Controller
+* OpenShift API
+* OpenShift MachineConfig API
 
 You can choose whether you want to configure one or all of these services for a user-managed load balancer. Configuring only the Ingress Controller service is a common configuration option. To better understand each service, view the following diagrams:
 
+![An image that shows an example network workflow of an Ingress Controller operating in an Red Hat OpenShift Container Platform environment.]
 
+![An image that shows an example network workflow of an OpenShift API operating in an Red Hat OpenShift Container Platform environment.]
 
+![An image that shows an example network workflow of an OpenShift MachineConfig API operating in an Red Hat OpenShift Container Platform environment.]
 
 The following configuration options are supported for user-managed load balancers:
 
-Use a node selector to map the Ingress Controller to a specific set of nodes. You must assign a static IP address to each node in this set, or configure each node to receive the same IP address from the Dynamic Host Configuration Protocol (DHCP). Infrastructure nodes commonly receive this type of configuration.
+* Use a node selector to map the Ingress Controller to a specific set of nodes. You must assign a static IP address to each node in this set, or configure each node to receive the same IP address from the Dynamic Host Configuration Protocol (DHCP). Infrastructure nodes commonly receive this type of configuration.
+* Target all IP addresses on a subnet. This configuration can reduce maintenance overhead, because you can create and destroy nodes within those networks without reconfiguring the load balancer targets. If you deploy your ingress pods by using a machine set on a smaller network, such as a /27 or /28, you can simplify your load balancer targets.
 
-Target all IP addresses on a subnet. This configuration can reduce maintenance overhead, because you can create and destroy nodes within those networks without reconfiguring the load balancer targets. If you deploy your ingress pods by using a machine set on a smaller network, such as a /27 or /28, you can simplify your load balancer targets.
-
+[TIP]
+----
+You can list all IP addresses that exist in a network by checking the machine config pool's resources.
+----
 
 Before you configure a user-managed load balancer for your Red Hat OpenShift Container Platform cluster, consider the following information:
 
-For a front-end IP address, you can use the same IP address for the front-end IP address, the Ingress Controller's load balancer, and API load balancer. Check the vendor's documentation for this capability.
+* For a front-end IP address, you can use the same IP address for the front-end IP address, the Ingress Controller's load balancer, and API load balancer. Check the vendor's documentation for this capability.
+* For a back-end IP address, ensure that an IP address for an Red Hat OpenShift Container Platform control plane node does not change during the lifetime of the user-managed load balancer. You can achieve this by completing one of the following actions:
+* Assign a static IP address to each control plane node.
+* Configure each node to receive the same IP address from the DHCP every time the node requests a DHCP lease. Depending on the vendor, the DHCP lease might be in the form of an IP reservation or a static DHCP assignment.
+* Manually define each node that runs the Ingress Controller in the user-managed load balancer for the Ingress Controller back-end service. For example, if the Ingress Controller moves to an undefined node, a connection outage can occur.
 
-For a back-end IP address, ensure that an IP address for an Red Hat OpenShift Container Platform control plane node does not change during the lifetime of the user-managed load balancer. You can achieve this by completing one of the following actions:
+## Configuring a user-managed load balancer
 
-Manually define each node that runs the Ingress Controller in the user-managed load balancer for the Ingress Controller back-end service. For example, if the Ingress Controller moves to an undefined node, a connection outage can occur.
+You can configure an Red Hat OpenShift Container Platform cluster
+to use a user-managed load balancer in place of the default load balancer.
 
 
-Configuring a user-managed load balancer
-You can configure an Red Hat OpenShift Container Platform cluster to use a user-managed load balancer in place of the default load balancer.
-
+[IMPORTANT]
+----
 Before you configure a user-managed load balancer, ensure that you read the "Services for a user-managed load balancer" section.
+----
+
 Read the following prerequisites that apply to the service that you want to configure for your user-managed load balancer.
 
+
+[NOTE]
+----
 MetalLB, which runs on a cluster, functions as a user-managed load balancer.
-You defined a front-end IP address.
+----
 
-TCP ports 6443 and 22623 are exposed on the front-end IP address of your load balancer. Check the following items:
+* You defined a front-end IP address.
+* TCP ports 6443 and 22623 are exposed on the front-end IP address of your load balancer. Check the following items:
+* Port 6443 provides access to the OpenShift API service.
+* Port 22623 can provide ignition startup configurations to nodes.
+* The front-end IP address and port 6443 are reachable by all users of your system with a location external to your Red Hat OpenShift Container Platform cluster.
+* The front-end IP address and port 22623 are reachable only by Red Hat OpenShift Container Platform nodes.
+* The load balancer backend can communicate with Red Hat OpenShift Container Platform control plane nodes on port 6443 and 22623.
 
-The front-end IP address and port 6443 are reachable by all users of your system with a location external to your Red Hat OpenShift Container Platform cluster.
-
-The front-end IP address and port 22623 are reachable only by Red Hat OpenShift Container Platform nodes.
-
-The load balancer backend can communicate with Red Hat OpenShift Container Platform control plane nodes on port 6443 and 22623.
-
-
-You defined a front-end IP address.
-
-TCP ports 443 and 80 are exposed on the front-end IP address of your load balancer.
-
-The front-end IP address, port 80 and port 443 are be reachable by all users of your system with a location external to your Red Hat OpenShift Container Platform cluster.
-
-The front-end IP address, port 80 and port 443 are reachable to all nodes that operate in your Red Hat OpenShift Container Platform cluster.
-
-The load balancer backend can communicate with Red Hat OpenShift Container Platform nodes that run the Ingress Controller on ports 80, 443, and 1936.
-
+* You defined a front-end IP address.
+* TCP ports 443 and 80 are exposed on the front-end IP address of your load balancer.
+* The front-end IP address, port 80 and port 443 are be reachable by all users of your system with a location external to your Red Hat OpenShift Container Platform cluster.
+* The front-end IP address, port 80 and port 443 are reachable to all nodes that operate in your Red Hat OpenShift Container Platform cluster.
+* The load balancer backend can communicate with Red Hat OpenShift Container Platform nodes that run the Ingress Controller on ports 80, 443, and 1936.
 
 You can configure most load balancers by setting health check URLs that determine if a service is available or unavailable. Red Hat OpenShift Container Platform provides these health checks for the OpenShift API, Machine Configuration API, and Ingress Controller backend services.
 
 The following examples show health check specifications for the previously listed backend services:
 
+
+```terminal
 Path: HTTPS:6443/readyz
 Healthy threshold: 2
 Unhealthy threshold: 2
 Timeout: 10
 Interval: 10
+```
+
+
+
+```terminal
 Path: HTTPS:22623/healthz
 Healthy threshold: 2
 Unhealthy threshold: 2
 Timeout: 10
 Interval: 10
+```
+
+
+
+```terminal
 Path: HTTP:1936/healthz/ready
 Healthy threshold: 2
 Unhealthy threshold: 2
 Timeout: 5
 Interval: 10
-Configure the HAProxy Ingress Controller, so that you can enable access to the cluster from your load balancer on ports 6443, 443, and 80:
-
-Use the curl CLI command to verify that the user-managed load balancer and its resources are operational:
-
-Configure the DNS records for your cluster to target the front-end IP addresses of the user-managed load balancer. You must update records to your DNS server for the cluster API and applications over the load balancer.
+```
 
 
-Use the curl CLI command to verify that the user-managed load balancer and DNS record configuration are operational:
+1. Configure the HAProxy Ingress Controller, so that you can enable access to the cluster from your load balancer on ports 6443, 443, and 80:
+Example HAProxy configuration
+
+```terminal
+#...
+listen my-cluster-api-6443
+    bind 192.168.1.100:6443
+    mode tcp
+    balance roundrobin
+  option httpchk
+  http-check connect
+  http-check send meth GET uri /readyz
+  http-check expect status 200
+    server my-cluster-master-2 192.168.1.101:6443 check inter 10s rise 2 fall 2
+    server my-cluster-master-0 192.168.1.102:6443 check inter 10s rise 2 fall 2
+    server my-cluster-master-1 192.168.1.103:6443 check inter 10s rise 2 fall 2
+
+listen my-cluster-machine-config-api-22623
+    bind 192.168.1.100:22623
+    mode tcp
+    balance roundrobin
+  option httpchk
+  http-check connect
+  http-check send meth GET uri /healthz
+  http-check expect status 200
+    server my-cluster-master-2 192.168.1.101:22623 check inter 10s rise 2 fall 2
+    server my-cluster-master-0 192.168.1.102:22623 check inter 10s rise 2 fall 2
+    server my-cluster-master-1 192.168.1.103:22623 check inter 10s rise 2 fall 2
+
+listen my-cluster-apps-443
+        bind 192.168.1.100:443
+        mode tcp
+        balance roundrobin
+    option httpchk
+    http-check connect
+    http-check send meth GET uri /healthz/ready
+    http-check expect status 200
+        server my-cluster-worker-0 192.168.1.111:443 check port 1936 inter 10s rise 2 fall 2
+        server my-cluster-worker-1 192.168.1.112:443 check port 1936 inter 10s rise 2 fall 2
+        server my-cluster-worker-2 192.168.1.113:443 check port 1936 inter 10s rise 2 fall 2
+
+listen my-cluster-apps-80
+        bind 192.168.1.100:80
+        mode tcp
+        balance roundrobin
+    option httpchk
+    http-check connect
+    http-check send meth GET uri /healthz/ready
+    http-check expect status 200
+        server my-cluster-worker-0 192.168.1.111:80 check port 1936 inter 10s rise 2 fall 2
+        server my-cluster-worker-1 192.168.1.112:80 check port 1936 inter 10s rise 2 fall 2
+        server my-cluster-worker-2 192.168.1.113:80 check port 1936 inter 10s rise 2 fall 2
+# ...
+```
+
+2. Use the curl CLI command to verify that the user-managed load balancer and its resources are operational:
+1. Verify that the cluster machine configuration API is accessible to the Kubernetes API server resource, by running the following command and observing the response:
+
+```terminal
+$ curl https://<loadbalancer_ip_address>:6443/version --insecure
+```
+
+
+If the configuration is correct, you receive a JSON object in response:
+
+```json
+{
+  "major": "1",
+  "minor": "11+",
+  "gitVersion": "v1.11.0+ad103ed",
+  "gitCommit": "ad103ed",
+  "gitTreeState": "clean",
+  "buildDate": "2019-01-09T06:44:10Z",
+  "goVersion": "go1.10.3",
+  "compiler": "gc",
+  "platform": "linux/amd64"
+}
+```
+
+2. Verify that the cluster machine configuration API is accessible to the Machine config server resource, by running the following command and observing the output:
+
+```terminal
+$ curl -v https://<loadbalancer_ip_address>:22623/healthz --insecure
+```
+
+
+If the configuration is correct, the output from the command shows the following response:
+
+```terminal
+HTTP/1.1 200 OK
+Content-Length: 0
+```
+
+3. Verify that the controller is accessible to the Ingress Controller resource on port 80, by running the following command and observing the output:
+
+```terminal
+$ curl -I -L -H "Host: console-openshift-console.apps.<cluster_name>.<base_domain>" http://<load_balancer_front_end_IP_address>
+```
+
+
+If the configuration is correct, the output from the command shows the following response:
+
+```terminal
+HTTP/1.1 302 Found
+content-length: 0
+location: https://console-openshift-console.apps.ocp4.private.opequon.net/
+cache-control: no-cache
+```
+
+4. Verify that the controller is accessible to the Ingress Controller resource on port 443, by running the following command and observing the output:
+
+```terminal
+$ curl -I -L --insecure --resolve console-openshift-console.apps.<cluster_name>.<base_domain>:443:<Load Balancer Front End IP Address> https://console-openshift-console.apps.<cluster_name>.<base_domain>
+```
+
+
+If the configuration is correct, the output from the command shows the following response:
+
+```terminal
+HTTP/1.1 200 OK
+referrer-policy: strict-origin-when-cross-origin
+set-cookie: csrf-token=UlYWOyQ62LWjw2h003xtYSKlh1a0Py2hhctw0WmV2YEdhJjFyQwWcGBsja261dGLgaYO0nxzVErhiXt6QepA7g==; Path=/; Secure; SameSite=Lax
+x-content-type-options: nosniff
+x-dns-prefetch-control: off
+x-frame-options: DENY
+x-xss-protection: 1; mode=block
+date: Wed, 04 Oct 2023 16:29:38 GMT
+content-type: text/html; charset=utf-8
+set-cookie: 1e2670d92730b515ce3a1bb65da45062=1bf5e9573c9a2760c964ed1659cc1673; path=/; HttpOnly; Secure; SameSite=None
+cache-control: private
+```
+
+3. Configure the DNS records for your cluster to target the front-end IP addresses of the user-managed load balancer. You must update records to your DNS server for the cluster API and applications over the load balancer.
+Examples of modified DNS records
+
+```dns
+<load_balancer_ip_address>  A  api.<cluster_name>.<base_domain>
+A record pointing to Load Balancer Front End
+```
+
+
+```dns
+<load_balancer_ip_address>   A apps.<cluster_name>.<base_domain>
+A record pointing to Load Balancer Front End
+```
+
+
+[IMPORTANT]
+----
+DNS propagation might take some time for each DNS record to become available. Ensure that each DNS record propagates before validating each record.
+----
+
+1. Use the curl CLI command to verify that the user-managed load balancer and DNS record configuration are operational:
+1. Verify that you can access the cluster API, by running the following command and observing the output:
+
+```terminal
+$ curl https://api.<cluster_name>.<base_domain>:6443/version --insecure
+```
+
+
+If the configuration is correct, you receive a JSON object in response:
+
+```json
+{
+  "major": "1",
+  "minor": "11+",
+  "gitVersion": "v1.11.0+ad103ed",
+  "gitCommit": "ad103ed",
+  "gitTreeState": "clean",
+  "buildDate": "2019-01-09T06:44:10Z",
+  "goVersion": "go1.10.3",
+  "compiler": "gc",
+  "platform": "linux/amd64"
+  }
+```
+
+2. Verify that you can access the cluster machine configuration, by running the following command and observing the output:
+
+```terminal
+$ curl -v https://api.<cluster_name>.<base_domain>:22623/healthz --insecure
+```
+
+
+If the configuration is correct, the output from the command shows the following response:
+
+```terminal
+HTTP/1.1 200 OK
+Content-Length: 0
+```
+
+3. Verify that you can access each cluster application on port, by running the following command and observing the output:
+
+```terminal
+$ curl http://console-openshift-console.apps.<cluster_name>.<base_domain> -I -L --insecure
+```
+
+
+If the configuration is correct, the output from the command shows the following response:
+
+```terminal
+HTTP/1.1 302 Found
+content-length: 0
+location: https://console-openshift-console.apps.<cluster-name>.<base domain>/
+cache-control: no-cacheHTTP/1.1 200 OK
+referrer-policy: strict-origin-when-cross-origin
+set-cookie: csrf-token=39HoZgztDnzjJkq/JuLJMeoKNXlfiVv2YgZc09c3TBOBU4NI6kDXaJH1LdicNhN1UsQWzon4Dor9GWGfopaTEQ==; Path=/; Secure
+x-content-type-options: nosniff
+x-dns-prefetch-control: off
+x-frame-options: DENY
+x-xss-protection: 1; mode=block
+date: Tue, 17 Nov 2020 08:42:10 GMT
+content-type: text/html; charset=utf-8
+set-cookie: 1e2670d92730b515ce3a1bb65da45062=9b714eb87e93cf34853e87a92d6894be; path=/; HttpOnly; Secure; SameSite=None
+cache-control: private
+```
+
+4. Verify that you can access each cluster application on port 443, by running the following command and observing the output:
+
+```terminal
+$ curl https://console-openshift-console.apps.<cluster_name>.<base_domain> -I -L --insecure
+```
+
+
+If the configuration is correct, the output from the command shows the following response:
+
+```terminal
+HTTP/1.1 200 OK
+referrer-policy: strict-origin-when-cross-origin
+set-cookie: csrf-token=UlYWOyQ62LWjw2h003xtYSKlh1a0Py2hhctw0WmV2YEdhJjFyQwWcGBsja261dGLgaYO0nxzVErhiXt6QepA7g==; Path=/; Secure; SameSite=Lax
+x-content-type-options: nosniff
+x-dns-prefetch-control: off
+x-frame-options: DENY
+x-xss-protection: 1; mode=block
+date: Wed, 04 Oct 2023 16:29:38 GMT
+content-type: text/html; charset=utf-8
+set-cookie: 1e2670d92730b515ce3a1bb65da45062=1bf5e9573c9a2760c964ed1659cc1673; path=/; HttpOnly; Secure; SameSite=None
+cache-control: private
+```

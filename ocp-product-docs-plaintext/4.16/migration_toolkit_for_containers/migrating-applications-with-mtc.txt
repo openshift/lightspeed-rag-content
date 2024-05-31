@@ -1,206 +1,298 @@
-Migrating your applications
+# Migrating your applications
+
 
 You can migrate your applications by using the Migration Toolkit for Containers (MTC) web console or the command line.
-
 Most cluster-scoped resources are not yet handled by MTC. If your applications require cluster-scoped resources, you might have to create them manually on the target cluster.
-
 You can use stage migration and cutover migration to migrate an application between clusters:
-
-Stage migration copies data from the source cluster to the target cluster without stopping the application. You can run a stage migration multiple times to reduce the duration of the cutover migration.
-
-Cutover migration stops the transactions on the source cluster and moves the resources to the target cluster.
-
-
+* Stage migration copies data from the source cluster to the target cluster without stopping the application. You can run a stage migration multiple times to reduce the duration of the cutover migration.
+* Cutover migration stops the transactions on the source cluster and moves the resources to the target cluster.
 You can use state migration to migrate an application's state:
-
-State migration copies selected persistent volume claims (PVCs).
-
-You can use state migration to migrate a namespace within the same cluster.
-
-
+* State migration copies selected persistent volume claims (PVCs).
+* You can use state migration to migrate a namespace within the same cluster.
 During migration, the Migration Toolkit for Containers (MTC) preserves the following namespace annotations:
+* openshift.io/sa.scc.mcs
+* openshift.io/sa.scc.supplemental-groups
+* openshift.io/sa.scc.uid-range
 
-openshift.io/sa.scc.mcs
+These annotations preserve the UID range, ensuring that the containers retain their file system permissions on the target cluster. There is a risk that the migrated UIDs could duplicate UIDs within an existing or future namespace on the target cluster.
 
-openshift.io/sa.scc.supplemental-groups
+# Migration prerequisites
 
-openshift.io/sa.scc.uid-range
-Migration prerequisites
-You must be logged in as a user with cluster-admin privileges on all clusters.
+* You must be logged in as a user with cluster-admin privileges on all clusters.
 
+* You must ensure that the secure OpenShift image registry of the source cluster is exposed.
+* You must create a route to the exposed registry.
 
-You must ensure that the secure OpenShift image registry of the source cluster is exposed.
+* If your clusters use proxies, you must configure an Stunnel TCP proxy.
 
-You must create a route to the exposed registry.
+* The source cluster must be upgraded to the latest MTC z-stream release.
+* The MTC version must be the same on all clusters.
 
+* The clusters have unrestricted network access to each other and to the replication repository.
+* If you copy the persistent volumes with move, the clusters must have unrestricted network access to the remote volumes.
+* You must enable the following ports on an Red Hat OpenShift Container Platform 4 cluster:
+* 6443 (API server)
+* 443 (routes)
+* 53 (DNS)
+* You must enable port 443 on the replication repository if you are using TLS.
 
-If your clusters use proxies, you must configure an Stunnel TCP proxy.
+* The PVs must be valid.
+* The PVs must be bound to persistent volume claims.
+* If you use snapshots to copy the PVs, the following additional prerequisites apply:
+* The cloud provider must support snapshots.
+* The PVs must have the same cloud provider.
+* The PVs must be located in the same geographic region.
+* The PVs must have the same storage class.
 
+# Migrating your applications by using the MTC web console
 
-The source cluster must be upgraded to the latest MTC z-stream release.
-
-The MTC version must be the same on all clusters.
-
-
-The clusters have unrestricted network access to each other and to the replication repository.
-
-If you copy the persistent volumes with move, the clusters must have unrestricted network access to the remote volumes.
-
-You must enable the following ports on an Red Hat OpenShift Container Platform 4 cluster:
-
-You must enable port 443 on the replication repository if you are using TLS.
-
-
-The PVs must be valid.
-
-The PVs must be bound to persistent volume claims.
-
-If you use snapshots to copy the PVs, the following additional prerequisites apply:
-Migrating your applications by using the MTC web console
 You can configure clusters and a replication repository by using the MTC web console. Then, you can create and run a migration plan.
 
-Launching the MTC web console
+## Launching the MTC web console
+
 You can launch the Migration Toolkit for Containers (MTC) web console in a browser.
 
-The MTC web console must have network access to the Red Hat OpenShift Container Platform web console.
+* The MTC web console must have network access to the Red Hat OpenShift Container Platform web console.
+* The MTC web console must have network access to the OAuth authorization server.
 
-The MTC web console must have network access to the OAuth authorization server.
+1. Log in to the Red Hat OpenShift Container Platform cluster on which you have installed MTC.
+2. Obtain the MTC web console URL by entering the following command:
+
+```terminal
+$ oc get -n openshift-migration route/migration -o go-template='https://{{ .spec.host }}'
+```
 
 
-Log in to the Red Hat OpenShift Container Platform cluster on which you have installed MTC.
+The output resembles the following: https://migration-openshift-migration.apps.cluster.openshift.com.
+3. Launch a browser and navigate to the MTC web console.
 
-Obtain the MTC web console URL by entering the following command:
+[NOTE]
+----
+If you try to access the MTC web console immediately after installing the Migration Toolkit for Containers Operator, the console might not load because the Operator is still configuring the cluster. Wait a few minutes and retry.
+----
+4. If you are using self-signed CA certificates, you will be prompted to accept the CA certificate of the source cluster API server. The web page guides you through the process of accepting the remaining certificates.
+5. Log in with your Red Hat OpenShift Container Platform username and password.
 
-Launch a browser and navigate to the MTC web console.
+## Adding a cluster to the MTC web console
 
-If you are using self-signed CA certificates, you will be prompted to accept the CA certificate of the source cluster API server. The web page guides you through the process of accepting the remaining certificates.
-
-Log in with your Red Hat OpenShift Container Platform username and password.
-Adding a cluster to the MTC web console
 You can add a cluster to the Migration Toolkit for Containers (MTC) web console.
 
-Cross-origin resource sharing must be configured on the source cluster.
+* Cross-origin resource sharing must be configured on the source cluster.
+* If you are using Azure snapshots to copy data:
+* You must specify the Azure resource group name for the cluster.
+* The clusters must be in the same Azure resource group.
+* The clusters must be in the same geographic location.
+* If you are using direct image migration, you must expose a route to the image registry of the source cluster.
 
-If you are using Azure snapshots to copy data:
+1. Log in to the cluster.
+2. Obtain the migration-controller service account token:
 
-If you are using direct image migration, you must expose a route to the image registry of the source cluster.
+```terminal
+$ oc create token migration-controller -n openshift-migration
+```
+
+Example output
+
+```terminal
+eyJhbGciOiJSUzI1NiIsImtpZCI6IiJ9.eyJpc3MiOiJrdWJlcm5ldGVzL3NlcnZpY2VhY2NvdW50Iiwia3ViZXJuZXRlcy5pby9zZXJ2aWNlYWNjb3VudC9uYW1lc3BhY2UiOiJtaWciLCJrdWJlcm5ldGVzLmlvL3NlcnZpY2VhY2NvdW50L3NlY3JldC5uYW1lIjoibWlnLXRva2VuLWs4dDJyIiwia3ViZXJuZXRlcy5pby9zZXJ2aWNlYWNjb3VudC9zZXJ2aWNlLWFjY291bnQubmFtZSI6Im1pZyIsImt1YmVybmV0ZXMuaW8vc2VydmljZWFjY291bnQvc2VydmljZS1hY2NvdW50LnVpZCI6ImE1YjFiYWMwLWMxYmYtMTFlOS05Y2NiLTAyOWRmODYwYjMwOCIsInN1YiI6InN5c3RlbTpzZXJ2aWNlYWNjb3VudDptaWc6bWlnIn0.xqeeAINK7UXpdRqAtOj70qhBJPeMwmgLomV9iFxr5RoqUgKchZRG2J2rkqmPm6vr7K-cm7ibD1IBpdQJCcVDuoHYsFgV4mp9vgOfn9osSDp2TGikwNz4Az95e81xnjVUmzh-NjDsEpw71DH92iHV_xt2sTwtzftS49LpPW2LjrV0evtNBP_t_RfskdArt5VSv25eORl7zScqfe1CiMkcVbf2UqACQjo3LbkpfN26HAioO2oH0ECPiRzT0Xyh-KwFutJLS9Xgghyw-LD9kPKcE_xbbJ9Y4Rqajh7WdPYuB0Jd9DPVrslmzK-F6cgHHYoZEv0SvLQi-PO0rpDrcjOEQQ
+```
+
+3. Log in to the MTC web console.
+4. In the MTC web console, click Clusters.
+5. Click Add cluster.
+6. Fill in the following fields:
+* Cluster name: The cluster name can contain lower-case letters (a-z) and numbers (0-9). It must not contain spaces or international characters.
+* URL: Specify the API server URL, for example, \https://<www.example.com>:8443.
+* Service account token: Paste the migration-controller service account token.
+* Exposed route host to image registry: If you are using direct image migration, specify the exposed route to the image registry of the source cluster.
+
+To create the route, run the following command:
+* For Red Hat OpenShift Container Platform 3:
+
+```terminal
+$ oc create route passthrough --service=docker-registry --port=5000 -n default
+```
+
+* For Red Hat OpenShift Container Platform 4:
+
+```terminal
+$ oc create route passthrough --service=image-registry --port=5000 -n openshift-image-registry
+```
+
+* Azure cluster: You must select this option if you use Azure snapshots to copy your data.
+* Azure resource group: This field is displayed if Azure cluster is selected. Specify the Azure resource group.
+
+When an {OCP} cluster is created on Microsoft Azure, an Azure Resource Group is created to contain all resources associated with the cluster. In the Azure CLI, you can display all resource groups by issuing the following command:
+
+```terminal
+$ az group list
+```
 
 
-Log in to the cluster.
+ResourceGroups associated with Red Hat OpenShift Container Platform clusters are tagged, where sample-rg-name is the value you would extract and supply to the UI:
 
-Obtain the migration-controller service account token:
+```terminal
+{
+  "id": "/subscriptions/...//resourceGroups/sample-rg-name",
+  "location": "centralus",
+  "name": "...",
+  "properties": {
+    "provisioningState": "Succeeded"
+  },
+  "tags": {
+    "kubernetes.io_cluster.sample-ld57c": "owned",
+    "openshift_creationDate": "2019-10-25T23:28:57.988208+00:00"
+  },
+  "type": "Microsoft.Resources/resourceGroups"
+},
+```
 
-Log in to the MTC web console.
 
-In the MTC web console, click Clusters.
+This information is also available from the Azure Portal in the Resource groups blade.
+* Require SSL verification: Optional: Select this option to verify the Secure Socket Layer (SSL) connection to the cluster.
+* CA bundle file: This field is displayed if Require SSL verification is selected. If you created a custom CA certificate bundle file for self-signed certificates, click Browse, select the CA bundle file, and upload it.
+7. Click Add cluster.
 
-Click Add cluster.
+The cluster appears in the Clusters list.
 
-Fill in the following fields:
+## Adding a replication repository to the MTC web console
 
-Click Add cluster.
-Adding a replication repository to the MTC web console
 You can add an object storage as a replication repository to the Migration Toolkit for Containers (MTC) web console.
 
 MTC supports the following storage providers:
 
-Amazon Web Services (AWS) S3
+* Amazon Web Services (AWS) S3
+* Multi-Cloud Object Gateway (MCG)
+* Generic S3 object storage, for example, Minio or Ceph S3
+* Google Cloud Provider (GCP)
+* Microsoft Azure Blob
 
-Multi-Cloud Object Gateway (MCG)
+* You must configure the object storage as a replication repository.
 
-Generic S3 object storage, for example, Minio or Ceph S3
+1. In the MTC web console, click Replication repositories.
+2. Click Add repository.
+3. Select a Storage provider type and fill in the following fields:
+* AWS for S3 providers, including AWS and MCG:
+* Replication repository name: Specify the replication repository name in the MTC web console.
+* S3 bucket name: Specify the name of the S3 bucket.
+* S3 bucket region: Specify the S3 bucket region. Required for AWS S3. Optional for some S3 providers. Check the product documentation of your S3 provider for expected values.
+* S3 endpoint: Specify the URL of the S3 service, not the bucket, for example, \https://<s3-storage.apps.cluster.com>. Required for a generic S3 provider. You must use the https:// prefix.
+* S3 provider access key: Specify the <AWS_SECRET_ACCESS_KEY> for AWS or the S3 provider access key for MCG and other S3 providers.
+* S3 provider secret access key: Specify the <AWS_ACCESS_KEY_ID> for AWS or the S3 provider secret access key for MCG and other S3 providers.
+* Require SSL verification: Clear this checkbox if you are using a generic S3 provider.
+* If you created a custom CA certificate bundle for self-signed certificates, click Browse and browse to the Base64-encoded file.
+* GCP:
+* Replication repository name: Specify the replication repository name in the MTC web console.
+* GCP bucket name: Specify the name of the GCP bucket.
+* GCP credential JSON blob: Specify the string in the credentials-velero file.
+* Azure:
+* Replication repository name: Specify the replication repository name in the MTC web console.
+* Azure resource group: Specify the resource group of the Azure Blob storage.
+* Azure storage account name: Specify the Azure Blob storage account name.
+* Azure credentials - INI file contents: Specify the string in the credentials-velero file.
+4. Click Add repository and wait for connection validation.
+5. Click Close.
 
-Google Cloud Provider (GCP)
+The new repository appears in the Replication repositories list.
 
-Microsoft Azure Blob
+## Creating a migration plan in the MTC web console
 
-
-You must configure the object storage as a replication repository.
-
-
-In the MTC web console, click Replication repositories.
-
-Click Add repository.
-
-Select a Storage provider type and fill in the following fields:
-
-Click Add repository and wait for connection validation.
-
-Click Close.
-Creating a migration plan in the MTC web console
 You can create a migration plan in the Migration Toolkit for Containers (MTC) web console.
 
-You must be logged in as a user with cluster-admin privileges on all clusters.
+* You must be logged in as a user with cluster-admin privileges on all clusters.
+* You must ensure that the same MTC version is installed on all clusters.
+* You must add the clusters and the replication repository to the MTC web console.
+* If you want to use the move data copy method to migrate a persistent volume (PV), the source and target clusters must have uninterrupted network access to the remote volume.
+* If you want to use direct image migration, you must specify the exposed route to the image registry of the source cluster. This can be done by using the MTC web console or by updating the MigCluster custom resource manifest.
 
-You must ensure that the same MTC version is installed on all clusters.
+1. In the MTC web console, click Migration plans.
+2. Click Add migration plan.
+3. Enter the Plan name.
 
-You must add the clusters and the replication repository to the MTC web console.
+The migration plan name must not exceed 253 lower-case alphanumeric characters (a-z, 0-9) and must not contain spaces or underscores (_).
+4. Select a Source cluster, a Target cluster, and a Repository.
+5. Click Next.
+6. Select the projects for migration.
+7. Optional: Click the edit icon beside a project to change the target namespace.
+8. Click Next.
+9. Select a Migration type for each PV:
+* The Copy option copies the data from the PV of a source cluster to the replication repository and then restores the data on a newly created PV, with similar characteristics, in the target cluster.
+* The Move option unmounts a remote volume, for example, NFS, from the source cluster, creates a PV resource on the target cluster pointing to the remote volume, and then mounts the remote volume on the target cluster. Applications running on the target cluster use the same remote volume that the source cluster was using.
+10. Click Next.
+11. Select a Copy method for each PV:
+* Snapshot copy backs up and restores data using the cloud provider's snapshot functionality. It is significantly faster than Filesystem copy.
+* Filesystem copy backs up the files on the source cluster and restores them on the target cluster.
 
-If you want to use the move data copy method to migrate a persistent volume (PV), the source and target clusters must have uninterrupted network access to the remote volume.
+The file system copy method is required for direct volume migration.
+12. You can select Verify copy to verify data migrated with Filesystem copy. Data is verified by generating a checksum for each source file and checking the checksum after restoration. Data verification significantly reduces performance.
+13. Select a Target storage class.
 
-If you want to use direct image migration, you must specify the exposed route to the image registry of the source cluster. This can be done by using the MTC web console or by updating the MigCluster custom resource manifest.
+If you selected Filesystem copy, you can change the target storage class.
+14. Click Next.
+15. On the Migration options page, the Direct image migration option is selected if you specified an exposed image registry route for the source cluster. The Direct PV migration option is selected if you are migrating data with Filesystem copy.
 
+The direct migration options copy images and files directly from the source cluster to the target cluster. This option is much faster than copying images and files from the source cluster to the replication repository and then from the replication repository to the target cluster.
+16. Click Next.
+17. Optional: Click Add Hook to add a hook to the migration plan.
 
-In the MTC web console, click Migration plans.
+A hook runs custom code. You can add up to four hooks to a single migration plan. Each hook runs during a different migration step.
+1. Enter the name of the hook to display in the web console.
+2. If the hook is an Ansible playbook, select Ansible playbook and click Browse to upload the playbook or paste the contents of the playbook in the field.
+3. Optional: Specify an Ansible runtime image if you are not using the default hook image.
+4. If the hook is not an Ansible playbook, select Custom container image and specify the image name and path.
 
-Click Add migration plan.
+A custom container image can include Ansible playbooks.
+5. Select Source cluster or Target cluster.
+6. Enter the Service account name and the Service account namespace.
+7. Select the migration step for the hook:
+* preBackup: Before the application workload is backed up on the source cluster
+* postBackup: After the application workload is backed up on the source cluster
+* preRestore: Before the application workload is restored on the target cluster
+* postRestore: After the application workload is restored on the target cluster
+8. Click Add.
+18. Click Finish.
 
-Enter the Plan name.
+The migration plan is displayed in the Migration plans list.
 
-Select a Source cluster, a Target cluster, and a Repository.
+## Additional resources for persistent volume copy methods
 
-Click Next.
+* MTC file system copy method
+* MTC snapshot copy method
 
-Select the projects for migration.
+## Running a migration plan in the MTC web console
 
-Optional: Click the edit icon beside a project to change the target namespace.
-
-Click Next.
-
-Select a Migration type for each PV:
-
-Click Next.
-
-Select a Copy method for each PV:
-
-You can select Verify copy to verify data migrated with Filesystem copy. Data is verified by generating a checksum for each source file and checking the checksum after restoration. Data verification significantly reduces performance.
-
-Select a Target storage class.
-
-Click Next.
-
-On the Migration options page, the Direct image migration option is selected if you specified an exposed image registry route for the source cluster. The Direct PV migration option is selected if you are migrating data with Filesystem copy.
-
-Click Next.
-
-Optional: Click Add Hook to add a hook to the migration plan.
-
-Click Finish.
-
-
-
-MTC file system copy method
-
-MTC snapshot copy method
-Running a migration plan in the MTC web console
 You can migrate applications and data with the migration plan you created in the Migration Toolkit for Containers (MTC) web console.
 
-During migration, MTC sets the reclaim policy of migrated persistent volumes (PVs) to Retain on the target cluster.
 
+[NOTE]
+----
+During migration, MTC sets the reclaim policy of migrated persistent volumes (PVs) to Retain on the target cluster.
 The Backup custom resource contains a PVOriginalReclaimPolicy annotation that indicates the original reclaim policy. You can manually restore the reclaim policy of the migrated PVs.
+----
+
 The MTC web console must contain the following:
 
-Source cluster in a Ready state
+* Source cluster in a Ready state
+* Target cluster in a Ready state
+* Replication repository
+* Valid migration plan
 
-Target cluster in a Ready state
+1. Log in to the MTC web console and click Migration plans.
+2. Click the Options menu . next to a migration plan and select one of the following options under Migration:
+* Stage copies data from the source cluster to the target cluster without stopping the application.
+* Cutover stops the transactions on the source cluster and moves the resources to the target cluster.
 
-Replication repository
+Optional: In the Cutover migration dialog, you can clear the Halt transactions on the source cluster during migration checkbox.
+* State copies selected persistent volume claims (PVCs).
 
-Valid migration plan
-
-
-Log in to the MTC web console and click Migration plans.
-
-Click the Options menu . next to a migration plan and select one of the following options under Migration:
-
-When the migration is complete, verify that the application migrated successfully in the Red Hat OpenShift Container Platform web console:
+[IMPORTANT]
+----
+Do not use state migration to migrate a namespace between clusters. Use stage or cutover migration instead.
+----
+* Select one or more PVCs in the State migration dialog and click Migrate.
+3. When the migration is complete, verify that the application migrated successfully in the Red Hat OpenShift Container Platform web console:
+1. Click Home -> Projects.
+2. Click the migrated project to view its status.
+3. In the Routes section, click Location to verify that the application is functioning, if applicable.
+4. Click Workloads -> Pods to verify that the pods are running in the migrated namespace.
+5. Click Storage -> Persistent volumes to verify that the migrated persistent volumes are correctly provisioned.

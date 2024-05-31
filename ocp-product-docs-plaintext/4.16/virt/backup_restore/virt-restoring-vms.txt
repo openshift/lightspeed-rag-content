@@ -1,37 +1,183 @@
-Restoring virtual machines
+# Restoring virtual machines
+
 
 You restore an OpenShift API for Data Protection (OADP) Backup custom resource (CR) by creating a Restore CR.
-
 You can add hooks to the Restore CR to run commands in init containers, before the application container starts, or in the application container itself.
-Creating a Restore CR
+
+# Creating a Restore CR
+
 You restore a Backup custom resource (CR) by creating a Restore CR.
 
-You must install the OpenShift API for Data Protection (OADP) Operator.
+* You must install the OpenShift API for Data Protection (OADP) Operator.
+* The DataProtectionApplication CR must be in a Ready state.
+* You must have a Velero Backup CR.
+* The persistent volume (PV) capacity must match the requested size at backup time. Adjust the requested size if needed.
 
-The DataProtectionApplication CR must be in a Ready state.
+1. Create a Restore CR, as in the following example:
 
-You must have a Velero Backup CR.
+```yaml
+apiVersion: velero.io/v1
+kind: Restore
+metadata:
+  name: <restore>
+  namespace: openshift-adp
+spec:
+  backupName: <backup> 1
+  includedResources: [] 2
+  excludedResources:
+  - nodes
+  - events
+  - events.events.k8s.io
+  - backups.velero.io
+  - restores.velero.io
+  - resticrepositories.velero.io
+  restorePVs: true 3
+```
 
-The persistent volume (PV) capacity must match the requested size at backup time. Adjust the requested size if needed.
+Name of the Backup CR.
+Optional: Specify an array of resources to include in the restore process. Resources might be shortcuts (for example, po for pods) or fully-qualified. If unspecified, all resources are included.
+Optional: The restorePVs parameter can be set to false to turn off restore of PersistentVolumes from VolumeSnapshot of Container Storage Interface (CSI) snapshots or from native snapshots when VolumeSnapshotLocation is configured.
+2. Verify that the status of the Restore CR is Completed by entering the following command:
+
+```terminal
+$ oc get restore -n openshift-adp <restore> -o jsonpath='{.status.phase}'
+```
+
+3. Verify that the backup resources have been restored by entering the following command:
+
+```terminal
+$ oc get all -n <namespace> 1
+```
+
+Namespace that you backed up.
+4. If you restore DeploymentConfig with volumes or if you use post-restore hooks, run the dc-post-restore.sh cleanup script by entering the following command:
+
+```terminal
+$ bash dc-restic-post-restore.sh -> dc-post-restore.sh
+```
 
 
-Create a Restore CR, as in the following example:
+[NOTE]
+----
+During the restore process, the OADP Velero plug-ins scale down the DeploymentConfig objects and restore the pods as standalone pods. This is done to prevent the cluster from deleting the restored DeploymentConfig pods immediately on restore and to allow the restore and post-restore hooks to complete their actions on the restored pods. The cleanup script shown below removes these disconnected pods and scales any DeploymentConfig objects back up to the appropriate number of replicas.
+----
+dc-restic-post-restore.sh -> dc-post-restore.sh cleanup script
 
-Verify that the status of the Restore CR is Completed by entering the following command:
+```bash
+#!/bin/bash
+set -e
 
-Verify that the backup resources have been restored by entering the following command:
+# if sha256sum exists, use it to check the integrity of the file
+if command -v sha256sum >/dev/null 2>&1; then
+  CHECKSUM_CMD="sha256sum"
+else
+  CHECKSUM_CMD="shasum -a 256"
+fi
 
-If you restore DeploymentConfig with volumes or if you use post-restore hooks, run the dc-post-restore.sh cleanup script by entering the following command:
+label_name () {
+    if [ "${#1}" -le "63" ]; then
+	echo $1
+	return
+    fi
+    sha=$(echo -n $1|$CHECKSUM_CMD)
+    echo "${1:0:57}${sha:0:6}"
+}
 
+OADP_NAMESPACE=${OADP_NAMESPACE:=openshift-adp}
 
-Creating restore hooks
+if [[ $# -ne 1 ]]; then
+    echo "usage: ${BASH_SOURCE} restore-name"
+    exit 1
+fi
+
+echo using OADP Namespace $OADP_NAMESPACE
+echo restore: $1
+
+label=$(label_name $1)
+echo label: $label
+
+echo Deleting disconnected restore pods
+oc delete pods -l oadp.openshift.io/disconnected-from-dc=$label
+
+for dc in $(oc get dc --all-namespaces -l oadp.openshift.io/replicas-modified=$label -o jsonpath='{range .items[*]}{.metadata.namespace}{","}{.metadata.name}{","}{.metadata.annotations.oadp\.openshift\.io/original-replicas}{","}{.metadata.annotations.oadp\.openshift\.io/original-paused}{"\n"}')
+do
+    IFS=',' read -ra dc_arr <<< "$dc"
+    if [ ${#dc_arr[0]} -gt 0 ]; then
+	echo Found deployment ${dc_arr[0]}/${dc_arr[1]}, setting replicas: ${dc_arr[2]}, paused: ${dc_arr[3]}
+	cat <<EOF | oc patch dc  -n ${dc_arr[0]} ${dc_arr[1]} --patch-file /dev/stdin
+spec:
+  replicas: ${dc_arr[2]}
+  paused: ${dc_arr[3]}
+EOF
+    fi
+done
+```
+
+## Creating restore hooks
+
 You create restore hooks to run commands in a container in a pod by editing the Restore custom resource (CR).
 
 You can create two types of restore hooks:
 
-An init hook adds an init container to a pod to perform setup tasks before the application container starts.
+* An init hook adds an init container to a pod to perform setup tasks before the application container starts.
 
-An exec hook runs commands or scripts in a container of a restored pod.
+If you restore a Restic backup, the restic-wait init container is added before the restore hook init container.
+* An exec hook runs commands or scripts in a container of a restored pod.
 
+* Add a hook to the spec.hooks block of the Restore CR, as in the following example:
 
-Add a hook to the spec.hooks block of the Restore CR, as in the following example:
+```yaml
+apiVersion: velero.io/v1
+kind: Restore
+metadata:
+  name: <restore>
+  namespace: openshift-adp
+spec:
+  hooks:
+    resources:
+      - name: <hook_name>
+        includedNamespaces:
+        - <namespace> 1
+        excludedNamespaces:
+        - <namespace>
+        includedResources:
+        - pods 2
+        excludedResources: []
+        labelSelector: 3
+          matchLabels:
+            app: velero
+            component: server
+        postHooks:
+        - init:
+            initContainers:
+            - name: restore-hook-init
+              image: alpine:latest
+              volumeMounts:
+              - mountPath: /restores/pvc1-vm
+                name: pvc1-vm
+              command:
+              - /bin/ash
+              - -c
+            timeout: 4
+        - exec:
+            container: <container> 5
+            command:
+            - /bin/bash 6
+            - -c
+            - "psql < /backup/backup.sql"
+            waitTimeout: 5m 7
+            execTimeout: 1m 8
+            onError: Continue 9
+```
+
+Optional: Array of namespaces to which the hook applies. If this value is not specified, the hook applies to all namespaces.
+Currently, pods are the only supported resource that hooks can apply to.
+Optional: This hook only applies to objects matching the label selector.
+Optional: Timeout specifies the maximum length of time Velero waits for initContainers to complete.
+Optional: If the container is not specified, the command runs in the first container in the pod.
+This is the entrypoint for the init container being added.
+Optional: How long to wait for a container to become ready. This should be long enough for the container to start and for any preceding hooks in the same container to complete. If not set, the restore process waits indefinitely.
+Optional: How long to wait for the commands to run. The default is 30s.
+Allowed values for error handling are Fail and Continue:
+* Continue: Only command failures are logged.
+* Fail: No more restore hooks run in any container in any pod. The status of the Restore CR will be PartiallyFailed.

@@ -1,103 +1,209 @@
-Using remote health reporting in a restricted network
+# Using remote health reporting in a restricted network
+
 
 You can manually gather and upload Insights Operator archives to diagnose issues from a restricted network.
-
 To use the Insights Operator in a restricted network, you must:
-
-Create a copy of your Insights Operator archive.
-
-Upload the Insights Operator archive to console.redhat.com.
-
-
+* Create a copy of your Insights Operator archive.
+* Upload the Insights Operator archive to console.redhat.com.
 Additionally, you can choose to obfuscate the Insights Operator data before upload.
-Running an Insights Operator gather operation
+
+# Running an Insights Operator gather operation
+
 You must run a gather operation to create an Insights Operator archive.
 
-You are logged in to Red Hat OpenShift Container Platform as cluster-admin.
+* You are logged in to Red Hat OpenShift Container Platform as cluster-admin.
+
+1. Create a file named gather-job.yaml using this template:
+
+```yaml
+link:https://raw.githubusercontent.com/openshift/insights-operator/release-4.15/docs/gather-job.yaml[role=include]
+```
+
+2. Copy your insights-operator image version:
+
+```terminal
+$ oc get -n openshift-insights deployment insights-operator -o yaml
+```
+
+Example output
+
+```yaml
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: insights-operator
+  namespace: openshift-insights
+# ...
+spec:
+  template:
+# ...
+    spec:
+      containers:
+      - args:
+# ...
+        image: registry.ci.openshift.org/ocp/4.15-2023-10-12-212500@sha256:a0aa581400805ad0... 1
+# ...
+```
+
+Specifies your insights-operator image version.
+3. Paste your image version in gather-job.yaml:
+
+```yaml
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: insights-operator-job
+# ...
+spec:
+# ...
+  template:
+    spec:
+    initContainers:
+    - name: insights-operator
+      image: image: registry.ci.openshift.org/ocp/4.15-2023-10-12-212500@sha256:a0aa581400805ad0... 1
+      terminationMessagePolicy: FallbackToLogsOnError
+      volumeMounts:
+```
+
+Replace any existing value with your insights-operator image version.
+4. Create the gather job:
+
+```terminal
+$ oc apply -n openshift-insights -f gather-job.yaml
+```
+
+5. Find the name of the job pod:
+
+```terminal
+$ oc describe -n openshift-insights job/insights-operator-job
+```
+
+Example output
+
+```terminal
+Name:             insights-operator-job
+Namespace:        openshift-insights
+# ...
+Events:
+  Type    Reason            Age    From            Message
+  ----    ------            ----   ----            -------
+  Normal  SuccessfulCreate  7m18s  job-controller  Created pod: insights-operator-job-<your_job>
+```
+
+where:: insights-operator-job-<your_job> is the name of the pod.
+6. Verify that the operation has finished:
+
+```terminal
+$ oc logs -n openshift-insights insights-operator-job-<your_job> insights-operator
+```
+
+Example output
+
+```terminal
+I0407 11:55:38.192084       1 diskrecorder.go:34] Wrote 108 records to disk in 33ms
+```
+
+7. Save the created archive:
+
+```terminal
+$ oc cp openshift-insights/insights-operator-job-<your_job>:/var/lib/insights-operator ./insights-data
+```
+
+8. Clean up the job:
+
+```terminal
+$ oc delete -n openshift-insights job insights-operator-job
+```
 
 
-Create a file named gather-job.yaml using this template:
+# Uploading an Insights Operator archive
 
-Copy your insights-operator image version:
-
-Paste your image version in gather-job.yaml:
-
-Create the gather job:
-
-Find the name of the job pod:
-
-Verify that the operation has finished:
-
-Save the created archive:
-
-Clean up the job:
-Uploading an Insights Operator archive
 You can manually upload an Insights Operator archive to console.redhat.com to diagnose potential issues.
 
-You are logged in to Red Hat OpenShift Container Platform as cluster-admin.
+* You are logged in to Red Hat OpenShift Container Platform as cluster-admin.
+* You have a workstation with unrestricted internet access.
+* You have created a copy of the Insights Operator archive.
 
-You have a workstation with unrestricted internet access.
+1. Download the dockerconfig.json file:
 
-You have created a copy of the Insights Operator archive.
+```terminal
+$ oc extract secret/pull-secret -n openshift-config --to=.
+```
+
+2. Copy your "cloud.openshift.com" "auth" token from the dockerconfig.json file:
+
+```json
+{
+  "auths": {
+    "cloud.openshift.com": {
+      "auth": "<your_token>",
+      "email": "asd@redhat.com"
+    }
+}
+```
+
+3. Upload the archive to console.redhat.com:
+
+```terminal
+$ curl -v -H "User-Agent: insights-operator/one10time200gather184a34f6a168926d93c330 cluster/<cluster_id>" -H "Authorization: Bearer <your_token>" -F "upload=@<path_to_archive>; type=application/vnd.redhat.openshift.periodic+tar" https://console.redhat.com/api/ingress/v1/upload
+```
 
 
-Download the dockerconfig.json file:
+where <cluster_id> is your cluster ID, <your_token> is the token from your pull secret, and <path_to_archive> is the path to the Insights Operator archive.
 
-Copy your "cloud.openshift.com" "auth" token from the dockerconfig.json file:
+If the operation is successful, the command returns a "request_id" and "account_number":
+Example output
 
-Upload the archive to console.redhat.com:
+```terminal
+* Connection #0 to host console.redhat.com left intact
+{"request_id":"393a7cf1093e434ea8dd4ab3eb28884c","upload":{"account_number":"6274079"}}%
+```
 
 
-Log in to https://console.redhat.com/openshift.
+1. Log in to https://console.redhat.com/openshift.
+2. Click the Clusters menu in the left pane.
+3. To display the details of the cluster, click the cluster name.
+4. Open the Insights Advisor tab of the cluster.
 
-Click the Clusters menu in the left pane.
+If the upload was successful, the tab displays one of the following:
+* Your cluster passed all recommendations, if Insights Advisor did not identify any issues.
+* A list of issues that Insights Advisor has detected, prioritized by risk (low, moderate, important, and critical).
 
-To display the details of the cluster, click the cluster name.
+# Enabling Insights Operator data obfuscation
 
-Open the Insights Advisor tab of the cluster.
-Enabling Insights Operator data obfuscation
 You can enable obfuscation to mask sensitive and identifiable IPv4 addresses and cluster base domains that the Insights Operator sends to console.redhat.com.
 
+
+[WARNING]
+----
 Although this feature is available, Red Hat recommends keeping obfuscation disabled for a more effective support experience.
+----
+
 Obfuscation assigns non-identifying values to cluster IPv4 addresses, and uses a translation table that is retained in memory to change IP addresses to their obfuscated versions throughout the Insights Operator archive before uploading the data to console.redhat.com.
 
 For cluster base domains, obfuscation changes the base domain to a hardcoded substring. For example, cluster-api.openshift.example.com becomes cluster-api.<CLUSTER_BASE_DOMAIN>.
 
 The following procedure enables obfuscation using the support secret in the openshift-config namespace.
 
-You are logged in to the Red Hat OpenShift Container Platform web console as cluster-admin.
+* You are logged in to the Red Hat OpenShift Container Platform web console as cluster-admin.
 
+1. Navigate to Workloads -> Secrets.
+2. Select the openshift-config project.
+3. Search for the support secret using the Search by name field. If it does not exist, click Create -> Key/value secret to create it.
+4. Click the Options menu ., and then click Edit Secret.
+5. Click Add Key/Value.
+6. Create a key named enableGlobalObfuscation with a value of true, and click Save.
+7. Navigate to Workloads -> Pods
+8. Select the openshift-insights project.
+9. Find the insights-operator pod.
+10. To restart the insights-operator pod, click the Options menu ., and then click Delete Pod.
 
-Navigate to Workloads -> Secrets.
-
-Select the openshift-config project.
-
-Search for the support secret using the Search by name field. If it does not exist, click Create -> Key/value secret to create it.
-
-Click the Options menu ., and then click Edit Secret.
-
-Click Add Key/Value.
-
-Create a key named enableGlobalObfuscation with a value of true, and click Save.
-
-Navigate to Workloads -> Pods
-
-Select the openshift-insights project.
-
-Find the insights-operator pod.
-
-To restart the insights-operator pod, click the Options menu ., and then click Delete Pod.
-
-
-Navigate to Workloads -> Secrets.
-
-Select the openshift-insights project.
-
-Search for the obfuscation-translation-table secret using the Search by name field.
-
+1. Navigate to Workloads -> Secrets.
+2. Select the openshift-insights project.
+3. Search for the obfuscation-translation-table secret using the Search by name field.
 
 If the obfuscation-translation-table secret exists, then obfuscation is enabled and working.
 
 Alternatively, you can inspect /insights-operator/gathers.json in your Insights Operator archive for the value "is_global_obfuscation_enabled": true.
 
-For more information on how to download your Insights Operator archive, see Showing data collected by the Insights Operator.
+* For more information on how to download your Insights Operator archive, see Showing data collected by the Insights Operator.

@@ -1,80 +1,360 @@
-Scaling a user-provisioned cluster with the Bare Metal Operator
+# Scaling a user-provisioned cluster with the Bare Metal Operator
+
 
 After deploying a user-provisioned infrastructure cluster, you can use the Bare Metal Operator (BMO) and other metal3 components to scale bare-metal hosts in the cluster. This approach helps you to scale a user-provisioned cluster in a more automated way.
-About scaling a user-provisioned cluster with the Bare Metal Operator
+
+# About scaling a user-provisioned cluster with the Bare Metal Operator
+
 You can scale user-provisioned infrastructure clusters by using the Bare Metal Operator (BMO) and other metal3 components. User-provisioned infrastructure installations do not feature the Machine API Operator. The Machine API Operator typically manages the lifecycle of bare-metal hosts in a cluster. However, it is possible to use the BMO and other metal3 components to scale nodes in user-provisioned clusters without requiring the Machine API Operator.
 
-Prerequisites for scaling a user-provisioned cluster
-You installed a user-provisioned infrastructure cluster on bare metal.
+## Prerequisites for scaling a user-provisioned cluster
 
-You have baseboard management controller (BMC) access to the hosts.
-Limitations for scaling a user-provisioned cluster
-You cannot use a provisioning network to scale user-provisioned infrastructure clusters by using the Bare Metal Operator (BMO).
+* You installed a user-provisioned infrastructure cluster on bare metal.
+* You have baseboard management controller (BMC) access to the hosts.
 
-You cannot scale MachineSet objects in user-provisioned infrastructure clusters by using the BMO.
-Configuring a provisioning resource to scale user-provisioned clusters
+## Limitations for scaling a user-provisioned cluster
+
+* You cannot use a provisioning network to scale user-provisioned infrastructure clusters by using the Bare Metal Operator (BMO).
+* Consequentially, you can only use bare-metal host drivers that support virtual media networking booting, for example redfish-virtualmedia and idrac-virtualmedia.
+* You cannot scale MachineSet objects in user-provisioned infrastructure clusters by using the BMO.
+
+# Configuring a provisioning resource to scale user-provisioned clusters
+
 Create a Provisioning custom resource (CR) to enable Metal platform components on a user-provisioned infrastructure cluster.
 
-You installed a user-provisioned infrastructure cluster on bare metal.
+* You installed a user-provisioned infrastructure cluster on bare metal.
+
+1. Create a Provisioning CR.
+1. Save the following YAML in the provisioning.yaml file:
+
+```yaml
+apiVersion: metal3.io/v1alpha1
+kind: Provisioning
+metadata:
+  name: provisioning-configuration
+spec:
+  provisioningNetwork: "Disabled"
+  watchAllNamespaces: false
+```
 
 
-Create a Provisioning CR.
+[NOTE]
+----
+Red Hat OpenShift Container Platform 4.15 does not support enabling a provisioning network when you scale a user-provisioned cluster by using the Bare Metal Operator.
+----
+2. Create the Provisioning CR by running the following command:
 
-Create the Provisioning CR by running the following command:
+```terminal
+$ oc create -f provisioning.yaml
+```
+
+Example output
+
+```terminal
+provisioning.metal3.io/provisioning-configuration created
+```
 
 
-Verify that the provisioning service is running by running the following command:
-Provisioning new hosts in a user-provisioned cluster by using the BMO
+* Verify that the provisioning service is running by running the following command:
+
+```terminal
+$ oc get pods -n openshift-machine-api
+```
+
+Example output
+
+```terminal
+NAME                                                  READY   STATUS    RESTARTS        AGE
+cluster-autoscaler-operator-678c476f4c-jjdn5          2/2     Running   0               5d21h
+cluster-baremetal-operator-6866f7b976-gmvgh           2/2     Running   0               5d21h
+control-plane-machine-set-operator-7d8566696c-bh4jz   1/1     Running   0               5d21h
+ironic-proxy-64bdw                                    1/1     Running   0               5d21h
+ironic-proxy-rbggf                                    1/1     Running   0               5d21h
+ironic-proxy-vj54c                                    1/1     Running   0               5d21h
+machine-api-controllers-544d6849d5-tgj9l              7/7     Running   1 (5d21h ago)   5d21h
+machine-api-operator-5c4ff4b86d-6fjmq                 2/2     Running   0               5d21h
+metal3-6d98f84cc8-zn2mx                               5/5     Running   0               5d21h
+metal3-image-customization-59d745768d-bhrp7           1/1     Running   0               5d21h
+```
+
+
+# Provisioning new hosts in a user-provisioned cluster by using the BMO
+
 You can use the Bare Metal Operator (BMO) to provision bare-metal hosts in a user-provisioned cluster by creating a BareMetalHost custom resource (CR).
 
+
+[NOTE]
+----
 To provision bare-metal hosts to the cluster by using the BMO, you must set the spec.externallyProvisioned specification in the BareMetalHost custom resource to false.
-You created a user-provisioned bare-metal cluster.
+----
 
-You have baseboard management controller (BMC) access to the hosts.
+* You created a user-provisioned bare-metal cluster.
+* You have baseboard management controller (BMC) access to the hosts.
+* You deployed a provisioning service in the cluster by creating a Provisioning CR.
 
-You deployed a provisioning service in the cluster by creating a Provisioning CR.
+1. Create the Secret CR and the BareMetalHost CR.
+1. Save the following YAML in the bmh.yaml file:
+
+```yaml
+---
+apiVersion: v1
+kind: Secret
+metadata:
+  name: worker1-bmc
+  namespace: openshift-machine-api
+type: Opaque
+data:
+  username: <base64_of_uid>
+  password: <base64_of_pwd>
+---
+apiVersion: metal3.io/v1alpha1
+kind: BareMetalHost
+metadata:
+  name: worker1
+  namespace: openshift-machine-api
+spec:
+  bmc:
+    address: <protocol>://<bmc_url> 1
+    credentialsName: "worker1-bmc"
+  bootMACAddress: <nic1_mac_address>
+  externallyProvisioned: false 2
+  customDeploy:
+    method: install_coreos
+  online: true
+  userData:
+    name: worker-user-data-managed
+    namespace: openshift-machine-api
+```
+
+You can only use bare-metal host drivers that support virtual media networking booting, for example redfish-virtualmedia and idrac-virtualmedia.
+You must set the spec.externallyProvisioned specification in the BareMetalHost custom resource to false. The default value is false.
+2. Create the bare-metal host object by running the following command:
+
+```terminal
+$ oc create -f bmh.yaml
+```
+
+Example output
+
+```terminal
+secret/worker1-bmc created
+baremetalhost.metal3.io/worker1 created
+```
+
+3. Approve all certificate signing requests (CSRs).
+1. Verify that the provisioning state of the host is provisioned by running the following command:
+
+```terminal
+$ oc get bmh -A
+```
+
+Example output
+
+```terminal
+NAMESPACE               NAME          STATE                    CONSUMER   ONLINE   ERROR   AGE
+openshift-machine-api   controller1   externally provisioned              true             5m25s
+openshift-machine-api   worker1       provisioned                         true             4m45s
+```
+
+2. Get the list of pending CSRs by running the following command:
+
+```terminal
+$ oc get csr
+```
+
+Example output
+
+```terminal
+NAME        AGE   SIGNERNAME                                    REQUESTOR                                         REQUESTEDDURATION CONDITION
+csr-gfm9f   33s   kubernetes.io/kube-apiserver-client-kubelet   system:serviceaccount:openshift-machine-config-o
+perator:node-bootstrapper   <none>              Pending
+```
+
+3. Approve the CSR by running the following command:
+
+```terminal
+$ oc adm certificate approve <csr_name>
+```
+
+Example output
+
+```terminal
+certificatesigningrequest.certificates.k8s.io/<csr_name> approved
+```
 
 
-Create the Secret CR and the BareMetalHost CR.
+* Verify that the node is ready by running the following command:
 
-Create the bare-metal host object by running the following command:
+```terminal
+$ oc get nodes
+```
 
-Approve all certificate signing requests (CSRs).
+Example output
+
+```terminal
+NAME        STATUS   ROLES           AGE     VERSION
+app1        Ready    worker          47s     v1.24.0+dc5a2fd
+controller1 Ready    master,worker   2d22h   v1.24.0+dc5a2fd
+```
 
 
-Verify that the node is ready by running the following command:
-Optional: Managing existing hosts in a user-provisioned cluster by using the BMO
-Optionally, you can use the Bare Metal Operator (BMO) to manage existing bare-metal controller hosts in a user-provisioned cluster by creating a BareMetalHost object for the existing host. It is not a requirement to manage existing user-provisioned hosts; however, you can enroll them as externally-provisioned hosts for inventory purposes.
+# Optional: Managing existing hosts in a user-provisioned cluster by using the BMO
 
+Optionally, you can use the Bare Metal Operator (BMO) to manage existing bare-metal controller hosts in a user-provisioned cluster by creating a BareMetalHost object for the existing host.
+It is not a requirement to manage existing user-provisioned hosts; however, you can enroll them as externally-provisioned hosts for inventory purposes.
+
+
+[IMPORTANT]
+----
 To manage existing hosts by using the BMO, you must set the spec.externallyProvisioned specification in the BareMetalHost custom resource to true to prevent the BMO from re-provisioning the host.
-You created a user-provisioned bare-metal cluster.
+----
 
-You have baseboard management controller (BMC) access to the hosts.
+* You created a user-provisioned bare-metal cluster.
+* You have baseboard management controller (BMC) access to the hosts.
+* You deployed a provisioning service in the cluster by creating a Provisioning CR.
 
-You deployed a provisioning service in the cluster by creating a Provisioning CR.
+1. Create the Secret CR and the BareMetalHost CR.
+1. Save the following YAML in the controller.yaml file:
+
+```yaml
+---
+apiVersion: v1
+kind: Secret
+metadata:
+  name: controller1-bmc
+  namespace: openshift-machine-api
+type: Opaque
+data:
+  username: <base64_of_uid>
+  password: <base64_of_pwd>
+---
+apiVersion: metal3.io/v1alpha1
+kind: BareMetalHost
+metadata:
+  name: controller1
+  namespace: openshift-machine-api
+spec:
+  bmc:
+    address: <protocol>://<bmc_url> 1
+    credentialsName: "controller1-bmc"
+  bootMACAddress: <nic1_mac_address>
+  customDeploy:
+    method: install_coreos
+  externallyProvisioned: true 2
+  online: true
+  userData:
+    name: controller-user-data-managed
+    namespace: openshift-machine-api
+```
+
+You can only use bare-metal host drivers that support virtual media networking booting, for example redfish-virtualmedia and idrac-virtualmedia.
+You must set the value to true to prevent the BMO from re-provisioning the bare-metal controller host.
+2. Create the bare-metal host object by running the following command:
+
+```terminal
+$ oc create -f controller.yaml
+```
+
+Example output
+
+```terminal
+secret/controller1-bmc created
+baremetalhost.metal3.io/controller1 created
+```
 
 
-Create the Secret CR and the BareMetalHost CR.
+* Verify that the BMO created the bare-metal host object by running the following command:
 
-Create the bare-metal host object by running the following command:
+```terminal
+$ oc get bmh -A
+```
+
+Example output
+
+```terminal
+NAMESPACE               NAME          STATE                    CONSUMER   ONLINE   ERROR   AGE
+openshift-machine-api   controller1   externally provisioned              true             13s
+```
 
 
-Verify that the BMO created the bare-metal host object by running the following command:
-Removing hosts from a user-provisioned cluster by using the BMO
+# Removing hosts from a user-provisioned cluster by using the BMO
+
 You can use the Bare Metal Operator (BMO) to remove bare-metal hosts from a user-provisioned cluster.
 
-You created a user-provisioned bare-metal cluster.
+* You created a user-provisioned bare-metal cluster.
+* You have baseboard management controller (BMC) access to the hosts.
+* You deployed a provisioning service in the cluster by creating a Provisioning CR.
 
-You have baseboard management controller (BMC) access to the hosts.
+1. Cordon and drain the host by running the following command:
 
-You deployed a provisioning service in the cluster by creating a Provisioning CR.
+```terminal
+$ oc adm drain app1 --force --ignore-daemonsets=true
+```
+
+Example output
+
+```terminal
+node/app1 cordoned
+WARNING: ignoring DaemonSet-managed Pods: openshift-cluster-node-tuning-operator/tuned-tvthg, openshift-dns/dns-
+default-9q6rz, openshift-dns/node-resolver-zvt42, openshift-image-registry/node-ca-mzxth, openshift-ingress-cana
+ry/ingress-canary-qq5lf, openshift-machine-config-operator/machine-config-daemon-v79dm, openshift-monitoring/nod
+e-exporter-2vn59, openshift-multus/multus-additional-cni-plugins-wssvj, openshift-multus/multus-fn8tg, openshift
+-multus/network-metrics-daemon-5qv55, openshift-network-diagnostics/network-check-target-jqxn2, openshift-ovn-ku
+bernetes/ovnkube-node-rsvqg
+evicting pod openshift-operator-lifecycle-manager/collect-profiles-27766965-258vp
+evicting pod openshift-operator-lifecycle-manager/collect-profiles-27766950-kg5mk
+evicting pod openshift-operator-lifecycle-manager/collect-profiles-27766935-stf4s
+pod/collect-profiles-27766965-258vp evicted
+pod/collect-profiles-27766950-kg5mk evicted
+pod/collect-profiles-27766935-stf4s evicted
+node/app1 drained
+```
+
+2. Delete the customDeploy specification from the BareMetalHost CR.
+1. Edit the BareMetalHost CR for the host by running the following command:
+
+```terminal
+$ oc edit bmh -n openshift-machine-api <host_name>
+```
+
+2. Delete the lines spec.customDeploy and spec.customDeploy.method:
+
+```yaml
+...
+  customDeploy:
+    method: install_coreos
+```
+
+3. Verify that the provisioning state of the host changes to deprovisioning by running the following command:
+
+```terminal
+$ oc get bmh -A
+```
+
+Example output
+
+```terminal
+NAMESPACE               NAME          STATE                    CONSUMER   ONLINE   ERROR   AGE
+openshift-machine-api   controller1   externally provisioned              true             58m
+openshift-machine-api   worker1       deprovisioning                      true             57m
+```
+
+3. Delete the node by running the following command:
+
+```terminal
+$ oc delete node <node_name>
+```
 
 
-Cordon and drain the host by running the following command:
+* Verify the node is deleted by running the following command:
 
-Delete the customDeploy specification from the BareMetalHost CR.
+```terminal
+$ oc get nodes
+```
 
-Delete the node by running the following command:
+Example output
 
-
-Verify the node is deleted by running the following command:
+```terminal
+NAME          STATUS   ROLES           AGE     VERSION
+controller1   Ready    master,worker   2d23h   v1.24.0+dc5a2fd
+```
