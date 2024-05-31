@@ -34,7 +34,7 @@ def get_file_title(file_path: str) -> str:
     title = ""
     try:
         with open(file_path, "r") as file:
-            title = file.readline().rstrip("\n")
+            title = file.readline().rstrip("\n").lstrip("# ")
     except Exception:  # noqa: S110
         pass
     return title
