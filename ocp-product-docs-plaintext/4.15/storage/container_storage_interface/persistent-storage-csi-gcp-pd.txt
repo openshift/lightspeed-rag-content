@@ -1,68 +1,155 @@
-GCP PD CSI Driver Operator
+# GCP PD CSI Driver Operator
 
-Overview
+
+
+# Overview
+
 Red Hat OpenShift Container Platform can provision persistent volumes (PVs) using the Container Storage Interface (CSI) driver for Google Cloud Platform (GCP) persistent disk (PD) storage.
 
 Familiarity with persistent storage and configuring CSI volumes is recommended when working with a Container Storage Interface (CSI) Operator and driver.
 
 To create CSI-provisioned persistent volumes (PVs) that mount to GCP PD storage assets, Red Hat OpenShift Container Platform installs the GCP PD CSI Driver Operator and the GCP PD CSI driver by default in the openshift-cluster-csi-drivers namespace.
 
-GCP PD CSI Driver Operator: By default, the Operator provides a storage class that you can use to create PVCs. You can disable this default storage class if desired (see Managing the default storage class). You also have the option to create the GCP PD storage class as described in Persistent storage using GCE Persistent Disk.
+* GCP PD CSI Driver Operator: By default, the Operator provides a storage class that you can use to create PVCs. You can disable this default storage class if desired (see Managing the default storage class). You also have the option to create the GCP PD storage class as described in Persistent storage using GCE Persistent Disk.
+* GCP PD driver: The driver enables you to create and mount GCP PD PVs.
 
-GCP PD driver: The driver enables you to create and mount GCP PD PVs.
 
-
+[NOTE]
+----
 Red Hat OpenShift Container Platform provides automatic migration for the GCE Persistent Disk in-tree volume plugin to its equivalent CSI driver. For more information, see CSI automatic migration.
-About CSI
+----
+
+# About CSI
+
 Storage vendors have traditionally provided storage drivers as part of Kubernetes. With the implementation of the Container Storage Interface (CSI), third-party providers can instead deliver storage plugins using a standard interface without ever having to change the core Kubernetes code.
 
 CSI Operators give Red Hat OpenShift Container Platform users storage options, such as volume snapshots, that are not possible with in-tree volume plugins.
-GCP PD CSI driver storage class parameters
+
+# GCP PD CSI driver storage class parameters
+
 The Google Cloud Platform (GCP) persistent disk (PD) Container Storage Interface (CSI) driver uses the CSI external-provisioner sidecar as a controller. This is a separate helper container that is deployed with the CSI driver. The sidecar manages persistent volumes (PVs) by triggering the CreateVolume operation.
 
 The GCP PD CSI driver uses the csi.storage.k8s.io/fstype parameter key to support dynamic provisioning. The following table describes all the GCP PD CSI storage class parameters that are supported by Red Hat OpenShift Container Platform.
-Creating a custom-encrypted persistent volume
+
+
+
+# Creating a custom-encrypted persistent volume
+
 When you create a PersistentVolumeClaim object, Red Hat OpenShift Container Platform provisions a new persistent volume (PV) and creates a PersistentVolume object. You can add a custom encryption key in Google Cloud Platform (GCP) to protect a PV in your cluster by encrypting the newly created PV.
 
 For encryption, the newly attached PV that you create uses customer-managed encryption keys (CMEK) on a cluster by using a new or existing Google Cloud Key Management Service (KMS) key.
 
-You are logged in to a running Red Hat OpenShift Container Platform cluster.
-
-You have created a Cloud KMS key ring and key version.
-
+* You are logged in to a running Red Hat OpenShift Container Platform cluster.
+* You have created a Cloud KMS key ring and key version.
 
 For more information about CMEK and Cloud KMS resources, see Using customer-managed encryption keys (CMEK).
 
 To create a custom-encrypted PV, complete the following steps:
 
-Create a storage class with the Cloud KMS key. The following example enables dynamic provisioning of encrypted volumes:
+1. Create a storage class with the Cloud KMS key. The following example enables dynamic provisioning of encrypted volumes:
 
-Deploy the storage class on your Red Hat OpenShift Container Platform cluster using the oc command:
+```yaml
+apiVersion: storage.k8s.io/v1
+kind: StorageClass
+metadata:
+  name: csi-gce-pd-cmek
+provisioner: pd.csi.storage.gke.io
+volumeBindingMode: "WaitForFirstConsumer"
+allowVolumeExpansion: true
+parameters:
+  type: pd-standard
+  disk-encryption-kms-key: projects/<key-project-id>/locations/<location>/keyRings/<key-ring>/cryptoKeys/<key> 1
+```
 
-Create a file named pvc.yaml that matches the name of your storage class object that you created in the previous step:
+This field must be the resource identifier for the key that will be used to encrypt new disks. Values are case-sensitive. For more information about providing key ID values, see Retrieving a resource's ID and Getting a Cloud KMS resource ID.
 
-Apply the PVC on your cluster:
+[NOTE]
+----
+You cannot add the disk-encryption-kms-key parameter to an existing storage class. However, you can delete the storage class and recreate it with the same name and a different set of parameters. If you do this, the provisioner of the existing class must be pd.csi.storage.gke.io.
+----
+2. Deploy the storage class on your Red Hat OpenShift Container Platform cluster using the oc command:
 
-Get the status of your PVC and verify that it is created and bound to a newly provisioned PV:
+```terminal
+$ oc describe storageclass csi-gce-pd-cmek
+```
 
+Example output
+
+```terminal
+Name:                  csi-gce-pd-cmek
+IsDefaultClass:        No
+Annotations:           None
+Provisioner:           pd.csi.storage.gke.io
+Parameters:            disk-encryption-kms-key=projects/key-project-id/locations/location/keyRings/ring-name/cryptoKeys/key-name,type=pd-standard
+AllowVolumeExpansion:  true
+MountOptions:          none
+ReclaimPolicy:         Delete
+VolumeBindingMode:     WaitForFirstConsumer
+Events:                none
+```
+
+3. Create a file named pvc.yaml that matches the name of your storage class object that you created in the previous step:
+
+```yaml
+kind: PersistentVolumeClaim
+apiVersion: v1
+metadata:
+  name: podpvc
+spec:
+  accessModes:
+    - ReadWriteOnce
+  storageClassName: csi-gce-pd-cmek
+  resources:
+    requests:
+      storage: 6Gi
+```
+
+
+[NOTE]
+----
+If you marked the new storage class as default, you can omit the storageClassName field.
+----
+4. Apply the PVC on your cluster:
+
+```terminal
+$ oc apply -f pvc.yaml
+```
+
+5. Get the status of your PVC and verify that it is created and bound to a newly provisioned PV:
+
+```terminal
+$ oc get pvc
+```
+
+Example output
+
+```terminal
+NAME      STATUS    VOLUME                                     CAPACITY   ACCESS MODES   STORAGECLASS     AGE
+podpvc    Bound     pvc-e36abf50-84f3-11e8-8538-42010a800002   10Gi       RWO            csi-gce-pd-cmek  9s
+```
+
+
+[NOTE]
+----
+If your storage class has the volumeBindingMode field set to WaitForFirstConsumer, you must create a pod to use the PVC before you can verify it.
+----
 
 Your CMEK-protected PV is now ready to use with your Red Hat OpenShift Container Platform cluster.
-User-managed encryption
+
+# User-managed encryption
+
 The user-managed encryption feature allows you to provide keys during installation that encrypt Red Hat OpenShift Container Platform node root volumes, and enables all managed storage classes to use these keys to encrypt provisioned storage volumes. You must specify the custom key in the platform.<cloud_type>.defaultMachinePlatform field in the install-config YAML file.
 
 This features supports the following storage types:
 
-Amazon Web Services (AWS) Elastic Block storage (EBS)
-
-Microsoft Azure Disk storage
-
-Google Cloud Platform (GCP) persistent disk (PD) storage
-
-IBM Virtual Private Cloud (VPC) Block storage
-
+* Amazon Web Services (AWS) Elastic Block storage (EBS)
+* Microsoft Azure Disk storage
+* Google Cloud Platform (GCP) persistent disk (PD) storage
+* IBM Virtual Private Cloud (VPC) Block storage
 
 For information about installing with user-managed encryption for GCP PD, see Installation configuration parameters.
-Additional resources
-Persistent storage using GCE Persistent Disk
 
-Configuring CSI volumes
+# Additional resources
+
+* Persistent storage using GCE Persistent Disk
+* Configuring CSI volumes

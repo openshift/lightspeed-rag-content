@@ -1,66 +1,203 @@
-Understanding node rebooting
+# Understanding node rebooting
 
-To reboot a node without causing an outage for applications running on the platform, it is important to first evacuate the pods. For pods that are made highly available by the routing tier, nothing else needs to be done. For other pods needing storage, typically databases, it is critical to ensure that they can remain in operation with one pod temporarily going offline. While implementing resiliency for stateful pods is different for each application, in all cases it is important to configure the scheduler to use node anti-affinity to ensure that the pods are properly spread across available nodes.
 
-Another challenge is how to handle nodes that are running critical infrastructure such as the router or the registry. The same node evacuation process applies, though it is important to understand certain edge cases.
-About rebooting nodes running critical infrastructure
+To reboot a node without causing an outage for applications running on the
+platform, it is important to first evacuate the pods. For pods that are
+made highly available by the routing tier, nothing
+else needs to be done. For other pods needing storage, typically databases, it
+is critical to ensure that they can remain in operation with one pod
+temporarily going offline. While implementing resiliency for stateful pods
+is different for each application, in all cases it is important to configure
+the scheduler to use node anti-affinity to
+ensure that the pods are properly spread across available nodes.
+Another challenge is how to handle nodes that are running critical
+infrastructure such as the router or the registry. The same node evacuation
+process applies, though it is important to understand certain edge cases.
+
+# About rebooting nodes running critical infrastructure
+
 When rebooting nodes that host critical Red Hat OpenShift Container Platform infrastructure components, such as router pods, registry pods, and monitoring pods, ensure that there are at least three nodes available to run these components.
 
 The following scenario demonstrates how service interruptions can occur with applications running on Red Hat OpenShift Container Platform when only two nodes are available:
 
-Node A is marked unschedulable and all pods are evacuated.
-
-The registry pod running on that node is now redeployed on node B. Node B is now running both registry pods.
-
-Node B is now marked unschedulable and is evacuated.
-
-The service exposing the two pod endpoints on node B loses all endpoints, for a brief period of time, until they are redeployed to node A.
-
+* Node A is marked unschedulable and all pods are evacuated.
+* The registry pod running on that node is now redeployed on node B. Node B is now running both registry pods.
+* Node B is now marked unschedulable and is evacuated.
+* The service exposing the two pod endpoints on node B loses all endpoints, for a brief period of time, until they are redeployed to node A.
 
 When using three nodes for infrastructure components, this process does not result in a service disruption. However, due to pod scheduling, the last node that is evacuated and brought back into rotation does not have a registry pod. One of the other nodes has two registry pods. To schedule the third registry pod on the last node, use pod anti-affinity to prevent the scheduler from locating two registry pods on the same node.
 
-For more information on pod anti-affinity, see Placing pods relative to other pods using affinity and anti-affinity rules.
-Rebooting a node using pod anti-affinity
-Pod anti-affinity is slightly different than node anti-affinity. Node anti-affinity can be violated if there are no other suitable locations to deploy a pod. Pod anti-affinity can be set to either required or preferred.
+* For more information on pod anti-affinity, see Placing pods relative to other pods using affinity and anti-affinity rules.
 
-With this in place, if only two infrastructure nodes are available and one is rebooted, the container image registry pod is prevented from running on the other node. oc get pods reports the pod as unready until a suitable node is available. Once a node is available and all pods are back in ready state, the next node can be restarted.
+# Rebooting a node using pod anti-affinity
+
+Pod anti-affinity is slightly different than node anti-affinity. Node anti-affinity can be
+violated if there are no other suitable locations to deploy a pod. Pod
+anti-affinity can be set to either required or preferred.
+
+With this in place, if only two infrastructure nodes are available and one is rebooted, the container image registry
+pod is prevented from running on the other node. oc get pods reports the pod as unready until a suitable node is available.
+Once a node is available and all pods are back in ready state, the next node can be restarted.
 
 To reboot a node using pod anti-affinity:
 
-Edit the node specification to configure pod anti-affinity:
+1. Edit the node specification to configure pod anti-affinity:
 
-Enable the MatchInterPodAffinity scheduler predicate in the scheduling policy file.
+```yaml
+apiVersion: v1
+kind: Pod
+metadata:
+  name: with-pod-antiaffinity
+spec:
+  affinity:
+    podAntiAffinity: 1
+      preferredDuringSchedulingIgnoredDuringExecution: 2
+      - weight: 100 3
+        podAffinityTerm:
+          labelSelector:
+            matchExpressions:
+            - key: registry 4
+              operator: In 5
+              values:
+              - default
+          topologyKey: kubernetes.io/hostname
+#...
+```
 
-Perform a graceful restart of the node.
-Understanding how to reboot nodes running routers
+Stanza to configure pod anti-affinity.
+Defines a preferred rule.
+Specifies a weight for a preferred rule. The node with the highest weight is preferred.
+Description of the pod label that determines when the anti-affinity rule applies. Specify a key and value for the label.
+The operator represents the relationship between the label on the existing pod and the set of values in the matchExpression parameters in the specification for the new pod. Can be In, NotIn, Exists, or DoesNotExist.
+
+This example assumes the container image registry pod has a label of
+registry=default. Pod anti-affinity can use any Kubernetes match
+expression.
+2. Enable the MatchInterPodAffinity scheduler predicate in the scheduling policy file.
+3. Perform a graceful restart of the node.
+
+# Understanding how to reboot nodes running routers
+
 In most cases, a pod running an Red Hat OpenShift Container Platform router exposes a host port.
 
-The PodFitsPorts scheduler predicate ensures that no router pods using the same port can run on the same node, and pod anti-affinity is achieved. If the routers are relying on IP failover for high availability, there is nothing else that is needed.
+The PodFitsPorts scheduler predicate ensures that no router pods using the
+same port can run on the same node, and pod anti-affinity is achieved. If the
+routers are relying on IP failover for high availability, there is nothing else that is needed.
 
-For router pods relying on an external service such as AWS Elastic Load Balancing for high availability, it is that service's responsibility to react to router pod restarts.
+For router pods relying on an external service such as AWS Elastic Load Balancing for high
+availability, it is that service&#8217;s responsibility to react to router pod restarts.
 
-In rare cases, a router pod may not have a host port configured. In those cases, it is important to follow the recommended restart process for infrastructure nodes.
-Rebooting a node gracefully
+In rare cases, a router pod may not have a host port configured. In those cases,
+it is important to follow the recommended restart process for infrastructure nodes.
+
+# Rebooting a node gracefully
+
 Before rebooting a node, it is recommended to backup etcd data to avoid any data loss on the node.
 
-For single-node OpenShift clusters that require users to perform the oc login command rather than having the certificates in kubeconfig file to manage the cluster, the oc adm commands might not be available after cordoning and draining the node. This is because the openshift-oauth-apiserver pod is not running due to the cordon. You can use SSH to access the nodes as indicated in the following procedure.
 
+[NOTE]
+----
+For single-node OpenShift clusters that require users to perform the oc login command rather than having the certificates in kubeconfig file to manage the cluster, the oc adm commands might not be available after cordoning and draining the node. This is because the openshift-oauth-apiserver pod is not running due to the cordon. You can use SSH to access the nodes as indicated in the following procedure.
 In a single-node OpenShift cluster, pods cannot be rescheduled when cordoning and draining. However, doing so gives the pods, especially your workload pods, time to properly stop and release associated resources.
+----
+
 To perform a graceful restart of a node:
 
-Mark the node as unschedulable:
+1. Mark the node as unschedulable:
 
-Drain the node to remove all the running pods:
+```terminal
+$ oc adm cordon <node1>
+```
 
-Access the node in debug mode:
+2. Drain the node to remove all the running pods:
 
-Change your root directory to /host:
+```terminal
+$ oc adm drain <node1> --ignore-daemonsets --delete-emptydir-data --force
+```
 
-Restart the node:
 
-After the reboot is complete, mark the node as schedulable by running the following command:
+You might receive errors that pods associated with custom pod disruption budgets (PDB) cannot be evicted.
+Example error
 
-Verify that the node is ready:
+```terminal
+error when evicting pods/"rails-postgresql-example-1-72v2w" -n "rails" (will retry after 5s): Cannot evict pod as it would violate the pod's disruption budget.
+```
+
+
+In this case, run the drain command again, adding the disable-eviction flag, which bypasses the PDB checks:
+
+```terminal
+$ oc adm drain <node1> --ignore-daemonsets --delete-emptydir-data --force --disable-eviction
+```
+
+3. Access the node in debug mode:
+
+```terminal
+$ oc debug node/<node1>
+```
+
+4. Change your root directory to /host:
+
+```terminal
+$ chroot /host
+```
+
+5. Restart the node:
+
+```terminal
+$ systemctl reboot
+```
+
+
+In a moment, the node enters the NotReady state.
+
+[NOTE]
+----
+With some single-node OpenShift clusters, the oc commands might not be available after you cordon and drain the node because the openshift-oauth-apiserver pod is not running. You can use SSH to connect to the node and perform the reboot.
+
+```terminal
+$ ssh core@<master-node>.<cluster_name>.<base_domain>
+```
+
+
+```terminal
+$ sudo systemctl reboot
+```
+
+----
+6. After the reboot is complete, mark the node as schedulable by running the following command:
+
+```terminal
+$ oc adm uncordon <node1>
+```
+
+
+[NOTE]
+----
+With some single-node OpenShift clusters, the oc commands might not be available after you cordon and drain the node because the openshift-oauth-apiserver pod is not running. You can use SSH to connect to the node and uncordon it.
+
+```terminal
+$ ssh core@<target_node>
+```
+
+
+```terminal
+$ sudo oc adm uncordon <node> --kubeconfig /etc/kubernetes/static-pod-resources/kube-apiserver-certs/secrets/node-kubeconfigs/localhost.kubeconfig
+```
+
+----
+7. Verify that the node is ready:
+
+```terminal
+$ oc get node <node1>
+```
+
+Example output
+
+```terminal
+NAME    STATUS  ROLES    AGE     VERSION
+<node1> Ready   worker   6d22h   v1.18.3+b0068a8
+```
 
 
 For information on etcd data backup, see Backing up etcd data.

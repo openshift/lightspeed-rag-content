@@ -1,97 +1,414 @@
-Configuring PCI passthrough
+# Configuring PCI passthrough
+
 
 The Peripheral Component Interconnect (PCI) passthrough feature enables you to access and manage hardware devices from a virtual machine (VM). When PCI passthrough is configured, the PCI devices function as if they were physically attached to the guest operating system.
-
 Cluster administrators can expose and manage host devices that are permitted to be used in the cluster by using the oc command-line interface (CLI).
-Preparing nodes for GPU passthrough
+
+# Preparing nodes for GPU passthrough
+
 You can prevent GPU operands from deploying on worker nodes that you designated for GPU passthrough.
 
-Preventing NVIDIA GPU operands from deploying on nodes
+## Preventing NVIDIA GPU operands from deploying on nodes
+
 If you use the NVIDIA GPU Operator in your cluster, you can apply the nvidia.com/gpu.deploy.operands=false label to nodes that you do not want to configure for GPU or vGPU operands. This label prevents the creation of the pods that configure GPU or vGPU operands and terminates the pods if they already exist.
 
-The OpenShift CLI (oc) is installed.
+* The OpenShift CLI (oc) is installed.
+
+* Label the node by running the following command:
+
+```terminal
+$ oc label node <node_name> nvidia.com/gpu.deploy.operands=false 1
+```
+
+Replace <node_name> with the name of a node where you do not want to install the NVIDIA GPU operands.
+
+1. Verify that the label was added to the node by running the following command:
+
+```terminal
+$ oc describe node <node_name>
+```
+
+2. Optional: If GPU operands were previously deployed on the node, verify their removal.
+1. Check the status of the pods in the nvidia-gpu-operator namespace by running the following command:
+
+```terminal
+$ oc get pods -n nvidia-gpu-operator
+```
+
+Example output
+
+```terminal
+NAME                             READY   STATUS        RESTARTS   AGE
+gpu-operator-59469b8c5c-hw9wj    1/1     Running       0          8d
+nvidia-sandbox-validator-7hx98   1/1     Running       0          8d
+nvidia-sandbox-validator-hdb7p   1/1     Running       0          8d
+nvidia-sandbox-validator-kxwj7   1/1     Terminating   0          9d
+nvidia-vfio-manager-7w9fs        1/1     Running       0          8d
+nvidia-vfio-manager-866pz        1/1     Running       0          8d
+nvidia-vfio-manager-zqtck        1/1     Terminating   0          9d
+```
+
+2. Monitor the pod status until the pods with Terminating status are removed:
+
+```terminal
+$ oc get pods -n nvidia-gpu-operator
+```
+
+Example output
+
+```terminal
+NAME                             READY   STATUS    RESTARTS   AGE
+gpu-operator-59469b8c5c-hw9wj    1/1     Running   0          8d
+nvidia-sandbox-validator-7hx98   1/1     Running   0          8d
+nvidia-sandbox-validator-hdb7p   1/1     Running   0          8d
+nvidia-vfio-manager-7w9fs        1/1     Running   0          8d
+nvidia-vfio-manager-866pz        1/1     Running   0          8d
+```
 
 
-Label the node by running the following command:
+# Preparing host devices for PCI passthrough
 
+## About preparing a host device for PCI passthrough
 
-Verify that the label was added to the node by running the following command:
-
-Optional: If GPU operands were previously deployed on the node, verify their removal.
-Preparing host devices for PCI passthrough
-About preparing a host device for PCI passthrough
 To prepare a host device for PCI passthrough by using the CLI, create a MachineConfig object and add kernel arguments to enable the Input-Output Memory Management Unit (IOMMU). Bind the PCI device to the Virtual Function I/O (VFIO) driver and then expose it in the cluster by editing the permittedHostDevices field of the HyperConverged custom resource (CR). The permittedHostDevices list is empty when you first install the OpenShift Virtualization Operator.
 
 To remove a PCI host device from the cluster by using the CLI, delete the PCI device information from the HyperConverged CR.
-Adding kernel arguments to enable the IOMMU driver
+
+## Adding kernel arguments to enable the IOMMU driver
+
 To enable the IOMMU driver in the kernel, create the MachineConfig object and add the kernel arguments.
 
-You have cluster administrator permissions.
+* You have cluster administrator permissions.
+* Your CPU hardware is Intel or AMD.
+* You enabled Intel Virtualization Technology for Directed I/O extensions or AMD IOMMU in the BIOS.
 
-Your CPU hardware is Intel or AMD.
+1. Create a MachineConfig object that identifies the kernel argument. The following example shows a kernel argument for an Intel CPU.
 
-You enabled Intel Virtualization Technology for Directed I/O extensions or AMD IOMMU in the BIOS.
+```yaml
+apiVersion: machineconfiguration.openshift.io/v1
+kind: MachineConfig
+metadata:
+  labels:
+    machineconfiguration.openshift.io/role: worker 1
+  name: 100-worker-iommu 2
+spec:
+  config:
+    ignition:
+      version: 3.2.0
+  kernelArguments:
+      - intel_iommu=on 3
+# ...
+```
+
+Applies the new kernel argument only to worker nodes.
+The name indicates the ranking of this kernel argument (100) among the machine configs and its purpose. If you have an AMD CPU, specify the kernel argument as amd_iommu=on.
+Identifies the kernel argument as intel_iommu for an Intel CPU.
+2. Create the new MachineConfig object:
+
+```terminal
+$ oc create -f 100-worker-kernel-arg-iommu.yaml
+```
 
 
-Create a MachineConfig object that identifies the kernel argument. The following example shows a kernel argument for an Intel CPU.
+* Verify that the new MachineConfig object was added.
 
-Create the new MachineConfig object:
+```terminal
+$ oc get MachineConfig
+```
 
 
-Verify that the new MachineConfig object was added.
-Binding PCI devices to the VFIO driver
+## Binding PCI devices to the VFIO driver
+
 To bind PCI devices to the VFIO (Virtual Function I/O) driver, obtain the values for vendor-ID and device-ID from each device and create a list with the values. Add this list to the MachineConfig object. The MachineConfig Operator generates the /etc/modprobe.d/vfio.conf on the nodes with the PCI devices, and binds the PCI devices to the VFIO driver.
 
-You added kernel arguments to enable IOMMU for the CPU.
+* You added kernel arguments to enable IOMMU for the CPU.
+
+1. Run the lspci command to obtain the vendor-ID and the device-ID for the PCI device.
+
+```terminal
+$ lspci -nnv | grep -i nvidia
+```
+
+Example output
+
+```terminal
+02:01.0 3D controller [0302]: NVIDIA Corporation GV100GL [Tesla V100 PCIe 32GB] [10de:1eb8] (rev a1)
+```
+
+2. Create a Butane config file, 100-worker-vfiopci.bu, binding the PCI device to the VFIO driver.
+
+[NOTE]
+----
+See "Creating machine configs with Butane" for information about Butane.
+----
+Example
+
+```yaml
+variant: openshift
+version: 4.16.0
+metadata:
+  name: 100-worker-vfiopci
+  labels:
+    machineconfiguration.openshift.io/role: worker 1
+storage:
+  files:
+  - path: /etc/modprobe.d/vfio.conf
+    mode: 0644
+    overwrite: true
+    contents:
+      inline: |
+        options vfio-pci ids=10de:1eb8 2
+  - path: /etc/modules-load.d/vfio-pci.conf 3
+    mode: 0644
+    overwrite: true
+    contents:
+      inline: vfio-pci
+```
+
+Applies the new kernel argument only to worker nodes.
+Specify the previously determined vendor-ID value (10de) and the device-ID value (1eb8) to bind a single device to the VFIO driver. You can add a list of multiple devices with their vendor and device information.
+The file that loads the vfio-pci kernel module on the worker nodes.
+3. Use Butane to generate a MachineConfig object file, 100-worker-vfiopci.yaml, containing the configuration to be delivered to the worker nodes:
+
+```terminal
+$ butane 100-worker-vfiopci.bu -o 100-worker-vfiopci.yaml
+```
+
+4. Apply the MachineConfig object to the worker nodes:
+
+```terminal
+$ oc apply -f 100-worker-vfiopci.yaml
+```
+
+5. Verify that the MachineConfig object was added.
+
+```terminal
+$ oc get MachineConfig
+```
+
+Example output
+
+```terminal
+NAME                             GENERATEDBYCONTROLLER                      IGNITIONVERSION  AGE
+00-master                        d3da910bfa9f4b599af4ed7f5ac270d55950a3a1   3.2.0            25h
+00-worker                        d3da910bfa9f4b599af4ed7f5ac270d55950a3a1   3.2.0            25h
+01-master-container-runtime      d3da910bfa9f4b599af4ed7f5ac270d55950a3a1   3.2.0            25h
+01-master-kubelet                d3da910bfa9f4b599af4ed7f5ac270d55950a3a1   3.2.0            25h
+01-worker-container-runtime      d3da910bfa9f4b599af4ed7f5ac270d55950a3a1   3.2.0            25h
+01-worker-kubelet                d3da910bfa9f4b599af4ed7f5ac270d55950a3a1   3.2.0            25h
+100-worker-iommu                                                            3.2.0            30s
+100-worker-vfiopci-configuration                                            3.2.0            30s
+```
 
 
-Run the lspci command to obtain the vendor-ID and the device-ID for the PCI device.
+* Verify that the VFIO driver is loaded.
 
-Create a Butane config file, 100-worker-vfiopci.bu, binding the PCI device to the VFIO driver.
-
-Use Butane to generate a MachineConfig object file, 100-worker-vfiopci.yaml, containing the configuration to be delivered to the worker nodes:
-
-Apply the MachineConfig object to the worker nodes:
-
-Verify that the MachineConfig object was added.
+```terminal
+$ lspci -nnk -d 10de:
+```
 
 
-Verify that the VFIO driver is loaded.
-Exposing PCI host devices in the cluster using the CLI
+The output confirms that the VFIO driver is being used.
+Example output
+
+```
+04:00.0 3D controller [0302]: NVIDIA Corporation GP102GL [Tesla P40] [10de:1eb8] (rev a1)
+        Subsystem: NVIDIA Corporation Device [10de:1eb8]
+        Kernel driver in use: vfio-pci
+        Kernel modules: nouveau
+```
+
+
+## Exposing PCI host devices in the cluster using the CLI
+
 To expose PCI host devices in the cluster, add details about the PCI devices to the spec.permittedHostDevices.pciHostDevices array of the HyperConverged custom resource (CR).
 
-Edit the HyperConverged CR in your default editor by running the following command:
+1. Edit the HyperConverged CR in your default editor by running the following command:
 
-Add the PCI device information to the spec.permittedHostDevices.pciHostDevices array. For example:
+```terminal
+$ oc edit hyperconverged kubevirt-hyperconverged -n openshift-cnv
+```
 
-Save your changes and exit the editor.
+2. Add the PCI device information to the spec.permittedHostDevices.pciHostDevices array. For example:
+Example configuration file
+
+```yaml
+apiVersion: hco.kubevirt.io/v1
+kind: HyperConverged
+metadata:
+  name: kubevirt-hyperconverged
+  namespace: openshift-cnv
+spec:
+  permittedHostDevices: 1
+    pciHostDevices: 2
+    - pciDeviceSelector: "10DE:1DB6" 3
+      resourceName: "nvidia.com/GV100GL_Tesla_V100" 4
+    - pciDeviceSelector: "10DE:1EB8"
+      resourceName: "nvidia.com/TU104GL_Tesla_T4"
+    - pciDeviceSelector: "8086:6F54"
+      resourceName: "intel.com/qat"
+      externalResourceProvider: true 5
+# ...
+```
+
+The host devices that are permitted to be used in the cluster.
+The list of PCI devices available on the node.
+The vendor-ID and the device-ID required to identify the PCI device.
+The name of a PCI host device.
+Optional: Setting this field to true indicates that the resource is provided by an external device plugin. OpenShift Virtualization allows the usage of this device in the cluster but leaves the allocation and monitoring to an external device plugin.
+
+[NOTE]
+----
+The above example snippet shows two PCI host devices that are named nvidia.com/GV100GL_Tesla_V100 and nvidia.com/TU104GL_Tesla_T4 added to the list of permitted host devices in the HyperConverged CR. These devices have been tested and verified to work with OpenShift Virtualization.
+----
+3. Save your changes and exit the editor.
+
+* Verify that the PCI host devices were added to the node by running the following command. The example output shows that there is one device each associated with the nvidia.com/GV100GL_Tesla_V100, nvidia.com/TU104GL_Tesla_T4, and intel.com/qat resource names.
+
+```terminal
+$ oc describe node <node_name>
+```
+
+Example output
+
+```terminal
+Capacity:
+  cpu:                            64
+  devices.kubevirt.io/kvm:        110
+  devices.kubevirt.io/tun:        110
+  devices.kubevirt.io/vhost-net:  110
+  ephemeral-storage:              915128Mi
+  hugepages-1Gi:                  0
+  hugepages-2Mi:                  0
+  memory:                         131395264Ki
+  nvidia.com/GV100GL_Tesla_V100   1
+  nvidia.com/TU104GL_Tesla_T4     1
+  intel.com/qat:                  1
+  pods:                           250
+Allocatable:
+  cpu:                            63500m
+  devices.kubevirt.io/kvm:        110
+  devices.kubevirt.io/tun:        110
+  devices.kubevirt.io/vhost-net:  110
+  ephemeral-storage:              863623130526
+  hugepages-1Gi:                  0
+  hugepages-2Mi:                  0
+  memory:                         130244288Ki
+  nvidia.com/GV100GL_Tesla_V100   1
+  nvidia.com/TU104GL_Tesla_T4     1
+  intel.com/qat:                  1
+  pods:                           250
+```
 
 
-Verify that the PCI host devices were added to the node by running the following command. The example output shows that there is one device each associated with the nvidia.com/GV100GL_Tesla_V100, nvidia.com/TU104GL_Tesla_T4, and intel.com/qat resource names.
-Removing PCI host devices from the cluster using the CLI
+## Removing PCI host devices from the cluster using the CLI
+
 To remove a PCI host device from the cluster, delete the information for that device from the HyperConverged custom resource (CR).
 
-Edit the HyperConverged CR in your default editor by running the following command:
+1. Edit the HyperConverged CR in your default editor by running the following command:
 
-Remove the PCI device information from the spec.permittedHostDevices.pciHostDevices array by deleting the pciDeviceSelector, resourceName and externalResourceProvider (if applicable) fields for the appropriate device. In this example, the intel.com/qat resource has been deleted.
+```terminal
+$ oc edit hyperconverged kubevirt-hyperconverged -n openshift-cnv
+```
 
-Save your changes and exit the editor.
+2. Remove the PCI device information from the spec.permittedHostDevices.pciHostDevices array by deleting the pciDeviceSelector, resourceName and externalResourceProvider (if applicable) fields for the appropriate device. In this example, the intel.com/qat resource has been deleted.
+Example configuration file
+
+```yaml
+apiVersion: hco.kubevirt.io/v1
+kind: HyperConverged
+metadata:
+  name: kubevirt-hyperconverged
+  namespace: openshift-cnv
+spec:
+  permittedHostDevices:
+    pciHostDevices:
+    - pciDeviceSelector: "10DE:1DB6"
+      resourceName: "nvidia.com/GV100GL_Tesla_V100"
+    - pciDeviceSelector: "10DE:1EB8"
+      resourceName: "nvidia.com/TU104GL_Tesla_T4"
+# ...
+```
+
+3. Save your changes and exit the editor.
+
+* Verify that the PCI host device was removed from the node by running the following command. The example output shows that there are zero devices associated with the intel.com/qat resource name.
+
+```terminal
+$ oc describe node <node_name>
+```
+
+Example output
+
+```terminal
+Capacity:
+  cpu:                            64
+  devices.kubevirt.io/kvm:        110
+  devices.kubevirt.io/tun:        110
+  devices.kubevirt.io/vhost-net:  110
+  ephemeral-storage:              915128Mi
+  hugepages-1Gi:                  0
+  hugepages-2Mi:                  0
+  memory:                         131395264Ki
+  nvidia.com/GV100GL_Tesla_V100   1
+  nvidia.com/TU104GL_Tesla_T4     1
+  intel.com/qat:                  0
+  pods:                           250
+Allocatable:
+  cpu:                            63500m
+  devices.kubevirt.io/kvm:        110
+  devices.kubevirt.io/tun:        110
+  devices.kubevirt.io/vhost-net:  110
+  ephemeral-storage:              863623130526
+  hugepages-1Gi:                  0
+  hugepages-2Mi:                  0
+  memory:                         130244288Ki
+  nvidia.com/GV100GL_Tesla_V100   1
+  nvidia.com/TU104GL_Tesla_T4     1
+  intel.com/qat:                  0
+  pods:                           250
+```
 
 
-Verify that the PCI host device was removed from the node by running the following command. The example output shows that there are zero devices associated with the intel.com/qat resource name.
-Configuring virtual machines for PCI passthrough
+# Configuring virtual machines for PCI passthrough
+
 After the PCI devices have been added to the cluster, you can assign them to virtual machines. The PCI devices are now available as if they are physically connected to the virtual machines.
 
-Assigning a PCI device to a virtual machine
+## Assigning a PCI device to a virtual machine
+
 When a PCI device is available in a cluster, you can assign it to a virtual machine and enable PCI passthrough.
 
-Assign the PCI device to a virtual machine as a host device.
+* Assign the PCI device to a virtual machine as a host device.
+Example
+
+```yaml
+apiVersion: kubevirt.io/v1
+kind: VirtualMachine
+spec:
+  domain:
+    devices:
+      hostDevices:
+      - deviceName: nvidia.com/TU104GL_Tesla_T4 1
+        name: hostdevices1
+```
+
+The name of the PCI device that is permitted on the cluster as a host device. The virtual machine can access this host device.
+
+* Use the following command to verify that the host device is available from the virtual machine.
+
+```terminal
+$ lspci -nnk | grep NVIDIA
+```
+
+Example output
+
+```terminal
+$ 02:01.0 3D controller [0302]: NVIDIA Corporation GV100GL [Tesla V100 PCIe 32GB] [10de:1eb8] (rev a1)
+```
 
 
-Use the following command to verify that the host device is available from the virtual machine.
-Additional resources
-Enabling Intel VT-X and AMD-V Virtualization Hardware Extensions in BIOS
+# Additional resources
 
-Managing file permissions
-
-Postinstallation machine configuration tasks
+* Enabling Intel VT-X and AMD-V Virtualization Hardware Extensions in BIOS
+* Managing file permissions
+* Postinstallation machine configuration tasks

@@ -1,67 +1,241 @@
-Troubleshooting local persistent storage using LVMS
+# Troubleshooting local persistent storage using LVMS
+
 
 Because Red Hat OpenShift Container Platform does not scope a persistent volume (PV) to a single project, it can be shared across the cluster and claimed by any project using a persistent volume claim (PVC). This can lead to a number of issues that require troubleshooting.
-Investigating a PVC stuck in the Pending state
+
+# Investigating a PVC stuck in the Pending state
+
 A persistent volume claim (PVC) can get stuck in a Pending state for a number of reasons. For example:
 
-Insufficient computing resources
-
-Network problems
-
-Mismatched storage class or node selector
-
-No available volumes
-
-The node with the persistent volume (PV) is in a Not Ready state
-
+* Insufficient computing resources
+* Network problems
+* Mismatched storage class or node selector
+* No available volumes
+* The node with the persistent volume (PV) is in a Not Ready state
 
 Identify the cause by using the oc describe command to review details about the stuck PVC.
 
-Retrieve the list of PVCs by running the following command:
+1. Retrieve the list of PVCs by running the following command:
 
-Inspect the events associated with a PVC stuck in the Pending state by running the following command:
-Recovering from missing LVMS or Operator components
+```terminal
+$ oc get pvc
+```
+
+Example output
+
+```terminal
+NAME        STATUS    VOLUME   CAPACITY   ACCESS MODES   STORAGECLASS   AGE
+lvms-test   Pending                                      lvms-vg1       11s
+```
+
+2. Inspect the events associated with a PVC stuck in the Pending state by running the following command:
+
+```terminal
+$ oc describe pvc <pvc_name> 1
+```
+
+Replace <pvc_name> with the name of the PVC. For example, lvms-vg1.
+Example output
+
+```terminal
+Type     Reason              Age               From                         Message
+----     ------              ----              ----                         -------
+Warning  ProvisioningFailed  4s (x2 over 17s)  persistentvolume-controller  storageclass.storage.k8s.io "lvms-vg1" not found
+```
+
+
+# Recovering from missing LVMS or Operator components
+
 If you encounter a storage class "not found" error, check the LVMCluster resource and ensure that all the logical volume manager storage (LVMS) pods are running. You can create an LVMCluster resource if it does not exist.
 
-Verify the presence of the LVMCluster resource by running the following command:
+1. Verify the presence of the LVMCluster resource by running the following command:
 
-If the cluster doesn't have an LVMCluster resource, create one by running the following command:
+```terminal
+$ oc get lvmcluster -n openshift-storage
+```
 
-Check that all the pods from LVMS are in the Running state in the openshift-storage namespace by running the following command:
-Recovering from node failure
+Example output
+
+```terminal
+NAME            AGE
+my-lvmcluster   65m
+```
+
+2. If the cluster doesn't have an LVMCluster resource, create one by running the following command:
+
+```terminal
+$ oc create -n openshift-storage -f <custom_resource> 1
+```
+
+Replace <custom_resource> with a custom resource URL or file tailored to your requirements.
+Example custom resource
+
+```yaml
+apiVersion: lvm.topolvm.io/v1alpha1
+kind: LVMCluster
+metadata:
+  name: my-lvmcluster
+spec:
+  storage:
+    deviceClasses:
+    - name: vg1
+      default: true
+      thinPoolConfig:
+        name: thin-pool-1
+        sizePercent: 90
+        overprovisionRatio: 10
+```
+
+3. Check that all the pods from LVMS are in the Running state in the openshift-storage namespace by running the following command:
+
+```terminal
+$ oc get pods -n openshift-storage
+```
+
+Example output
+
+```terminal
+NAME                                  READY   STATUS    RESTARTS      AGE
+lvms-operator-7b9fb858cb-6nsml        3/3     Running   0             70m
+topolvm-controller-5dd9cf78b5-7wwr2   5/5     Running   0             66m
+topolvm-node-dr26h                    4/4     Running   0             66m
+vg-manager-r6zdv                      1/1     Running   0             66m
+```
+
+
+The expected output is one running instance of lvms-operator and vg-manager. One instance of topolvm-controller and topolvm-node is expected for each node.
+
+If topolvm-node is stuck in the Init state, there is a failure to locate an available disk for LVMS to use. To retrieve the information necessary to troubleshoot, review the logs of the vg-manager pod by running the following command:
+
+```terminal
+$ oc logs -l app.kubernetes.io/component=vg-manager -n openshift-storage
+```
+
+
+# Recovering from node failure
+
 Sometimes a persistent volume claim (PVC) is stuck in a Pending state because a particular node in the cluster has failed. To identify the failed node, you can examine the restart count of the topolvm-node pod. An increased restart count indicates potential problems with the underlying node, which may require further investigation and troubleshooting.
 
-Examine the restart count of the topolvm-node pod instances by running the following command:
+* Examine the restart count of the topolvm-node pod instances by running the following command:
+
+```terminal
+$ oc get pods -n openshift-storage
+```
+
+Example output
+
+```terminal
+NAME                                  READY   STATUS    RESTARTS      AGE
+lvms-operator-7b9fb858cb-6nsml        3/3     Running   0             70m
+topolvm-controller-5dd9cf78b5-7wwr2   5/5     Running   0             66m
+topolvm-node-dr26h                    4/4     Running   0             66m
+topolvm-node-54as8                    4/4     Running   0             66m
+topolvm-node-78fft                    4/4     Running   17 (8s ago)   66m
+vg-manager-r6zdv                      1/1     Running   0             66m
+vg-manager-990ut                      1/1     Running   0             66m
+vg-manager-an118                      1/1     Running   0             66m
+```
 
 
-Performing a forced cleanup
-Recovering from disk failure
+After you resolve any issues with the node, you might need to perform the forced cleanup procedure if the PVC is still stuck in a Pending state.
+
+* Performing a forced cleanup
+
+# Recovering from disk failure
+
 If you see a failure message while inspecting the events associated with the persistent volume claim (PVC), there might be a problem with the underlying volume or disk. Disk and volume provisioning issues often result with a generic error first, such as Failed to provision volume with StorageClass <storage_class_name>. A second, more specific error message usually follows.
 
-Inspect the events associated with a PVC by running the following command:
+1. Inspect the events associated with a PVC by running the following command:
 
-Establish a direct connection to the host where the problem is occurring.
+```terminal
+$ oc describe pvc <pvc_name> 1
+```
 
-Resolve the disk issue.
-
+Replace <pvc_name> with the name of the PVC. Here are some examples of disk or volume failure error messages and their causes:
+* Failed to check volume existence: Indicates a problem in verifying whether the volume already exists. Volume verification failure can be caused by network connectivity problems or other failures.
+* Failed to bind volume: Failure to bind a volume can happen if the persistent volume (PV) that is available does not match the requirements of the PVC.
+* FailedMount or FailedUnMount: This error indicates problems when trying to mount the volume to a node or unmount a volume from a node. If the disk has failed, this error might appear when a pod tries to use the PVC.
+* Volume is already exclusively attached to one node and can't be attached to another: This error can appear with storage solutions that do not support ReadWriteMany access modes.
+2. Establish a direct connection to the host where the problem is occurring.
+3. Resolve the disk issue.
 
 After you have resolved the issue with the disk, you might need to perform the forced cleanup procedure if failure messages persist or reoccur.
 
-Performing a forced cleanup
-Performing a forced cleanup
+* Performing a forced cleanup
+
+# Performing a forced cleanup
+
 If disk- or node-related problems persist after you complete the troubleshooting procedures, it might be necessary to perform a forced cleanup procedure. A forced cleanup is used to comprehensively address persistent issues and ensure the proper functioning of the LVMS.
 
-All of the persistent volume claims (PVCs) created using the logical volume manager storage (LVMS) driver have been removed.
+1. All of the persistent volume claims (PVCs) created using the logical volume manager storage (LVMS) driver have been removed.
+2. The pods using those PVCs have been stopped.
 
-The pods using those PVCs have been stopped.
+1. Switch to the openshift-storage namespace by running the following command:
 
+```terminal
+$ oc project openshift-storage
+```
 
-Switch to the openshift-storage namespace by running the following command:
+2. Ensure there is no Logical Volume custom resource (CR) remaining by running the following command:
 
-Ensure there is no Logical Volume custom resource (CR) remaining by running the following command:
+```terminal
+$ oc get logicalvolume
+```
 
-Make sure there are no LVMVolumeGroup CRs left by running the following command:
+Example output
 
-Remove any LVMVolumeGroupNodeStatus CRs by running the following command:
+```terminal
+No resources found
+```
 
-Remove the LVMCluster CR by running the following command:
+1. If there are any LogicalVolume CRs remaining, remove their finalizers by running the following command:
+
+```terminal
+$ oc patch logicalvolume <name> -p '{"metadata":{"finalizers":[]}}' --type=merge 1
+```
+
+Replace <name> with the name of the CR.
+2. After removing their finalizers, delete the CRs by running the following command:
+
+```terminal
+$ oc delete logicalvolume <name> 1
+```
+
+Replace <name> with the name of the CR.
+3. Make sure there are no LVMVolumeGroup CRs left by running the following command:
+
+```terminal
+$ oc get lvmvolumegroup
+```
+
+Example output
+
+```terminal
+No resources found
+```
+
+1. If there are any LVMVolumeGroup CRs left, remove their finalizers by running the following command:
+
+```terminal
+$ oc patch lvmvolumegroup <name> -p '{"metadata":{"finalizers":[]}}' --type=merge 1
+```
+
+Replace <name> with the name of the CR.
+2. After removing their finalizers, delete the CRs by running the following command:
+
+```terminal
+$ oc delete lvmvolumegroup <name> 1
+```
+
+Replace <name> with the name of the CR.
+4. Remove any LVMVolumeGroupNodeStatus CRs by running the following command:
+
+```terminal
+$ oc delete lvmvolumegroupnodestatus --all
+```
+
+5. Remove the LVMCluster CR by running the following command:
+
+```terminal
+$ oc delete lvmcluster --all
+```

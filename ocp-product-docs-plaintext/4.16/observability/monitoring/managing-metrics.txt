@@ -1,14 +1,25 @@
-Managing metrics
+# Managing metrics
+
 
 You can collect metrics to monitor how cluster components and your own workloads are performing.
-Understanding metrics
-In Red Hat OpenShift Container Platform 4.16, cluster components are monitored by scraping metrics exposed through service endpoints. You can also configure metrics collection for user-defined projects. Metrics enable you to monitor how cluster components and your own workloads are performing.
+
+# Understanding metrics
+
+In Red Hat OpenShift Container Platform 4.16,
+cluster components are monitored by scraping metrics exposed through service endpoints. You can also configure metrics collection for user-defined projects. Metrics enable you to monitor how cluster components and your own workloads are performing.
 
 You can define the metrics that you want to provide for your own workloads by using Prometheus client libraries at the application level.
 
 In Red Hat OpenShift Container Platform, metrics are exposed through an HTTP service endpoint under the /metrics canonical name. You can list all available metrics for a service by running a curl query against \http://<endpoint>/metrics. For instance, you can expose a route to the prometheus-example-app example application and then run the following to view all of its available metrics:
 
+
+```terminal
 $ curl http://<example_app_endpoint>/metrics
+```
+
+
+
+```terminal
 # HELP http_requests_total Count of all HTTP requests
 # TYPE http_requests_total counter
 http_requests_total{code="200",method="get"} 4
@@ -16,127 +27,437 @@ http_requests_total{code="404",method="get"} 2
 # HELP version Version information about this binary
 # TYPE version gauge
 version{version="v0.1.0"} 1
-Prometheus client library documentation
-Setting up metrics collection for user-defined projects
+```
+
+
+* Prometheus client library documentation
+
+# Setting up metrics collection for user-defined projects
+
 You can create a ServiceMonitor resource to scrape metrics from a service endpoint in a user-defined project. This assumes that your application uses a Prometheus client library to expose metrics to the /metrics canonical name.
 
 This section describes how to deploy a sample service in a user-defined project and then create a ServiceMonitor resource that defines how that service should be monitored.
 
-Deploying a sample service
+## Deploying a sample service
+
 To test monitoring of a service in a user-defined project, you can deploy a sample service.
 
-Create a YAML file for the service configuration. In this example, it is called prometheus-example-app.yaml.
+1. Create a YAML file for the service configuration. In this example, it is called prometheus-example-app.yaml.
+2. Add the following deployment and service configuration details to the file:
 
-Add the following deployment and service configuration details to the file:
+```yaml
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: ns1
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  labels:
+    app: prometheus-example-app
+  name: prometheus-example-app
+  namespace: ns1
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: prometheus-example-app
+  template:
+    metadata:
+      labels:
+        app: prometheus-example-app
+    spec:
+      containers:
+      - image: ghcr.io/rhobs/prometheus-example-app:0.4.2
+        imagePullPolicy: IfNotPresent
+        name: prometheus-example-app
+---
+apiVersion: v1
+kind: Service
+metadata:
+  labels:
+    app: prometheus-example-app
+  name: prometheus-example-app
+  namespace: ns1
+spec:
+  ports:
+  - port: 8080
+    protocol: TCP
+    targetPort: 8080
+    name: web
+  selector:
+    app: prometheus-example-app
+  type: ClusterIP
+```
 
-Apply the configuration to the cluster:
 
-You can check that the pod is running:
-Specifying how a service is monitored
+This configuration deploys a service named prometheus-example-app in the user-defined ns1 project. This service exposes the custom version metric.
+3. Apply the configuration to the cluster:
+
+```terminal
+$ oc apply -f prometheus-example-app.yaml
+```
+
+
+It takes some time to deploy the service.
+4. You can check that the pod is running:
+
+```terminal
+$ oc -n ns1 get pod
+```
+
+Example output
+
+```terminal
+NAME                                      READY     STATUS    RESTARTS   AGE
+prometheus-example-app-7857545cb7-sbgwq   1/1       Running   0          81m
+```
+
+
+## Specifying how a service is monitored
+
 To use the metrics exposed by your service, you must configure Red Hat OpenShift Container Platform monitoring to scrape metrics from the /metrics endpoint. You can do this using a ServiceMonitor custom resource definition (CRD) that specifies how a service should be monitored, or a PodMonitor CRD that specifies how a pod should be monitored. The former requires a Service object, while the latter does not, allowing Prometheus to directly scrape metrics from the metrics endpoint exposed by a pod.
 
 This procedure shows you how to create a ServiceMonitor resource for a service in a user-defined project.
 
-You have access to the cluster as a user with the cluster-admin cluster role or the monitoring-edit cluster role.
+* You have access to the cluster as a user with the cluster-admin cluster role or the monitoring-edit cluster role.
+* You have enabled monitoring for user-defined projects.
+* For this example, you have deployed the prometheus-example-app sample service in the ns1 project.
 
-You have enabled monitoring for user-defined projects.
+[NOTE]
+----
+The prometheus-example-app sample service does not support TLS authentication.
+----
 
-For this example, you have deployed the prometheus-example-app sample service in the ns1 project.
+1. Create a new YAML configuration file named example-app-service-monitor.yaml.
+2. Add a ServiceMonitor resource to the YAML file. The following example creates a service monitor named prometheus-example-monitor to scrape metrics exposed by the prometheus-example-app service in the ns1 namespace:
+
+```yaml
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  name: prometheus-example-monitor
+  namespace: ns1 1
+spec:
+  endpoints:
+  - interval: 30s
+    port: web 2
+    scheme: http
+  selector: 3
+    matchLabels:
+      app: prometheus-example-app
+```
+
+Specify a user-defined namespace where your service runs.
+Specify endpoint ports to be scraped by Prometheus.
+Configure a selector to match your service based on its metadata labels.
+
+[NOTE]
+----
+A ServiceMonitor resource in a user-defined namespace can only discover services in the same namespace. That is, the namespaceSelector field of the ServiceMonitor resource is always ignored.
+----
+3. Apply the configuration to the cluster:
+
+```terminal
+$ oc apply -f example-app-service-monitor.yaml
+```
 
 
-Create a YAML file for the ServiceMonitor resource configuration. In this example, the file is called example-app-service-monitor.yaml.
+It takes some time to deploy the ServiceMonitor resource.
+4. Verify that the ServiceMonitor resource is running:
 
-Add the following ServiceMonitor resource configuration details:
+```terminal
+$ oc -n <namespace> get servicemonitor
+```
 
-Apply the configuration to the cluster:
+Example output
 
-You can check that the ServiceMonitor resource is running:
+```terminal
+NAME                         AGE
+prometheus-example-monitor   81m
+```
 
 
-Enabling monitoring for user-defined projects
+## Example service endpoint authentication settings
 
-How to scrape metrics using TLS in a ServiceMonitor configuration in a user-defined project
+You can configure authentication for service endpoints for user-defined project monitoring by using ServiceMonitor and PodMonitor custom resource definitions (CRDs).
 
-PodMonitor API
+The following samples show different authentication settings for a ServiceMonitor resource.
+Each sample shows how to configure a corresponding Secret object that contains authentication credentials and other relevant settings.
 
-ServiceMonitor API
-Viewing a list of available metrics
+### Sample YAML authentication with a bearer token
+
+The following sample shows bearer token settings for a Secret object named example-bearer-auth in the ns1 namespace:
+
+
+```yaml
+apiVersion: v1
+kind: Secret
+metadata:
+  name: example-bearer-auth
+  namespace: ns1
+stringData:
+  token: <authentication_token> 1
+```
+
+
+Specify an authentication token.
+
+The following sample shows bearer token authentication settings for a ServiceMonitor CRD. The example uses a Secret object named example-bearer-auth:
+
+
+```yaml
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  name: prometheus-example-monitor
+  namespace: ns1
+spec:
+  endpoints:
+  - authorization:
+      credentials:
+        key: token 1
+        name: example-bearer-auth 2
+    port: web
+  selector:
+    matchLabels:
+      app: prometheus-example-app
+```
+
+
+The key that contains the authentication token in the specified Secret object.
+The name of the Secret object that contains the authentication credentials.
+
+
+[IMPORTANT]
+----
+Do not use bearerTokenFile to configure bearer token. If you use the bearerTokenFile configuration, the ServiceMonitor resource is rejected.
+----
+
+### Sample YAML for Basic authentication
+
+The following sample shows Basic authentication settings for a Secret object named example-basic-auth in the ns1 namespace:
+
+
+```yaml
+apiVersion: v1
+kind: Secret
+metadata:
+  name: example-basic-auth
+  namespace: ns1
+stringData:
+  user: <basic_username> 1
+  password: <basic_password>  2
+```
+
+
+Specify a username for authentication.
+Specify a password for authentication.
+
+The following sample shows Basic authentication settings for a ServiceMonitor CRD. The example uses a Secret object named example-basic-auth:
+
+
+```yaml
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  name: prometheus-example-monitor
+  namespace: ns1
+spec:
+  endpoints:
+  - basicAuth:
+      username:
+        key: user 1
+        name: example-basic-auth 2
+      password:
+        key: password 3
+        name: example-basic-auth 2
+    port: web
+  selector:
+    matchLabels:
+      app: prometheus-example-app
+```
+
+
+The key that contains the username in the specified Secret object.
+The name of the Secret object that contains the Basic authentication.
+The key that contains the password in the specified Secret object.
+
+### Sample YAML authentication with OAuth 2.0
+
+The following sample shows OAuth 2.0 settings for a Secret object named example-oauth2 in the ns1 namespace:
+
+
+```yaml
+apiVersion: v1
+kind: Secret
+metadata:
+  name: example-oauth2
+  namespace: ns1
+stringData:
+  id: <oauth2_id> 1
+  secret: <oauth2_secret> 2
+```
+
+
+Specify an Oauth 2.0 ID.
+Specify an Oauth 2.0 secret.
+
+The following sample shows OAuth 2.0 authentication settings for a ServiceMonitor CRD. The example uses a Secret object named example-oauth2:
+
+
+```yaml
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  name: prometheus-example-monitor
+  namespace: ns1
+spec:
+  endpoints:
+  - oauth2:
+      clientId:
+        secret:
+          key: id 1
+          name: example-oauth2 2
+      clientSecret:
+        key: secret 3
+        name: example-oauth2 2
+      tokenUrl: https://example.com/oauth2/token 4
+    port: web
+  selector:
+    matchLabels:
+      app: prometheus-example-app
+```
+
+
+The key that contains the OAuth 2.0 ID in the specified Secret object.
+The name of the Secret object that contains the OAuth 2.0 credentials.
+The key that contains the OAuth 2.0 secret in the specified Secret object.
+The URL used to fetch a token with the specified clientId and clientSecret.
+
+* Enabling monitoring for user-defined projects
+* How to scrape metrics using TLS in a ServiceMonitor configuration in a user-defined project
+* PodMonitor API
+* ServiceMonitor API
+
+# Viewing a list of available metrics
+
 As a cluster administrator or as a user with view permissions for all projects, you can view a list of metrics available in a cluster and output the list in JSON format.
 
-You are a cluster administrator, or you have access to the cluster as a user with the cluster-monitoring-view cluster role.
+* You are a cluster administrator, or you have access to the cluster as a user with the cluster-monitoring-view cluster role.
+* You have installed the Red Hat OpenShift Container Platform CLI (oc).
+* You have obtained the Red Hat OpenShift Container Platform API route for Thanos Querier.
+* You are able to get a bearer token by using the oc whoami -t command.
 
-You have installed the Red Hat OpenShift Container Platform CLI (oc).
+[IMPORTANT]
+----
+You can only use bearer token authentication to access the Thanos Querier API route.
+----
 
-You have obtained the Red Hat OpenShift Container Platform API route for Thanos Querier.
+1. If you have not obtained the Red Hat OpenShift Container Platform API route for Thanos Querier, run the following command:
 
-You are able to get a bearer token by using the oc whoami -t command.
+```terminal
+$ oc get routes -n openshift-monitoring thanos-querier -o jsonpath='{.status.ingress[0].host}'
+```
 
+2. Retrieve a list of metrics in JSON format from the Thanos Querier API route by running the following command. This command uses oc to authenticate with a bearer token.
 
-If you have not obtained the Red Hat OpenShift Container Platform API route for Thanos Querier, run the following command:
+```terminal
+$ curl -k -H "Authorization: Bearer $(oc whoami -t)" https://<thanos_querier_route>/api/v1/metadata 1
+```
 
-Retrieve a list of metrics in JSON format from the Thanos Querier API route by running the following command. This command uses oc to authenticate with a bearer token.
-Querying metrics
+Replace <thanos_querier_route> with the Red Hat OpenShift Container Platform API route for Thanos Querier.
+
+# Querying metrics
+
 The Red Hat OpenShift Container Platform monitoring dashboard enables you to run Prometheus Query Language (PromQL) queries to examine metrics visualized on a plot. This functionality provides information about the state of a cluster and any user-defined workloads that you are monitoring.
 
 As a cluster administrator, you can query metrics for all core Red Hat OpenShift Container Platform and user-defined projects.
 
 As a developer, you must specify a project name when querying metrics. You must have the required privileges to view metrics for the selected project.
 
-Querying metrics for all projects as a cluster administrator
-As a cluster administrator or as a user with view permissions for all projects, you can access metrics for all default Red Hat OpenShift Container Platform and user-defined projects in the Metrics UI.
+## Querying metrics for all projects as a cluster administrator
 
-You have access to the cluster as a user with the cluster-admin cluster role or with view permissions for all projects.
+As a
+cluster administrator
+or as a user with view permissions for all projects, you can access metrics for all default Red Hat OpenShift Container Platform and user-defined projects in the Metrics UI.
 
-You have installed the OpenShift CLI (oc).
+* You have access to the cluster as a user with the cluster-admin cluster role or with view permissions for all projects.
+* You have installed the OpenShift CLI (oc).
+
+1. From the Administrator perspective in the Red Hat OpenShift Container Platform web console, select Observe -> Metrics.
+2. To add one or more queries, do any of the following:
+
+3. To run queries that you created, select Run queries. The metrics from the queries are visualized on the plot. If a query is invalid, the UI shows an error message.
+
+[NOTE]
+----
+Queries that operate on large amounts of data might time out or overload the browser when drawing time series graphs. To avoid this, select Hide graph and calibrate your query using only the metrics table. Then, after finding a feasible query, enable the plot to draw the graphs.
+----
+
+[NOTE]
+----
+By default, the query table shows an expanded view that lists every metric and its current value. You can select ˅ to minimize the expanded view for a query.
+----
+4. Optional: The page URL now contains the queries you ran. To use this set of queries again in the future, save this URL.
+5. Explore the visualized metrics. Initially, all metrics from all enabled queries are shown on the plot. You can select which metrics are shown by doing any of the following:
 
 
-From the Administrator perspective in the Red Hat OpenShift Container Platform web console, select Observe -> Metrics.
+* For more information about creating PromQL queries, see the Prometheus query documentation.
 
-To add one or more queries, do any of the following:
+## Querying metrics for user-defined projects as a developer
 
-To run queries that you created, select Run queries. The metrics from the queries are visualized on the plot. If a query is invalid, the UI shows an error message.
-
-Optional: The page URL now contains the queries you ran. To use this set of queries again in the future, save this URL.
-
-Explore the visualized metrics. Initially, all metrics from all enabled queries are shown on the plot. You can select which metrics are shown by doing any of the following:
-
-
-For more information about creating PromQL queries, see the Prometheus query documentation.
-Querying metrics for user-defined projects as a developer
 You can access metrics for a user-defined project as a developer or as a user with view permissions for the project.
 
 In the Developer perspective, the Metrics UI includes some predefined CPU, memory, bandwidth, and network packet queries for the selected project. You can also run custom Prometheus Query Language (PromQL) queries for CPU, memory, bandwidth, network packet and application metrics for the project.
 
+
+[NOTE]
+----
 Developers can only use the Developer perspective and not the Administrator perspective. As a developer, you can only query metrics for one project at a time.
-You have access to the cluster as a developer or as a user with view permissions for the project that you are viewing metrics for.
+----
 
-You have enabled monitoring for user-defined projects.
+* You have access to the cluster as a developer or as a user with view permissions for the project that you are viewing metrics for.
+* You have enabled monitoring for user-defined projects.
+* You have deployed a service in a user-defined project.
+* You have created a ServiceMonitor custom resource definition (CRD) for the service to define how the service is monitored.
 
-You have deployed a service in a user-defined project.
+1. From the Developer perspective in the Red Hat OpenShift Container Platform web console, select Observe -> Metrics.
+2. Select the project that you want to view metrics for in the Project: list.
+3. Select a query from the Select query list, or create a custom PromQL query based on the selected query by selecting Show PromQL. The metrics from the queries are visualized on the plot.
 
-You have created a ServiceMonitor custom resource definition (CRD) for the service to define how the service is monitored.
-
-
-From the Developer perspective in the Red Hat OpenShift Container Platform web console, select Observe -> Metrics.
-
-Select the project that you want to view metrics for in the Project: list.
-
-Select a query from the Select query list, or create a custom PromQL query based on the selected query by selecting Show PromQL. The metrics from the queries are visualized on the plot.
-
-Explore the visualized metrics by doing any of the following:
+[NOTE]
+----
+In the Developer perspective, you can only run one query at a time.
+----
+4. Explore the visualized metrics by doing any of the following:
 
 
-For more information about creating PromQL queries, see the Prometheus query documentation.
-Getting detailed information about a metrics target
+* For more information about creating PromQL queries, see the Prometheus query documentation.
+
+# Getting detailed information about a metrics target
+
 In the Administrator perspective in the Red Hat OpenShift Container Platform web console, you can use the Metrics targets page to view, search, and filter the endpoints that are currently targeted for scraping, which helps you to identify and troubleshoot problems. For example, you can view the current status of targeted endpoints to see when Red Hat OpenShift Container Platform Monitoring is not able to scrape metrics from a targeted component.
 
 The Metrics targets page shows targets for default Red Hat OpenShift Container Platform projects and for user-defined projects.
 
-You have access to the cluster as an administrator for the project for which you want to view metrics targets.
+* You have access to the cluster as an administrator for the project for which you want to view metrics targets.
 
+1. In the Administrator perspective, select Observe -> Targets. The Metrics targets page opens with a list of all service endpoint targets that are being scraped for metrics.
+This page shows details about targets for default Red Hat OpenShift Container Platform and user-defined projects. This page lists the following information for each target:
+* Service endpoint URL being scraped
+* ServiceMonitor component being monitored
+* The up or down status of the target
+* Namespace
+* Last scrape time
+* Duration of the last scrape
+2. Optional: The list of metrics targets can be long. To find a specific target, do any of the following:
 
-In the Administrator perspective, select Observe -> Targets. The Metrics targets page opens with a list of all service endpoint targets that are being scraped for metrics.
-
-Optional: The list of metrics targets can be long. To find a specific target, do any of the following:
-
-Click the URL in the Endpoint column for a target to navigate to its Target details page. This page provides information about the target, including the following:
+3. Click the URL in the Endpoint column for a target to navigate to its Target details page. This page provides information about the target, including the following:
+* The endpoint URL being scraped for metrics
+* The current Up or Down status of the target
+* A link to the namespace
+* A link to the ServiceMonitor details
+* Labels attached to the target
+* The most recent time that the target was scraped for metrics

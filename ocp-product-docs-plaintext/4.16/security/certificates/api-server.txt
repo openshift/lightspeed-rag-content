@@ -1,35 +1,114 @@
-Adding API server certificates
+# Adding API server certificates
 
-The default API server certificate is issued by an internal Red Hat OpenShift Container Platform cluster CA. Clients outside of the cluster will not be able to verify the API server's certificate by default. This certificate can be replaced by one that is issued by a CA that clients trust.
-Add an API server named certificate
-The default API server certificate is issued by an internal Red Hat OpenShift Container Platform cluster CA. You can add one or more alternative certificates that the API server will return based on the fully qualified domain name (FQDN) requested by the client, for example when a reverse proxy or load balancer is used.
 
-You must have a certificate for the FQDN and its corresponding private key. Each should be in a separate PEM format file.
+The default API server certificate is issued by an internal Red Hat OpenShift Container Platform
+cluster CA. Clients outside of the cluster will not be able to verify the
+API server's certificate by default. This certificate can be replaced
+by one that is issued by a CA that clients trust.
 
-The private key must be unencrypted. If your key is encrypted, decrypt it
+# Add an API server named certificate
+
+The default API server certificate is issued by an internal Red Hat OpenShift Container Platform
+cluster CA. You can add one or more alternative certificates that the API
+server will return based on the fully qualified domain name (FQDN) requested by
+the client, for example when a reverse proxy or load balancer is used.
+
+* You must have a certificate for the FQDN and its corresponding private key. Each should be in a separate PEM format file.
+* The private key must be unencrypted. If your key is encrypted, decrypt it
 before importing it into Red Hat OpenShift Container Platform.
-
-The certificate must include the subjectAltName extension showing the FQDN.
-
-The certificate file can contain one or more certificates in a chain. The
+* The certificate must include the subjectAltName extension showing the FQDN.
+* The certificate file can contain one or more certificates in a chain. The
 certificate for the API server FQDN must be the first certificate in the file.
 It can then be followed with any intermediate certificates, and the file should
 end with the root CA certificate.
 
 
-Do not provide a named certificate for the internal load balancer (host name api-int.<cluster_name>.<base_domain>). Doing so will leave your cluster in a degraded state.
-Login to the new API as the kubeadmin user.
+[WARNING]
+----
+Do not provide a named certificate for the internal load balancer (host
+name api-int.<cluster_name>.<base_domain>). Doing so will leave your
+cluster in a degraded state.
+----
 
-Get the kubeconfig file.
+1. Login to the new API as the kubeadmin user.
 
-Create a secret that contains the certificate chain and private key in the
+```terminal
+$ oc login -u kubeadmin -p <password> https://FQDN:6443
+```
+
+2. Get the kubeconfig file.
+
+```terminal
+$ oc config view --flatten > kubeconfig-newapi
+```
+
+3. Create a secret that contains the certificate chain and private key in the
 openshift-config namespace.
 
-Update the API server to reference the created secret.
+```terminal
+$ oc create secret tls <secret> \1
+     --cert=</path/to/cert.crt> \2
+     --key=</path/to/cert.key> \3
+     -n openshift-config
+```
 
-Examine the apiserver/cluster object and confirm the secret is now
+<secret> is the name of the secret that will contain the certificate chain and private key.
+</path/to/cert.crt> is the path to the certificate chain on your local file system.
+</path/to/cert.key> is the path to the private key associated with this certificate.
+4. Update the API server to reference the created secret.
+
+```terminal
+$ oc patch apiserver cluster \
+     --type=merge -p \
+     '{"spec":{"servingCerts": {"namedCertificates":
+     [{"names": ["<FQDN>"], 1
+     "servingCertificate": {"name": "<secret>"}}]}}}' 2
+```
+
+Replace <FQDN> with the FQDN that the API server should provide the certificate for.
+Replace <secret> with the name used for the secret in the previous step.
+5. Examine the apiserver/cluster object and confirm the secret is now
 referenced.
 
-Check the kube-apiserver operator, and verify that a new revision of the Kubernetes API server rolls out.
+```terminal
+$ oc get apiserver cluster -o yaml
+```
+
+Example output
+
+```terminal
+...
+spec:
+  servingCerts:
+    namedCertificates:
+    - names:
+      - <FQDN>
+      servingCertificate:
+        name: <secret>
+...
+```
+
+6. Check the kube-apiserver operator, and verify that a new revision of the Kubernetes API server rolls out.
 It may take a minute for the operator to detect the configuration change and trigger a new deployment.
 While the new revision is rolling out, PROGRESSING will report True.
+
+```terminal
+$ oc get clusteroperators kube-apiserver
+```
+
+
+Do not continue to the next step until PROGRESSING is listed as False, as shown in the following output:
+Example output
+
+```terminal
+NAME             VERSION   AVAILABLE   PROGRESSING   DEGRADED   SINCE
+kube-apiserver   4.16.0     True        False         False      145m
+```
+
+
+If PROGRESSING is showing True, wait a few minutes and try again.
+
+[NOTE]
+----
+A new revision of the Kubernetes API server only rolls out if the API server named certificate is added for the first time. When the API server named certificate is renewed, a new revision of the Kubernetes API server does not roll out because the kube-apiserver pods dynamically reload the updated certificate.
+----
