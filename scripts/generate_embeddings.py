@@ -10,6 +10,8 @@ import faiss
 import requests
 from llama_index.core import Settings, SimpleDirectoryReader, VectorStoreIndex
 from llama_index.core.llms.utils import resolve_llm
+
+# from llama_index.core.node_parser import MarkdownNodeParser
 from llama_index.core.schema import TextNode
 from llama_index.core.storage.storage_context import StorageContext
 from llama_index.embeddings.huggingface import HuggingFaceEmbedding
@@ -88,15 +90,23 @@ if __name__ == "__main__":
         help="HF repo id of the embedding model",
     )
     parser.add_argument(
-        "-c", "--chunk", type=int, default="1500", help="Chunk size for embedding"
+        "-c", "--chunk", type=int, default=380, help="Chunk size for embedding"
     )
     parser.add_argument(
-        "-l", "--overlap", type=int, default="10", help="Chunk overlap for embedding"
+        "-l", "--overlap", type=int, default=0, help="Chunk overlap for embedding"
+    )
+    parser.add_argument(
+        "-em",
+        "--exclude-metadata",
+        nargs="+",
+        default=None,
+        help="Metadata to be excluded during embedding",
     )
     parser.add_argument("-o", "--output", help="Vector DB output folder")
     parser.add_argument("-i", "--index", help="Product index")
     parser.add_argument("-v", "--ocp-version", help="OCP version")
     args = parser.parse_args()
+    print(f"Arguments used: {args}")
 
     PERSIST_FOLDER = args.output
     EMBEDDINGS_ROOT_DIR = os.path.abspath(args.folder)
@@ -116,18 +126,30 @@ if __name__ == "__main__":
     vector_store = FaissVectorStore(faiss_index=faiss_index)
     storage_context = StorageContext.from_defaults(vector_store=vector_store)
 
+    # Load documents
     documents = SimpleDirectoryReader(
         args.folder, recursive=True, file_metadata=file_metadata_func
     ).load_data()
 
-    good_nodes = []
+    # Split based on header/section
+    # md_parser = MarkdownNodeParser()
+    # documents = md_parser.get_nodes_from_documents(documents)
+
+    # Create chunks/nodes
     nodes = Settings.text_splitter.get_nodes_from_documents(documents)
+
+    # Filter out invalid nodes
+    good_nodes = []
     for node in nodes:
         if isinstance(node, TextNode) and got_whitespace(node.text):
+            # Exclude given metadata during embedding
+            # if args.exclude_metadata is not None:
+            #     node.excluded_embed_metadata_keys.extend(args.exclude_metadata)
             good_nodes.append(node)
         else:
             print("skipping node without whitespace: " + node.__repr__())
 
+    # Create & save Index
     index = VectorStoreIndex(
         good_nodes,
         storage_context=storage_context,
