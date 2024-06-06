@@ -31,9 +31,9 @@ spec:
     receivers:
       otlp:
         protocols:
-          grpc:
-          http:
-    processors:
+          grpc: {}
+          http: {}
+    processors: {}
     exporters:
       otlp:
         endpoint: jaeger-production-collector-headless.tracing-system.svc:4317
@@ -68,7 +68,8 @@ Receivers get data into the Collector.
 
 ### OTLP Receiver
 
-The OTLP receiver ingests traces and metrics using the OpenTelemetry protocol (OTLP).
+The OTLP Receiver ingests traces, metrics, and logs by using the OpenTelemetry Protocol (OTLP).
+The OTLP Receiver ingests traces and metrics using the OpenTelemetry protocol (OTLP).
 
 
 ```yaml
@@ -98,15 +99,15 @@ The OTLP receiver ingests traces and metrics using the OpenTelemetry protocol (O
 
 
 The OTLP gRPC endpoint. If omitted, the default 0.0.0.0:4317 is used.
-The server-side TLS configuration. Defines paths to TLS certificates. If omitted, TLS is disabled.
+The server-side TLS configuration. Defines paths to TLS certificates. If omitted, the TLS is disabled.
 The path to the TLS certificate at which the server verifies a client certificate. This sets the value of ClientCAs and ClientAuth to RequireAndVerifyClientCert in the TLSConfig. For more information, see the Config of the Golang TLS package.
-Specifies the time interval at which the certificate is reloaded. If the value is not set, the certificate is never reloaded. The reload_interval accepts a string containing valid units of time such as ns, us (or µs), ms, s, m, h.
+Specifies the time interval at which the certificate is reloaded. If the value is not set, the certificate is never reloaded. The reload_interval field accepts a string containing valid units of time such as ns, us (or µs), ms, s, m, h.
 The OTLP HTTP endpoint. The default value is 0.0.0.0:4318.
 The server-side TLS configuration. For more information, see the grpc protocol configuration section.
 
 ### Jaeger Receiver
 
-The Jaeger receiver ingests traces in the Jaeger formats.
+The Jaeger Receiver ingests traces in the Jaeger formats.
 
 
 ```yaml
@@ -135,13 +136,254 @@ The Jaeger gRPC endpoint. If omitted, the default 0.0.0.0:14250 is used.
 The Jaeger Thrift HTTP endpoint. If omitted, the default 0.0.0.0:14268 is used.
 The Jaeger Thrift Compact endpoint. If omitted, the default 0.0.0.0:6831 is used.
 The Jaeger Thrift Binary endpoint. If omitted, the default 0.0.0.0:6832 is used.
-The  server-side TLS configuration. See the OTLP receiver configuration section for more details.
+The  server-side TLS configuration. See the OTLP Receiver configuration section for more details.
+
+### Host Metrics Receiver
+
+
+[IMPORTANT]
+----
+{FeatureName} is a Technology Preview feature only. Technology Preview features are not supported with Red Hat production service level agreements (SLAs) and might not be functionally complete. Red Hat does not recommend using them in production. These features provide early access to upcoming product features, enabling customers to test functionality and provide feedback during the development process.
+For more information about the support scope of Red Hat Technology Preview features, see Technology Preview Features Support Scope.
+----
+
+The Host Metrics Receiver ingests metrics in the OTLP format.
+
+
+```yaml
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: otel-hostfs-daemonset
+  namespace: <namespace>
+---
+apiVersion: security.openshift.io/v1
+kind: SecurityContextConstraints
+allowHostDirVolumePlugin: true
+allowHostIPC: false
+allowHostNetwork: false
+allowHostPID: true
+allowHostPorts: false
+allowPrivilegeEscalation: true
+allowPrivilegedContainer: true
+allowedCapabilities: null
+defaultAddCapabilities:
+- SYS_ADMIN
+fsGroup:
+  type: RunAsAny
+groups: []
+metadata:
+  name: otel-hostmetrics
+readOnlyRootFilesystem: true
+runAsUser:
+  type: RunAsAny
+seLinuxContext:
+  type: RunAsAny
+supplementalGroups:
+  type: RunAsAny
+users:
+- system:serviceaccount:<namespace>:otel-hostfs-daemonset
+volumes:
+- configMap
+- emptyDir
+- hostPath
+- projected
+---
+apiVersion: opentelemetry.io/v1alpha1
+kind: OpenTelemetryCollector
+metadata:
+  name: otel
+  namespace: <namespace>
+spec:
+  serviceAccount: otel-hostfs-daemonset
+  mode: daemonset
+  volumeMounts:
+    - mountPath: /hostfs
+      name: host
+      readOnly: true
+  volumes:
+    - hostPath:
+        path: /
+      name: host
+  config: |
+    receivers:
+      hostmetrics:
+        collection_interval: 10s 1
+        initial_delay: 1s 2
+        root_path: / 3
+        scrapers: 4
+          cpu:
+          memory:
+          disk:
+    service:
+      pipelines:
+        metrics:
+          receivers: [hostmetrics]
+```
+
+
+Sets the time interval for host metrics collection. If omitted, the default value is 1m.
+Sets the initial time delay for host metrics collection. If omitted, the default value is 1s.
+Configures the root_path so that the Host Metrics Receiver knows where the root filesystem is. If running multiple instances of the Host Metrics Receiver, set the same root_path value for each instance.
+Lists the enabled host metrics scrapers. Available scrapers are cpu, disk, load, filesystem, memory, network, paging, processes, and process.
+
+### Kubernetes Objects Receiver
+
+
+[IMPORTANT]
+----
+{FeatureName} is a Technology Preview feature only. Technology Preview features are not supported with Red Hat production service level agreements (SLAs) and might not be functionally complete. Red Hat does not recommend using them in production. These features provide early access to upcoming product features, enabling customers to test functionality and provide feedback during the development process.
+For more information about the support scope of Red Hat Technology Preview features, see Technology Preview Features Support Scope.
+----
+
+The Kubernetes Objects Receiver pulls or watches objects to be collected from the Kubernetes API server.
+This receiver watches primarily Kubernetes events, but it can collect any type of Kubernetes objects.
+This receiver gathers telemetry for the cluster as a whole, so only one instance of this receiver suffices for collecting all the data.
+
+
+```yaml
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: otel-k8sobj
+  namespace: <namespace>
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: otel-k8sobj
+  namespace: <namespace>
+rules:
+- apiGroups:
+  - ""
+  resources:
+  - events
+  - pods
+  verbs:
+  - get
+  - list
+  - watch
+- apiGroups:
+  - "events.k8s.io"
+  resources:
+  - events
+  verbs:
+  - watch
+  - list
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: otel-k8sobj
+subjects:
+  - kind: ServiceAccount
+    name: otel-k8sobj
+    namespace: <namespace>
+roleRef:
+  kind: ClusterRole
+  name: otel-k8sobj
+  apiGroup: rbac.authorization.k8s.io
+---
+apiVersion: opentelemetry.io/v1alpha1
+kind: OpenTelemetryCollector
+metadata:
+  name: otel-k8s-obj
+  namespace: <namespace>
+spec:
+  serviceAccount: otel-k8sobj
+  image: ghcr.io/os-observability/redhat-opentelemetry-collector/redhat-opentelemetry-collector:main
+  mode: deployment
+  config: |
+    receivers:
+      k8sobjects:
+        auth_type: serviceAccount
+        objects:
+          - name: pods 1
+            mode: pull 2
+            interval: 30s 3
+            label_selector: 4
+            field_selector: 5
+            namespaces: [<namespace>,...] 6
+          - name: events
+            mode: watch
+    exporters:
+      debug:
+    service:
+      pipelines:
+        logs:
+          receivers: [k8sobjects]
+          exporters: [debug]
+```
+
+
+The Resource name that this receiver observes: for example, pods, deployments, or events.
+The observation mode that this receiver uses: pull or watch.
+Only applicable to the pull mode. The request interval for pulling an object. If omitted, the default value is 1h.
+The label selector to define targets.
+The field selector to filter targets.
+The list of namespaces to collect events from. If omitted, the default value is all.
+
+### Kubelet Stats Receiver
+
+
+[IMPORTANT]
+----
+{FeatureName} is a Technology Preview feature only. Technology Preview features are not supported with Red Hat production service level agreements (SLAs) and might not be functionally complete. Red Hat does not recommend using them in production. These features provide early access to upcoming product features, enabling customers to test functionality and provide feedback during the development process.
+For more information about the support scope of Red Hat Technology Preview features, see Technology Preview Features Support Scope.
+----
+
+The Kubelet Stats Receiver extracts metrics related to nodes, pods, containers, and volumes from the kubelet&#8217;s API server. These metrics are then channeled through the metrics-processing pipeline for additional analysis.
+
+
+```yaml
+# ...
+config: |
+  receivers:
+    kubeletstats:
+      collection_interval: 20s
+      auth_type: "serviceAccount"
+      endpoint: "https://${env:K8S_NODE_NAME}:10250"
+      insecure_skip_verify: true
+  service:
+    pipelines:
+      metrics:
+        receivers: [kubeletstats]
+env:
+  - name: K8S_NODE_NAME 1
+    valueFrom:
+      fieldRef:
+        fieldPath: spec.nodeName
+# ...
+```
+
+
+Sets the K8S_NODE_NAME to authenticate to the API.
+
+The Kubelet Stats Receiver requires additional permissions for the service account used for running the OpenTelemetry Collector.
+
+
+```yaml
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: otel-collector
+rules:
+  - apiGroups: ['']
+    resources: ['nodes/stats']
+    verbs: ['get', 'watch', 'list']
+  - apiGroups: [""]
+    resources: ["nodes/proxy"] 1
+    verbs: ["get"]
+```
+
+
+The permissions required when using the extra_metadata_labels or request_utilization or limit_utilization metrics.
 
 ### Prometheus Receiver
 
-The Prometheus receiver is currently a Technology Preview feature only.
+The Prometheus Receiver is currently a Technology Preview feature only.
 
-The Prometheus receiver scrapes the metrics endpoints.
+The Prometheus Receiver scrapes the metrics endpoints.
 
 
 ```yaml
@@ -168,7 +410,7 @@ The targets at which the metrics are exposed. This example scrapes the metrics f
 
 ### Zipkin Receiver
 
-The Zipkin receiver ingests traces in the Zipkin v1 and v2 formats.
+The Zipkin Receiver ingests traces in the Zipkin v1 and v2 formats.
 
 
 ```yaml
@@ -186,13 +428,13 @@ The Zipkin receiver ingests traces in the Zipkin v1 and v2 formats.
 
 
 The Zipkin HTTP endpoint. If omitted, the default 0.0.0.0:9411 is used.
-The server-side TLS configuration. See the OTLP receiver configuration section for more details.
+The server-side TLS configuration. See the OTLP Receiver configuration section for more details.
 
 ### Kafka Receiver
 
-The Kafka receiver is currently a Technology Preview feature only.
+The Kafka Receiver is currently a Technology Preview feature only.
 
-The Kafka receiver receives traces, metrics, and logs from Kafka in the OTLP format.
+The Kafka Receiver receives traces, metrics, and logs from Kafka in the OTLP format.
 
 
 ```yaml
@@ -227,9 +469,149 @@ The client-side TLS configuration. Defines paths to the TLS certificates. If omi
 Disables verifying the server's certificate chain and host name. The default is false.
 ServerName indicates the name of the server requested by the client to support virtual hosting.
 
-### OpenCensus receiver
+### Kubernetes Cluster Receiver
 
-The OpenCensus receiver provides backwards compatibility with the OpenCensus project for easier migration of instrumented codebases. It receives metrics and traces in the OpenCensus format via gRPC or HTTP and Json.
+
+[IMPORTANT]
+----
+{FeatureName} is a Technology Preview feature only. Technology Preview features are not supported with Red Hat production service level agreements (SLAs) and might not be functionally complete. Red Hat does not recommend using them in production. These features provide early access to upcoming product features, enabling customers to test functionality and provide feedback during the development process.
+For more information about the support scope of Red Hat Technology Preview features, see Technology Preview Features Support Scope.
+----
+
+The Kubernetes Cluster Receiver gathers cluster metrics and entity events from the Kubernetes API server. It uses the Kubernetes API to receive information about updates. Authentication for this receiver is only supported through service accounts.
+
+
+```yaml
+# ...
+  receivers:
+    k8s_cluster:
+      distribution: openshift
+      collection_interval: 10s
+  exporters:
+    debug:
+  service:
+    pipelines:
+      metrics:
+        receivers: [k8s_cluster]
+        exporters: [debug]
+      logs/entity_events:
+        receivers: [k8s_cluster]
+        exporters: [debug]
+# ...
+```
+
+
+This receiver requires a configured service account, RBAC rules for the cluster role, and the cluster role binding that binds the RBAC with the service account.
+
+
+```yaml
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  labels:
+    app: otelcontribcol
+  name: otelcontribcol
+```
+
+
+
+```yaml
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: otelcontribcol
+  labels:
+    app: otelcontribcol
+rules:
+- apiGroups:
+  - quota.openshift.io
+  resources:
+  - clusterresourcequotas
+  verbs:
+  - get
+  - list
+  - watch
+- apiGroups:
+  - ""
+  resources:
+  - events
+  - namespaces
+  - namespaces/status
+  - nodes
+  - nodes/spec
+  - pods
+  - pods/status
+  - replicationcontrollers
+  - replicationcontrollers/status
+  - resourcequotas
+  - services
+  verbs:
+  - get
+  - list
+  - watch
+- apiGroups:
+  - apps
+  resources:
+  - daemonsets
+  - deployments
+  - replicasets
+  - statefulsets
+  verbs:
+  - get
+  - list
+  - watch
+- apiGroups:
+  - extensions
+  resources:
+  - daemonsets
+  - deployments
+  - replicasets
+  verbs:
+  - get
+  - list
+  - watch
+- apiGroups:
+  - batch
+  resources:
+  - jobs
+  - cronjobs
+  verbs:
+  - get
+  - list
+  - watch
+- apiGroups:
+    - autoscaling
+  resources:
+    - horizontalpodautoscalers
+  verbs:
+    - get
+    - list
+    - watch
+```
+
+
+
+```yaml
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: otelcontribcol
+  labels:
+    app: otelcontribcol
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: otelcontribcol
+subjects:
+- kind: ServiceAccount
+  name: otelcontribcol
+  namespace: default
+```
+
+
+### OpenCensus Receiver
+
+The OpenCensus Receiver provides backwards compatibility with the OpenCensus project for easier migration of instrumented codebases. It receives metrics and traces in the OpenCensus format via gRPC or HTTP and Json.
 
 
 ```yaml
@@ -249,18 +631,262 @@ The OpenCensus receiver provides backwards compatibility with the OpenCensus pro
 
 
 The OpenCensus endpoint. If omitted, the default is 0.0.0.0:55678.
-The server-side TLS configuration. See the OTLP receiver configuration section for more details.
+The server-side TLS configuration. See the OTLP Receiver configuration section for more details.
 You can also use the HTTP JSON endpoint to optionally configure CORS, which is enabled by specifying a list of allowed CORS origins in this field.
 Wildcards with * are accepted under the cors_allowed_origins.
 To match any origin, enter only *.
+
+### Filelog Receiver
+
+
+[IMPORTANT]
+----
+{FeatureName} is a Technology Preview feature only. Technology Preview features are not supported with Red Hat production service level agreements (SLAs) and might not be functionally complete. Red Hat does not recommend using them in production. These features provide early access to upcoming product features, enabling customers to test functionality and provide feedback during the development process.
+For more information about the support scope of Red Hat Technology Preview features, see Technology Preview Features Support Scope.
+----
+
+The Filelog Receiver tails and parses logs from files.
+
+
+```yaml
+receivers:
+  filelog:
+    include: [ /simple.log ] 1
+    operators: 2
+      - type: regex_parser
+        regex: '^(?P<time>\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}) (?P<sev>[A-Z]*) (?P<msg>.*)$'
+        timestamp:
+          parse_from: attributes.time
+          layout: '%Y-%m-%d %H:%M:%S'
+        severity:
+          parse_from: attributes.sev
+```
+
+
+A list of file glob patterns that match the file paths to be read.
+An array of Operators. Each Operator performs a simple task such as parsing a timestamp or JSON. To process logs into a desired format, chain the Operators together.
+
+### Journald Receiver
+
+
+[IMPORTANT]
+----
+{FeatureName} is a Technology Preview feature only. Technology Preview features are not supported with Red Hat production service level agreements (SLAs) and might not be functionally complete. Red Hat does not recommend using them in production. These features provide early access to upcoming product features, enabling customers to test functionality and provide feedback during the development process.
+For more information about the support scope of Red Hat Technology Preview features, see Technology Preview Features Support Scope.
+----
+
+The Journald Receiver parses journald events from the systemd journal and sends them as logs.
+
+
+```yaml
+kubectl apply -f - <<EOF
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: otel-journald
+  labels:
+    security.openshift.io/scc.podSecurityLabelSync: "false"
+    pod-security.kubernetes.io/enforce: "privileged"
+    pod-security.kubernetes.io/audit: "privileged"
+    pod-security.kubernetes.io/warn: "privileged"
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: privileged-sa
+  namespace: otel-journald
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: otel-journald-binding
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: system:openshift:scc:privileged
+subjects:
+- kind: ServiceAccount
+  name: privileged-sa
+  namespace: otel-journald
+---
+apiVersion: opentelemetry.io/v1alpha1
+kind: OpenTelemetryCollector
+metadata:
+  name: otel-journald-logs
+  namespace: otel-journald
+spec:
+  mode: daemonset
+  serviceAccount: privileged-sa
+  securityContext:
+    allowPrivilegeEscalation: false
+    capabilities:
+      drop:
+      - CHOWN
+      - DAC_OVERRIDE
+      - FOWNER
+      - FSETID
+      - KILL
+      - NET_BIND_SERVICE
+      - SETGID
+      - SETPCAP
+      - SETUID
+    readOnlyRootFilesystem: true
+    seLinuxOptions:
+      type: spc_t
+    seccompProfile:
+      type: RuntimeDefault
+  config: |
+    receivers:
+      journald:
+        files: /var/log/journal/*/*
+        priority: info 1
+        units: 2
+          - kubelet
+          - crio
+          - init.scope
+          - dnsmasq
+        all: true 3
+        retry_on_failure:
+          enabled: true 4
+          initial_interval: 1s 5
+          max_interval: 30s 6
+          max_elapsed_time: 5m 7
+    processors:
+    exporters:
+      debug:
+        verbosity: detailed
+    service:
+      pipelines:
+        logs:
+          receivers: [journald]
+          exporters: [debug]
+  volumeMounts:
+  - name: journal-logs
+    mountPath: /var/log/journal/
+    readOnly: true
+  volumes:
+  - name: journal-logs
+    hostPath:
+      path: /var/log/journal
+  tolerations:
+  - key: node-role.kubernetes.io/master
+    operator: Exists
+    effect: NoSchedule
+EOF
+```
+
+
+Filters output by message priorities or priority ranges. The default value is info.
+Lists the units to read entries from. If empty, entries are read from all units.
+Includes very long logs and logs with unprintable characters. The default value is false.
+If set to true, the receiver pauses reading a file and attempts to resend the current batch of logs when encountering an error from downstream components. The default value is false.
+The time interval to wait after the first failure before retrying. The default value is 1s. The units are ms, s, m, h.
+The upper bound for the retry backoff interval. When this value is reached, the time interval between consecutive retry attempts remains constant at this value. The default value is 30s. The supported units are ms, s, m, h.
+The maximum time interval, including retry attempts, for attempting to send a logs batch to a downstream consumer. When this value is reached, the data are discarded. If the set value is 0, retrying never stops. The default value is 5m. The supported units are ms, s, m, h.
+
+### Kubernetes Events Receiver
+
+
+[IMPORTANT]
+----
+{FeatureName} is a Technology Preview feature only. Technology Preview features are not supported with Red Hat production service level agreements (SLAs) and might not be functionally complete. Red Hat does not recommend using them in production. These features provide early access to upcoming product features, enabling customers to test functionality and provide feedback during the development process.
+For more information about the support scope of Red Hat Technology Preview features, see Technology Preview Features Support Scope.
+----
+
+The Kubernetes Events Receiver collects events from the Kubernetes API server. The collected events are converted into logs.
+
+
+```yaml
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: otel-collector
+  labels:
+    app: otel-collector
+rules:
+- apiGroups:
+  - ""
+  resources:
+  - events
+  - namespaces
+  - namespaces/status
+  - nodes
+  - nodes/spec
+  - pods
+  - pods/status
+  - replicationcontrollers
+  - replicationcontrollers/status
+  - resourcequotas
+  - services
+  verbs:
+  - get
+  - list
+  - watch
+- apiGroups:
+  - apps
+  resources:
+  - daemonsets
+  - deployments
+  - replicasets
+  - statefulsets
+  verbs:
+  - get
+  - list
+  - watch
+- apiGroups:
+  - extensions
+  resources:
+  - daemonsets
+  - deployments
+  - replicasets
+  verbs:
+  - get
+  - list
+  - watch
+- apiGroups:
+  - batch
+  resources:
+  - jobs
+  - cronjobs
+  verbs:
+  - get
+  - list
+  - watch
+- apiGroups:
+    - autoscaling
+  resources:
+    - horizontalpodautoscalers
+  verbs:
+    - get
+    - list
+    - watch
+```
+
+
+
+```yaml
+  serviceAccount: otel-collector 1
+  config: |
+    receivers:
+      k8s_events:
+        namespaces: [project1, project2] 2
+    service:
+      pipelines:
+        logs:
+          receivers: [k8s_events]
+```
+
+
+The service account of the Collector that has the required ClusterRole otel-collector RBAC.
+The list of namespaces to collect events from. The default value is empty, which means that all namespaces are collected.
 
 ## Processors
 
 Processors run through the data between it is received and exported.
 
-### Batch processor
+### Batch Processor
 
-The Batch processor batches traces and metrics to reduce the number of outgoing connections needed to transfer the telemetry information.
+The Batch Processor batches traces and metrics to reduce the number of outgoing connections needed to transfer the telemetry information.
 
 
 ```yaml
@@ -280,9 +906,9 @@ The Batch processor batches traces and metrics to reduce the number of outgoing 
 
 
 
-### Memory Limiter processor
+### Memory Limiter Processor
 
-The Memory Limiter processor periodically checks the Collector&#8217;s memory usage and pauses data processing when the soft memory limit is reached. This processor supports traces, metrics, and logs. The preceding component, which is typically a receiver, is expected to retry sending the same data and may apply a backpressure to the incoming data. When memory usage exceeds the hard limit, the Memory Limiter processor forces garbage collection to run.
+The Memory Limiter Processor periodically checks the Collector&#8217;s memory usage and pauses data processing when the soft memory limit is reached. This processor supports traces, metrics, and logs. The preceding component, which is typically a receiver, is expected to retry sending the same data and may apply a backpressure to the incoming data. When memory usage exceeds the hard limit, the Memory Limiter Processor forces garbage collection to run.
 
 
 ```yaml
@@ -303,11 +929,11 @@ The Memory Limiter processor periodically checks the Collector&#8217;s memory us
 
 
 
-### Resource Detection processor
+### Resource Detection Processor
 
-The Resource Detection processor is currently a Technology Preview feature only.
+The Resource Detection Processor is currently a Technology Preview feature only.
 
-The Resource Detection processor identifies host resource details in alignment with OpenTelemetry&#8217;s resource semantic standards. Using the detected information, it can add or replace the resource values in telemetry data. This processor supports traces, metrics, and can be used with multiple detectors such as the Docket metadata detector or the OTEL_RESOURCE_ATTRIBUTES environment variable detector.
+The Resource Detection Processor identifies host resource details in alignment with OpenTelemetry&#8217;s resource semantic standards. Using the detected information, this processor can add or replace the resource values in telemetry data. This processor supports traces and metrics. You can use this processor with multiple detectors such as the Docket metadata detector or the OTEL_RESOURCE_ATTRIBUTES environment variable detector.
 
 
 ```yaml
@@ -350,20 +976,20 @@ rules:
 
 Specifies which detector to use. In this example, the environment detector is specified.
 
-### Attributes processor
+### Attributes Processor
 
-The Attributes processor is currently a Technology Preview feature only.
+The Attributes Processor is currently a Technology Preview feature only.
 
-The Attributes processor can modify attributes of a span, log, or metric. You can configure this processor to filter and match input data and include or exclude such data for specific actions.
+The Attributes Processor can modify attributes of a span, log, or metric. You can configure this processor to filter and match input data and include or exclude such data for specific actions.
 
-The processor operates on a list of actions, executing them in the order specified in the configuration. The following actions are supported:
+This processor operates on a list of actions, executing them in the order specified in the configuration. The following actions are supported:
 
 Insert:: Inserts a new attribute into the input data when the specified key does not already exist.
 Update:: Updates an attribute in the input data if the key already exists.
 Upsert:: Combines the insert and update actions: Inserts a new attribute if the key does not exist yet. Updates the attribute if the key already exists.
 Delete:: Removes an attribute from the input data.
 Hash:: Hashes an existing attribute value as SHA1.
-Extract:: Extracts values by using a regular expression rule from the input key to the target keys defined in the rule. If a target key already exists, it will be overridden similarly to the Span processor's to_attributes setting with the existing attribute as the source.
+Extract:: Extracts values by using a regular expression rule from the input key to the target keys defined in the rule. If a target key already exists, it is overridden similarly to the Span Processor's to_attributes setting with the existing attribute as the source.
 Convert:: Converts an existing attribute to a specified type.
 
 
@@ -393,11 +1019,11 @@ Convert:: Converts an existing attribute to a specified type.
 ```
 
 
-### Resource processor
+### Resource Processor
 
-The Resource processor is currently a Technology Preview feature only.
+The Resource Processor is currently a Technology Preview feature only.
 
-The Resource processor applies changes to the resource attributes. This processor supports traces, metrics, and logs.
+The Resource Processor applies changes to the resource attributes. This processor supports traces, metrics, and logs.
 
 
 ```yaml
@@ -417,11 +1043,11 @@ The Resource processor applies changes to the resource attributes. This processo
 
 Attributes represent the actions that are applied to the resource attributes, such as delete the attribute, insert the attribute, or upsert the attribute.
 
-### Span processor
+### Span Processor
 
-The Span processor is currently a Technology Preview feature only.
+The Span Processor is currently a Technology Preview feature only.
 
-The Span processor modifies the span name based on its attributes or extracts the span attributes from the span name. It can also change the span status. It can also include or exclude spans. This processor supports traces.
+The Span Processor modifies the span name based on its attributes or extracts the span attributes from the span name. This processor can also change the span status and include or exclude spans. This processor supports traces.
 
 Span renaming requires specifying attributes for the new name by using the from_attributes configuration.
 
@@ -439,7 +1065,7 @@ Span renaming requires specifying attributes for the new name by using the from_
 Defines the keys to form the new span name.
 An optional separator.
 
-You can use the processor to extract attributes from the span name.
+You can use this processor to extract attributes from the span name.
 
 
 ```yaml
@@ -468,11 +1094,11 @@ You can have the span status modified.
 ```
 
 
-### Kubernetes Attributes processor
+### Kubernetes Attributes Processor
 
-The Kubernetes Attributes processor is currently a Technology Preview feature only.
+The Kubernetes Attributes Processor is currently a Technology Preview feature only.
 
-The Kubernetes Attributes processor enables automatic configuration of spans, metrics, and log resource attributes by using the Kubernetes metadata.
+The Kubernetes Attributes Processor enables automatic configuration of spans, metrics, and log resource attributes by using the Kubernetes metadata.
 This processor supports traces, metrics, and logs.
 This processor automatically identifies the Kubernetes resources, extracts the metadata from them, and incorporates this extracted metadata as resource attributes into relevant spans, metrics, and logs. It utilizes the Kubernetes API to discover all pods operating within a cluster, maintaining records of their IP addresses, pod UIDs, and other relevant metadata.
 
@@ -498,11 +1124,11 @@ rules:
 ```
 
 
-### Filter processor
+### Filter Processor
 
-The Filter processor is currently a Technology Preview feature only.
+The Filter Processor is currently a Technology Preview feature only.
 
-The Filter processor leverages the OpenTelemetry Transformation Language to establish criteria for discarding telemetry data. If any of these conditions are satisfied, the telemetry data are discarded. The conditions can be combined by using the logical OR operator. This processor supports traces, metrics, and logs.
+The Filter Processor leverages the OpenTelemetry Transformation Language to establish criteria for discarding telemetry data. If any of these conditions are satisfied, the telemetry data are discarded. You can combine the conditions by using the logical OR operator. This processor supports traces, metrics, and logs.
 
 
 ```yaml
@@ -521,11 +1147,11 @@ Defines the error mode. When set to ignore, ignores errors returned by condition
 Filters the spans that have the container.name == app_container_1 attribute.
 Filters the spans that have the host.name == localhost resource attribute.
 
-### Routing processor
+### Routing Processor
 
-The Routing processor is currently a Technology Preview feature only.
+The Routing Processor is currently a Technology Preview feature only.
 
-The Routing processor routes logs, metrics, or traces to specific exporters. This processor can read a header from an incoming HTTP request (gRPC or plain HTTP) or can read a resource attribute, and then directs the trace information to relevant exporters according to the read value.
+The Routing Processor routes logs, metrics, or traces to specific exporters. This processor can read a header from an incoming gRPC or plain HTTP request or read a resource attribute, and then direct the trace information to relevant exporters according to the read value.
 
 
 ```yaml
@@ -550,15 +1176,52 @@ The HTTP header name for the lookup value when performing the route.
 The default exporter when the attribute value is not present in the table in the next section.
 The table that defines which values are to be routed to which exporters.
 
-You can optionally create an attribute_source configuratiion, which defines where to look for the attribute in from_attribute. The allowed value is context to search the context, which includes the HTTP headers, or resource to search the resource attributes.
+You can optionally create an attribute_source configuration, which defines where to look for the attribute in from_attribute. The allowed value is context to search the context, which includes the HTTP headers, or resource to search the resource attributes.
+
+### Cumulative to Delta Processor
+
+This processor converts monotonic, cumulative-sum, and histogram metrics to monotonic delta metrics.
+
+You can filter metrics by using the include: or exclude: fields and specifying the strict or regexp metric name matching.
+
+This processor does not convert non-monotonic sums and exponential histograms.
+
+
+[IMPORTANT]
+----
+{FeatureName} is a Technology Preview feature only. Technology Preview features are not supported with Red Hat production service level agreements (SLAs) and might not be functionally complete. Red Hat does not recommend using them in production. These features provide early access to upcoming product features, enabling customers to test functionality and provide feedback during the development process.
+For more information about the support scope of Red Hat Technology Preview features, see Technology Preview Features Support Scope.
+----
+
+
+```yaml
+config: |
+  processors:
+    cumulativetodelta:
+      include: 1
+        match_type: strict 2
+        metrics: 3
+        - <metric_1_name>
+        - <metric_2_name>
+      exclude: 4
+        match_type: regexp
+        metrics:
+        - "<regular_expression_for_metric_names>"
+```
+
+
+Optional: Configures which metrics to include. When omitted, all metrics, except for those listed in the exclude field, are converted to delta metrics.
+Defines a value provided in the metrics field as a strict exact match or regexp regular expression.
+Lists the metric names, which are exact matches or matches for regular expressions, of the metrics to be converted to delta metrics. If a metric matches both the include and exclude filters, the exclude filter takes precedence.
+Optional: Configures which metrics to exclude. When omitted, no metrics are excluded from conversion to delta metrics.
 
 ## Exporters
 
 Exporters send data to one or more back ends or destinations.
 
-### OTLP exporter
+### OTLP Exporter
 
-The OTLP gRPC exporter exports traces and metrics using the OpenTelemetry protocol (OTLP).
+The OTLP gRPC Exporter exports traces and metrics by using the OpenTelemetry protocol (OTLP).
 
 
 ```yaml
@@ -593,9 +1256,9 @@ Specifies the time interval at which the certificate is reloaded. If the value i
 Overrides the virtual host name of authority such as the authority header field in requests. You can use this for testing.
 Headers are sent for every request performed during an established connection.
 
-### OTLP HTTP exporter
+### OTLP HTTP Exporter
 
-The OTLP HTTP exporter exports traces and metrics using the OpenTelemetry protocol (OTLP).
+The OTLP HTTP Exporter exports traces and metrics by using the OpenTelemetry protocol (OTLP).
 
 
 ```yaml
@@ -622,9 +1285,9 @@ The client side TLS configuration. Defines paths to TLS certificates.
 Headers are sent in every HTTP request.
 If true, disables HTTP keep-alives. It will only use the connection to the server for a single HTTP request.
 
-### Debug exporter
+### Debug Exporter
 
-The Debug exporter prints traces and metrics to the standard output.
+The Debug Exporter prints traces and metrics to the standard output.
 
 
 ```yaml
@@ -643,11 +1306,55 @@ The Debug exporter prints traces and metrics to the standard output.
 
 Verbosity of the debug export: detailed or normal or basic. When set to detailed, pipeline data is verbosely logged. Defaults to normal.
 
-### Prometheus exporter
+### Load Balancing Exporter
 
-The Prometheus exporter is currently a Technology Preview feature only.
+The Load Balancing Exporter consistently exports spans, metrics, and logs according to the routing_key configuration.
 
-The Prometheus exporter exports metrics in the Prometheus or OpenMetrics formats.
+
+[IMPORTANT]
+----
+{FeatureName} is a Technology Preview feature only. Technology Preview features are not supported with Red Hat production service level agreements (SLAs) and might not be functionally complete. Red Hat does not recommend using them in production. These features provide early access to upcoming product features, enabling customers to test functionality and provide feedback during the development process.
+For more information about the support scope of Red Hat Technology Preview features, see Technology Preview Features Support Scope.
+----
+
+
+```yaml
+# ...
+  config: |
+    exporters:
+      loadbalancing:
+        routing_key: "service" 1
+        protocol:
+          otlp: 2
+            timeout: 1s
+        resolver: 3
+          static: 4
+            hostnames:
+            - backend-1:4317
+            - backend-2:4317
+          dns: 5
+            hostname: otelcol-headless.observability.svc.cluster.local
+          k8s: 6
+            service: lb-svc.kube-public
+            ports:
+              - 15317
+              - 16317
+# ...
+```
+
+
+The routing_key: service exports spans for the same service name to the same Collector instance to provide accurate aggregation. The routing_key: traceID exports spans based on their traceID. The implicit default is traceID based routing.
+The OTLP is the only supported load-balancing protocol. All options of the OTLP exporter are supported.
+You can configure only one resolver.
+The static resolver distributes the load across the listed endpoints.
+You can use the DNS resolver only with a Kubernetes headless service.
+The Kubernetes resolver is recommended.
+
+### Prometheus Exporter
+
+The Prometheus Exporter is currently a Technology Preview feature only.
+
+The Prometheus Exporter exports metrics in the Prometheus or OpenMetrics formats.
 
 
 ```yaml
@@ -688,11 +1395,11 @@ If enabled is true, all the resource attributes are converted to metric labels b
 Defines how long metrics are exposed without updates. The default is 5m.
 Adds the metrics types and units suffixes. Must be disabled if the monitor tab in Jaeger console is enabled. The default is true.
 
-### Kafka exporter
+### Kafka Exporter
 
-The Kafka exporter is currently a Technology Preview feature only.
+The Kafka Exporter is currently a Technology Preview feature only.
 
-The Kafka exporter exports logs, metrics, and traces to Kafka. This exporter uses a synchronous producer that blocks and does not batch messages. It must be used with batch and queued retry processors for higher throughput and resiliency.
+The Kafka Exporter exports logs, metrics, and traces to Kafka. This exporter uses a synchronous producer that blocks and does not batch messages. You must use it with batch and queued retry processors for higher throughput and resiliency.
 
 
 ```yaml
@@ -731,11 +1438,57 @@ ServerName indicates the name of the server requested by the client to support v
 
 Connectors connect two pipelines.
 
-### Spanmetrics connector
+### Forward Connector
 
-The Spanmetrics connector is currently a Technology Preview feature only.
 
-The Spanmetrics connector aggregates Request, Error, and Duration (R.E.D) OpenTelemetry metrics from span data.
+[IMPORTANT]
+----
+{FeatureName} is a Technology Preview feature only. Technology Preview features are not supported with Red Hat production service level agreements (SLAs) and might not be functionally complete. Red Hat does not recommend using them in production. These features provide early access to upcoming product features, enabling customers to test functionality and provide feedback during the development process.
+For more information about the support scope of Red Hat Technology Preview features, see Technology Preview Features Support Scope.
+----
+
+The Forward Connector merges two pipelines of the same type.
+
+
+```yaml
+receivers:
+  otlp:
+    protocols:
+      grpc:
+  jaeger:
+    protocols:
+      grpc:
+processors:
+  batch:
+exporters:
+  otlp:
+    endpoint: tempo-simplest-distributor:4317
+    tls:
+      insecure: true
+connectors:
+  forward:
+service:
+  pipelines:
+    traces/regiona:
+      receivers: [otlp]
+      processors: []
+      exporters: [forward]
+    traces/regionb:
+      receivers: [jaeger]
+      processors: []
+      exporters: [forward]
+    traces:
+      receivers: [forward]
+      processors: [batch]
+      exporters: [otlp]
+```
+
+
+### Spanmetrics Connector
+
+The Spanmetrics Connector is currently a Technology Preview feature only.
+
+The Spanmetrics Connector aggregates Request, Error, and Duration (R.E.D) OpenTelemetry metrics from span data.
 
 
 ```yaml
@@ -758,12 +1511,12 @@ Defines the flush interval of the generated metrics. Defaults to 15s.
 
 Extensions add capabilities to the Collector.
 
-### BearerTokenAuth extension
+### BearerTokenAuth Extension
 
-The BearerTokenAuth extension is currently a Technology Preview feature only.
+The BearerTokenAuth Extension is currently a Technology Preview feature only.
 
-The BearerTokenAuth extension is an authenticator for receivers and exporters that are based on the HTTP and the gRPC protocol.
-You can use the OpenTelemetry Collector custom resource to configure client authentication and server authentication for the BearerTokenAuth extension on the receiver and exporter side.
+The BearerTokenAuth Extension is an authenticator for receivers and exporters that are based on the HTTP and the gRPC protocol.
+You can use the OpenTelemetry Collector custom resource to configure client authentication and server authentication for the BearerTokenAuth Extension on the receiver and exporter side.
 This extension supports traces, metrics, and logs.
 
 
@@ -795,18 +1548,18 @@ This extension supports traces, metrics, and logs.
 ```
 
 
-You can configure the BearerTokenAuth extension to send a custom scheme. The default is Bearer.
-You can add the BearerTokenAuth extension token as metadata to identify a message.
+You can configure the BearerTokenAuth Extension to send a custom scheme. The default is Bearer.
+You can add the BearerTokenAuth Extension token as metadata to identify a message.
 Path to a file that contains an authorization token that is transmitted with every message.
-You can assign the authenticator configuration to an OTLP receiver.
-You can assign the authenticator configuration to an OTLP exporter.
+You can assign the authenticator configuration to an OTLP Receiver.
+You can assign the authenticator configuration to an OTLP Exporter.
 
-### OAuth2Client extension
+### OAuth2Client Extension
 
-The OAuth2Client extension is currently a Technology Preview feature only.
+The OAuth2Client Extension is currently a Technology Preview feature only.
 
-The OAuth2Client extension is an authenticator for exporters that are based on the HTTP and the gRPC protocol.
-Client authentication for the OAuth2Client extension is configured in a separate section in the OpenTelemetry Collector custom resource.
+The OAuth2Client Extension is an authenticator for exporters that are based on the HTTP and the gRPC protocol.
+Client authentication for the OAuth2Client Extension is configured in a separate section in the OpenTelemetry Collector custom resource.
 This extension supports traces, metrics, and logs.
 
 
@@ -831,7 +1584,7 @@ This extension supports traces, metrics, and logs.
     receivers:
       otlp:
         protocols:
-          http:
+          http: {}
 
     exporters:
       otlp:
@@ -860,11 +1613,102 @@ The path to the client's private key file that is used with the client certifica
 Sets a timeout for the token client's request.
 You can assign the authenticator configuration to an OTLP exporter.
 
-### Jaeger Remote Sampling extension
+### File Storage Extension
 
-The Jaeger Remote Sampling extension is currently a Technology Preview feature only.
 
-The Jaeger Remote Sampling extension allows serving sampling strategies after Jaeger&#8217;s remote sampling API. You can configure this extension to proxy requests to a backing remote sampling server such as a Jaeger collector down the pipeline or to a static JSON file from the local file system.
+[IMPORTANT]
+----
+{FeatureName} is a Technology Preview feature only. Technology Preview features are not supported with Red Hat production service level agreements (SLAs) and might not be functionally complete. Red Hat does not recommend using them in production. These features provide early access to upcoming product features, enabling customers to test functionality and provide feedback during the development process.
+For more information about the support scope of Red Hat Technology Preview features, see Technology Preview Features Support Scope.
+----
+
+The File Storage Extension supports traces, metrics, and logs. This extension can persist the state to the local file system. This extension persists the sending queue for the OTLP exporters that are based on the HTTP and the gRPC protocols. This extension requires the read and write access to a directory. This extension can use a default directory, but the default directory must already exist.
+
+
+```yaml
+  config: |
+    extensions:
+      file_storage/all_settings:
+        directory: /var/lib/otelcol/mydir 1
+        timeout: 1s 2
+        compaction:
+          on_start: true 3
+          directory: /tmp/ 4
+          max_transaction_size: 65_536 5
+        fsync: false 6
+
+    exporters:
+      otlp:
+        sending_queue:
+          storage: file_storage/all_settings
+
+    service:
+      extensions: [file_storage/all_settings]
+      pipelines:
+        traces:
+          receivers: [otlp]
+          exporters: [otlp]
+```
+
+
+Specifies the directory in which the telemetry data is stored.
+Specifies the timeout time interval for opening the stored files.
+Starts compaction when the Collector starts. If omitted, the default is false.
+Specifies the directory in which the compactor stores the telemetry data.
+Defines the maximum size of the compaction transaction. To ignore the transaction size, set to zero. If omitted, the default is 65536 bytes.
+When set, forces the database to perform an fsync call after each write operation. This helps to ensure database integrity if there is an interruption to the database process, but at the cost of performance.
+
+### OIDC Auth Extension
+
+
+[IMPORTANT]
+----
+{FeatureName} is a Technology Preview feature only. Technology Preview features are not supported with Red Hat production service level agreements (SLAs) and might not be functionally complete. Red Hat does not recommend using them in production. These features provide early access to upcoming product features, enabling customers to test functionality and provide feedback during the development process.
+For more information about the support scope of Red Hat Technology Preview features, see Technology Preview Features Support Scope.
+----
+
+The OIDC Auth Extension authenticates incoming requests to receivers by using the OpenID Connect (OIDC) protocol.
+It validates the ID token in the authorization header against the issuer and updates the authentication context of the incoming request.
+
+
+```yaml
+  config: |
+    extensions:
+      oidc:
+        attribute: authorization 1
+        issuer_url: https://example.com/auth/realms/opentelemetry 2
+        issuer_ca_path: /var/run/tls/issuer.pem 3
+        audience: otel-collector 4
+        username_claim: email 5
+    receivers:
+      otlp:
+        protocols:
+          grpc:
+            auth:
+              authenticator: oidc
+    exporters:
+      otlp:
+        endpoint: <endpoint>
+    service:
+      extensions: [oidc]
+      pipelines:
+        traces:
+          receivers: [otlp]
+          exporters: [otlp]
+```
+
+
+The name of the header that contains the ID token. The default name is authorization.
+The base URL of the OIDC provider.
+Optional: The path to the issuer's CA certificate.
+The audience for the token.
+The name of the claim that contains the username. The default name is sub.
+
+### Jaeger Remote Sampling Extension
+
+The Jaeger Remote Sampling Extension is currently a Technology Preview feature only.
+
+The Jaeger Remote Sampling Extension enables serving sampling strategies after Jaeger&#8217;s remote sampling API. You can configure this extension to proxy requests to a backing remote sampling server such as a Jaeger collector down the pipeline or to a static JSON file from the local file system.
 
 
 ```yaml
@@ -880,7 +1724,7 @@ The Jaeger Remote Sampling extension allows serving sampling strategies after Ja
     receivers:
       otlp:
         protocols:
-          http:
+          http: {}
 
     exporters:
       otlp:
@@ -945,11 +1789,11 @@ The path to a local file that contains a sampling strategy configuration in the 
 ```
 
 
-### Performance Profiler extension
+### Performance Profiler Extension
 
-The Performance Profiler extension is currently a Technology Preview feature only.
+The Performance Profiler Extension is currently a Technology Preview feature only.
 
-The Performance Profiler extension enables the Go net/http/pprof endpoint. This is typically used by developers to collect performance profiles and investigate issues with the service.
+The Performance Profiler Extension enables the Go net/http/pprof endpoint. Developers use this extension to collect performance profiles and investigate issues with the service.
 
 
 ```yaml
@@ -964,7 +1808,7 @@ The Performance Profiler extension enables the Go net/http/pprof endpoint. This 
     receivers:
       otlp:
         protocols:
-          http:
+          http: {}
 
     exporters:
       otlp:
@@ -983,11 +1827,11 @@ Sets a fraction of blocking events to be profiled. To disable profiling, set thi
 Set a fraction of mutex contention events to be profiled. To disable profiling, set this to 0 or a negative integer. See the documentation for the runtime package. The default value is 0.
 The name of the file in which the CPU profile is to be saved. Profiling starts when the Collector starts. Profiling is saved to the file when the Collector is terminated.
 
-### Health Check extension
+### Health Check Extension
 
-The Health Check extension is currently a Technology Preview feature only.
+The Health Check Extension is currently a Technology Preview feature only.
 
-The Health Check extension provides an HTTP URL for checking the status of the OpenTelemetry Collector. You can use this extension as a liveness and readiness probe on OpenShift.
+The Health Check Extension provides an HTTP URL for checking the status of the OpenTelemetry Collector. You can use this extension as a liveness and readiness probe on OpenShift.
 
 
 ```yaml
@@ -1008,7 +1852,7 @@ The Health Check extension provides an HTTP URL for checking the status of the O
     receivers:
       otlp:
         protocols:
-          http:
+          http: {}
 
     exporters:
       otlp:
@@ -1030,11 +1874,11 @@ Enables the Collector pipeline health check. The default is false.
 The time interval for checking the number of failures. The default is 5m.
 The threshold of a number of failures until which a container is still marked as healthy. The default is 5.
 
-### Memory Ballast extension
+### Memory Ballast Extension
 
-The Memory Ballast extension is currently a Technology Preview feature only.
+The Memory Ballast Extension is currently a Technology Preview feature only.
 
-The Memory Ballast extension enables applications to configure memory ballast for the process.
+The Memory Ballast Extension enables applications to configure memory ballast for the process.
 
 
 ```yaml
@@ -1047,7 +1891,7 @@ The Memory Ballast extension enables applications to configure memory ballast fo
     receivers:
       otlp:
         protocols:
-          http:
+          http: {}
 
     exporters:
       otlp:
@@ -1064,11 +1908,11 @@ The Memory Ballast extension enables applications to configure memory ballast fo
 Sets the memory ballast size in MiB. Takes priority over the size_in_percentage if both are specified.
 Sets the memory ballast as a percentage, 1-100, of the total memory. Supports containerized and physical host environments.
 
-### zPages extension
+### zPages Extension
 
-The zPages extension is currently a Technology Preview feature only.
+The zPages Extension is currently a Technology Preview feature only.
 
-The zPages extension provides an HTTP endpoint for extensions that serve zPages. At the endpoint, this extension serves live data for debugging instrumented components. All core exporters and receivers provide some zPages instrumentation.
+The zPages Extension provides an HTTP endpoint for extensions that serve zPages. At the endpoint, this extension serves live data for debugging instrumented components. All core exporters and receivers provide some zPages instrumentation.
 
 zPages are useful for in-process diagnostics without having to depend on a back end to examine traces or metrics.
 
@@ -1082,7 +1926,7 @@ zPages are useful for in-process diagnostics without having to depend on a back 
     receivers:
       otlp:
         protocols:
-          http:
+          http: {}
     exporters:
       otlp:
 
@@ -1096,6 +1940,47 @@ zPages are useful for in-process diagnostics without having to depend on a back 
 
 
 Specifies the HTTP endpoint that serves zPages. Use localhost: to make it available only locally, or ":" to make it available on all network interfaces. The default is localhost:55679.
+
+# Creating the required RBAC resources automatically
+
+Some Collector components require configuring the RBAC resources.
+
+* Add the following permissions to the opentelemetry-operator-controller-manage service account so that the Red Hat build of OpenTelemetry Operator can create them automatically:
+
+```yaml
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: generate-processors-rbac
+rules:
+- apiGroups:
+  - rbac.authorization.k8s.io
+  resources:
+  - clusterrolebindings
+  - clusterroles
+  verbs:
+  - create
+  - delete
+  - get
+  - list
+  - patch
+  - update
+  - watch
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: generate-processors-rbac
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: generate-processors-rbac
+subjects:
+- kind: ServiceAccount
+  name: opentelemetry-operator-controller-manager
+  namespace: openshift-opentelemetry-operator
+```
+
 
 # Target allocator
 
@@ -1134,7 +2019,7 @@ spec:
           scrape_configs: []
     processors:
     exporters:
-      debug:
+      debug: {}
     service:
       pipelines:
         metrics:
