@@ -17,7 +17,7 @@ This repo contains Tekton pipeline for creation of  LLM embedding using Llama_in
 
 - Add secrets resources to the secret folder and to link the secretes to the pipeline service account 
 - Copy and edit the pipeline configuration file `pipeline/data-pipeline.yaml` 
-- add you file adn resources to th `kustomization.yaml` file 
+- add you file and resources to th `kustomization.yaml` file 
 - Deploy the pipeline pipeline using the following command: 
 ```
 oc apply -k . 
