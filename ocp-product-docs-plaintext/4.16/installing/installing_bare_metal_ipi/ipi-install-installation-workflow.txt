@@ -261,21 +261,30 @@ bridge-slave-eno2  f31c3353-54b7-48de-893a-02d2b34c4736  ethernet  eno2
 
 # Establishing communication between subnets
 
-In a typical Red Hat OpenShift Container Platform cluster setup, all nodes, including the control plane and worker nodes, reside in the same network. However, for edge computing scenarios, it can be beneficial to locate worker nodes closer to the edge. This often involves using different network segments or subnets for the remote worker nodes than the subnet used by the control plane and local worker nodes. Such a setup can reduce latency for the edge and allow for enhanced scalability. However, the network must be configured properly before installing Red Hat OpenShift Container Platform to ensure that the edge subnets containing the remote worker nodes can reach the subnet containing the control plane nodes and receive traffic from the control plane too.
+In a typical Red Hat OpenShift Container Platform cluster setup, all nodes, including the control plane and compute nodes, reside in the same network. However, for edge computing scenarios, it can be beneficial to locate compute nodes closer to the edge. This often involves using different network segments or subnets for the remote nodes than the subnet used by the control plane and local compute nodes. Such a setup can reduce latency for the edge and allow for enhanced scalability.
+
+Before installing Red Hat OpenShift Container Platform, you must configure the network properly to ensure that the edge subnets containing the remote nodes can reach the subnet containing the control plane nodes and receive traffic from the control plane too.
+
+You can run control plane nodes in the same subnet or multiple subnets by configuring a user-managed load balancer in place of the default load balancer. With a multiple subnet environment, you can reduce the risk of your Red Hat OpenShift Container Platform cluster from failing because of a hardware failure or a network outage. For more information, see "Services for a user-managed load balancer" and "Configuring a user-managed load balancer".
+
+Running control plane nodes in a multiple subnet environment requires completion of the following key tasks:
+
+* Configuring a user-managed load balancer instead of the default load balancer by specifying UserManaged in the loadBalancer.type parameter of the install-config.yaml file.
+* Configuring a user-managed load balancer address in the ingressVIPs and apiVIPs parameters of the install-config.yaml file.
+* Adding the multiple subnet Classless Inter-Domain Routing (CIDR) and the user-managed load balancer IP addresses to the networking.machineNetworks parameter in the install-config.yaml file.
 
 
-[IMPORTANT]
+[NOTE]
 ----
-All control plane nodes must run in the same subnet. When using more than one subnet, you can also configure the Ingress VIP to run on the control plane nodes by using a manifest. See "Configuring network components to run on the control plane" for details.
-Deploying a cluster with multiple subnets requires using virtual media.
+Deploying a cluster with multiple subnets requires using virtual media, such as redfish-virtualmedia and idrac-virtualmedia.
 ----
 
-This procedure details the network configuration required to allow the remote worker nodes in the second subnet to communicate effectively with the control plane nodes in the first subnet and to allow the control plane nodes in the first subnet to communicate effectively with the remote worker nodes in the second subnet.
+This procedure details the network configuration required to allow the remote compute nodes in the second subnet to communicate effectively with the control plane nodes in the first subnet and to allow the control plane nodes in the first subnet to communicate effectively with the remote compute nodes in the second subnet.
 
 In this procedure, the cluster spans two subnets:
 
-* The first subnet (10.0.0.0) contains the control plane and local worker nodes.
-* The second subnet (192.168.0.0) contains the edge worker nodes.
+* The first subnet (10.0.0.0) contains the control plane and local compute nodes.
+* The second subnet (192.168.0.0) contains the edge compute nodes.
 
 1. Configure the first subnet to communicate with the second subnet:
 1. Log in as root to a control plane node by running the following command:
@@ -325,7 +334,7 @@ Replace <interface_name> with the interface name.
 Adjust the commands to match your actual interface names and gateway.
 ----
 2. Configure the second subnet to communicate with the first subnet:
-1. Log in as root to a remote worker node by running the following command:
+1. Log in as root to a remote compute node by running the following command:
 
 ```terminal
 $ sudo su -
@@ -365,29 +374,29 @@ Replace <interface_name> with the interface name.
 # ip route
 ```
 
-6. Repeat the previous steps for each worker node in the second subnet.
+6. Repeat the previous steps for each compute node in the second subnet.
 
 [NOTE]
 ----
 Adjust the commands to match your actual interface names and gateway.
 ----
-3. Once you have configured the networks, test the connectivity to ensure the remote worker nodes can reach the control plane nodes and the control plane nodes can reach the remote worker nodes.
-1. From the control plane nodes in the first subnet, ping a remote worker node in the second subnet by running the following command:
+3. After you have configured the networks, test the connectivity to ensure the remote nodes can reach the control plane nodes and the control plane nodes can reach the remote nodes.
+1. From the control plane nodes in the first subnet, ping a remote node in the second subnet by running the following command:
 
 ```terminal
-$ ping <remote_worker_node_ip_address>
+$ ping <remote_node_ip_address>
 ```
 
 
-If the ping is successful, it means the control plane nodes in the first subnet can reach the remote worker nodes in the second subnet. If you do not receive a response, review the network configurations and repeat the procedure for the node.
-2. From the remote worker nodes in the second subnet, ping a control plane node in the first subnet by running the following command:
+If the ping is successful, it means the control plane nodes in the first subnet can reach the remote nodes in the second subnet. If you do not receive a response, review the network configurations and repeat the procedure for the node.
+2. From the remote nodes in the second subnet, ping a control plane node in the first subnet by running the following command:
 
 ```terminal
 $ ping <control_plane_node_ip_address>
 ```
 
 
-If the ping is successful, it means the remote worker nodes in the second subnet can reach the control plane in the first subnet. If you do not receive a response, review the network configurations and repeat the procedure for the node.
+If the ping is successful, it means the remote compute nodes in the second subnet can reach the control plane in the first subnet. If you do not receive a response, review the network configurations and repeat the procedure for the node.
 
 # Retrieving the Red Hat OpenShift Container Platform installer
 
@@ -687,11 +696,11 @@ Interval: 10
 ```
 
 
-1. Configure the HAProxy Ingress Controller, so that you can enable access to the cluster from your load balancer on ports 6443, 443, and 80:
-Example HAProxy configuration
+1. Configure the HAProxy Ingress Controller, so that you can enable access to the cluster from your load balancer on ports 6443, 22623, 443, and 80. Depending on your needs, you can specify the IP address of a single subnet or IP addresses from multiple subnets in your HAProxy configuration.
+Example HAProxy configuration with one listed subnet
 
 ```terminal
-#...
+# ...
 listen my-cluster-api-6443
     bind 192.168.1.100:6443
     mode tcp
@@ -717,28 +726,82 @@ listen my-cluster-machine-config-api-22623
     server my-cluster-master-1 192.168.1.103:22623 check inter 10s rise 2 fall 2
 
 listen my-cluster-apps-443
-        bind 192.168.1.100:443
-        mode tcp
-        balance roundrobin
-    option httpchk
-    http-check connect
-    http-check send meth GET uri /healthz/ready
-    http-check expect status 200
-        server my-cluster-worker-0 192.168.1.111:443 check port 1936 inter 10s rise 2 fall 2
-        server my-cluster-worker-1 192.168.1.112:443 check port 1936 inter 10s rise 2 fall 2
-        server my-cluster-worker-2 192.168.1.113:443 check port 1936 inter 10s rise 2 fall 2
+    bind 192.168.1.100:443
+    mode tcp
+    balance roundrobin
+  option httpchk
+  http-check connect
+  http-check send meth GET uri /healthz/ready
+  http-check expect status 200
+    server my-cluster-worker-0 192.168.1.111:443 check port 1936 inter 10s rise 2 fall 2
+    server my-cluster-worker-1 192.168.1.112:443 check port 1936 inter 10s rise 2 fall 2
+    server my-cluster-worker-2 192.168.1.113:443 check port 1936 inter 10s rise 2 fall 2
 
 listen my-cluster-apps-80
-        bind 192.168.1.100:80
-        mode tcp
-        balance roundrobin
-    option httpchk
-    http-check connect
-    http-check send meth GET uri /healthz/ready
-    http-check expect status 200
-        server my-cluster-worker-0 192.168.1.111:80 check port 1936 inter 10s rise 2 fall 2
-        server my-cluster-worker-1 192.168.1.112:80 check port 1936 inter 10s rise 2 fall 2
-        server my-cluster-worker-2 192.168.1.113:80 check port 1936 inter 10s rise 2 fall 2
+   bind 192.168.1.100:80
+   mode tcp
+   balance roundrobin
+  option httpchk
+  http-check connect
+  http-check send meth GET uri /healthz/ready
+  http-check expect status 200
+    server my-cluster-worker-0 192.168.1.111:80 check port 1936 inter 10s rise 2 fall 2
+    server my-cluster-worker-1 192.168.1.112:80 check port 1936 inter 10s rise 2 fall 2
+    server my-cluster-worker-2 192.168.1.113:80 check port 1936 inter 10s rise 2 fall 2
+# ...
+```
+
+Example HAProxy configuration with multiple listed subnets
+
+```terminal
+# ...
+listen api-server-6443
+    bind *:6443
+    mode tcp
+      server master-00 192.168.83.89:6443 check inter 1s
+      server master-01 192.168.84.90:6443 check inter 1s
+      server master-02 192.168.85.99:6443 check inter 1s
+      server bootstrap 192.168.80.89:6443 check inter 1s
+
+listen machine-config-server-22623
+    bind *:22623
+    mode tcp
+      server master-00 192.168.83.89:22623 check inter 1s
+      server master-01 192.168.84.90:22623 check inter 1s
+      server master-02 192.168.85.99:22623 check inter 1s
+      server bootstrap 192.168.80.89:22623 check inter 1s
+
+listen ingress-router-80
+    bind *:80
+    mode tcp
+    balance source
+      server worker-00 192.168.83.100:80 check inter 1s
+      server worker-01 192.168.83.101:80 check inter 1s
+
+listen ingress-router-443
+    bind *:443
+    mode tcp
+    balance source
+      server worker-00 192.168.83.100:443 check inter 1s
+      server worker-01 192.168.83.101:443 check inter 1s
+
+listen ironic-api-6385
+    bind *:6385
+    mode tcp
+    balance source
+      server master-00 192.168.83.89:6385 check inter 1s
+      server master-01 192.168.84.90:6385 check inter 1s
+      server master-02 192.168.85.99:6385 check inter 1s
+      server bootstrap 192.168.80.89:6385 check inter 1s
+
+listen inspector-api-5050
+    bind *:5050
+    mode tcp
+    balance source
+      server master-00 192.168.83.89:5050 check inter 1s
+      server master-01 192.168.84.90:5050 check inter 1s
+      server master-02 192.168.85.99:5050 check inter 1s
+      server bootstrap 192.168.80.89:5050 check inter 1s
 # ...
 ```
 
@@ -1046,7 +1109,7 @@ pullSecret: '<pull_secret>'
 sshKey: '<ssh_pub_key>'
 ```
 
-Scale the worker machines based on the number of worker nodes that are part of the Red Hat OpenShift Container Platform cluster. Valid options for the replicas value are 0 and integers greater than or equal to 2. Set the number of replicas to 0 to deploy a three-node cluster, which contains only three control plane machines. A three-node cluster is a smaller, more resource-efficient cluster that can be used for testing, development, and production. You cannot install the cluster with only one worker.
+Scale the compute machines based on the number of compute nodes that are part of the Red Hat OpenShift Container Platform cluster. Valid options for the replicas value are 0 and integers greater than or equal to 2. Set the number of replicas to 0 to deploy a three-node cluster, which contains only three control plane machines. A three-node cluster is a smaller, more resource-efficient cluster that can be used for testing, development, and production. You cannot install the cluster with only one compute node.
 When deploying a cluster with static IP addresses, you must set the bootstrapExternalStaticIP configuration setting to specify the static IP address of the bootstrap VM when there is no DHCP server on the bare-metal network.
 When deploying a cluster with static IP addresses, you must set the bootstrapExternalStaticGateway configuration setting to specify the gateway IP address for the bootstrap VM when there is no DHCP server on the bare-metal network.
 When deploying a cluster with static IP addresses, you must set the bootstrapExternalStaticDNS configuration setting to specify the DNS address for the bootstrap VM when there is no DHCP server on the bare-metal network.
@@ -1749,15 +1812,20 @@ After deploying the cluster, you cannot modify the networkConfig configuration s
 
 ## Configuring host network interfaces for subnets
 
-For edge computing scenarios, it can be beneficial to locate worker nodes closer to the edge. To locate remote worker nodes in subnets, you might use different network segments or subnets for the remote worker nodes than you used for the control plane subnet and local worker nodes. You can reduce latency for the edge and allow for enhanced scalability by setting up subnets for edge computing scenarios.
-
-If you have established different network segments or subnets for remote worker nodes as described in the section on "Establishing communication between subnets", you must specify the subnets in the machineNetwork configuration setting if the workers are using static IP addresses, bonds or other advanced networking. When setting the node IP address in the networkConfig parameter for each remote worker node, you must also specify the gateway and the DNS server for the subnet containing the control plane nodes when using static IP addresses. This ensures the remote worker nodes can reach the subnet containing the control plane nodes and that they can receive network traffic from the control plane.
+For edge computing scenarios, it can be beneficial to locate compute nodes closer to the edge. To locate remote nodes in subnets, you might use different network segments or subnets for the remote nodes than you used for the control plane subnet and local compute nodes. You can reduce latency for the edge and allow for enhanced scalability by setting up subnets for edge computing scenarios.
 
 
 [IMPORTANT]
 ----
-All control plane nodes must run in the same subnet. When using more than one subnet, you can also configure the Ingress VIP to run on the control plane nodes by using a manifest. See "Configuring network components to run on the control plane" for details.
-Deploying a cluster with multiple subnets requires using virtual media, such as redfish-virtualmedia and idrac-virtualmedia.
+When using the default load balancer, OpenShiftManagedDefault and adding remote nodes to your Red Hat OpenShift Container Platform cluster, all control plane nodes must run in the same subnet. When using more than one subnet, you can also configure the Ingress VIP to run on the control plane nodes by using a manifest. See "Configuring network components to run on the control plane" for details.
+----
+
+If you have established different network segments or subnets for remote nodes as described in the section on "Establishing communication between subnets", you must specify the subnets in the machineNetwork configuration setting if the workers are using static IP addresses, bonds or other advanced networking. When setting the node IP address in the networkConfig parameter for each remote node, you must also specify the gateway and the DNS server for the subnet containing the control plane nodes when using static IP addresses. This ensures the remote nodes can reach the subnet containing the control plane nodes and that they can receive network traffic from the control plane.
+
+
+[NOTE]
+----
+Deploying a cluster with multiple subnets requires using virtual media, such as redfish-virtualmedia and idrac-virtualmedia, because remote nodes cannot access the local provisioning network.
 ----
 
 1. Add the subnets to the machineNetwork in the install-config.yaml file when using static IP addresses:
@@ -1770,7 +1838,7 @@ networking:
   networkType: OVNKubernetes
 ```
 
-2. Add the gateway and DNS configuration to the networkConfig parameter of each edge worker node using NMState syntax when using a static IP address or advanced networking such as bonds:
+2. Add the gateway and DNS configuration to the networkConfig parameter of each edge compute node using NMState syntax when using a static IP address or advanced networking such as bonds:
 
 ```yaml
 networkConfig:
@@ -2079,7 +2147,7 @@ Red Hat OpenShift Container Platform installs the chrony Network Time Protocol (
 
 ![Configuring NTP for disconnected clusters]
 
-Red Hat OpenShift Container Platform nodes must agree on a date and time to run properly. When worker nodes retrieve the date and time from the NTP servers on the control plane nodes, it enables the installation and operation of clusters that are not connected to a routable network and thereby do not have access to a higher stratum NTP server.
+Red Hat OpenShift Container Platform nodes must agree on a date and time to run properly. When compute nodes retrieve the date and time from the NTP servers on the control plane nodes, it enables the installation and operation of clusters that are not connected to a routable network and thereby do not have access to a higher stratum NTP server.
 
 1. Create a Butane config, 99-master-chrony-conf-override.bu, including the contents of the chrony.conf file for the control plane nodes.
 
@@ -2125,7 +2193,7 @@ storage:
           logdir /var/log/chrony
 
           # Configure the control plane nodes to serve as local NTP servers
-          # for all worker nodes, even if they are not in sync with an
+          # for all compute nodes, even if they are not in sync with an
           # upstream NTP server.
 
           # Allow NTP client access from the local network.
@@ -2141,7 +2209,7 @@ You must replace <cluster-name> with the name of the cluster and replace <domain
 $ butane 99-master-chrony-conf-override.bu -o 99-master-chrony-conf-override.yaml
 ```
 
-3. Create a Butane config, 99-worker-chrony-conf-override.bu, including the contents of the chrony.conf file for the worker nodes that references the NTP servers on the control plane nodes.
+3. Create a Butane config, 99-worker-chrony-conf-override.bu, including the contents of the chrony.conf file for the compute nodes that references the NTP servers on the control plane nodes.
 Butane config example
 
 ```yaml
@@ -2187,12 +2255,12 @@ $ butane 99-worker-chrony-conf-override.bu -o 99-worker-chrony-conf-override.yam
 
 ## Configuring network components to run on the control plane
 
-You can configure networking components to run exclusively on the control plane nodes. By default, Red Hat OpenShift Container Platform allows any node in the machine config pool to host the ingressVIP virtual IP address. However, some environments deploy worker nodes in separate subnets from the control plane nodes, which requires configuring the ingressVIP virtual IP address to run on the control plane nodes.
+You can configure networking components to run exclusively on the control plane nodes. By default, Red Hat OpenShift Container Platform allows any node in the machine config pool to host the ingressVIP virtual IP address. However, some environments deploy compute nodes in separate subnets from the control plane nodes, which requires configuring the ingressVIP virtual IP address to run on the control plane nodes.
 
 
 [IMPORTANT]
 ----
-When deploying remote workers in separate subnets, you must place the ingressVIP virtual IP address exclusively with the control plane nodes.
+When deploying remote nodes in separate subnets, you must place the ingressVIP virtual IP address exclusively with the control plane nodes.
 ----
 
 ![Installer-provisioned networking]
@@ -2269,20 +2337,20 @@ $ sed -i "s;mastersSchedulable: false;mastersSchedulable: true;g" clusterconfigs
 If control plane nodes are not schedulable after completing this procedure, deploying the cluster will fail.
 ----
 
-## Optional: Deploying routers on worker nodes
+## Optional: Deploying routers on compute nodes
 
-During installation, the installer deploys router pods on worker nodes. By default, the installer installs two router pods. If a deployed cluster requires additional routers to handle external traffic loads destined for services within the Red Hat OpenShift Container Platform cluster, you can create a yaml file to set an appropriate number of router replicas.
+During installation, the installation program deploys router pods on compute nodes. By default, the installation program installs two router pods. If a deployed cluster requires additional routers to handle external traffic loads destined for services within the Red Hat OpenShift Container Platform cluster, you can create a yaml file to set an appropriate number of router replicas.
 
 
 [IMPORTANT]
 ----
-Deploying a cluster with only one worker node is not supported. While modifying the router replicas will address issues with the degraded state when deploying with one worker, the cluster loses high availability for the ingress API, which is not suitable for production environments.
+Deploying a cluster with only one compute node is not supported. While modifying the router replicas will address issues with the degraded state when deploying with one compute node, the cluster loses high availability for the ingress API, which is not suitable for production environments.
 ----
 
 
 [NOTE]
 ----
-By default, the installer deploys two routers. If the cluster has no worker nodes, the installer deploys the two routers on the control plane nodes by default.
+By default, the installation program deploys two routers. If the cluster has no compute nodes, the installation program deploys the two routers on the control plane nodes by default.
 ----
 
 1. Create a router-replicas.yaml file:
@@ -2306,7 +2374,7 @@ spec:
 
 [NOTE]
 ----
-Replace <num-of-router-pods> with an appropriate value. If working with just one worker node, set replicas: to 1. If working with more than 3 worker nodes, you can increase replicas: from the default value 2 as appropriate.
+Replace <num-of-router-pods> with an appropriate value. If working with just one compute node, set replicas: to 1. If working with more than 3 compute nodes, you can increase replicas: from the default value 2 as appropriate.
 ----
 2. Save and copy the router-replicas.yaml file to the clusterconfigs/openshift directory:
 
@@ -2714,7 +2782,7 @@ $ echo "  source: quay.io/openshift-release-dev/ocp-v4.0-art-dev" >> install-con
 * The bmc parameter for the install-config.yaml has been configured.
 * Conventions for the values configured in the bmc address field have been applied.
 * Created the Red Hat OpenShift Container Platform manifests.
-* (Optional) Deployed routers on worker nodes.
+* (Optional) Deployed routers on compute nodes.
 * (Optional) Created a disconnected registry.
 * (Optional) Validate disconnected registry settings if in use.
 
@@ -2757,7 +2825,7 @@ Verify the network configuration is working properly.
 
 Before you reinstall a cluster on bare metal, you must perform cleanup operations.
 
-1. Remove or reformat the disks for the bootstrap, control plane node, and worker nodes. If you are working in a hypervisor environment, you must add any disks you removed.
+1. Remove or reformat the disks for the bootstrap, control plane node, and compute nodes. If you are working in a hypervisor environment, you must add any disks you removed.
 2. Delete the artifacts that the previous installation generated:
 
 ```terminal
