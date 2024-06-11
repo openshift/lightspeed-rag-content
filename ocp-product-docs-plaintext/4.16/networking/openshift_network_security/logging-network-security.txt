@@ -1,16 +1,39 @@
-# Logging for egress firewall and network policy rules
+# Audit logging for network security
 
 
-As a cluster administrator, you can configure audit logging for your cluster and enable logging for one or more namespaces. Red Hat OpenShift Container Platform produces audit logs for both egress firewalls and network policies.
+The OVN-Kubernetes network plugin uses Open Virtual Network (OVN) access control lists (ACLs) to manage AdminNetworkPolicy, BaselineAdminNetworkPolicy, NetworkPolicy, and EgressFirewall objects. Audit logging exposes allow and deny ACL events for NetworkPolicy, EgressFirewall and BaselineAdminNetworkPolicy custom resources (CR). Logging also exposes allow, deny, and pass ACL events for AdminNetworkPolicy (ANP) CR.
 
 [NOTE]
 ----
 Audit logging is available for only the OVN-Kubernetes network plugin.
 ----
 
-# Audit logging
+# Audit configuration
 
-The OVN-Kubernetes network plugin uses Open Virtual Network (OVN) ACLs to manage egress firewalls and network policies. Audit logging exposes allow and deny ACL events.
+The configuration for audit logging is specified as part of the OVN-Kubernetes cluster network provider configuration. The following YAML illustrates the default values for the audit logging:
+
+
+```yaml
+apiVersion: operator.openshift.io/v1
+kind: Network
+metadata:
+  name: cluster
+spec:
+  defaultNetwork:
+    ovnKubernetesConfig:
+      policyAuditConfig:
+        destination: "null"
+        maxFileSize: 50
+        rateLimit: 20
+        syslogFacility: local0
+```
+
+
+The following table describes the configuration fields for audit logging.
+
+
+
+# Audit logging
 
 You can configure the destination for audit logs, such as a syslog server or a UNIX domain socket.
 Regardless of any additional configuration, an audit log is always saved to /var/log/ovn/acl-audit-log.log on each OVN-Kubernetes pod in the cluster.
@@ -46,28 +69,165 @@ The following table describes namespace annotation values:
 
 
 
-# Audit configuration
+# AdminNetworkPolicy audit logging
 
-The configuration for audit logging is specified as part of the OVN-Kubernetes cluster network provider configuration. The following YAML illustrates the default values for the audit logging:
+Audit logging is enabled per AdminNetworkPolicy CR by annotating an ANP policy with the k8s.ovn.org/acl-logging key such as in the following example:
 
 
 ```yaml
-apiVersion: operator.openshift.io/v1
-kind: Network
+apiVersion: policy.networking.k8s.io/v1alpha1
+kind: AdminNetworkPolicy
 metadata:
-  name: cluster
+  annotations:
+    k8s.ovn.org/acl-logging: '{ "deny": "alert", "allow": "alert", "pass" : "warning" }'
+  name: anp-tenant-log
 spec:
-  defaultNetwork:
-    ovnKubernetesConfig:
-      policyAuditConfig:
-        destination: "null"
-        maxFileSize: 50
-        rateLimit: 20
-        syslogFacility: local0
+  priority: 5
+  subject:
+    namespaces:
+      matchLabels:
+        tenant: backend-storage # Selects all pods owned by storage tenant.
+  ingress:
+    - name: "allow-all-ingress-product-development-and-customer" # Product development and customer tenant ingress to backend storage.
+      action: "Allow"
+      from:
+      - pods:
+          namespaceSelector:
+            matchExpressions:
+            - key: tenant
+              operator: In
+              values:
+              - product-development
+              - customer
+          podSelector: {}
+    - name: "pass-all-ingress-product-security"
+      action: "Pass"
+      from:
+      - namespaces:
+          matchLabels:
+              tenant: product-security
+    - name: "deny-all-ingress" # Ingress to backend from all other pods in the cluster.
+      action: "Deny"
+      from:
+      - namespaces: {}
+  egress:
+    - name: "allow-all-egress-product-development"
+      action: "Allow"
+      to:
+      - pods:
+          namespaceSelector:
+            matchLabels:
+              tenant: product-development
+          podSelector: {}
+    - name: "pass-egress-product-security"
+      action: "Pass"
+      to:
+      - namespaces:
+           matchLabels:
+             tenant: product-security
+    - name: "deny-all-egress" # Egress from backend denied to all other pods.
+      action: "Deny"
+      to:
+      - namespaces: {}
+```
+
+Logs are generated whenever a specific OVN ACL is hit and meets the action criteria set in your logging annotation. For example, an event in which any of the namespaces with the label tenant: product-development accesses the namespaces with the label tenant: backend-storage, a log is generated.
+
+
+[NOTE]
+----
+ACL logging is limited to 60 characters. If your ANP name field is long, the rest of the log will be truncated.
+----
+
+The following is a direction index for the examples log entries that follow:
+
+
+
+
+```text
+2024-06-10T16:27:45.194Z|00052|acl_log(ovn_pinctrl0)|INFO|name="ANP:anp-tenant-log:Ingress:0", verdict=allow, severity=alert, direction=to-lport: tcp,vlan_tci=0x0000,dl_src=0a:58:0a:80:02:1a,dl_dst=0a:58:0a:80:02:19,nw_src=10.128.2.26,nw_dst=10.128.2.25,nw_tos=0,nw_ecn=0,nw_ttl=64,nw_frag=no,tp_src=57814,tp_dst=8080,tcp_flags=syn
+2024-06-10T16:28:23.130Z|00059|acl_log(ovn_pinctrl0)|INFO|name="ANP:anp-tenant-log:Ingress:0", verdict=allow, severity=alert, direction=to-lport: tcp,vlan_tci=0x0000,dl_src=0a:58:0a:80:02:18,dl_dst=0a:58:0a:80:02:19,nw_src=10.128.2.24,nw_dst=10.128.2.25,nw_tos=0,nw_ecn=0,nw_ttl=64,nw_frag=no,tp_src=38620,tp_dst=8080,tcp_flags=ack
+2024-06-10T16:28:38.293Z|00069|acl_log(ovn_pinctrl0)|INFO|name="ANP:anp-tenant-log:Egress:0", verdict=allow, severity=alert, direction=from-lport: tcp,vlan_tci=0x0000,dl_src=0a:58:0a:80:02:19,dl_dst=0a:58:0a:80:02:1a,nw_src=10.128.2.25,nw_dst=10.128.2.26,nw_tos=0,nw_ecn=0,nw_ttl=64,nw_frag=no,tp_src=47566,tp_dst=8080,tcp_flags=fin|ack=0,nw_ecn=0,nw_ttl=64,nw_frag=no,tp_src=55704,tp_dst=8080,tcp_flags=ack
 ```
 
 
-The following table describes the configuration fields for audit logging.
+```text
+2024-06-10T16:33:12.019Z|00075|acl_log(ovn_pinctrl0)|INFO|name="ANP:anp-tenant-log:Ingress:1", verdict=pass, severity=warning, direction=to-lport: tcp,vlan_tci=0x0000,dl_src=0a:58:0a:80:02:1b,dl_dst=0a:58:0a:80:02:19,nw_src=10.128.2.27,nw_dst=10.128.2.25,nw_tos=0,nw_ecn=0,nw_ttl=64,nw_frag=no,tp_src=37394,tp_dst=8080,tcp_flags=ack
+2024-06-10T16:35:04.209Z|00081|acl_log(ovn_pinctrl0)|INFO|name="ANP:anp-tenant-log:Egress:1", verdict=pass, severity=warning, direction=from-lport: tcp,vlan_tci=0x0000,dl_src=0a:58:0a:80:02:19,dl_dst=0a:58:0a:80:02:1b,nw_src=10.128.2.25,nw_dst=10.128.2.27,nw_tos=0,nw_ecn=0,nw_ttl=64,nw_frag=no,tp_src=34018,tp_dst=8080,tcp_flags=ack
+```
+
+
+```text
+2024-06-10T16:43:05.287Z|00087|acl_log(ovn_pinctrl0)|INFO|name="ANP:anp-tenant-log:Egress:2", verdict=drop, severity=alert, direction=from-lport: tcp,vlan_tci=0x0000,dl_src=0a:58:0a:80:02:19,dl_dst=0a:58:0a:80:02:18,nw_src=10.128.2.25,nw_dst=10.128.2.24,nw_tos=0,nw_ecn=0,nw_ttl=64,nw_frag=no,tp_src=51598,tp_dst=8080,tcp_flags=syn
+2024-06-10T16:44:43.591Z|00090|acl_log(ovn_pinctrl0)|INFO|name="ANP:anp-tenant-log:Ingress:2", verdict=drop, severity=alert, direction=to-lport: tcp,vlan_tci=0x0000,dl_src=0a:58:0a:80:02:1c,dl_dst=0a:58:0a:80:02:19,nw_src=10.128.2.28,nw_dst=10.128.2.25,nw_tos=0,nw_ecn=0,nw_ttl=64,nw_frag=no,tp_src=33774,tp_dst=8080,tcp_flags=syn
+```
+
+The following table describes ANP annotation:
+
+
+
+# BaselineAdminNetworkPolicy audit logging
+
+Audit logging is enabled in the BaselineAdminNetworkPolicy CR by annotating an BANP policy with the k8s.ovn.org/acl-logging key such as in the following example:
+
+
+```yaml
+apiVersion: policy.networking.k8s.io/v1alpha1
+kind: BaselineAdminNetworkPolicy
+metadata:
+  annotations:
+    k8s.ovn.org/acl-logging: '{ "deny": "alert", "allow": "alert"}'
+  name: default
+spec:
+  subject:
+    namespaces:
+      matchLabels:
+          tenant: workloads # Selects all workload pods in the cluster.
+  ingress:
+  - name: "default-allow-dns" # This rule allows ingress from dns tenant to all workloads.
+    action: "Allow"
+    from:
+    - namespaces:
+          matchLabels:
+            tenant: dns
+  - name: "default-deny-dns" # This rule denies all ingress from all pods to workloads.
+    action: "Deny"
+    from:
+    - namespaces: {}
+  egress:
+  - name: "default-deny-dns" # This rule denies all egress from workloads. It will be applied when no ANP or network policy matches.
+    action: "Deny"
+    to:
+    - namespaces: {}
+```
+
+In the example, an event in which any of the namespaces with the label tenant: dns accesses the namespaces with the label tenant: workloads, a log is generated.
+
+The following is a direction index for the examples log entries that follow:
+
+
+
+
+```text
+2024-06-10T18:11:58.263Z|00022|acl_log(ovn_pinctrl0)|INFO|name="BANP:default:Ingress:0", verdict=allow, severity=alert, direction=to-lport: tcp,vlan_tci=0x0000,dl_src=0a:58:0a:82:02:57,dl_dst=0a:58:0a:82:02:56,nw_src=10.130.2.87,nw_dst=10.130.2.86,nw_tos=0,nw_ecn=0,nw_ttl=64,nw_frag=no,tp_src=60510,tp_dst=8080,tcp_flags=syn
+2024-06-10T18:11:58.264Z|00023|acl_log(ovn_pinctrl0)|INFO|name="BANP:default:Ingress:0", verdict=allow, severity=alert, direction=to-lport: tcp,vlan_tci=0x0000,dl_src=0a:58:0a:82:02:57,dl_dst=0a:58:0a:82:02:56,nw_src=10.130.2.87,nw_dst=10.130.2.86,nw_tos=0,nw_ecn=0,nw_ttl=64,nw_frag=no,tp_src=60510,tp_dst=8080,tcp_flags=psh|ack
+2024-06-10T18:11:58.264Z|00024|acl_log(ovn_pinctrl0)|INFO|name="BANP:default:Ingress:0", verdict=allow, severity=alert, direction=to-lport: tcp,vlan_tci=0x0000,dl_src=0a:58:0a:82:02:57,dl_dst=0a:58:0a:82:02:56,nw_src=10.130.2.87,nw_dst=10.130.2.86,nw_tos=0,nw_ecn=0,nw_ttl=64,nw_frag=no,tp_src=60510,tp_dst=8080,tcp_flags=ack
+2024-06-10T18:11:58.264Z|00025|acl_log(ovn_pinctrl0)|INFO|name="BANP:default:Ingress:0", verdict=allow, severity=alert, direction=to-lport: tcp,vlan_tci=0x0000,dl_src=0a:58:0a:82:02:57,dl_dst=0a:58:0a:82:02:56,nw_src=10.130.2.87,nw_dst=10.130.2.86,nw_tos=0,nw_ecn=0,nw_ttl=64,nw_frag=no,tp_src=60510,tp_dst=8080,tcp_flags=ack
+2024-06-10T18:11:58.264Z|00026|acl_log(ovn_pinctrl0)|INFO|name="BANP:default:Ingress:0", verdict=allow, severity=alert, direction=to-lport: tcp,vlan_tci=0x0000,dl_src=0a:58:0a:82:02:57,dl_dst=0a:58:0a:82:02:56,nw_src=10.130.2.87,nw_dst=10.130.2.86,nw_tos=0,nw_ecn=0,nw_ttl=64,nw_frag=no,tp_src=60510,tp_dst=8080,tcp_flags=fin|ack
+2024-06-10T18:11:58.264Z|00027|acl_log(ovn_pinctrl0)|INFO|name="BANP:default:Ingress:0", verdict=allow, severity=alert, direction=to-lport: tcp,vlan_tci=0x0000,dl_src=0a:58:0a:82:02:57,dl_dst=0a:58:0a:82:02:56,nw_src=10.130.2.87,nw_dst=10.130.2.86,nw_tos=0,nw_ecn=0,nw_ttl=64,nw_frag=no,tp_src=60510,tp_dst=8080,tcp_flags=ack
+```
+
+
+```text
+2024-06-10T18:09:57.774Z|00016|acl_log(ovn_pinctrl0)|INFO|name="BANP:default:Egress:0", verdict=drop, severity=alert, direction=from-lport: tcp,vlan_tci=0x0000,dl_src=0a:58:0a:82:02:56,dl_dst=0a:58:0a:82:02:57,nw_src=10.130.2.86,nw_dst=10.130.2.87,nw_tos=0,nw_ecn=0,nw_ttl=64,nw_frag=no,tp_src=45614,tp_dst=8080,tcp_flags=syn
+2024-06-10T18:09:58.809Z|00017|acl_log(ovn_pinctrl0)|INFO|name="BANP:default:Egress:0", verdict=drop, severity=alert, direction=from-lport: tcp,vlan_tci=0x0000,dl_src=0a:58:0a:82:02:56,dl_dst=0a:58:0a:82:02:57,nw_src=10.130.2.86,nw_dst=10.130.2.87,nw_tos=0,nw_ecn=0,nw_ttl=64,nw_frag=no,tp_src=45614,tp_dst=8080,tcp_flags=syn
+2024-06-10T18:10:00.857Z|00018|acl_log(ovn_pinctrl0)|INFO|name="BANP:default:Egress:0", verdict=drop, severity=alert, direction=from-lport: tcp,vlan_tci=0x0000,dl_src=0a:58:0a:82:02:56,dl_dst=0a:58:0a:82:02:57,nw_src=10.130.2.86,nw_dst=10.130.2.87,nw_tos=0,nw_ecn=0,nw_ttl=64,nw_frag=no,tp_src=45614,tp_dst=8080,tcp_flags=syn
+2024-06-10T18:10:25.414Z|00019|acl_log(ovn_pinctrl0)|INFO|name="BANP:default:Ingress:1", verdict=drop, severity=alert, direction=to-lport: tcp,vlan_tci=0x0000,dl_src=0a:58:0a:82:02:58,dl_dst=0a:58:0a:82:02:56,nw_src=10.130.2.88,nw_dst=10.130.2.86,nw_tos=0,nw_ecn=0,nw_ttl=64,nw_frag=no,tp_src=40630,tp_dst=8080,tcp_flags=syn
+2024-06-10T18:10:26.457Z|00020|acl_log(ovn_pinctrl0)|INFO|name="BANP:default:Ingress:1", verdict=drop, severity=alert, direction=to-lport: tcp,vlan_tci=0x0000,dl_src=0a:58:0a:82:02:58,dl_dst=0a:58:0a:82:02:56,nw_src=10.130.2.88,nw_dst=10.130.2.86,nw_tos=0,nw_ecn=0,nw_ttl=64,nw_frag=no,tp_src=40630,tp_dst=8080,tcp_flags=syn
+2024-06-10T18:10:28.505Z|00021|acl_log(ovn_pinctrl0)|INFO|name="BANP:default:Ingress:1", verdict=drop, severity=alert, direction=to-lport: tcp,vlan_tci=0x0000,dl_src=0a:58:0a:82:02:58,dl_dst=0a:58:0a:82:02:56,nw_src=10.130.2.88,nw_dst=10.130.2.86,nw_tos=0,nw_ecn=0,nw_ttl=64,nw_frag=no,tp_src=40630,tp_dst=8080,tcp_flags=syn
+```
+
+The following table describes BANP annotation:
 
 
 
