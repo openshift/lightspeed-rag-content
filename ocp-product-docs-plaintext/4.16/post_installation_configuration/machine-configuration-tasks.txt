@@ -83,24 +83,38 @@ The kinds of components that MCO can change include:
 * kernelType: Optionally identify a non-standard kernel to use instead of the standard kernel. Use realtime to use the RT kernel (for RAN). This is only supported on select platforms. Use the 64k-pages parameter to enable the 64k page size kernel. This setting is exclusive to machines with 64-bit ARM architectures.
 * fips: Enable FIPS mode. FIPS should be set at installation-time setting and not a postinstallation procedure.
 
-
 [IMPORTANT]
 ----
-To enable FIPS mode for your cluster, you must run the installation program from a Red Hat Enterprise Linux (RHEL) computer configured to operate in FIPS mode. For more information about configuring FIPS mode on RHEL, see Installing the system in FIPS mode. When running Red Hat Enterprise Linux (RHEL) or Red Hat Enterprise Linux CoreOS (RHCOS) booted in FIPS mode, Red Hat OpenShift Container Platform core components use the RHEL cryptographic libraries that have been submitted to NIST for FIPS 140-2/140-3 Validation on only the x86_64, ppc64le, and s390x architectures.
+To enable FIPS mode for your cluster, you must run the installation program from a Red Hat Enterprise Linux (RHEL) computer configured to operate in FIPS mode. For more information about configuring FIPS mode on RHEL, see Installing the system in FIPS mode.
+When running Red Hat Enterprise Linux (RHEL) or Red Hat Enterprise Linux CoreOS (RHCOS) booted in FIPS mode, Red Hat OpenShift Container Platform core components use the RHEL cryptographic libraries that have been submitted to NIST for FIPS 140-2/140-3 Validation on only the x86_64, ppc64le, and s390x architectures.
 ----
-
 * extensions: Extend RHCOS features by adding selected pre-packaged software. For this feature, available extensions include usbguard and kernel modules.
 * Custom resources (for ContainerRuntime and Kubelet): Outside of machine configs, MCO manages two special custom resources for modifying CRI-O container runtime settings (ContainerRuntime CR) and the Kubelet service (Kubelet CR).
 
 The MCO is not the only Operator that can change operating system components on Red Hat OpenShift Container Platform nodes. Other Operators can modify operating system-level features as well. One example is the Node Tuning Operator, which allows you to do node-level tuning through Tuned daemon profiles.
 
-Tasks for the MCO configuration that can be done postinstallation are included in the following procedures. See descriptions of RHCOS bare metal installation for system configuration tasks that must be done during or before Red Hat OpenShift Container Platform installation.
+Tasks for the MCO configuration that can be done after installation are included in the following procedures. See descriptions of RHCOS bare metal installation for system configuration tasks that must be done during or before Red Hat OpenShift Container Platform installation. By default, many of the changes you make with the MCO require a reboot.
+
+The following modifications do not trigger a node reboot:
+
+* When the MCO detects any of the following changes, it applies the update without draining or rebooting the node:
+* Changes to the SSH key in the spec.config.passwd.users.sshAuthorizedKeys parameter of a machine config.
+* Changes to the global pull secret or pull secret in the openshift-config namespace.
+* Automatic rotation of the /etc/kubernetes/kubelet-ca.crt certificate authority (CA) by the Kubernetes API Server Operator.
+* When the MCO detects changes to the /etc/containers/registries.conf file, such as adding or editing an ImageDigestMirrorSet, ImageTagMirrorSet, or ImageContentSourcePolicy object, it drains the corresponding nodes, applies the changes, and uncordons the nodes. The node drain does not happen for the following changes:
+* The addition of a registry with the pull-from-mirror = "digest-only" parameter set for each mirror.
+* The addition of a mirror with the pull-from-mirror = "digest-only" parameter set in a registry.
+* The addition of items to the unqualified-search-registries list.
+
+In other cases, you can mitigate the disruption to your workload when the MCO makes changes by using node disruption policies. For information, see Understanding node restart behaviors after machine config changes.
 
 There might be situations where the configuration on a node does not fully match what the currently-applied machine config specifies. This state is called configuration drift. The Machine Config Daemon (MCD) regularly checks the nodes for configuration drift. If the MCD detects configuration drift, the MCO marks the node degraded until an administrator corrects the node configuration. A degraded node is online and operational, but, it cannot be updated. For more information on configuration drift, see Understanding configuration drift detection.
 
 ### Project
 
 See the openshift-machine-config-operator GitHub site for details.
+
+* Understanding node restart behaviors after machine config changes
 
 ## Understanding configuration drift detection
 
@@ -542,6 +556,526 @@ Example output
 image-registry.openshift-image-registry.svc.cluster.local:5000 image-registry.openshift-image-registry.svc:5000
 ```
 
+
+# Updating boot images
+
+The Machine Config Operator (MCO) uses a boot image to bring up a Red Hat Enterprise Linux CoreOS (RHCOS) node. By default, Red Hat OpenShift Container Platform does not manage the boot image.
+
+This means that the boot image in your cluster is not updated along with your cluster. For example, if your cluster was originally created with Red Hat OpenShift Container Platform 4.12, the boot image that the cluster uses to create nodes is the same 4.12 version, even if your cluster is at a later version. If the cluster is later upgraded to 4.13 or later, new nodes continue to scale with the same 4.12 image.
+
+This process could cause the following issues:
+
+* Extra time to start up nodes
+* Certificate expiration issues
+* Version skew issues
+
+To avoid these issues, you can configure your cluster to update the boot image whenever you update your cluster. By modifying the MachineConfiguration object, you can enable this feature. Currently, the ability to update the boot image is available for only Google Cloud Platform (GCP) clusters and is not supported for Cluster CAPI Operator managed clusters.
+
+
+[IMPORTANT]
+----
+{FeatureName} is a Technology Preview feature only. Technology Preview features are not supported with Red Hat production service level agreements (SLAs) and might not be functionally complete. Red Hat does not recommend using them in production. These features provide early access to upcoming product features, enabling customers to test functionality and provide feedback during the development process.
+For more information about the support scope of Red Hat Technology Preview features, see Technology Preview Features Support Scope.
+----
+
+To view the current boot image used in your cluster, examine a machine set:
+
+
+```yaml
+apiVersion: machine.openshift.io/v1beta1
+kind: MachineSet
+metadata:
+  name: ci-ln-hmy310k-72292-5f87z-worker-a
+  namespace: openshift-machine-api
+spec:
+# ...
+  template:
+# ...
+    spec:
+# ...
+      providerSpec:
+# ...
+        value:
+          disks:
+          - autoDelete: true
+            boot: true
+            image: projects/rhcos-cloud/global/images/rhcos-412-85-202203181601-0-gcp-x86-64 1
+# ...
+```
+
+
+This boot image is the same as the originally-installed Red Hat OpenShift Container Platform version, in this example Red Hat OpenShift Container Platform 4.12, regardless of the current version of the cluster. The way that the boot image is represented in the machine set depends on the platform, as the structure of the providerSpec field differs from platform to platform.
+
+If you configure your cluster to update your boot images, the boot image referenced in your machine sets matches the current version of the cluster.
+
+* You have enabled the TechPreviewNoUpgrade feature set by using the feature gates. For more information, see "Enabling features using feature gates" in the "Additional resources"  section.
+
+1. Edit the MachineConfiguration object, named cluster, to enable the updating of boot images by running the following command:
+
+```terminal
+$ oc edit MachineConfiguration cluster
+```
+
+1. Optional: Configure the boot image update feature for all the machine sets:
+
+```yaml
+apiVersion: operator.openshift.io/v1
+kind: MachineConfiguration
+metadata:
+  name: cluster
+  namespace: openshift-machine-config-operator
+spec:
+# ...
+  managedBootImages: 1
+    machineManagers:
+    - resource: machinesets
+      apiGroup: machine.openshift.io
+      selection:
+        mode: All 2
+```
+
+Activates the boot image update feature.
+Specifies that all the machine sets in the cluster are to be updated.
+2. Optional: Configure the boot image update feature for specific machine sets:
+
+```yaml
+apiVersion: operator.openshift.io/v1
+kind: MachineConfiguration
+metadata:
+  name: cluster
+  namespace: openshift-machine-config-operator
+spec:
+# ...
+  managedBootImages: 1
+    machineManagers:
+    - resource: machinesets
+      apiGroup: machine.openshift.io
+      selection:
+        mode: Partial
+          partial:
+            machineResourceSelector:
+              matchLabels:
+                update-boot-image: "true" 2
+```
+
+Activates the boot image update feature.
+Specifies that any machine set with this label is to be updated.
+
+[TIP]
+----
+If an appropriate label is not present on the machine set, add a key/value pair by running a command similar to following:
+
+```
+$ oc label machineset.machine ci-ln-hmy310k-72292-5f87z-worker-a update-boot-image=true -n openshift-machine-api
+```
+
+----
+
+1. Get the boot image version by running the following command:
+
+```terminal
+$ oc get machinesets <machineset_name> -n openshift-machine-api -o yaml
+```
+
+Example machine set with the boot image reference
+
+```yaml
+apiVersion: machine.openshift.io/v1beta1
+kind: MachineSet
+metadata:
+  labels:
+    machine.openshift.io/cluster-api-cluster: ci-ln-77hmkpt-72292-d4pxp
+    update-boot-image: "true"
+  name: ci-ln-77hmkpt-72292-d4pxp-worker-a
+  namespace: openshift-machine-api
+spec:
+# ...
+  template:
+# ...
+    spec:
+# ...
+      providerSpec:
+# ...
+        value:
+          disks:
+          - autoDelete: true
+            boot: true
+            image: projects/rhcos-cloud/global/images/rhcos-416-92-202402201450-0-gcp-x86-64 1
+# ...
+```
+
+This boot image is the same as the current Red Hat OpenShift Container Platform version.
+
+* Enabling features using feature gates
+
+## Disabling updated boot images
+
+To disable the updated boot image feature, edit the MachineConfiguration object to remove the managedBootImages stanza.
+
+If you disable this feature after some nodes have been created with the new boot image version, any existing nodes retain their current boot image. Turning off this feature does not rollback the nodes or machine sets to the originally-installed boot image. The machine sets retain the boot image version that was present when the feature was enabled and is not updated again when the cluster is upgraded to a new Red Hat OpenShift Container Platform version in the future.
+
+1. Disable updated boot images by editing the MachineConfiguration object:
+
+```terminal
+$ oc edit MachineConfiguration cluster
+```
+
+2. Remove the managedBootImages stanza:
+
+```yaml
+apiVersion: operator.openshift.io/v1
+kind: MachineConfiguration
+metadata:
+  name: cluster
+  namespace: openshift-machine-config-operator
+spec:
+# ...
+  managedBootImages: 1
+    machineManagers:
+    - resource: machinesets
+      apiGroup: machine.openshift.io
+      selection:
+        mode: All
+```
+
+Remove the entire stanza to disable updated boot images.
+
+# Understanding node restart behaviors after machine config changes
+
+By default, when you make certain changes to the fields in a MachineConfig object, the Machine Config Operator (MCO) drains and reboots the nodes associated with that machine config. However, you can create a node disruption policy that defines a set of changes to some Ignition config objects that would require little or no disruption to your workloads.
+
+A node disruption policy allows you to define the configuration changes that cause a disruption to your cluster, and which changes do not. This allows you to reduce node downtime when making small machine configuration changes in your cluster. To configure the policy, you modify the MachineConfiguration object, which is in the openshift-machine-config-operator namespace. See the example node disruption policies in the MachineConfiguration objects that follow.
+
+
+[NOTE]
+----
+There are machine configuration changes that always require a reboot, regardless of any node disruption policies. For more information, see About the Machine Config Operator.
+----
+
+After you create the node disruption policy, the MCO validates the policy to search for potential issues in the file, such as problems with formatting. The MCO then merges the policy with the cluster defaults and populates the status.nodeDisruptionPolicyStatus fields in the machine config with the actions to be performed upon future changes to the machine config. The configurations in your policy always overwrite the cluster defaults.
+
+
+[IMPORTANT]
+----
+The MCO does not validate whether a change can be successfully applied by your node disruption policy. Therefore, you are responsible to ensure the accuracy of your node disruption policies.
+----
+
+For example, you can configure a node disruption policy so that sudo configurations do not require a node drain and reboot. Or, you can configure your cluster so that updates to sshd are applied with only a reload of that one service.
+
+
+[IMPORTANT]
+----
+{FeatureName} is a Technology Preview feature only. Technology Preview features are not supported with Red Hat production service level agreements (SLAs) and might not be functionally complete. Red Hat does not recommend using them in production. These features provide early access to upcoming product features, enabling customers to test functionality and provide feedback during the development process.
+For more information about the support scope of Red Hat Technology Preview features, see Technology Preview Features Support Scope.
+----
+
+You can control the behavior of the MCO when making the changes to the following Ignition configuration objects:
+
+* configuration files: You add to or update the files in the /var or /etc directory.
+* systemd units: You create and set the status of a systemd service or modify an existing systemd service.
+* users and groups: You change SSH keys in the passwd section post-installation.
+* ICSP, ITMS, IDMS objects: You can remove mirroring rules from an ImageContentSourcePolicy (ICSP), ImageTagMirrorSet (ITMS), and ImageDigestMirrorSet (IDMS) object.
+
+When you make any of these changes, the node disruption policy determines which of the following actions are required when the MCO implements the changes:
+
+* Reboot: The MCO drains and reboots the nodes. This is the default behavior.
+* None: The MCO does not drain or reboot the nodes. The MCO applies the changes with no further action.
+* Drain: The MCO cordons and drains the nodes of their workloads. The workloads restart with the new configurations.
+* Reload: For services, the MCO reloads the specified services without restarting the service.
+* Restart: For services, the MCO fully restarts the specified services.
+* DaemonReload: The MCO reloads the systemd manager configuration.
+* Special: This is an internal MCO-only action and cannot be set by the user.
+
+
+[NOTE]
+----
+* The Reboot and None actions cannot be used with with any other actions, as the Reboot and None actions override the others.
+* Actions are applied in the order that they are set in the node disruption policy list.
+* If you make other machine config changes that do require a reboot or other disruption to the nodes, that reboot supercedes the node disruption policy actions.
+----
+
+## Example node disruption policies
+
+The following example MachineConfiguration objects contain a node disruption policy.
+
+
+[TIP]
+----
+A MachineConfiguration object and a MachineConfig object are different objects. A MachineConfiguration object is a singleton object in the MCO namespace that contains configuration parameters for the MCO operator. A MachineConfig object defines changes that are applied to a machine config pool.
+----
+
+The following example MachineConfiguration object shows no user defined policies. The default node disruption policy values are shown in the status stanza.
+
+
+```yaml
+apiVersion: operator.openshift.io/v1
+kind: MachineConfiguration
+  name: cluster
+spec:
+  logLevel: Normal
+  managementState: Managed
+  operatorLogLevel: Normal
+status:
+  nodeDisruptionPolicyStatus:
+    clusterPolicies:
+      files:
+      - actions:
+        - type: None
+        path: /etc/mco/internal-registry-pull-secret.json
+      - actions:
+        - type: None
+        path: /var/lib/kubelet/config.json
+      - actions:
+        - reload:
+            serviceName: crio.service
+          type: Reload
+        path: /etc/machine-config-daemon/no-reboot/containers-gpg.pub
+      - actions:
+        - reload:
+            serviceName: crio.service
+          type: Reload
+        path: /etc/containers/policy.json
+      - actions:
+        - type: Special
+        path: /etc/containers/registries.conf
+      sshkey:
+        actions:
+        - type: None
+  readyReplicas: 0
+```
+
+
+In the following example, when changes are made to the SSH keys, the MCO drains the cluster nodes, reloads the crio.service, reloads the systemd configuration, and restarts the crio-service.
+
+
+```yaml
+apiVersion: operator.openshift.io/v1
+kind: MachineConfiguration
+metadata:
+  name: cluster
+  namespace: openshift-machine-config-operator
+# ...
+spec:
+  nodeDisruptionPolicy:
+    sshkey:
+      actions:
+      - type: Drain
+      - reload:
+          serviceName: crio.service
+        type: Reload
+      - type: DaemonReload
+      - restart:
+          serviceName: crio.service
+        type: Restart
+# ...
+```
+
+
+In the following example, when changes are made to the files in the /etc/chrony.conf directory, the MCO reloads the chronyd.service on the cluster nodes.
+
+
+```yaml
+apiVersion: operator.openshift.io/v1
+kind: MachineConfiguration
+metadata:
+  name: cluster
+  namespace: openshift-machine-config-operator
+# ...
+spec:
+  nodeDisruptionPolicy:
+    files:
+    - actions:
+      - reload:
+          serviceName: chronyd.service
+        type: Reload
+      path: /etc/chrony.conf
+```
+
+
+In the following example, when changes are made to the auditd.service	systemd unit, the MCO drains the cluster nodes, reloads the crio.service, reloads the systemd manager configuration, and restarts the crio.service.
+
+
+```yaml
+apiVersion: operator.openshift.io/v1
+kind: MachineConfiguration
+metadata:
+  name: cluster
+  namespace: openshift-machine-config-operator
+# ...
+spec:
+  nodeDisruptionPolicy:
+    units:
+      - name: auditd.service
+        actions:
+          - type: Drain
+          - type: Reload
+            reload:
+              serviceName: crio.service
+          - type: DaemonReload
+          - type: Restart
+            restart:
+              serviceName: crio.service
+```
+
+
+In the following example, when changes are made to the files in the registries.conf directory, the MCO does not drain or reboot the nodes and applies the changes with no further action.
+
+
+```yaml
+apiVersion: operator.openshift.io/v1
+kind: MachineConfiguration
+metadata:
+  name: cluster
+  namespace: openshift-machine-config-operator
+# ...
+spec:
+  nodeDisruptionPolicy:
+      - actions:
+        - type: None
+        path: /etc/containers/registries.conf
+```
+
+
+* About the Machine Config Operator
+
+## Configuring node restart behaviors upon machine config changes
+
+You can create a node disruption policy to define the machine configuration changes that cause a disruption to your cluster, and which changes do not.
+
+You can control how your nodes respond to changes in the files in the /var or /etc directory, the systemd units, the SSH keys, and the registries.conf file.
+
+When you make any of these changes, the node disruption policy determines which of the following actions are required when the MCO implements the changes:
+
+* Reboot: The MCO drains and reboots the nodes. This is the default behavior.
+* None: The MCO does not drain or reboot the nodes. The MCO applies the changes with no further action.
+* Drain: The MCO cordons and drains the nodes of their workloads. The workloads restart with the new configurations.
+* Reload: For services, the MCO reloads the specified services without restarting the service.
+* Restart: For services, the MCO fully restarts the specified services.
+* DaemonReload: The MCO reloads the systemd manager configuration.
+* Special: This is an internal MCO-only action and cannot be set by the user.
+
+
+[NOTE]
+----
+* The Reboot and None actions cannot be used with with any other actions, as the Reboot and None actions override the others.
+* Actions are applied in the order that they are set in the node disruption policy list.
+* If you make other machine config changes that do require a reboot or other disruption to the nodes, that reboot supercedes the node disruption policy actions.
+----
+
+* You have enabled the TechPreviewNoUpgrade feature set by using the feature gates. For more information, see "Enabling features using feature gates".
+
+[WARNING]
+----
+Enabling the TechPreviewNoUpgrade feature set on your cluster prevents minor version updates. The TechPreviewNoUpgrade feature set cannot be disabled. Do not enable this feature set on production clusters.
+----
+
+1. Edit the machineconfigurations.operator.openshift.io object to define the node disruption policy:
+
+```terminal
+$ oc edit MachineConfiguration cluster -n openshift-machine-config-operator
+```
+
+2. Add a node disruption policy similar to the following:
+
+```yaml
+apiVersion: operator.openshift.io/v1
+kind: MachineConfiguration
+metadata:
+  name: cluster
+# ...
+spec:
+  nodeDisruptionPolicy: 1
+    files: 2
+    - actions: 3
+      - reload: 4
+          serviceName: chronyd.service 5
+        type: Reload
+      path: /etc/chrony.conf 6
+    sshkey: 7
+      actions:
+      - type: Drain
+      - reload:
+          serviceName: crio.service
+        type: Reload
+      - type: DaemonReload
+      - restart:
+          serviceName: crio.service
+        type: Restart
+    units: 8
+    - actions:
+      - type: Drain
+      - reload:
+          serviceName: crio.service
+        type: Reload
+      - type: DaemonReload
+      - restart:
+          serviceName: crio.service
+        type: Restart
+      name: test.service
+```
+
+Specifies the node disruption policy.
+Specifies a list of machine config file definitions and actions to take to changes on those paths. This list supports a maximum of 50 entries.
+Specifies the series of actions to be executed upon changes to the specified files. Actions are applied in the order that they are set in this list. This list supports a maximum of 10 entries.
+Specifies that the listed service is to be reloaded upon changes to the specified files.
+Specifies the full name of the service to be acted upon.
+Specifies the location of a file that is managed by a machine config. The actions in the policy apply when changes are made to the file in path.
+Specifies a list of service names and actions to take upon changes to the SSH keys in the cluster.
+Specifies a list of systemd unit names and actions to take upon changes to those units.
+
+* View the MachineConfiguration object file that you created:
+
+```
+$ oc get MachineConfiguration/cluster -o yaml
+```
+
+Example output
+
+```yaml
+apiVersion: operator.openshift.io/v1
+kind: MachineConfiguration
+metadata:
+  labels:
+    machineconfiguration.openshift.io/role: worker
+  name: cluster
+# ...
+status:
+  nodeDisruptionPolicyStatus: 1
+    clusterPolicies:
+      files:
+# ...
+      - actions:
+        - reload:
+            serviceName: chronyd.service
+          type: Reload
+        path: /etc/chrony.conf
+      sshkey:
+        actions:
+        - type: Drain
+        - reload:
+            serviceName: crio.service
+          type: Reload
+        - type: DaemonReload
+        - restart:
+            serviceName: crio.service
+          type: Restart
+      units:
+      - actions:
+        - type: Drain
+        - reload:
+            serviceName: crio.service
+          type: Reload
+        - type: DaemonReload
+        - restart:
+            serviceName: crio.service
+          type: Restart
+        name: test.se
+# ...
+```
+
+Specifies the current cluster-validated policies.
+
+* Enabling features using feature gates
 
 # Using MachineConfig objects to configure nodes
 
