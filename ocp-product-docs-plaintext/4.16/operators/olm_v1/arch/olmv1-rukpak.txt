@@ -1,0 +1,129 @@
+# Rukpak (Technology Preview)
+
+
+Operator Lifecycle Manager (OLM) 1.0 uses the RukPak component and its resources to manage cloud-native content.
+
+[IMPORTANT]
+----
+OLM 1.0 is a Technology Preview feature only. Technology Preview features are not supported with Red Hat production service level agreements (SLAs) and might not be functionally complete. Red Hat does not recommend using them in production. These features provide early access to upcoming product features, enabling customers to test functionality and provide feedback during the development process.
+For more information about the support scope of Red Hat Technology Preview features, see Technology Preview Features Support Scope.
+----
+
+# About RukPak
+
+RukPak is a pluggable solution for packaging and distributing cloud-native content. It supports advanced strategies for installation, updates, and policy.
+
+RukPak provides a content ecosystem for installing a variety of artifacts on a Kubernetes cluster. Artifact examples include Git repositories, Helm charts, and OLM bundles. RukPak can then manage, scale, and upgrade these artifacts in a safe way to enable powerful cluster extensions.
+
+At its core, RukPak is a small set of APIs and controllers. The APIs are packaged as custom resource definitions (CRDs) that express what content to install on a cluster and how to create a running deployment of the content. The controllers watch for the APIs.
+
+Bundle:: A collection of Kubernetes manifests that define content to be deployed to a cluster
+Bundle image:: A container image that contains a bundle within its filesystem
+Bundle Git repository:: A Git repository that contains a bundle within a directory
+Provisioner:: Controllers that install and manage content on a Kubernetes cluster
+Bundle deployment:: Generates deployed instances of a bundle
+
+# About provisioners
+
+RukPak consists of a series of controllers, known as provisioners, that install and manage content on a Kubernetes cluster. RukPak also provides two primary APIs: Bundle and BundleDeployment. These components work together to bring content onto the cluster and install it, generating resources within the cluster.
+
+Currently, the registry provisioner is implemented and bundled with RukPak. The registry provisioner sources and unpacks Operator Lifecycle Manager (OLM) registry+v1 bundles.
+
+A provisioner is assigned a unique ID and is responsible for reconciling Bundle and BundleDeployment objects with a spec.provisionerClassName field that matches that particular ID. For example, the registry provisioner is able to unpack a given registry+v1 bundle onto a cluster and then instantiate it, making the content of the bundle available in the cluster.
+
+A provisioner places a watch on both Bundle and BundleDeployment resources that refer to the provisioner explicitly. For a given bundle, the provisioner unpacks the contents of the Bundle resource onto the cluster. Then, given a BundleDeployment resource referring to that bundle, the provisioner installs the bundle contents and is responsible for managing the lifecycle of those resources.
+
+# Bundle
+
+A RukPak Bundle object represents content to make available to other consumers in the cluster. Much like the contents of a container image must be pulled and unpacked in order for pod to start using them, Bundle objects are used to reference content that might need to be pulled and unpacked. In this sense, a bundle is a generalization of the image concept and can be used to represent any type of content.
+
+Bundles cannot do anything on their own; they require a provisioner to unpack and make their content available in the cluster. They can be unpacked to any arbitrary storage medium, such as a tar.gz file in a directory mounted into the provisioner pods. Each Bundle object has an associated spec.provisionerClassName field that indicates the Provisioner object that watches and unpacks that particular bundle type.
+
+
+[NOTE]
+----
+Bundles are considered immutable after they are created.
+----
+
+## Bundle immutability
+
+After a Bundle object is accepted by the API server, the bundle is considered an immutable artifact by the rest of the RukPak system. This behavior enforces the notion that a bundle represents some unique, static piece of content to source onto the cluster. A user can have confidence that a particular bundle is pointing to a specific set of manifests and cannot be updated without creating a new bundle. This property is true for both standalone bundles and dynamic bundles created by an embedded BundleTemplate object.
+
+Bundle immutability is enforced by the core RukPak webhook. This webhook watches Bundle object events and, for any update to a bundle, checks whether the spec field of the existing bundle is semantically equal to that in the proposed updated bundle. If they are not equal, the update is rejected by the webhook. Other Bundle object fields, such as metadata or status, are updated during the bundle&#8217;s lifecycle; it is only the spec field that is considered immutable.
+
+Applying a Bundle object and then attempting to update its spec should fail. For example, the following example creates a bundle:
+
+
+```terminal
+$ oc apply -f -<<EOF
+apiVersion: core.rukpak.io/v1alpha1
+kind: Bundle
+metadata:
+  name: combo-tag-ref
+spec:
+  source:
+    type: git
+    git:
+      ref:
+        tag: v0.0.2
+      repository: https://github.com/operator-framework/combo
+  provisionerClassName: core-rukpak-io-plain
+EOF
+```
+
+
+
+```terminal
+bundle.core.rukpak.io/combo-tag-ref created
+```
+
+
+Then, patching the bundle to point to a newer tag returns an error:
+
+
+```terminal
+$ oc patch bundle combo-tag-ref --type='merge' -p '{"spec":{"source":{"git":{"ref":{"tag":"v0.0.3"}}}}}'
+```
+
+
+
+```terminal
+Error from server (bundle.spec is immutable): admission webhook "vbundles.core.rukpak.io" denied the request: bundle.spec is immutable
+```
+
+
+The core RukPak admission webhook rejected the patch because the spec of the bundle is immutable. The recommended method to change the content of a bundle is by creating a new Bundle object instead of updating it in-place.
+
+## Further immutability considerations
+
+While the spec field of the Bundle object is immutable, it is still possible for a BundleDeployment object to pivot to a newer version of bundle content without changing the underlying spec field. This unintentional pivoting could occur in the following scenario:
+
+1. A user sets an image tag, a Git branch, or a Git tag in the spec.source field of the Bundle object.
+2. The image tag moves to a new digest, a user pushes changes to a Git branch, or a user deletes and re-pushes a Git tag on a different commit.
+3. A user does something to cause the bundle unpack pod to be re-created, such as deleting the unpack pod.
+
+If this scenario occurs, the new content from step 2 is unpacked as a result of step 3. The bundle deployment detects the changes and pivots to the newer version of the content.
+
+This is similar to pod behavior, where one of the pod&#8217;s container images uses a tag, the tag is moved to a different digest, and then at some point in the future the existing pod is rescheduled on a different node. At that point, the node pulls the new image at the new digest and runs something different without the user explicitly asking for it.
+
+To be confident that the underlying Bundle spec content does not change, use a digest-based image or a Git commit reference when creating the bundle.
+
+## Registry bundle spec
+
+A registry bundle, or registry+v1 bundle, contains a set of static Kubernetes YAML manifests organized in the legacy Operator Lifecycle Manager (OLM) bundle format.
+
+* Legacy OLM bundle format
+
+# BundleDeployment
+
+
+[WARNING]
+----
+A BundleDeployment object changes the state of a Kubernetes cluster by installing and removing objects. It is important to verify and trust the content that is being installed and limit access, by using RBAC, to the BundleDeployment API to only those who require those permissions.
+----
+
+The RukPak BundleDeployment API points to a Bundle object and indicates that it should be active. This includes pivoting from older versions of an active bundle. A BundleDeployment object might also include an embedded spec for a desired bundle.
+
+Much like pods generate instances of container images, a bundle deployment generates a deployed version of a bundle. A bundle deployment can be seen as a generalization of the pod concept.
+
+The specifics of how a bundle deployment makes changes to a cluster based on a referenced bundle is defined by the provisioner that is configured to watch that bundle deployment.

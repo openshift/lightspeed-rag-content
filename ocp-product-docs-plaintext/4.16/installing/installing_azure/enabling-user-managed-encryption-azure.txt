@@ -1,0 +1,128 @@
+# Enabling user-managed encryption for Azure
+
+
+In Red Hat OpenShift Container Platform version 4.16, you can install a cluster with a user-managed encryption key in Azure. To enable this feature, you can prepare an Azure DiskEncryptionSet before installation, modify the install-config.yaml file, and then complete the installation.
+
+# Preparing an Azure Disk Encryption Set
+
+The Red Hat OpenShift Container Platform installer can use an existing Disk Encryption Set with a user-managed key. To enable this feature, you can create a Disk Encryption Set in Azure and provide the key to the installer.
+
+1. Set the following environment variables for the Azure resource group by running the following command:
+
+```terminal
+$ export RESOURCEGROUP="<resource_group>" \1
+    LOCATION="<location>" 2
+```
+
+Specifies the name of the Azure resource group where you will create the Disk Encryption Set and encryption key. To avoid losing access to your keys after destroying the cluster, you should create the Disk Encryption Set in a different resource group than the resource group where you install the cluster.
+Specifies the Azure location where you will create the resource group.
+2. Set the following environment variables for the Azure Key Vault and Disk Encryption Set by running the following command:
+
+```terminal
+$ export KEYVAULT_NAME="<keyvault_name>" \1
+    KEYVAULT_KEY_NAME="<keyvault_key_name>" \2
+    DISK_ENCRYPTION_SET_NAME="<disk_encryption_set_name>" 3
+```
+
+Specifies the name of the Azure Key Vault you will create.
+Specifies the name of the encryption key you will create.
+Specifies the name of the disk encryption set you will create.
+3. Set the environment variable for the ID of your Azure Service Principal by running the following command:
+
+```terminal
+$ export CLUSTER_SP_ID="<service_principal_id>" 1
+```
+
+Specifies the ID of the service principal you will use for this installation.
+4. Enable host-level encryption in Azure by running the following commands:
+
+```terminal
+$ az feature register --namespace "Microsoft.Compute" --name "EncryptionAtHost"
+```
+
+
+```terminal
+$ az feature show --namespace Microsoft.Compute --name EncryptionAtHost
+```
+
+
+```terminal
+$ az provider register -n Microsoft.Compute
+```
+
+5. Create an Azure Resource Group to hold the disk encryption set and associated resources by running the following command:
+
+```terminal
+$ az group create --name $RESOURCEGROUP --location $LOCATION
+```
+
+6. Create an Azure key vault by running the following command:
+
+```terminal
+$ az keyvault create -n $KEYVAULT_NAME -g $RESOURCEGROUP -l $LOCATION \
+    --enable-purge-protection true
+```
+
+7. Create an encryption key in the key vault by running the following command:
+
+```terminal
+$ az keyvault key create --vault-name $KEYVAULT_NAME -n $KEYVAULT_KEY_NAME \
+    --protection software
+```
+
+8. Capture the ID of the key vault by running the following command:
+
+```terminal
+$ KEYVAULT_ID=$(az keyvault show --name $KEYVAULT_NAME --query "[id]" -o tsv)
+```
+
+9. Capture the key URL in the key vault by running the following command:
+
+```terminal
+$ KEYVAULT_KEY_URL=$(az keyvault key show --vault-name $KEYVAULT_NAME --name \
+    $KEYVAULT_KEY_NAME --query "[key.kid]" -o tsv)
+```
+
+10. Create a disk encryption set by running the following command:
+
+```terminal
+$ az disk-encryption-set create -n $DISK_ENCRYPTION_SET_NAME -l $LOCATION -g \
+    $RESOURCEGROUP --source-vault $KEYVAULT_ID --key-url $KEYVAULT_KEY_URL
+```
+
+11. Grant the DiskEncryptionSet resource access to the key vault by running the following commands:
+
+```terminal
+$ DES_IDENTITY=$(az disk-encryption-set show -n $DISK_ENCRYPTION_SET_NAME -g \
+    $RESOURCEGROUP --query "[identity.principalId]" -o tsv)
+```
+
+
+```terminal
+$ az keyvault set-policy -n $KEYVAULT_NAME -g $RESOURCEGROUP --object-id \
+    $DES_IDENTITY --key-permissions wrapkey unwrapkey get
+```
+
+12. Grant the Azure Service Principal permission to read the DiskEncryptionSet by running the following commands:
+
+```terminal
+$ DES_RESOURCE_ID=$(az disk-encryption-set show -n $DISK_ENCRYPTION_SET_NAME -g \
+    $RESOURCEGROUP --query "[id]" -o tsv)
+```
+
+
+```terminal
+$ az role assignment create --assignee $CLUSTER_SP_ID --role "<reader_role>" \1
+    --scope $DES_RESOURCE_ID -o jsonc
+```
+
+Specifies an Azure role with read permissions to the disk encryption set. You can use the Owner role or a custom role with the necessary permissions.
+
+# Next steps
+
+* Install an Red Hat OpenShift Container Platform cluster:
+* Install a cluster with customizations on installer-provisioned infrastructure
+* Install a cluster with network customizations on installer-provisioned infrastructure
+* Install a cluster into an existing VNet on installer-provisioned infrastructure
+* Install a private cluster on installer-provisioned infrastructure
+* Install a cluster into an government region on installer-provisioned infrastructure

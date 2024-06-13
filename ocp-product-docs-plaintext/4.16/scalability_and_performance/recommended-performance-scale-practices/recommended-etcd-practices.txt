@@ -1,0 +1,734 @@
+# Recommended etcd practices
+
+
+This topic provides recommended performance and scalability practices for etcd in Red Hat OpenShift Container Platform.
+
+# Recommended etcd practices
+
+Because etcd writes data to disk and persists proposals on disk, its performance depends on disk performance.
+Although etcd is not particularly I/O intensive, it requires a low latency block device for optimal performance and stability. Because etcd&#8217;s consensus protocol depends on persistently storing metadata to a log (WAL), etcd is sensitive to disk-write latency. Slow disks and disk activity from other processes can cause long fsync latencies.
+
+Those latencies can cause etcd to miss heartbeats, not commit new proposals to the disk on time, and ultimately experience request timeouts and temporary leader loss. High write latencies also lead to an OpenShift API slowness, which affects cluster performance. Because of these reasons, avoid colocating other workloads on the control-plane nodes that are I/O sensitive or intensive and share the same underlying I/O infrastructure.
+
+In terms of latency, run etcd on top of a block device that can write at least 50 IOPS of 8000 bytes long sequentially. That is, with a latency of 10ms, keep in mind that uses fdatasync to synchronize each write in the WAL. For heavy loaded clusters, sequential 500 IOPS of 8000 bytes (2 ms) are recommended. To measure those numbers, you can use a benchmarking tool, such as fio.
+
+To achieve such performance, run etcd on machines that are backed by SSD or NVMe disks with low latency and high throughput. Consider single-level cell (SLC) solid-state drives (SSDs), which provide 1 bit per memory cell, are durable and reliable, and are ideal for write-intensive workloads.
+
+
+[NOTE]
+----
+The load on etcd arises from static factors, such as the number of nodes and pods, and dynamic factors, including changes in endpoints due to pod autoscaling, pod restarts, job executions, and other workload-related events. To accurately size your etcd setup, you must analyze the specific requirements of your workload. Consider the number of nodes, pods, and other relevant factors that impact the load on etcd.
+----
+
+The following hard drive practices provide optimal etcd performance:
+
+* Use dedicated etcd drives. Avoid drives that communicate over the network, such as iSCSI. Do not place log files or other heavy workloads on etcd drives.
+* Prefer drives with low latency to support fast read and write operations.
+* Prefer high-bandwidth writes for faster compactions and defragmentation.
+* Prefer high-bandwidth reads for faster recovery from failures.
+* Use solid state drives as a minimum selection. Prefer NVMe drives for production environments.
+* Use server-grade hardware for increased reliability.
+
+
+[NOTE]
+----
+Avoid NAS or SAN setups and spinning drives. Ceph Rados Block Device (RBD) and other types of network-attached storage can result in unpredictable network latency. To provide fast storage to etcd nodes at scale, use PCI passthrough to pass NVM devices directly to the nodes.
+----
+
+Always benchmark by using utilities such as fio. You can use such utilities to continuously monitor the cluster performance as it increases.
+
+
+[NOTE]
+----
+Avoid using the Network File System (NFS) protocol or other network based file systems.
+----
+
+Some key metrics to monitor on a deployed Red Hat OpenShift Container Platform cluster are p99 of etcd disk write ahead log duration and the number of etcd leader changes. Use Prometheus to track these metrics.
+
+
+[NOTE]
+----
+The etcd member database sizes can vary in a cluster during normal operations. This difference does not affect cluster upgrades, even if the leader size is different from the other members.
+----
+
+To validate the hardware for etcd before or after you create the Red Hat OpenShift Container Platform cluster, you can use fio.
+
+* Container runtimes such as Podman or Docker are installed on the machine that you are testing.
+* Data is written to the /var/lib/etcd path.
+
+* Run fio and analyze the results:
+* If you use Podman, run this command:
+
+```terminal
+$ sudo podman run --volume /var/lib/etcd:/var/lib/etcd:Z quay.io/cloud-bulldozer/etcd-perf
+```
+
+* If you use Docker, run this command:
+
+```terminal
+$ sudo docker run --volume /var/lib/etcd:/var/lib/etcd:Z quay.io/cloud-bulldozer/etcd-perf
+```
+
+The output reports whether the disk is fast enough to host etcd by comparing the 99th percentile of the fsync metric captured from the run to see if it is less than 10 ms. A few of the most important etcd metrics that might affected by I/O performance are as follow:
+
+* etcd_disk_wal_fsync_duration_seconds_bucket metric reports the etcd's WAL fsync duration
+* etcd_disk_backend_commit_duration_seconds_bucket  metric reports the etcd backend commit latency duration
+* etcd_server_leader_changes_seen_total metric reports the leader changes
+
+Because etcd replicates the requests among all the members, its performance strongly depends on network input/output (I/O) latency. High network latencies result in etcd heartbeats taking longer than the election timeout, which results in leader elections that are disruptive to the cluster. A key metric to monitor on a deployed Red Hat OpenShift Container Platform cluster is the 99th percentile of etcd network peer latency on each etcd cluster member. Use Prometheus to track the metric.
+
+The histogram_quantile(0.99, rate(etcd_network_peer_round_trip_time_seconds_bucket[2m])) metric reports the round trip time for etcd to finish replicating the client requests between the members. Ensure that it is less than 50 ms.
+
+* How to use fio to check etcd disk performance in Red Hat OpenShift Container Platform
+* etcd performance troubleshooting guide for Red Hat OpenShift Container Platform
+
+# Moving etcd to a different disk
+
+You can move etcd from a shared disk to a separate disk to prevent or resolve performance issues.
+
+The Machine Config Operator (MCO) is responsible for mounting a secondary disk for Red Hat OpenShift Container Platform 4.16 container storage.
+
+
+[NOTE]
+----
+This encoded script only supports device names for the following device types:
+SCSI or SATA:: /dev/sd*
+Virtual device:: /dev/vd*
+NVMe:: /dev/nvme*[0-9]*n*
+----
+
+* When the new disk is attached to the cluster, the etcd database is part of the root mount. It is not part of the secondary disk or the intended disk when the primary node is recreated. As a result, the primary node will not create a separate /var/lib/etcd mount.
+
+* You have a backup of your cluster's etcd data.
+* You have installed the OpenShift CLI (`oc`).
+* You have access to the cluster with cluster-admin privileges.
+* Add additional disks before uploading the machine configuration.
+* The MachineConfigPool must match metadata.labels[machineconfiguration.openshift.io/role]. This applies to a controller, worker, or a custom pool.
+
+
+[NOTE]
+----
+This procedure does not move parts of the root file system, such as /var/, to another disk or partition on an installed node.
+----
+
+
+[IMPORTANT]
+----
+This procedure is not supported when using control plane machine sets.
+----
+
+1. Attach the new disk to the cluster and verify that the disk is detected in the node by running the lsblk command in a debug shell:
+
+```terminal
+$ oc debug node/<node_name>
+```
+
+
+```terminal
+# lsblk
+```
+
+
+Note the device name of the new disk reported by the lsblk command.
+2. Decode and replace the device name in the script according to your environment.
+
+```bash
+#!/bin/bash
+set -uo pipefail
+
+for device in <device_type_glob>; do 1
+/usr/sbin/blkid $device &> /dev/null
+ if [ $? == 2  ]; then
+    echo "secondary device found $device"
+    echo "creating filesystem for etcd mount"
+    mkfs.xfs -L var-lib-etcd -f $device &> /dev/null
+    udevadm settle
+    touch /etc/var-lib-etcd-mount
+    exit
+ fi
+done
+echo "Couldn't find secondary block device!" >&2
+exit 77
+```
+
+Replace <device_type_glob> with a shell glob for your block device type. For SCSI or SATA drives, use /dev/sd*; for virtual drives, use /dev/vd*; for NVMe drives, use /dev/nvme*[0-9]*n*.
+3. Create a MachineConfig YAML file named etcd-mc.yml with contents such as the following:
+
+```yaml
+apiVersion: machineconfiguration.openshift.io/v1
+kind: MachineConfig
+metadata:
+  labels:
+    machineconfiguration.openshift.io/role: master
+  name: 98-var-lib-etcd
+spec:
+  config:
+    ignition:
+      version: 3.1.0
+    storage:
+      files:
+        - path: /etc/find-secondary-device
+          mode: 0755
+          contents:
+            source: data:text/plain;charset=utf-8;base64,<encoded_etc_find_secondary_device_script> 1
+    systemd:
+      units:
+        - name: find-secondary-device.service
+          enabled: true
+          contents: |
+            [Unit]
+            Description=Find secondary device
+            DefaultDependencies=false
+            After=systemd-udev-settle.service
+            Before=local-fs-pre.target
+            ConditionPathExists=!/etc/var-lib-etcd-mount
+
+            [Service]
+            RemainAfterExit=yes
+            ExecStart=/etc/find-secondary-device
+
+            RestartForceExitStatus=77
+
+            [Install]
+            WantedBy=multi-user.target
+        - name: var-lib-etcd.mount
+          enabled: true
+          contents: |
+            [Unit]
+            Before=local-fs.target
+
+            [Mount]
+            What=/dev/disk/by-label/var-lib-etcd
+            Where=/var/lib/etcd
+            Type=xfs
+            TimeoutSec=120s
+
+            [Install]
+            RequiredBy=local-fs.target
+        - name: sync-var-lib-etcd-to-etcd.service
+          enabled: true
+          contents: |
+            [Unit]
+            Description=Sync etcd data if new mount is empty
+            DefaultDependencies=no
+            After=var-lib-etcd.mount var.mount
+            Before=crio.service
+
+            [Service]
+            Type=oneshot
+            RemainAfterExit=yes
+            ExecCondition=/usr/bin/test ! -d /var/lib/etcd/member
+            ExecStart=/usr/sbin/setsebool -P rsync_full_access 1
+            ExecStart=/bin/rsync -ar /sysroot/ostree/deploy/rhcos/var/lib/etcd/ /var/lib/etcd/
+            ExecStart=/usr/sbin/semanage fcontext -a -t container_var_lib_t '/var/lib/etcd(/.*)?'
+            ExecStart=/usr/sbin/setsebool -P rsync_full_access 0
+            TimeoutSec=0
+
+            [Install]
+            WantedBy=multi-user.target graphical.target
+        - name: restorecon-var-lib-etcd.service
+          enabled: true
+          contents: |
+            [Unit]
+            Description=Restore recursive SELinux security contexts
+            DefaultDependencies=no
+            After=var-lib-etcd.mount
+            Before=crio.service
+
+            [Service]
+            Type=oneshot
+            RemainAfterExit=yes
+            ExecStart=/sbin/restorecon -R /var/lib/etcd/
+            TimeoutSec=0
+
+            [Install]
+            WantedBy=multi-user.target graphical.target
+```
+
+Use the encoded string that you previously created and replace it with the encoded script that you noted.
+
+* Run the grep /var/lib/etcd /proc/mounts command in a debug shell for the node to ensure that the disk is mounted:
+
+```terminal
+$ oc debug node/<node_name>
+```
+
+
+```terminal
+# grep -w "/var/lib/etcd" /proc/mounts
+```
+
+Example output
+
+```terminal
+/dev/sdb /var/lib/etcd xfs rw,seclabel,relatime,attr2,inode64,logbufs=8,logbsize=32k,noquota 0 0
+```
+
+
+* Red Hat Enterprise Linux CoreOS (RHCOS)
+
+# Defragmenting etcd data
+
+For large and dense clusters, etcd can suffer from poor performance if the keyspace grows too large and exceeds the space quota. Periodically maintain and defragment etcd to free up space in the data store. Monitor Prometheus for etcd metrics and defragment it when required; otherwise, etcd can raise a cluster-wide alarm that puts the cluster into a maintenance mode that accepts only key reads and deletes.
+
+Monitor these key metrics:
+
+* etcd_server_quota_backend_bytes, which is the current quota limit
+* etcd_mvcc_db_total_size_in_use_in_bytes, which indicates the actual database usage after a history compaction
+* etcd_mvcc_db_total_size_in_bytes, which shows the database size, including free space waiting for defragmentation
+
+Defragment etcd data to reclaim disk space after events that cause disk fragmentation, such as etcd history compaction.
+
+History compaction is performed automatically every five minutes and leaves gaps in the back-end database. This fragmented space is available for use by etcd, but is not available to the host file system. You must defragment etcd to make this space available to the host file system.
+
+Defragmentation occurs automatically, but you can also trigger it manually.
+
+
+[NOTE]
+----
+Automatic defragmentation is good for most cases, because the etcd operator uses cluster information to determine the most efficient operation for the user.
+----
+
+## Automatic defragmentation
+
+The etcd Operator automatically defragments disks. No manual intervention is needed.
+
+Verify that the defragmentation process is successful by viewing one of these logs:
+
+* etcd logs
+* cluster-etcd-operator pod
+* operator status error log
+
+
+[WARNING]
+----
+Automatic defragmentation can cause leader election failure in various OpenShift core components, such as the Kubernetes controller manager, which triggers a restart of the failing component. The restart is harmless and either triggers failover to the next running instance or the component resumes work again after the restart.
+----
+
+
+```terminal
+etcd member has been defragmented: <member_name>, memberID: <member_id>
+```
+
+
+
+```terminal
+failed defrag on member: <member_name>, memberID: <member_id>: <error_message>
+```
+
+
+## Manual defragmentation
+
+A Prometheus alert indicates when you need to use manual defragmentation. The alert is displayed in two cases:
+
+* When etcd uses more than 50% of its available space for more than 10 minutes
+* When etcd is actively using less than 50% of its total database size for more than 10 minutes
+
+You can also determine whether defragmentation is needed by checking the etcd database size in MB that will be freed by defragmentation with the PromQL expression: (etcd_mvcc_db_total_size_in_bytes - etcd_mvcc_db_total_size_in_use_in_bytes)/1024/1024
+
+
+[WARNING]
+----
+Defragmenting etcd is a blocking action. The etcd member will not respond until defragmentation is complete. For this reason, wait at least one minute between defragmentation actions on each of the pods to allow the cluster to recover.
+----
+
+Follow this procedure to defragment etcd data on each etcd member.
+
+* You have access to the cluster as a user with the cluster-admin role.
+
+1. Determine which etcd member is the leader, because the leader should be defragmented last.
+1. Get the list of etcd pods:
+
+```terminal
+$ oc -n openshift-etcd get pods -l k8s-app=etcd -o wide
+```
+
+Example output
+
+```terminal
+etcd-ip-10-0-159-225.example.redhat.com                3/3     Running     0          175m   10.0.159.225   ip-10-0-159-225.example.redhat.com   <none>           <none>
+etcd-ip-10-0-191-37.example.redhat.com                 3/3     Running     0          173m   10.0.191.37    ip-10-0-191-37.example.redhat.com    <none>           <none>
+etcd-ip-10-0-199-170.example.redhat.com                3/3     Running     0          176m   10.0.199.170   ip-10-0-199-170.example.redhat.com   <none>           <none>
+```
+
+2. Choose a pod and run the following command to determine which etcd member is the leader:
+
+```terminal
+$ oc rsh -n openshift-etcd etcd-ip-10-0-159-225.example.redhat.com etcdctl endpoint status --cluster -w table
+```
+
+Example output
+
+```terminal
+Defaulting container name to etcdctl.
+Use 'oc describe pod/etcd-ip-10-0-159-225.example.redhat.com -n openshift-etcd' to see all of the containers in this pod.
++---------------------------+------------------+---------+---------+-----------+------------+-----------+------------+--------------------+--------+
+|         ENDPOINT          |        ID        | VERSION | DB SIZE | IS LEADER | IS LEARNER | RAFT TERM | RAFT INDEX | RAFT APPLIED INDEX | ERRORS |
++---------------------------+------------------+---------+---------+-----------+------------+-----------+------------+--------------------+--------+
+|  https://10.0.191.37:2379 | 251cd44483d811c3 |   3.5.9 |  104 MB |     false |      false |         7 |      91624 |              91624 |        |
+| https://10.0.159.225:2379 | 264c7c58ecbdabee |   3.5.9 |  104 MB |     false |      false |         7 |      91624 |              91624 |        |
+| https://10.0.199.170:2379 | 9ac311f93915cc79 |   3.5.9 |  104 MB |      true |      false |         7 |      91624 |              91624 |        |
++---------------------------+------------------+---------+---------+-----------+------------+-----------+------------+--------------------+--------+
+```
+
+
+Based on the IS LEADER column of this output, the https://10.0.199.170:2379 endpoint is the leader. Matching this endpoint with the output of the previous step, the pod name of the leader is etcd-ip-10-0-199-170.example.redhat.com.
+2. Defragment an etcd member.
+1. Connect to the running etcd container, passing in the name of a pod that is not the leader:
+
+```terminal
+$ oc rsh -n openshift-etcd etcd-ip-10-0-159-225.example.redhat.com
+```
+
+2. Unset the ETCDCTL_ENDPOINTS environment variable:
+
+```terminal
+sh-4.4# unset ETCDCTL_ENDPOINTS
+```
+
+3. Defragment the etcd member:
+
+```terminal
+sh-4.4# etcdctl --command-timeout=30s --endpoints=https://localhost:2379 defrag
+```
+
+Example output
+
+```terminal
+Finished defragmenting etcd member[https://localhost:2379]
+```
+
+
+If a timeout error occurs, increase the value for --command-timeout until the command succeeds.
+4. Verify that the database size was reduced:
+
+```terminal
+sh-4.4# etcdctl endpoint status -w table --cluster
+```
+
+Example output
+
+```terminal
++---------------------------+------------------+---------+---------+-----------+------------+-----------+------------+--------------------+--------+
+|         ENDPOINT          |        ID        | VERSION | DB SIZE | IS LEADER | IS LEARNER | RAFT TERM | RAFT INDEX | RAFT APPLIED INDEX | ERRORS |
++---------------------------+------------------+---------+---------+-----------+------------+-----------+------------+--------------------+--------+
+|  https://10.0.191.37:2379 | 251cd44483d811c3 |   3.5.9 |  104 MB |     false |      false |         7 |      91624 |              91624 |        |
+| https://10.0.159.225:2379 | 264c7c58ecbdabee |   3.5.9 |   41 MB |     false |      false |         7 |      91624 |              91624 |        | 1
+| https://10.0.199.170:2379 | 9ac311f93915cc79 |   3.5.9 |  104 MB |      true |      false |         7 |      91624 |              91624 |        |
++---------------------------+------------------+---------+---------+-----------+------------+-----------+------------+--------------------+--------+
+```
+
+
+This example shows that the database size for this etcd member is now 41 MB as opposed to the starting size of 104 MB.
+5. Repeat these steps to connect to each of the other etcd members and defragment them. Always defragment the leader last.
+
+Wait at least one minute between defragmentation actions to allow the etcd pod to recover. Until the etcd pod recovers, the etcd member will not respond.
+3. If any NOSPACE alarms were triggered due to the space quota being exceeded, clear them.
+1. Check if there are any NOSPACE alarms:
+
+```terminal
+sh-4.4# etcdctl alarm list
+```
+
+Example output
+
+```terminal
+memberID:12345678912345678912 alarm:NOSPACE
+```
+
+2. Clear the alarms:
+
+```terminal
+sh-4.4# etcdctl alarm disarm
+```
+
+
+# Setting tuning parameters for etcd
+
+You can set the control plane hardware speed to "Standard", "Slower", or the default, which is "".
+
+The default setting allows the system to decide which speed to use. This value enables upgrades from versions where this feature does not exist, as the system can select values from previous versions.
+
+By selecting one of the other values, you are overriding the default. If you see many leader elections due to timeouts or missed heartbeats and your system is set to "" or "Standard", set the hardware speed to "Slower" to make the system more tolerant to the increased latency.
+
+## Changing hardware speed tolerance
+
+To change the hardware speed tolerance for etcd, complete the following steps.
+
+1. Check to see what the current value is by entering the following command:
+
+```terminal
+$ oc describe etcd/cluster | grep "Control Plane Hardware Speed"
+```
+
+Example output
+
+```terminal
+Control Plane Hardware Speed:  <VALUE>
+```
+
+
+[NOTE]
+----
+If the output is empty, the field has not been set and should be considered as the default ("").
+----
+2. Change the value by entering the following command. Replace <value> with one of the valid values: "", "Standard", or "Slower":
+
+```terminal
+oc patch etcd/cluster --type=merge -p '{"spec": {"controlPlaneHardwareSpeed": "<value>"}}'
+```
+
+
+The following table indicates the heartbeat interval and leader election timeout for each profile. These values are subject to change.
+
+3. Review the output:
+Example output
+
+```terminal
+etcd.operator.openshift.io/cluster patched
+```
+
+
+If you enter any value besides the valid values, error output is displayed. For example, if you entered "Faster" as the value, the output is as follows:
+Example output
+
+```terminal
+The Etcd "cluster" is invalid: spec.controlPlaneHardwareSpeed: Unsupported value: "Faster": supported values: "", "Standard", "Slower"
+```
+
+4. Verify that the value was changed by entering the following command:
+
+```terminal
+$ oc describe etcd/cluster | grep "Control Plane Hardware Speed"
+```
+
+Example output
+
+```terminal
+Control Plane Hardware Speed:  ""
+```
+
+5. Wait for etcd pods to roll out:
+
+```terminal
+oc get pods -n openshift-etcd -w
+```
+
+
+The following output shows the expected entries for master-0. Before you continue, wait until all masters show a status of 4/4 Running.
+Example output
+
+```terminal
+installer-9-ci-ln-qkgs94t-72292-9clnd-master-0           0/1     Pending             0          0s
+installer-9-ci-ln-qkgs94t-72292-9clnd-master-0           0/1     Pending             0          0s
+installer-9-ci-ln-qkgs94t-72292-9clnd-master-0           0/1     ContainerCreating   0          0s
+installer-9-ci-ln-qkgs94t-72292-9clnd-master-0           0/1     ContainerCreating   0          1s
+installer-9-ci-ln-qkgs94t-72292-9clnd-master-0           1/1     Running             0          2s
+installer-9-ci-ln-qkgs94t-72292-9clnd-master-0           0/1     Completed           0          34s
+installer-9-ci-ln-qkgs94t-72292-9clnd-master-0           0/1     Completed           0          36s
+installer-9-ci-ln-qkgs94t-72292-9clnd-master-0           0/1     Completed           0          36s
+etcd-guard-ci-ln-qkgs94t-72292-9clnd-master-0            0/1     Running             0          26m
+etcd-ci-ln-qkgs94t-72292-9clnd-master-0                  4/4     Terminating         0          11m
+etcd-ci-ln-qkgs94t-72292-9clnd-master-0                  4/4     Terminating         0          11m
+etcd-ci-ln-qkgs94t-72292-9clnd-master-0                  0/4     Pending             0          0s
+etcd-ci-ln-qkgs94t-72292-9clnd-master-0                  0/4     Init:1/3            0          1s
+etcd-ci-ln-qkgs94t-72292-9clnd-master-0                  0/4     Init:2/3            0          2s
+etcd-ci-ln-qkgs94t-72292-9clnd-master-0                  0/4     PodInitializing     0          3s
+etcd-ci-ln-qkgs94t-72292-9clnd-master-0                  3/4     Running             0          4s
+etcd-guard-ci-ln-qkgs94t-72292-9clnd-master-0            1/1     Running             0          26m
+etcd-ci-ln-qkgs94t-72292-9clnd-master-0                  3/4     Running             0          20s
+etcd-ci-ln-qkgs94t-72292-9clnd-master-0                  4/4     Running             0          20s
+```
+
+6. Enter the following command to review to the values:
+
+```terminal
+$ oc describe -n openshift-etcd pod/<ETCD_PODNAME> | grep -e HEARTBEAT_INTERVAL -e ELECTION_TIMEOUT
+```
+
+
+[NOTE]
+----
+These values might not have changed from the default.
+----
+
+Understanding feature gates
+
+# Increasing the database size for etcd
+
+You can set the disk quota in gibibytes (GiB) for each etcd instance. If you set a disk quota for your etcd instance, you can specify integer values from 8 to 32. The default value is 8. You can specify only increasing values.
+
+You might want to increase the disk quota if you encounter a low space alert. This alert indicates that the cluster is too large to fit in etcd despite automatic compaction and defragmentation. If you see this alert, you need to increase the disk quota immediately because after etcd runs out of space, writes fail.
+
+Another scenario where you might want to increase the disk quota is if you encounter an excessive database growth alert. This alert is a warning that the database might grow too large in the next four hours. In this scenario, consider increasing the disk quota so that you do not eventually encounter a low space alert and possible write fails.
+
+When you increase the disk quota, the amount of space that you specify is not immediately reserved. Instead, etcd can grow to that size if needed. Ensure that etcd is running on a dedicated disk that is larger than the value that you specify for the disk quota.
+
+
+[IMPORTANT]
+----
+{FeatureName} is a Technology Preview feature only. Technology Preview features are not supported with Red Hat production service level agreements (SLAs) and might not be functionally complete. Red Hat does not recommend using them in production. These features provide early access to upcoming product features, enabling customers to test functionality and provide feedback during the development process.
+For more information about the support scope of Red Hat Technology Preview features, see Technology Preview Features Support Scope.
+----
+
+## Changing the etcd database size
+
+To change the database size for etcd, complete the following steps.
+
+1. Check the current value of the disk quota for each etcd instance by entering the following command:
+
+```terminal
+$ oc describe etcd/cluster | grep "Backend Quota"
+```
+
+Example output
+
+```terminal
+Backend Quota Gi B: <value>
+```
+
+2. Change the value of the disk quota by entering the following command:
+
+```terminal
+$ oc patch etcd/cluster --type=merge -p '{"spec": {"backendQuotaGiB": <value>}}'
+```
+
+Example output
+
+```terminal
+etcd.operator.openshift.io/cluster patched
+```
+
+
+1. Verify that the new value for the disk quota is set by entering the following command:
+
+```terminal
+$ oc describe etcd/cluster | grep "Backend Quota"
+```
+
+
+The etcd Operator automatically rolls out the etcd instances with the new values.
+2. Verify that the etcd pods are up and running by entering the following command:
+
+```terminal
+oc get pods -n openshift-etcd
+```
+
+
+The following output shows the expected entries.
+Example output
+
+```terminal
+NAME                                                   READY   STATUS      RESTARTS   AGE
+etcd-ci-ln-b6kfsw2-72292-mzwbq-master-0                4/4     Running     0          39m
+etcd-ci-ln-b6kfsw2-72292-mzwbq-master-1                4/4     Running     0          37m
+etcd-ci-ln-b6kfsw2-72292-mzwbq-master-2                4/4     Running     0          41m
+etcd-guard-ci-ln-b6kfsw2-72292-mzwbq-master-0          1/1     Running     0          51m
+etcd-guard-ci-ln-b6kfsw2-72292-mzwbq-master-1          1/1     Running     0          49m
+etcd-guard-ci-ln-b6kfsw2-72292-mzwbq-master-2          1/1     Running     0          54m
+installer-5-ci-ln-b6kfsw2-72292-mzwbq-master-1         0/1     Completed   0          51m
+installer-7-ci-ln-b6kfsw2-72292-mzwbq-master-0         0/1     Completed   0          46m
+installer-7-ci-ln-b6kfsw2-72292-mzwbq-master-1         0/1     Completed   0          44m
+installer-7-ci-ln-b6kfsw2-72292-mzwbq-master-2         0/1     Completed   0          49m
+installer-8-ci-ln-b6kfsw2-72292-mzwbq-master-0         0/1     Completed   0          40m
+installer-8-ci-ln-b6kfsw2-72292-mzwbq-master-1         0/1     Completed   0          38m
+installer-8-ci-ln-b6kfsw2-72292-mzwbq-master-2         0/1     Completed   0          42m
+revision-pruner-7-ci-ln-b6kfsw2-72292-mzwbq-master-0   0/1     Completed   0          43m
+revision-pruner-7-ci-ln-b6kfsw2-72292-mzwbq-master-1   0/1     Completed   0          43m
+revision-pruner-7-ci-ln-b6kfsw2-72292-mzwbq-master-2   0/1     Completed   0          43m
+revision-pruner-8-ci-ln-b6kfsw2-72292-mzwbq-master-0   0/1     Completed   0          42m
+revision-pruner-8-ci-ln-b6kfsw2-72292-mzwbq-master-1   0/1     Completed   0          42m
+revision-pruner-8-ci-ln-b6kfsw2-72292-mzwbq-master-2   0/1     Completed   0          42m
+```
+
+3. Verify that the disk quota value is updated for the etcd pod by entering the following command:
+
+```terminal
+$ oc describe -n openshift-etcd pod/<etcd_podname> | grep "ETCD_QUOTA_BACKEND_BYTES"
+```
+
+
+The value might not have changed from the default value of 8.
+Example output
+
+```terminal
+ETCD_QUOTA_BACKEND_BYTES:                               8589934592
+```
+
+
+[NOTE]
+----
+While the value that you set is an integer in GiB, the value shown in the output is converted to bytes.
+----
+
+## Troubleshooting
+
+If you encounter issues when you try to increase the database size for etcd, the following troubleshooting steps might help.
+
+### Value is too small
+
+If the value that you specify is less than 8, you see the following error message:
+
+
+```terminal
+$ oc patch etcd/cluster --type=merge -p '{"spec": {"backendQuotaGiB": 5}}'
+```
+
+
+
+```terminal
+The Etcd "cluster" is invalid:
+* spec.backendQuotaGiB: Invalid value: 5: spec.backendQuotaGiB in body should be greater than or equal to 8
+* spec.backendQuotaGiB: Invalid value: "integer": etcd backendQuotaGiB may not be decreased
+```
+
+
+To resolve this issue, specify an integer between 8 and 32.
+
+### Value is too large
+
+If the value that you specify is greater than 32, you see the following error message:
+
+
+```terminal
+$ oc patch etcd/cluster --type=merge -p '{"spec": {"backendQuotaGiB": 64}}'
+```
+
+
+
+```terminal
+The Etcd "cluster" is invalid: spec.backendQuotaGiB: Invalid value: 64: spec.backendQuotaGiB in body should be less than or equal to 32
+```
+
+
+To resolve this issue, specify an integer between 8 and 32.
+
+### Value is decreasing
+
+If the value is set to a valid value between 8 and 32, you cannot decrease the value. Otherwise, you see an error message.
+
+1. Check to see the current value by entering the following command:
+
+```terminal
+$ oc describe etcd/cluster | grep "Backend Quota"
+```
+
+Example output
+
+```terminal
+Backend Quota Gi B: 10
+```
+
+2. Decrease the disk quota value by entering the following command:
+
+```terminal
+$ oc patch etcd/cluster --type=merge -p '{"spec": {"backendQuotaGiB": 8}}'
+```
+
+Example error message
+
+```terminal
+The Etcd "cluster" is invalid: spec.backendQuotaGiB: Invalid value: "integer": etcd backendQuotaGiB may not be decreased
+```
+
+3. To resolve this issue, specify an integer greater than 10.

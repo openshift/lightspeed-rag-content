@@ -1,43 +1,163 @@
-Custom image builds with Buildah
+# Custom image builds with Buildah
 
-With Red Hat OpenShift Container Platform 4.15, a docker socket will not be present on the host nodes. This means the mount docker socket option of a custom build is not guaranteed to provide an accessible docker socket for use within a custom build image.
 
-If you require this capability in order to build and push images, add the Buildah tool your custom build image and use it to build and push the image within your custom build logic. The following is an example of how to run custom builds with Buildah.
+With Red Hat OpenShift Container Platform 4.15, a docker socket will not be present on the host
+nodes. This means the mount docker socket option of a custom build is not
+guaranteed to provide an accessible docker socket for use within a custom build
+image.
+If you require this capability in order to build and push images, add the Buildah
+tool your custom build image and use it to build and push the image within your
+custom build logic. The following is an example of how to run custom builds with
+Buildah.
 
-Using the custom build strategy requires permissions that normal users do not have by default because it allows the user to execute arbitrary code inside a privileged container running on the cluster. This level of access can be used to compromise the cluster and therefore should be granted only to users who are trusted with administrative privileges on the cluster.
-Prerequisites
-Review how to grant custom build permissions.
-Creating custom build artifacts
+[NOTE]
+----
+Using the custom build strategy requires permissions that normal users do
+not have by default because it allows the user to execute arbitrary code inside
+a privileged container running on the cluster. This level of access can be used
+to compromise the cluster and therefore should be granted only to users who are
+trusted with administrative privileges on the cluster.
+----
+
+# Prerequisites
+
+* Review how to grant custom build permissions.
+
+# Creating custom build artifacts
+
 You must create the image you want to use as your custom build image.
 
-Starting with an empty directory, create a file named Dockerfile with the following content:
+1. Starting with an empty directory, create a file named Dockerfile with the following content:
 
-In the same directory, create a file named dockerfile.sample. This file is included in the custom build image and defines the image that is produced by the custom build:
+```terminal
+FROM registry.redhat.io/rhel8/buildah
+# In this example, `/tmp/build` contains the inputs that build when this
+# custom builder image is run. Normally the custom builder image fetches
+# this content from some location at build time, by using git clone as an example.
+ADD dockerfile.sample /tmp/input/Dockerfile
+ADD build.sh /usr/bin
+RUN chmod a+x /usr/bin/build.sh
+# /usr/bin/build.sh contains the actual custom build logic that will be run when
+# this custom builder image is run.
+ENTRYPOINT ["/usr/bin/build.sh"]
+```
 
-In the same directory, create a file named build.sh. This file contains the logic that is run when the custom build runs:
-Build custom builder image
+2. In the same directory, create a file named dockerfile.sample. This file is included in the custom build image and defines the image that is produced by the custom build:
+
+```terminal
+FROM registry.access.redhat.com/ubi9/ubi
+RUN touch /tmp/build
+```
+
+3. In the same directory, create a file named build.sh. This file contains the logic that is run when the custom build runs:
+
+```terminal
+#!/bin/sh
+# Note that in this case the build inputs are part of the custom builder image, but normally this
+# is retrieved from an external source.
+cd /tmp/input
+# OUTPUT_REGISTRY and OUTPUT_IMAGE are env variables provided by the custom
+# build framework
+TAG="${OUTPUT_REGISTRY}/${OUTPUT_IMAGE}"
+
+
+# performs the build of the new image defined by dockerfile.sample
+buildah --storage-driver vfs bud --isolation chroot -t ${TAG} .
+
+
+# buildah requires a slight modification to the push secret provided by the service
+# account to use it for pushing the image
+cp /var/run/secrets/openshift.io/push/.dockercfg /tmp
+(echo "{ \"auths\": " ; cat /var/run/secrets/openshift.io/push/.dockercfg ; echo "}") > /tmp/.dockercfg
+
+
+# push the new image to the target for the build
+buildah --storage-driver vfs push --tls-verify=false --authfile /tmp/.dockercfg ${TAG}
+```
+
+
+# Build custom builder image
+
 You can use Red Hat OpenShift Container Platform to build and push custom builder images to use in a custom strategy.
 
-Define all the inputs that will go into creating your new custom builder image.
+* Define all the inputs that will go into creating your new custom builder image.
+
+1. Define a BuildConfig object that will build your custom builder image:
+
+```terminal
+$ oc new-build --binary --strategy=docker --name custom-builder-image
+```
+
+2. From the directory in which you created your custom build image, run the build:
+
+```terminal
+$ oc start-build custom-builder-image --from-dir . -F
+```
 
 
-Define a BuildConfig object that will build your custom builder image:
+After the build completes, your new custom builder image is available in your project in an image stream tag that is named custom-builder-image:latest.
 
-From the directory in which you created your custom build image, run the build:
-Use custom builder image
+# Use custom builder image
+
 You can define a BuildConfig object that uses the custom strategy in conjunction with your custom builder image to execute your custom build logic.
 
-Define all the required inputs for new custom builder image.
+* Define all the required inputs for new custom builder image.
+* Build your custom builder image.
 
-Build your custom builder image.
+1. Create a file named buildconfig.yaml. This file defines the BuildConfig object that is created in your project and executed:
+
+```yaml
+kind: BuildConfig
+apiVersion: build.openshift.io/v1
+metadata:
+  name: sample-custom-build
+  labels:
+    name: sample-custom-build
+  annotations:
+    template.alpha.openshift.io/wait-for-ready: 'true'
+spec:
+  strategy:
+    type: Custom
+    customStrategy:
+      forcePull: true
+      from:
+        kind: ImageStreamTag
+        name: custom-builder-image:latest
+        namespace: <yourproject> 1
+  output:
+    to:
+      kind: ImageStreamTag
+      name: sample-custom:latest
+```
+
+Specify your project name.
+2. Create the BuildConfig object by entering the following command:
+
+```terminal
+$ oc create -f buildconfig.yaml
+```
+
+3. Create a file named imagestream.yaml. This file defines the image stream to which the build will push the image:
+
+```yaml
+kind: ImageStream
+apiVersion: image.openshift.io/v1
+metadata:
+  name: sample-custom
+spec: {}
+```
+
+4. Create the image stream by entering the following command:
+
+```terminal
+$ oc create -f imagestream.yaml
+```
+
+5. Run your custom build by entering the following command:
+
+```terminal
+$ oc start-build sample-custom-build -F
+```
 
 
-Create a file named buildconfig.yaml. This file defines the BuildConfig object that is created in your project and executed:
-
-Create the BuildConfig:
-
-Create a file named imagestream.yaml. This file defines the image stream to which the build will push the image:
-
-Create the imagestream:
-
-Run your custom build:
+When the build runs, it launches a pod running the custom builder image that was built earlier. The pod runs the build.sh logic that is defined as the entrypoint for the custom builder image. The build.sh logic invokes Buildah to build the dockerfile.sample that was embedded in the custom builder image, and then uses Buildah to push the new image to the sample-custom image stream.

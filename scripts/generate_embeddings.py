@@ -9,6 +9,8 @@ import faiss
 import requests
 from llama_index.core import Settings, SimpleDirectoryReader, VectorStoreIndex
 from llama_index.core.llms.utils import resolve_llm
+
+# from llama_index.core.node_parser import MarkdownNodeParser
 from llama_index.core.schema import TextNode
 from llama_index.core.storage.storage_context import StorageContext
 from llama_index.embeddings.huggingface import HuggingFaceEmbedding
@@ -33,7 +35,7 @@ def get_file_title(file_path: str) -> str:
     title = ""
     try:
         with open(file_path, "r") as file:
-            title = file.readline().rstrip("\n")
+            title = file.readline().rstrip("\n").lstrip("# ")
     except Exception:  # noqa: S110
         pass
     return title
@@ -105,15 +107,23 @@ if __name__ == "__main__":
         help="HF repo id of the embedding model",
     )
     parser.add_argument(
-        "-c", "--chunk", type=int, default="1500", help="Chunk size for embedding"
+        "-c", "--chunk", type=int, default=380, help="Chunk size for embedding"
     )
     parser.add_argument(
-        "-l", "--overlap", type=int, default="10", help="Chunk overlap for embedding"
+        "-l", "--overlap", type=int, default=0, help="Chunk overlap for embedding"
+    )
+    parser.add_argument(
+        "-em",
+        "--exclude-metadata",
+        nargs="+",
+        default=None,
+        help="Metadata to be excluded during embedding",
     )
     parser.add_argument("-o", "--output", help="Vector DB output folder")
     parser.add_argument("-i", "--index", help="Product index")
     parser.add_argument("-v", "--ocp-version", help="OCP version")
     args = parser.parse_args()
+    print(f"Arguments used: {args}")
 
     os.environ["HF_HOME"] = args.model_dir
     os.environ["TRANSFORMERS_OFFLINE"] = "1"
@@ -178,4 +188,5 @@ if __name__ == "__main__":
             gen_metadata_file(start_time, args, embedding_dimension, folder, folder_index, PERSIST_FOLDER, documents)
 
     print(f" --> Completed embedding generation")
+
 

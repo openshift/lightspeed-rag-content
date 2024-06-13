@@ -1,0 +1,295 @@
+# About network policy
+
+
+As a cluster administrator, you can define network policies that restrict traffic to pods in your cluster.
+
+# About network policy
+
+In a cluster using a network plugin that supports Kubernetes network policy, network isolation is controlled entirely by NetworkPolicy objects.
+In Red Hat OpenShift Container Platform 4.16, OpenShift SDN supports using network policy in its default network isolation mode.
+
+
+[WARNING]
+----
+Network policy does not apply to the host network namespace. Pods with host networking enabled are unaffected by network policy rules. However, pods connecting to the host-networked pods might be affected by the network policy rules.
+Network policies cannot block traffic from localhost or from their resident nodes.
+----
+
+By default, all pods in a project are accessible from other pods and network endpoints. To isolate one or more pods in a project, you can create NetworkPolicy objects in that project to indicate the allowed incoming connections. Project administrators can create and delete NetworkPolicy objects within their own project.
+
+If a pod is matched by selectors in one or more NetworkPolicy objects, then the pod will accept only connections that are allowed by at least one of those NetworkPolicy objects. A pod that is not selected by any NetworkPolicy objects is fully accessible.
+
+A network policy applies to only the TCP, UDP, ICMP, and SCTP protocols. Other protocols are not affected.
+
+The following example NetworkPolicy objects demonstrate supporting different scenarios:
+
+* Deny all traffic:
+
+To make a project deny by default, add a NetworkPolicy object that matches all pods but accepts no traffic:
+
+```yaml
+kind: NetworkPolicy
+apiVersion: networking.k8s.io/v1
+metadata:
+  name: deny-by-default
+spec:
+  podSelector: {}
+  ingress: []
+```
+
+* Only allow connections from the Red Hat OpenShift Container Platform Ingress Controller:
+
+To make a project allow only connections from the Red Hat OpenShift Container Platform Ingress Controller, add the following NetworkPolicy object.
+
+```yaml
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-from-openshift-ingress
+spec:
+  ingress:
+  - from:
+    - namespaceSelector:
+        matchLabels:
+          network.openshift.io/policy-group: ingress
+  podSelector: {}
+  policyTypes:
+  - Ingress
+```
+
+* Only accept connections from pods within a project:
+
+To make pods accept connections from other pods in the same project, but reject all other connections from pods in other projects, add the following NetworkPolicy object:
+
+```yaml
+kind: NetworkPolicy
+apiVersion: networking.k8s.io/v1
+metadata:
+  name: allow-same-namespace
+spec:
+  podSelector: {}
+  ingress:
+  - from:
+    - podSelector: {}
+```
+
+* Only allow HTTP and HTTPS traffic based on pod labels:
+
+To enable only HTTP and HTTPS access to the pods with a specific label (role=frontend in following example), add a NetworkPolicy object similar to the following:
+
+```yaml
+kind: NetworkPolicy
+apiVersion: networking.k8s.io/v1
+metadata:
+  name: allow-http-and-https
+spec:
+  podSelector:
+    matchLabels:
+      role: frontend
+  ingress:
+  - ports:
+    - protocol: TCP
+      port: 80
+    - protocol: TCP
+      port: 443
+```
+
+* Accept connections by using both namespace and pod selectors:
+
+To match network traffic by combining namespace and pod selectors, you can use a NetworkPolicy object similar to the following:
+
+```yaml
+kind: NetworkPolicy
+apiVersion: networking.k8s.io/v1
+metadata:
+  name: allow-pod-and-namespace-both
+spec:
+  podSelector:
+    matchLabels:
+      name: test-pods
+  ingress:
+    - from:
+      - namespaceSelector:
+          matchLabels:
+            project: project_name
+        podSelector:
+          matchLabels:
+            name: test-pods
+```
+
+
+NetworkPolicy objects are additive, which means you can combine multiple NetworkPolicy objects together to satisfy complex network requirements.
+
+For example, for the NetworkPolicy objects defined in previous samples, you can define both allow-same-namespace and allow-http-and-https policies within the same project. Thus allowing the pods with the label role=frontend, to accept any connection allowed by each policy. That is, connections on any port from pods in the same namespace, and connections on ports 80 and 443 from pods in any namespace.
+
+## Using the allow-from-router network policy
+
+Use the following NetworkPolicy to allow external traffic regardless of the router configuration:
+
+
+```yaml
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-from-router
+spec:
+  ingress:
+  - from:
+    - namespaceSelector:
+        matchLabels:
+          policy-group.network.openshift.io/ingress: ""1
+  podSelector: {}
+  policyTypes:
+  - Ingress
+```
+
+
+policy-group.network.openshift.io/ingress:"" label supports both OpenShift-SDN and OVN-Kubernetes.
+
+## Using the allow-from-hostnetwork network policy
+
+Add the following allow-from-hostnetwork NetworkPolicy object to direct traffic from the host network pods:
+
+
+```yaml
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-from-hostnetwork
+spec:
+  ingress:
+  - from:
+    - namespaceSelector:
+        matchLabels:
+          policy-group.network.openshift.io/host-network: ""
+  podSelector: {}
+  policyTypes:
+  - Ingress
+```
+
+
+# Optimizations for network policy with OpenShift SDN
+
+Use a network policy to isolate pods that are differentiated from one another by labels within a namespace.
+
+It is inefficient to apply NetworkPolicy objects to large numbers of individual pods in a single namespace. Pod labels do not exist at the IP address level, so a network policy generates a separate Open vSwitch (OVS) flow rule for every possible link between every pod selected with a podSelector.
+
+For example, if the spec podSelector and the ingress podSelector within a NetworkPolicy object each match 200 pods, then 40,000 (200*200) OVS flow rules are generated. This might slow down a node.
+
+When designing your network policy, refer to the following guidelines:
+
+* Reduce the number of OVS flow rules by using namespaces to contain groups of pods that need to be isolated.
+
+NetworkPolicy objects that select a whole namespace, by using the namespaceSelector or an empty podSelector, generate only a single OVS flow rule that matches the VXLAN virtual network ID (VNID) of the namespace.
+* Keep the pods that do not need to be isolated in their original namespace, and move the pods that require isolation into one or more different namespaces.
+* Create additional targeted cross-namespace network policies to allow the specific traffic that you do want to allow from the isolated pods.
+
+# Optimizations for network policy with OVN-Kubernetes network plugin
+
+When designing your network policy, refer to the following guidelines:
+
+* For network policies with the same spec.podSelector spec, it is more efficient to use one network policy with multiple ingress or egress rules, than multiple network policies with subsets of ingress or egress rules.
+* Every ingress or egress rule based on the podSelector or namespaceSelector spec generates the number of OVS flows proportional to number of pods selected by network policy + number of pods selected by ingress or egress rule. Therefore, it is preferable to use the podSelector or namespaceSelector spec that can select as many pods as you need in one rule, instead of creating individual rules for every pod.
+
+For example, the following policy contains two rules:
+
+```yaml
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: test-network-policy
+spec:
+  podSelector: {}
+  ingress:
+  - from:
+    - podSelector:
+        matchLabels:
+          role: frontend
+  - from:
+    - podSelector:
+        matchLabels:
+          role: backend
+```
+
+
+The following policy expresses those same two rules as one:
+
+```yaml
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: test-network-policy
+spec:
+  podSelector: {}
+  ingress:
+  - from:
+    - podSelector:
+        matchExpressions:
+        - {key: role, operator: In, values: [frontend, backend]}
+```
+
+
+The same guideline applies to the spec.podSelector spec. If you have the same ingress or egress rules for different network policies, it might be more efficient to create one network policy with a common spec.podSelector spec. For example, the following two policies have different rules:
+
+```yaml
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: policy1
+spec:
+  podSelector:
+    matchLabels:
+      role: db
+  ingress:
+  - from:
+    - podSelector:
+        matchLabels:
+          role: frontend
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: policy2
+spec:
+  podSelector:
+    matchLabels:
+      role: client
+  ingress:
+  - from:
+    - podSelector:
+        matchLabels:
+          role: frontend
+```
+
+
+The following network policy expresses those same two rules as one:
+
+```yaml
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: policy3
+spec:
+  podSelector:
+    matchExpressions:
+    - {key: role, operator: In, values: [db, client]}
+  ingress:
+  - from:
+    - podSelector:
+        matchLabels:
+          role: frontend
+```
+
+
+You can apply this optimization when only multiple selectors are expressed as one. In cases where selectors are based on different labels, it may not be possible to apply this optimization. In those cases, consider applying some new labels for network policy optimization specifically.
+
+# Next steps
+
+* Creating a network policy
+* Optional: Defining a default network policy for projects
+
+# Additional resources
+
+* Projects and namespaces
+* Configuring multitenant isolation with network policy
+* NetworkPolicy API
