@@ -5,7 +5,6 @@ import json
 import os
 import time
 from typing import Dict
-
 import faiss
 import requests
 from llama_index.core import Settings, SimpleDirectoryReader, VectorStoreIndex
@@ -18,7 +17,7 @@ from llama_index.embeddings.huggingface import HuggingFaceEmbedding
 from llama_index.vector_stores.faiss import FaissVectorStore
 
 OCP_DOCS_ROOT_URL = "https://docs.openshift.com/container-platform/"
-OCP_DOCS_VERSION = "4.15"
+OCP_DOCS_VERSION = " "
 UNREACHABLE_DOCS: bool = False
 
 
@@ -57,6 +56,7 @@ def file_metadata_func(file_path: str) -> Dict:
     title = get_file_title(file_path)
     msg = f"file_path: {file_path}, title: {title}, docs_url: {docs_url}"
     if not ping_url(docs_url):
+        print("--> unreachable: {docs_url} ")
         global UNREACHABLE_DOCS
         UNREACHABLE_DOCS = True
         msg += ", UNREACHABLE"
@@ -72,12 +72,29 @@ def got_whitespace(text: str) -> bool:
     return False
 
 
+def gen_metadata_file(start_time, args, embedding_dimension, folder, folder_index, PERSIST_FOLDER, documents):
+    metadata = {}
+    metadata["execution-time"] = time.time() - start_time
+    metadata["llm"] = "None"
+    metadata["folder"] = folder
+    metadata["embedding-model"] = args.model_name
+    metadata["index-id"] = folder_index
+    metadata["vector-db"] = "faiss"
+    metadata["embedding-dimension"] = embedding_dimension
+    metadata["chunk"] = args.chunk
+    metadata["overlap"] = args.overlap
+    metadata["total-embedded-files"] = len(documents)
+
+    with open(os.path.join(PERSIST_FOLDER, f"metadata_{folder_index}.json"), "w") as file:
+        file.write(json.dumps(metadata))
+
 if __name__ == "__main__":
 
     start_time = time.time()
 
     parser = argparse.ArgumentParser(description="embedding cli for task execution")
     parser.add_argument("-f", "--folder", help="Plain text folder path")
+    parser.add_argument("-fo", "--folders", help="Multiple plain text folders paths separated by space]")
     parser.add_argument(
         "-md",
         "--model-dir",
@@ -108,71 +125,68 @@ if __name__ == "__main__":
     args = parser.parse_args()
     print(f"Arguments used: {args}")
 
-    PERSIST_FOLDER = args.output
-    EMBEDDINGS_ROOT_DIR = os.path.abspath(args.folder)
-    if EMBEDDINGS_ROOT_DIR.endswith("/"):
-        EMBEDDINGS_ROOT_DIR = EMBEDDINGS_ROOT_DIR[:-1]
-    OCP_DOCS_VERSION = args.ocp_version
-
     os.environ["HF_HOME"] = args.model_dir
     os.environ["TRANSFORMERS_OFFLINE"] = "1"
     Settings.chunk_size = args.chunk
     Settings.chunk_overlap = args.overlap
     Settings.embed_model = HuggingFaceEmbedding(model_name=args.model_dir)
-    Settings.llm = resolve_llm(None)
 
     embedding_dimension = len(Settings.embed_model.get_text_embedding("random text"))
     faiss_index = faiss.IndexFlatIP(embedding_dimension)
     vector_store = FaissVectorStore(faiss_index=faiss_index)
     storage_context = StorageContext.from_defaults(vector_store=vector_store)
 
-    # Load documents
-    documents = SimpleDirectoryReader(
-        args.folder, recursive=True, file_metadata=file_metadata_func
-    ).load_data()
+    folder_list = []
+    if args.folder:
+        folder_list.append(args.folder)
+    if args.folders: 
+        folder_list = folder_list + args.folders.split()
+    print(f" --> List of folders: {folder_list}")
 
-    # Split based on header/section
-    # md_parser = MarkdownNodeParser()
-    # documents = md_parser.get_nodes_from_documents(documents)
+    for folder in folder_list: 
+        if not os.path.exists(folder):
+            print(f" --> Couldn't fine path for folder: {folder}")
+        else:     
+            folder_index = folder.split("/")[-1]
 
-    # Create chunks/nodes
-    nodes = Settings.text_splitter.get_nodes_from_documents(documents)
+            PERSIST_FOLDER = args.output
+            EMBEDDINGS_ROOT_DIR = os.path.abspath(folder)
+            if EMBEDDINGS_ROOT_DIR.endswith("/"):
+                EMBEDDINGS_ROOT_DIR = EMBEDDINGS_ROOT_DIR[:-1]
 
-    # Filter out invalid nodes
-    good_nodes = []
-    for node in nodes:
-        if isinstance(node, TextNode) and got_whitespace(node.text):
-            # Exclude given metadata during embedding
-            # if args.exclude_metadata is not None:
-            #     node.excluded_embed_metadata_keys.extend(args.exclude_metadata)
-            good_nodes.append(node)
-        else:
-            print("skipping node without whitespace: " + node.__repr__())
+            OCP_DOCS_VERSION = folder.split("/")[-1]
+            output_folder = os.path.join(PERSIST_FOLDER,folder_index)
 
-    # Create & save Index
-    index = VectorStoreIndex(
-        good_nodes,
-        storage_context=storage_context,
-    )
-    index.set_index_id(args.index)
-    index.storage_context.persist(persist_dir=PERSIST_FOLDER)
+            os.makedirs(output_folder)
+            print(f" --> Starting embedding for: {folder}")
+            documents = SimpleDirectoryReader(folder, recursive=True, file_metadata=file_metadata_func).load_data()
 
-    metadata: dict = {}
-    metadata["execution-time"] = time.time() - start_time
-    metadata["llm"] = "None"
-    metadata["embedding-model"] = args.model_name
-    metadata["index-id"] = args.index
-    metadata["vector-db"] = "faiss.IndexFlatIP"
-    metadata["embedding-dimension"] = embedding_dimension
-    metadata["chunk"] = args.chunk
-    metadata["overlap"] = args.overlap
-    metadata["total-embedded-files"] = len(documents)
+            if UNREACHABLE_DOCS:
+                raise Exception(
+                    "There were documents with unreachable URLs, grep the log for UNREACHABLE.\n"
+                    "Please update the plain text."
+                )
 
-    with open(os.path.join(PERSIST_FOLDER, "metadata.json"), "w") as file:
-        file.write(json.dumps(metadata))
+            good_nodes = []
+            nodes = Settings.text_splitter.get_nodes_from_documents(documents)
+            for node in nodes:
+                if isinstance(node, TextNode) and got_whitespace(node.text):
+                    good_nodes.append(node)
+                else:
+                    print("skipping node without whitespace: " + node.__repr__())
 
-    if UNREACHABLE_DOCS:
-        raise Exception(
-            "There were documents with unreachable URLs, grep the log for UNREACHABLE.\n"
-            "Please update the plain text."
-        )
+            index = VectorStoreIndex(
+                good_nodes,
+                storage_context=storage_context,
+            )
+            
+            print(f" --> Setting index {folder_index}")  
+            index.set_index_id(folder_index.replace(".","_"))
+            index.storage_context.persist(persist_dir= output_folder)
+
+            print(f" --> List of folders: {folder_list}")
+            gen_metadata_file(start_time, args, embedding_dimension, folder, folder_index, PERSIST_FOLDER, documents)
+
+    print(f" --> Completed embedding generation")
+
+
