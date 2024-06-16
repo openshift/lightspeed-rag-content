@@ -64,7 +64,7 @@ if __name__ == "__main__":
         with open(args.attributes, "r") as fin:
             attributes = yaml.safe_load(fin)
         for key, value in attributes.items():
-            attribute_list = [*attribute_list, "-a", key + '=%s' % value]
+            attribute_list = [*attribute_list, "-a", key + "=%s" % value]
 
     with open(args.topic_map, "r") as fin:
         topic_map = yaml.safe_load_all(fin)

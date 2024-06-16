@@ -4,7 +4,7 @@ import argparse
 import json
 import os
 import time
-from typing import Dict
+from typing import Callable, Dict
 
 import faiss
 import requests
@@ -20,6 +20,7 @@ from llama_index.vector_stores.faiss import FaissVectorStore
 OCP_DOCS_ROOT_URL = "https://docs.openshift.com/container-platform/"
 OCP_DOCS_VERSION = "4.15"
 UNREACHABLE_DOCS: bool = False
+RUNBOOKS_ROOT_URL = "https://github.com/openshift/runbooks/blob/master/alerts"
 
 
 def ping_url(url: str) -> bool:
@@ -42,18 +43,14 @@ def get_file_title(file_path: str) -> str:
     return title
 
 
-def file_metadata_func(file_path: str) -> Dict:
-    """Populate the docs_url metadata element with the corresponding OCP docs URL.
+def file_metadata_func(file_path: str, docs_url_func: Callable[[str], str]) -> Dict:
+    """Populate the docs_url and title metadata elements with docs URL and the page's title.
 
     Args:
         file_path: str: file path in str
+        docs_url_func: Callable[[str], str]: lambda for the docs_url
     """
-    docs_url = (
-        OCP_DOCS_ROOT_URL
-        + OCP_DOCS_VERSION
-        + file_path.removeprefix(EMBEDDINGS_ROOT_DIR).removesuffix("txt")
-        + "html"
-    )
+    docs_url = docs_url_func(file_path)
     title = get_file_title(file_path)
     msg = f"file_path: {file_path}, title: {title}, docs_url: {docs_url}"
     if not ping_url(docs_url):
@@ -62,6 +59,33 @@ def file_metadata_func(file_path: str) -> Dict:
         msg += ", UNREACHABLE"
     print(msg)
     return {"docs_url": docs_url, "title": title}
+
+
+def ocp_file_metadata_func(file_path: str) -> Dict:
+    """Populate metadata for an OCP docs page.
+
+    Args:
+        file_path: str: file path in str
+    """
+    docs_url = lambda file_path: (  # noqa: E731
+        OCP_DOCS_ROOT_URL
+        + OCP_DOCS_VERSION
+        + file_path.removeprefix(EMBEDDINGS_ROOT_DIR).removesuffix("txt")
+        + "html"
+    )
+    return file_metadata_func(file_path, docs_url)
+
+
+def runbook_file_metadata_func(file_path: str) -> Dict:
+    """Populate metadata for a runbook page.
+
+    Args:
+        file_path: str: file path in str
+    """
+    docs_url = lambda file_path: (  # noqa: E731
+        RUNBOOKS_ROOT_URL + file_path.removeprefix(RUNBOOKS_ROOT_DIR)
+    )
+    return file_metadata_func(file_path, docs_url)
 
 
 def got_whitespace(text: str) -> bool:
@@ -78,6 +102,7 @@ if __name__ == "__main__":
 
     parser = argparse.ArgumentParser(description="embedding cli for task execution")
     parser.add_argument("-f", "--folder", help="Plain text folder path")
+    parser.add_argument("-r", "--runbooks", help="Runbooks folder path")
     parser.add_argument(
         "-md",
         "--model-dir",
@@ -112,6 +137,10 @@ if __name__ == "__main__":
     EMBEDDINGS_ROOT_DIR = os.path.abspath(args.folder)
     if EMBEDDINGS_ROOT_DIR.endswith("/"):
         EMBEDDINGS_ROOT_DIR = EMBEDDINGS_ROOT_DIR[:-1]
+    RUNBOOKS_ROOT_DIR = os.path.abspath(args.runbooks)
+    if RUNBOOKS_ROOT_DIR.endswith("/"):
+        RUNBOOKS_ROOT_DIR = RUNBOOKS_ROOT_DIR[:-1]
+
     OCP_DOCS_VERSION = args.ocp_version
 
     os.environ["HF_HOME"] = args.model_dir
@@ -128,7 +157,7 @@ if __name__ == "__main__":
 
     # Load documents
     documents = SimpleDirectoryReader(
-        args.folder, recursive=True, file_metadata=file_metadata_func
+        args.folder, recursive=True, file_metadata=ocp_file_metadata_func
     ).load_data()
 
     # Split based on header/section
@@ -148,6 +177,16 @@ if __name__ == "__main__":
             good_nodes.append(node)
         else:
             print("skipping node without whitespace: " + node.__repr__())
+
+    runbook_documents = SimpleDirectoryReader(
+        args.runbooks,
+        recursive=True,
+        required_exts=[".md"],
+        file_metadata=runbook_file_metadata_func,
+    ).load_data()
+    runbook_nodes = Settings.text_splitter.get_nodes_from_documents(runbook_documents)
+
+    good_nodes.extend(runbook_nodes)
 
     # Create & save Index
     index = VectorStoreIndex(

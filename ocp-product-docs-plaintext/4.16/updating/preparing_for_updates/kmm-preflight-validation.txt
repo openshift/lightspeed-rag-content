@@ -1,75 +1,38 @@
 # Preflight validation for Kernel Module Management (KMM) Modules
 
 
-Before performing an upgrade on the cluster with applied KMM modules, the administrator must verify that kernel modules installed using KMM are able to be installed on the nodes after the cluster upgrade and possible kernel upgrade. Preflight attempts to validate every Module loaded in the cluster, in parallel. Preflight does not wait for validation of one Module to complete before starting validation of another Module.
+Before performing an upgrade on the cluster with applied KMM modules, you must verify that kernel modules installed using KMM are able to be installed on the nodes after the cluster upgrade and possible kernel upgrade. Preflight attempts to validate every Module loaded in the cluster, in parallel. Preflight does not wait for validation of one Module to complete before starting validation of another Module.
 
 # Validation kickoff
 
 Preflight validation is triggered by creating a PreflightValidationOCP resource in the cluster. This spec contains two fields:
 
-
-```terminal
-type PreflightValidationOCPSpec struct {
-	// releaseImage describes the OCP release image that all Modules need to be checked against.
-	// +kubebuilder:validation:Required
-	ReleaseImage string `json:"releaseImage"` 1
-	// Boolean flag that determines whether images build during preflight must also
-	// be pushed to a defined repository
-	// +optional
-	PushBuiltImage bool `json:"pushBuiltImage"` 2
-}
-```
-
-
-ReleaseImage - Mandatory field that provides the name of the release image for the Red Hat OpenShift Container Platform version the cluster is upgraded to.
-PushBuiltImage - If true, then the images created during the Build and Sign validation are pushed to their repositories (false by default).
+releaseImage:: Mandatory field that provides the name of the release image for the Red Hat OpenShift Container Platform version the cluster is upgraded to.
+pushBuiltImage:: If true, then the images created during the Build and Sign validation are pushed to their repositories. This field is false by default.
 
 # Validation lifecycle
 
-Preflight validation attempts to validate every module loaded in the cluster. Preflight will stop running validation on a Module resource after the validation is successful. In case module validation has failed, you can change the module definitions and Preflight will try to validate the module again in the next loop.
+Preflight validation attempts to validate every module loaded in the cluster. Preflight stops running validation on a Module resource after the validation is successful. If module validation fails, you can change the module definitions and Preflight tries to validate the module again in the next loop.
 
 If you want to run Preflight validation for an additional kernel, then you should create another PreflightValidationOCP resource for that kernel. After all the modules have been validated, it is recommended to delete the PreflightValidationOCP resource.
 
 # Validation status
 
-Preflight reports the status and progress of each module in the cluster that it attempts to
-validate.
+A PreflightValidationOCP resource reports the status and progress of each module in the cluster that it attempts or has attempted to validate in its .status.modules list. Elements of that list contain the following fields:
 
-
-```terminal
-type CRStatus struct {
-	// Status of Module CR verification: true (verified), false (verification failed),
-	// error (error during verification process), unknown (verification has not started yet)
-	// +required
-	// +kubebuilder:validation:Required
-	// +kubebuilder:validation:Enum=True;False
-	VerificationStatus string `json:"verificationStatus"` 1
-	// StatusReason contains a string describing the status source.
-	// +optional
-	StatusReason string `json:"statusReason,omitempty"` 2
-	// Current stage of the verification process:
-	// image (image existence verification), build(build process verification)
-	// +required
-	// +kubebuilder:validation:Required
-	// +kubebuilder:validation:Enum=Image;Build;Sign;Requeued;Done
-	VerificationStage string `json:"verificationStage"` 3
-	// LastTransitionTime is the last time the CR status transitioned from one status to another.
-	// This should be when the underlying status changed.  If that is not known, then using the time when the API field changed is acceptable.
-	// +required
-	// +kubebuilder:validation:Required
-	// +kubebuilder:validation:Type=string
-	// +kubebuilder:validation:Format=date-time
-	LastTransitionTime metav1.Time `json:"lastTransitionTime" protobuf:"bytes,4,opt,name=lastTransitionTime"` 4
-}
-```
-
-
-The following fields apply to each module:
-
-VerificationStatus - true or false, validated or not.
-StatusReason - Verbal explanation regarding the status.
-VerificationStage - Describes the validation stage being executed (Image, Build, Sign).
-LastTransitionTime - The time of the last update to the status.
+lastTransitionTime:: The last time the Module resource status transitioned from one status to another. This should be when the underlying status has changed. If that is not known, then using the time when the API field changed is acceptable.
+name:: The name of the Module resource.
+namespace:: The namespace of the Module resource.
+statusReason:: Verbal explanation regarding the status.
+verificationStage:: Describes the validation stage being executed:
+* image: Image existence verification
+* build: Build process verification
+* sign: Sign process verification
+verificationStatus:: The status of the Module verification:
+* true: Verified
+* false: Verification failed
+* error: Error during the verification process
+* unknown: Verfication has not started
 
 # Preflight validation stages per Module
 
@@ -86,9 +49,7 @@ Image validation is always the first stage of the preflight validation to be exe
 Image validation consists of two stages:
 
 1. Image existence and accessibility. The code tries to access the image defined for the upgraded kernel in the module and get its manifests.
-2. Verify the presence of the kernel module defined in the Module in the correct path for future modprobe execution. The correct path is <dirname>/lib/modules/<upgraded_kernel>/.
-
-If this validation is successful, it probably means that the kernel module was compiled with the correct Linux headers.
+2. Verify the presence of the kernel module defined in the Module in the correct path for future modprobe execution. If this validation is successful, it probably means that the kernel module was compiled with the correct Linux headers. The correct path is <dirname>/lib/modules/<upgraded_kernel>/.
 
 ## Build validation stage
 
@@ -105,7 +66,7 @@ $ RUN depmod -b /opt ${KERNEL_VERSION}
 
 ----
 
-If the PushBuiltImage flag is defined in the PreflightValidationOCP custom resource (CR), it will also try to push the resulting image into its repository. The resulting image name is taken from the definition of the containerImage field of the Module CR.
+If the PushBuiltImage flag is defined in the PreflightValidationOCP custom resource (CR), it also tries to push the resulting image into its repository. The resulting image name is taken from the definition of the containerImage field of the Module CR.
 
 
 [NOTE]
@@ -115,11 +76,9 @@ If the sign section is defined for the upgraded kernel, then the resulting image
 
 ## Sign validation stage
 
-Sign validation is executed only when image validation has failed, there is a sign section in the Module that is relevant for the upgrade kernel, and build validation finished successfully in the event there was a build section in the Module relevant for the upgraded kernel. Sign validation will try to run the sign job and validate that it finishes successfully.
+Sign validation is executed only when image validation has failed. There is a sign section in the Module resource that is relevant for the upgrade kernel, and build validation finishes successfully in case there was a build section in the Module relevant for the upgraded kernel. Sign validation attempts to run the sign job and validate that it finishes successfully.
 
-If the PushBuiltImage flag is defined in the PreflightValidationOCP CR, sign validation will also try to push the resulting image to its registry.
-
-The resulting image is always the image defined in the containerImage field of the Module. The input image is either the output of the Build stage, or an image defined in the UnsignedImage field.
+If the PushBuiltImage flag is defined in the PreflightValidationOCP CR, sign validation also tries to push the resulting image to its registry. The resulting image is always the image defined in the ContainerImage field of the Module. The input image is either the output of the Build stage, or an image defined in the UnsignedImage field.
 
 
 [NOTE]
@@ -131,7 +90,7 @@ If a build section exists, the sign section input image is the build section's o
 
 This section shows an example of the PreflightValidationOCP resource in the YAML format.
 
-The example verifies all the currently present modules against the upcoming kernel version included in the Red Hat OpenShift Container Platform release 4.11.18, which the following release image points to:
+The example verifies all of the currently present modules against the upcoming kernel version included in the Red Hat OpenShift Container Platform release 4.11.18, which the following release image points to:
 
 
 ```terminal
@@ -139,15 +98,15 @@ quay.io/openshift-release-dev/ocp-release@sha256:22e149142517dfccb47be828f012659
 ```
 
 
-Because .spec.pushBuiltImage is set to true, KMM pushes the resulting images of Build/Sign into the defined repositories.
+Because .spec.pushBuiltImage is set to true, KMM pushes the resulting images of Build/Sign in to the defined repositories.
 
 
 ```yaml
-apiVersion: kmm.sigs.x-k8s.io/v1beta1
+apiVersion: kmm.sigs.x-k8s.io/v1beta2
 kind: PreflightValidationOCP
 metadata:
- name: preflight
+  name: preflight
 spec:
- releaseImage: quay.io/openshift-release-dev/ocp-release@sha256:22e149142517dfccb47be828f012659b1ccf71d26620e6f62468c264a7ce7863
- pushBuiltImage: true
+  releaseImage: quay.io/openshift-release-dev/ocp-release@sha256:22e149142517dfccb47be828f012659b1ccf71d26620e6f62468c264a7ce7863
+  pushBuiltImage: true
 ```
