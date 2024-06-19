@@ -10,6 +10,7 @@ import faiss
 import requests
 from llama_index.core import Settings, SimpleDirectoryReader, VectorStoreIndex
 from llama_index.core.llms.utils import resolve_llm
+from llama_index.readers.file.flat.base import FlatReader
 
 # from llama_index.core.node_parser import MarkdownNodeParser
 from llama_index.core.schema import TextNode
@@ -182,6 +183,7 @@ if __name__ == "__main__":
         args.runbooks,
         recursive=True,
         required_exts=[".md"],
+        file_extractor={".md": FlatReader()},
         file_metadata=runbook_file_metadata_func,
     ).load_data()
     runbook_nodes = Settings.text_splitter.get_nodes_from_documents(runbook_documents)
