@@ -427,7 +427,11 @@ Example output
 
 # Installing single-node OpenShift with IBM Z and IBM LinuxONE
 
-Installing a single-node cluster on IBM Z&#174; and IBM&#174; LinuxONE requires user-provisioned installation using either the "Installing a cluster with RHEL KVM on IBM Z&#174; and IBM&#174; LinuxONE" or the "Installing a cluster with z/VM on IBM Z&#174; and IBM&#174; LinuxONE" procedure.
+Installing a single-node cluster on IBM Z&#174; and IBM&#174; LinuxONE requires user-provisioned installation using one of the following procedures:
+
+* Installing a cluster with z/VM on IBM Z(R) and IBM(R) LinuxONE
+* Installing a cluster with RHEL KVM on IBM Z(R) and IBM(R) LinuxONE
+* Installing a cluster in an LPAR on IBM Z(R) and IBM(R) LinuxONE
 
 
 [NOTE]
@@ -446,9 +450,6 @@ Installing a single-node cluster on IBM Z(R) simplifies installation for develop
 You can use dedicated or shared IFLs to assign sufficient compute resources. Resource sharing is one of the key strengths of IBM Z(R). However, you must adjust capacity correctly on each hypervisor layer and ensure sufficient resources for every Red Hat OpenShift Container Platform cluster.
 ----
 
-* Installing a cluster with z/VM on IBM Z(R) and IBM(R) LinuxONE
-* Installing a cluster with RHEL KVM on IBM Z(R) andIBM(R) LinuxONE
-
 ## Installing single-node OpenShift with z/VM on IBM Z and IBM LinuxONE
 
 * You have installed podman.
@@ -459,7 +460,7 @@ You can use dedicated or shared IFLs to assign sufficient compute resources. Res
 $ OCP_VERSION=<ocp_version> 1
 ```
 
-Replace <ocp_version> with the current version, for example, latest-4.16
+Replace <ocp_version> with the current version. For example, latest-4.16.
 2. Set the host architecture by running the following command:
 
 ```terminal
@@ -676,7 +677,7 @@ where:
 $ OCP_VERSION=<ocp_version> 1
 ```
 
-Replace <ocp_version> with the current version, for example, latest-4.16
+Replace <ocp_version> with the current version. For example, latest-4.16.
 2. Set the host architecture by running the following command:
 
 ```terminal
@@ -819,6 +820,198 @@ $ virt-install \
 For the --location parameter, specify the location  of the kernel/initrd on the HTTP or HTTPS server.
 For the coreos.live.rootfs_url= artifact, specify the matching rootfs artifact for the kernel and initramfs you are booting. Only HTTP and HTTPS protocols are supported.
 For the ignition.config.url= parameter, specify the Ignition file for the machine role. Only HTTP and HTTPS protocols are supported.
+
+## Installing single-node OpenShift in an LPAR on IBM Z and IBM LinuxONE
+
+* If you are deploying a single-node cluster there are zero compute nodes, the Ingress Controller pods run on the control plane nodes. In single-node cluster deployments, you must configure your application ingress load balancer to route HTTP and HTTPS traffic to the control plane nodes. See the Load balancing requirements for user-provisioned infrastructure section for more information.
+
+1. Set the Red Hat OpenShift Container Platform version by running the following command:
+
+```terminal
+$ OCP_VERSION=<ocp_version> 1
+```
+
+Replace <ocp_version> with the current version. For example, latest-4.16.
+2. Set the host architecture by running the following command:
+
+```terminal
+$ ARCH=<architecture> 1
+```
+
+Replace <architecture> with the target host architecture s390x.
+3. Download the Red Hat OpenShift Container Platform client (oc) and make it available for use by entering the following commands:
+
+```terminal
+$ curl -k https://mirror.openshift.com/pub/openshift-v4/${ARCH}/clients/ocp/${OCP_VERSION}/openshift-client-linux.tar.gz -o oc.tar.gz
+```
+
+
+```terminal
+$ tar zxvf oc.tar.gz
+```
+
+
+```terminal
+$ chmod +x oc
+```
+
+4. Download the Red Hat OpenShift Container Platform installer and make it available for use by entering the following commands:
+
+```terminal
+$ curl -k https://mirror.openshift.com/pub/openshift-v4/${ARCH}/clients/ocp/${OCP_VERSION}/openshift-install-linux.tar.gz -o openshift-install-linux.tar.gz
+```
+
+
+```terminal
+$ tar zxvf openshift-install-linux.tar.gz
+```
+
+
+```terminal
+$ chmod +x openshift-install
+```
+
+5. Prepare the install-config.yaml file:
+
+```yaml
+apiVersion: v1
+baseDomain: <domain> 1
+compute:
+- name: worker
+  replicas: 0 2
+controlPlane:
+  name: master
+  replicas: 1 3
+metadata:
+  name: <name> 4
+networking: 5
+  clusterNetwork:
+  - cidr: 10.128.0.0/14
+    hostPrefix: 23
+  machineNetwork:
+  - cidr: 10.0.0.0/16 6
+  networkType: OVNKubernetes
+  serviceNetwork:
+  - 172.30.0.0/16
+platform:
+  none: {}
+pullSecret: '<pull_secret>' 7
+sshKey: |
+  <ssh_key> 8
+```
+
+Add the cluster domain name.
+Set the compute replicas to 0. This makes the control plane node schedulable.
+Set the controlPlane replicas to 1. In conjunction with the previous compute setting, this setting ensures the cluster runs on a single node.
+Set the metadata name to the cluster name.
+Set the networking details. OVN-Kubernetes is the only allowed network plugin type for single-node clusters.
+Set the cidr value to match the subnet of the single-node OpenShift cluster.
+Copy the https://console.redhat.com/openshift/install/pull-secret [pull secret from Red Hat OpenShift Cluster Manager] and add the contents to this configuration setting.
+Add the public SSH key from the administration host so that you can log in to the cluster after installation.
+6. Generate Red Hat OpenShift Container Platform assets by running the following commands:
+
+```terminal
+$ mkdir ocp
+```
+
+
+```terminal
+$ cp install-config.yaml ocp
+```
+
+7. Change to the directory that contains the Red Hat OpenShift Container Platform installation program and generate the Kubernetes manifests for the cluster:
+
+```terminal
+$ ./openshift-install create manifests --dir <installation_directory> 1
+```
+
+For <installation_directory>, specify the installation directory that contains the install-config.yaml file you created.
+8. Check that the mastersSchedulable parameter in the <installation_directory>/manifests/cluster-scheduler-02-config.yml Kubernetes manifest file is set to true.
+1. Open the <installation_directory>/manifests/cluster-scheduler-02-config.yml file.
+2. Locate the mastersSchedulable parameter and ensure that it is set to true as shown in the following spec stanza:
+
+```yaml
+spec:
+  mastersSchedulable: true
+status: {}
+```
+
+3. Save and exit the file.
+9. Create the Ignition configuration files by running the following command from the directory that contains the installation program:
+
+```terminal
+$ ./openshift-install create ignition-configs --dir <installation_directory> 1
+```
+
+For <installation_directory>, specify the same installation directory.
+10. Obtain the RHEL kernel, initramfs, and rootfs  artifacts from the Product Downloads page on the Red Hat Customer Portal or from the RHCOS image mirror page.
+
+[IMPORTANT]
+----
+The RHCOS images might not change with every release of Red Hat OpenShift Container Platform. You must download images with the highest version that is less than or equal to the Red Hat OpenShift Container Platform version that you install. Only use the appropriate kernel, initramfs, and rootfs artifacts described in the following procedure.
+----
+
+The file names contain the Red Hat OpenShift Container Platform version number. They resemble the following examples:
+kernel:: rhcos-<version>-live-kernel-<architecture>
+initramfs:: rhcos-<version>-live-initramfs.<architecture>.img
+rootfs:: rhcos-<version>-live-rootfs.<architecture>.img
+
+[NOTE]
+----
+The rootfs image is the same for FCP and DASD.
+----
+11. Move the following artifacts and files to an HTTP or HTTPS server:
+* Downloaded RHEL live kernel, initramfs, and rootfs artifacts
+* Ignition files
+12. Create a parameter file for the bootstrap in an LPAR:
+Example parameter file for the bootstrap machine
+
+```terminal
+cio_ignore=all,!condev rd.neednet=1 \
+console=ttysclp0 \
+coreos.inst.install_dev=/dev/<block_device> \1
+coreos.inst.ignition_url=http://<http_server>/bootstrap.ign \2
+coreos.live.rootfs_url=http://<http_server>/rhcos-<version>-live-rootfs.<architecture>.img \3
+ip=<ip>::<gateway>:<netmask>:<hostname>::none nameserver=<dns> \4
+rd.znet=qeth,0.0.1140,0.0.1141,0.0.1142,layer2=1,portno=0 \
+rd.dasd=0.0.4411 \5
+rd.zfcp=0.0.8001,0x50050763040051e3,0x4000406300000000 \6
+zfcp.allow_lun_scan=0
+```
+
+Specify the block device on the system to install to. For installations on DASD-type disk use dasda, for installations on FCP-type disks use sda.
+Specify the location of the bootstrap.ign config file. Only HTTP and HTTPS protocols are supported.
+For the coreos.live.rootfs_url= artifact, specify the matching rootfs artifact for the kernel`and `initramfs you are booting. Only HTTP and HTTPS protocols are supported.
+For the ip= parameter, assign the IP address manually as described in "Installing a cluster in an LPAR on IBM Z(R) and IBM(R) LinuxONE".
+For installations on DASD-type disks, use rd.dasd= to specify the DASD where RHCOS is to be installed. Omit this entry for FCP-type disks.
+For installations on FCP-type disks, use rd.zfcp=<adapter>,<wwpn>,<lun> to specify the FCP disk where RHCOS is to be installed. Omit this entry for DASD-type disks.
+
+You can adjust further parameters if required.
+13. Create a parameter file for the control plane in an LPAR:
+Example parameter file for the control plane machine
+
+```terminal
+cio_ignore=all,!condev rd.neednet=1 \
+console=ttysclp0 \
+coreos.inst.install_dev=/dev/<block_device> \
+coreos.inst.ignition_url=http://<http_server>/master.ign \1
+coreos.live.rootfs_url=http://<http_server>/rhcos-<version>-live-rootfs.<architecture>.img \
+ip=<ip>::<gateway>:<netmask>:<hostname>::none nameserver=<dns> \
+rd.znet=qeth,0.0.1140,0.0.1141,0.0.1142,layer2=1,portno=0 \
+rd.dasd=0.0.4411 \
+rd.zfcp=0.0.8001,0x50050763040051e3,0x4000406300000000 \
+zfcp.allow_lun_scan=0
+```
+
+Specify the location of the master.ign config file. Only HTTP and HTTPS protocols are supported.
+14. Transfer the following artifacts, files, and images to the LPAR. For example by using FTP:
+* kernel and initramfs artifacts
+* Parameter files
+* RHCOS images
+
+For details about how to transfer the files with FTP and boot, see Installing in an LPAR.
+15. Boot the bootstrap machine.
+16. Boot the control plane machine.
 
 # Installing single-node OpenShift with IBM Power
 
