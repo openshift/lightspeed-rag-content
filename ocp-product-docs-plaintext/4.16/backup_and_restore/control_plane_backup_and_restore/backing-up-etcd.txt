@@ -100,8 +100,6 @@ The automated backup feature for etcd supports both recurring and single backups
 For more information about the support scope of Red Hat Technology Preview features, see Technology Preview Features Support Scope.
 ----
 
-## Enabling automated etcd backups
-
 Follow these steps to enable automated backups for etcd.
 
 
@@ -150,9 +148,154 @@ Follow these steps to create a single etcd backup by creating and applying a cus
 
 * You have access to the cluster as a user with the cluster-admin role.
 * You have access to the OpenShift CLI (oc).
-* You have a PVC to save backup data to.
 
-1. Create a CR file named etcd-single-backup.yaml with contents such as the following example:
+* If dynamically-provisioned storage is available, complete the following steps to create a single automated etcd backup:
+1. Create a persistent volume claim (PVC) named etcd-backup-pvc.yaml with contents such as the following example:
+
+```yaml
+kind: PersistentVolumeClaim
+apiVersion: v1
+metadata:
+  name: etcd-backup-pvc
+  namespace: openshift-etcd
+spec:
+  accessModes:
+    - ReadWriteOnce
+  resources:
+    requests:
+      storage: 200Gi 1
+  volumeMode: Filesystem
+```
+
+The amount of storage available to the PVC. Adjust this value for your requirements.
+2. Apply the PVC by running the following command:
+
+```terminal
+$ oc apply -f etcd-backup-pvc.yaml
+```
+
+3. Verify the creation of the PVC by running the following command:
+
+```terminal
+$ oc get pvc
+```
+
+Example output
+
+```terminal
+NAME              STATUS    VOLUME   CAPACITY   ACCESS MODES   STORAGECLASS   AGE
+etcd-backup-pvc   Bound                                                       51s
+```
+
+
+[NOTE]
+----
+Dynamic PVCs stay in the Pending state until they are mounted.
+----
+4. Create a CR file named etcd-single-backup.yaml with contents such as the following example:
+
+```yaml
+apiVersion: operator.openshift.io/v1alpha1
+kind: EtcdBackup
+metadata:
+  name: etcd-single-backup
+  namespace: openshift-etcd
+spec:
+  pvcName: etcd-backup-pvc 1
+```
+
+The name of the PVC to save the backup to. Adjust this value according to your environment.
+5. Apply the CR to start a single backup:
+
+```terminal
+$ oc apply -f etcd-single-backup.yaml
+```
+
+* If dynamically-provisioned storage is not available, complete the following steps to create a single automated etcd backup:
+1. Create a StorageClass CR file named etcd-backup-local-storage.yaml with the following contents:
+
+```yaml
+apiVersion: storage.k8s.io/v1
+kind: StorageClass
+metadata:
+  name: etcd-backup-local-storage
+provisioner: kubernetes.io/no-provisioner
+volumeBindingMode: Immediate
+```
+
+2. Apply the StorageClass CR by running the following command:
+
+```terminal
+$ oc apply -f etcd-backup-local-storage.yaml
+```
+
+3. Create a PV named etcd-backup-pv-fs.yaml with contents such as the following example:
+
+```yaml
+apiVersion: v1
+kind: PersistentVolume
+metadata:
+  name: etcd-backup-pv-fs
+spec:
+  capacity:
+    storage: 100Gi 1
+  volumeMode: Filesystem
+  accessModes:
+  - ReadWriteOnce
+  persistentVolumeReclaimPolicy: Retain
+  storageClassName: etcd-backup-local-storage
+  local:
+    path: /mnt
+  nodeAffinity:
+    required:
+      nodeSelectorTerms:
+      - matchExpressions:
+      - key: kubernetes.io/hostname
+         operator: In
+         values:
+         - <example_master_node> 2
+```
+
+The amount of storage available to the PV. Adjust this value for your requirements.
+Replace this value with the node to attach this PV to.
+4. Verify the creation of the PV by running the following command:
+
+```terminal
+$ oc get pv
+```
+
+Example output
+
+```terminal
+NAME                    CAPACITY   ACCESS MODES   RECLAIM POLICY   STATUS      CLAIM   STORAGECLASS                REASON   AGE
+etcd-backup-pv-fs       100Gi      RWO            Retain           Available           etcd-backup-local-storage            10s
+```
+
+5. Create a PVC named etcd-backup-pvc.yaml with contents such as the following example:
+
+```yaml
+kind: PersistentVolumeClaim
+apiVersion: v1
+metadata:
+  name: etcd-backup-pvc
+  namespace: openshift-etcd
+spec:
+  accessModes:
+  - ReadWriteOnce
+  volumeMode: Filesystem
+  resources:
+    requests:
+      storage: 10Gi 1
+```
+
+The amount of storage available to the PVC. Adjust this value for your requirements.
+6. Apply the PVC by running the following command:
+
+```terminal
+$ oc apply -f etcd-backup-pvc.yaml
+```
+
+7. Create a CR file named etcd-single-backup.yaml with contents such as the following example:
 
 ```yaml
 apiVersion: operator.openshift.io/v1alpha1
@@ -165,7 +308,7 @@ spec:
 ```
 
 The name of the persistent volume claim (PVC) to save the backup to. Adjust this value according to your environment.
-2. Apply the CR to start a single backup:
+8. Apply the CR to start a single backup:
 
 ```terminal
 $ oc apply -f etcd-single-backup.yaml
@@ -196,12 +339,11 @@ spec:
   resources:
     requests:
       storage: 200Gi 1
-  storageClassName: standard-csi 2
   volumeMode: Filesystem
+  storageClassName: etcd-backup-local-storage
 ```
 
 The amount of storage available to the PVC. Adjust this value for your requirements.
-The name of the StorageClass required by the claim. Adjust this value according to your environment.
 
 [NOTE]
 ----
@@ -224,7 +366,7 @@ Example output
 
 ```terminal
 NAME              STATUS    VOLUME   CAPACITY   ACCESS MODES   STORAGECLASS   AGE
-etcd-backup-pvc   Pending                                      standard-csi   51s
+etcd-backup-pvc   Bound                                                       51s
 ```
 
 
@@ -246,7 +388,7 @@ kind: StorageClass
 metadata:
   name: etcd-backup-local-storage
 provisioner: kubernetes.io/no-provisioner
-volumeBindingMode: WaitForFirstConsumer
+volumeBindingMode: Immediate
 ```
 
 2. Apply the StorageClass CR by running the following command:
@@ -255,7 +397,7 @@ volumeBindingMode: WaitForFirstConsumer
 $ oc apply -f etcd-backup-local-storage.yaml
 ```
 
-3. Create a PV named etcd-backup-pv-fs.yaml from the applied StorageClass with content such as the following example:
+3. Create a PV named etcd-backup-pv-fs.yaml from the applied StorageClass with contents such as the following example:
 
 ```yaml
 apiVersion: v1
@@ -269,7 +411,7 @@ spec:
   accessModes:
   - ReadWriteMany
   persistentVolumeReclaimPolicy: Delete
-  storageClassName: local-storage
+  storageClassName: etcd-backup-local-storage
   local:
     path: /mnt/
   nodeAffinity:
@@ -279,11 +421,11 @@ spec:
         - key: kubernetes.io/hostname
           operator: In
           values:
-          - <example-master-node> 2
+          - <example_master_node> 2
 ```
 
 The amount of storage available to the PV. Adjust this value for your requirements.
-Replace this value with the node to attach this PV to.
+Replace this value with the master node to attach this PV to.
 
 [TIP]
 ----
@@ -303,8 +445,8 @@ $ oc get pv
 Example output
 
 ```terminal
-NAME                    CAPACITY   ACCESS MODES   RECLAIM POLICY   STATUS      CLAIM   STORAGECLASS    REASON   AGE
-etcd-backup-pv-fs       100Gi      RWX            Delete           Available           local-storage            10s
+NAME                    CAPACITY   ACCESS MODES   RECLAIM POLICY   STATUS      CLAIM   STORAGECLASS                REASON   AGE
+etcd-backup-pv-fs       100Gi      RWX            Delete           Available           etcd-backup-local-storage            10s
 ```
 
 5. Create a PVC named etcd-backup-pvc.yaml with contents such as the following example:
@@ -321,7 +463,7 @@ spec:
   resources:
     requests:
       storage: 10Gi 1
-  storageClassName: local-storage
+  storageClassName: etcd-backup-local-storage
 ```
 
 The amount of storage available to the PVC. Adjust this value for your requirements.
