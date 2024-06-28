@@ -1446,19 +1446,21 @@ In Red Hat OpenShift Container Platform 4.16, half of a CPU core (500 millicore)
 
 ## Setting up CPU Manager
 
-1. Optional: Label a node:
+To configure CPU manager, create a KubeletConfig custom resource (CR) and apply it to the desired set of nodes.
+
+1. Label a node by running the following command:
 
 ```terminal
 # oc label node perf-node.example.com cpumanager=true
 ```
 
-2. Edit the MachineConfigPool of the nodes where CPU Manager should be enabled. In this example, all workers have CPU Manager enabled:
+2. To enable CPU Manager for all compute nodes, edit the CR by running the following command:
 
 ```terminal
 # oc edit machineconfigpool worker
 ```
 
-3. Add a label to the worker machine config pool:
+3. Add the custom-kubelet: cpumanager-enabled label to metadata.labels section.
 
 ```yaml
 metadata:
@@ -1488,7 +1490,7 @@ Specify a policy:
 * none. This policy explicitly enables the existing default CPU affinity scheme, providing no affinity beyond what the scheduler does automatically. This is the default policy.
 * static. This policy allows containers in guaranteed pods with integer CPU requests. It also limits access to exclusive CPUs on the node. If static, you must use a lowercase s.
 Optional. Specify the CPU Manager reconcile frequency. The default is 5s.
-5. Create the dynamic kubelet config:
+5. Create the dynamic kubelet config by running the following command:
 
 ```terminal
 # oc create -f cpumanager-kubeletconfig.yaml
@@ -1496,7 +1498,7 @@ Optional. Specify the CPU Manager reconcile frequency. The default is 5s.
 
 
 This adds the CPU Manager feature to the kubelet config and, if needed, the Machine Config Operator (MCO) reboots the node. To enable CPU Manager, a reboot is not needed.
-6. Check for the merged kubelet config:
+6. Check for the merged kubelet config by running the following command:
 
 ```terminal
 # oc get machineconfig 99-worker-XXXXXX-XXXXX-XXXX-XXXXX-kubelet -o json | grep ownerReference -A7
@@ -1515,7 +1517,7 @@ Example output
         ]
 ```
 
-7. Check the worker for the updated kubelet.conf:
+7. Check the compute node for the updated kubelet.conf file by running the following command:
 
 ```terminal
 # oc debug node/perf-node.example.com
@@ -1531,7 +1533,13 @@ cpuManagerReconcilePeriod: 5s   2
 
 cpuManagerPolicy is defined when you create the KubeletConfig CR.
 cpuManagerReconcilePeriod is defined when you create the KubeletConfig CR.
-8. Create a pod that requests a core or multiple cores. Both limits and requests must have their CPU value set to a whole integer. That is the number of cores that will be dedicated to this pod:
+8. Create a project by running the following command:
+
+```terminal
+$ oc new-project <project_name>
+```
+
+9. Create a pod that requests a core or multiple cores. Both limits and requests must have their CPU value set to a whole integer. That is the number of cores that will be dedicated to this pod:
 
 ```terminal
 # cat cpumanager-pod.yaml
@@ -1567,13 +1575,14 @@ spec:
     cpumanager: "true"
 ```
 
-9. Create the pod:
+10. Create the pod:
 
 ```terminal
 # oc create -f cpumanager-pod.yaml
 ```
 
-10. Verify that the pod is scheduled to the node that you labeled:
+
+1. Verify that the pod is scheduled to the node that you labeled by running the following command:
 
 ```terminal
 # oc describe pod cpumanager
@@ -1599,7 +1608,36 @@ QoS Class:       Guaranteed
 Node-Selectors:  cpumanager=true
 ```
 
-11. Verify that the cgroups are set up correctly. Get the process ID (PID) of the pause process:
+2. Verify that a CPU has been exclusively assigned to the pod by running the following command:
+
+```terminal
+# oc describe node --selector='cpumanager=true' | grep -i cpumanager- -B2
+```
+
+Example output
+
+```terminal
+NAMESPACE    NAME                CPU Requests  CPU Limits  Memory Requests  Memory Limits  Age
+cpuman       cpumanager-mlrrz    1 (28%)       1 (28%)     1G (13%)         1G (13%)       27m
+```
+
+3. Verify that the cgroups are set up correctly. Get the process ID (PID) of the pause process by running the following commands:
+
+```terminal
+# oc debug node/perf-node.example.com
+```
+
+
+```terminal
+sh-4.2# systemctl status | grep -B5 pause
+```
+
+
+[NOTE]
+----
+If the output returns multiple pause process entries, you must identify the correct pause process.
+----
+Example output
 
 ```terminal
 # ├─init.scope
@@ -1610,14 +1648,22 @@ Node-Selectors:  cpumanager=true
   │ └─32706 /pause
 ```
 
-
-Pods of quality of service (QoS) tier Guaranteed are placed within the kubepods.slice. Pods of other QoS tiers end up in child cgroups of kubepods:
+4. Verify that pods of quality of service (QoS) tier Guaranteed are placed within the kubepods.slice subdirectory by running the following commands:
 
 ```terminal
-# cd /sys/fs/cgroup/cpuset/kubepods.slice/kubepods-pod69c01f8e_6b74_11e9_ac0f_0a2b62178a22.slice/crio-b5437308f1ad1a7db0574c542bdf08563b865c0345c86e9585f8c0b0a655612c.scope
-# for i in `ls cpuset.cpus tasks` ; do echo -n "$i "; cat $i ; done
+# cd /sys/fs/cgroup/kubepods.slice/kubepods-pod69c01f8e_6b74_11e9_ac0f_0a2b62178a22.slice/crio-b5437308f1ad1a7db0574c542bdf08563b865c0345c86e9585f8c0b0a655612c.scope
 ```
 
+
+```terminal
+# for i in `ls cpuset.cpus cgroup.procs` ; do echo -n "$i "; cat $i ; done
+```
+
+
+[NOTE]
+----
+Pods of other QoS tiers end up in child cgroups of the parent kubepods.
+----
 Example output
 
 ```terminal
@@ -1625,7 +1671,7 @@ cpuset.cpus 1
 tasks 32706
 ```
 
-12. Check the allowed CPU list for the task:
+5. Check the allowed CPU list for the task by running the following command:
 
 ```terminal
 # grep ^Cpus_allowed_list /proc/32706/status
@@ -1637,11 +1683,14 @@ Example output
  Cpus_allowed_list:    1
 ```
 
-13. Verify that another pod (in this case, the pod in the burstable QoS tier) on the system cannot run on the core allocated for the Guaranteed pod:
+6. Verify that another pod on the system cannot run on the core allocated for the Guaranteed pod. For example, to verify the pod in the besteffort QoS tier, run the following commands:
 
 ```terminal
-# cat /sys/fs/cgroup/cpuset/kubepods.slice/kubepods-besteffort.slice/kubepods-besteffort-podc494a073_6b77_11e9_98c0_06bba5c387ea.slice/crio-c56982f57b75a2420947f0afc6cafe7534c5734efc34157525fa9abbf99e3849.scope/cpuset.cpus
-0
+# cat /sys/fs/cgroup/kubepods.slice/kubepods-besteffort.slice/kubepods-besteffort-podc494a073_6b77_11e9_98c0_06bba5c387ea.slice/crio-c56982f57b75a2420947f0afc6cafe7534c5734efc34157525fa9abbf99e3849.scope/cpuset.cpus
+```
+
+
+```terminal
 # oc describe node perf-node.example.com
 ```
 

@@ -1,0 +1,617 @@
+# Performing an image-based upgrade for single-node OpenShift clusters using GitOps ZTP
+
+
+You can upgrade your managed single-node OpenShift cluster with the image-based upgrade through GitOps Zero Touch Provisioning (ZTP).
+When you deploy the Lifecycle Agent on a cluster, an ImageBasedUpgrade CR is automatically created.
+You update this CR to specify the image repository of the seed image and to move through the different stages.
+
+# Moving to the Prep stage of the image-based upgrade with Lifecycle Agent and GitOps ZTP
+
+When you deploy the Lifecycle Agent on a cluster, an ImageBasedUpgrade CR is automatically created. You update this CR to specify the image repository of the seed image and to move through the different stages.
+
+* Create policies and ConfigMap objects for resources used in the image-based upgrade. For more information, see "Creating ConfigMap objects for the image-based upgrade with GitOps ZTP
+
+1. Add policies for the Prep, Upgrade, and Idle stages to your existing group PolicyGenTemplate called ibu-upgrade-ranGen.yaml:
+
+```yaml
+apiVersion: ran.openshift.io/v1
+kind: PolicyGenTemplate
+metadata:
+  name: example-group-ibu
+  namespace: "ztp-group"
+spec:
+  bindingRules:
+    group-du-sno: ""
+  mcp: "master"
+  evaluationInterval: 1
+    compliant: 10s
+    noncompliant: 10s
+  sourceFiles:
+    - fileName: ConfigMapGeneric.yaml
+      complianceType: mustonlyhave
+      policyName: "oadp-cm-policy"
+      metadata:
+        name: oadp-cm
+        namespace: openshift-adp
+    - fileName: ibu/ImageBasedUpgrade.yaml
+      policyName: "prep-stage-policy"
+      spec:
+        stage: Prep
+        seedImageRef: 2
+          version: "4.15.0"
+          image: "quay.io/user/lca-seed:4.15.0"
+          pullSecretRef:
+            name: "<seed_pull_secret>"
+        oadpContent: 3
+        - name: "oadp-cm"
+          namespace: "openshift-adp"
+      status:
+        conditions:
+          - reason: Completed
+            status: "True"
+            type: PrepCompleted
+            message: "Prep stage completed successfully"
+    - fileName: ibu/ImageBasedUpgrade.yaml
+      policyName: "upgrade-stage-policy"
+      spec:
+        stage: Upgrade
+      status:
+        conditions:
+          - reason: Completed
+            status: "True"
+            type: UpgradeCompleted
+    - fileName: ibu/ImageBasedUpgrade.yaml
+      policyName: "finalize-stage-policy"
+      complianceType: mustonlyhave
+      spec:
+        stage: Idle
+    - fileName: ibu/ImageBasedUpgrade.yaml
+      policyName: "finalize-stage-policy"
+      status:
+        conditions:
+          - reason: Idle
+            status: "True"
+            type: Idle
+```
+
+The policy evaluation interval for compliant and non-compliant policies. Set them to 10s to ensure that the policies status accurately reflects the current upgrade status.
+Define the seed image, Red Hat OpenShift Container Platform version, and pull secret for the upgrade in the Prep stage.
+Define the OADP ConfigMap resources required for backup and restore.
+2. Verify that the policies required for an image-based upgrade are created by running the following command:
+
+```terminal
+$ oc get policies -n spoke1 | grep -E "example-group-ibu"
+```
+
+
+```terminal
+ztp-group.example-group-ibu-oadp-cm-policy       inform               NonCompliant          31h
+ztp-group.example-group-ibu-prep-stage-policy          inform               NonCompliant          31h
+ztp-group.example-group-ibu-upgrade-stage-policy       inform               NonCompliant          31h
+ztp-group.example-group-ibu-finalize-stage-policy      inform               NonCompliant          31h
+ztp-group.example-group-ibu-rollback-stage-policy      inform               NonCompliant          31h
+```
+3. Update the du-profile cluster label to the target platform version or the corresponding policy-binding label in the SiteConfig CR.
+
+```yaml
+apiVersion: ran.openshift.io/v1
+kind: SiteConfig
+[...]
+spec:
+  [...]
+    clusterLabels:
+      du-profile: "4.15.0"
+```
+
+
+[IMPORTANT]
+----
+Updating the labels to the target platform version unbinds the existing set of policies.
+----
+4. Commit and push the updated SiteConfig CR to the Git repository.
+5. When you are ready to move to the Prep stage, create the ClusterGroupUpgrade CR on the target hub cluster with the Prep and OADP ConfigMap policies:
+
+```yaml
+apiVersion: ran.openshift.io/v1alpha1
+kind: ClusterGroupUpgrade
+metadata:
+  name: cgu-ibu-prep
+  namespace: default
+spec:
+  clusters:
+  - spoke1
+  enable: true
+  managedPolicies:
+  - example-group-ibu-oadp-cm-policy
+  - example-group-ibu-prep-stage-policy
+  remediationStrategy:
+    canaries:
+      - spoke1
+    maxConcurrency: 1
+    timeout: 240
+```
+
+6. Apply the Prep policy by running the following command:
+
+```terminal
+$ oc apply -f cgu-ibu-prep.yml
+```
+
+If you provide ConfigMap objects for OADP resources and extra manifests, Lifecycle Agent validates the specified ConfigMap objects during the Prep stage.
+You might encounter the following issues:
+* Validation warnings or errors if the Lifecycle Agent detects any issues with extraManifests
+* Validation errors if the Lifecycle Agent detects any issues with oadpContent
+Validation warnings do not block the Upgrade stage but you must decide if it is safe to proceed with the upgrade.
+These warnings, for example missing CRDs, namespaces or dry run failures, update the status.conditions in the Prep stage and annotation fields in the ImageBasedUpgrade CR with details about the warning.
+
+```yaml
+[...]
+metadata:
+annotations:
+  extra-manifest.lca.openshift.io/validation-warning: '...'
+[...]
+```
+
+However, validation errors, such as adding MachineConfig or Operator manifests to extra manifests, cause the Prep stage to fail and block the Upgrade stage.
+When the validations pass, the cluster creates a new ostree stateroot, which involves pulling and unpacking the seed image, and running host level commands.
+Finally, all the required images are precached on the target cluster.
+7. Monitor the status and wait for the cgu-ibu-prep ClusterGroupUpgrade to report Completed by running the following command:
+
+```terminal
+$ oc get cgu -n default
+```
+
+
+```terminal
+NAME                    AGE   STATE       DETAILS
+cgu-ibu-prep            31h   Completed   All clusters are compliant with all the managed policies
+```
+
+* Preparing the GitOps ZTP site configuration repository for version independence
+* Creating ConfigMap objects for the image-based upgrade with Lifecycle Agent using GitOps ZTP
+* Configuring a shared container directory between ostree stateroots when using GitOps ZTP
+* About backup and snapshot locations and their secrets
+* Creating a Backup CR
+* Creating a Restore CR
+
+# Moving to the Upgrade stage of the image-based upgrade with Lifecycle Agent and GitOps ZTP
+
+After you completed the Prep stage, you can upgrade the target cluster. During the upgrade process, the OADP Operator creates a backup of the artifacts specified in the OADP CRs, then the Lifecycle Agent upgrades the cluster.
+
+If the upgrade fails or stops, an automatic rollback is initiated.
+If you have an issue after the upgrade, you can initiate a manual rollback.
+For more information about manual rollback, see "(Optional) Initiating a rollback with Lifecycle Agent and GitOps ZTP".
+
+* Complete the Prep stage.
+
+1. When you are ready to move to the Upgrade stage, create the ClusterGroupUpgrade CR on the target hub cluster that references the Upgrade policy:
+
+```yaml
+apiVersion: ran.openshift.io/v1alpha1
+kind: ClusterGroupUpgrade
+metadata:
+  name: cgu-ibu-upgrade
+  namespace: default
+spec:
+  actions:
+    beforeEnable:
+      addClusterAnnotations:
+        import.open-cluster-management.io/disable-auto-import: "true" 1
+    afterCompletion:
+      removeClusterAnnotations:
+      - import.open-cluster-management.io/disable-auto-import 2
+  clusters:
+  - spoke1
+  enable: true
+  managedPolicies:
+  - example-group-ibu-upgrade-stage-policy
+  remediationStrategy:
+    canaries:
+      - spoke1
+    maxConcurrency: 1
+    timeout: 240
+```
+
+Applies the disable-auto-import annotation to the managed cluster before starting the upgrade. This annotation ensures the automatic importing of managed cluster is disabled during the upgrade stage until the cluster is ready.
+Removes the disable-auto-import annotation after the upgrade is complete.
+2. Apply the Upgrade policy by running the following command:
+
+```terminal
+$ oc apply -f cgu-ibu-upgrade.yml
+```
+
+3. Monitor the status by running the following command and wait for the cgu-ibu-upgrade ClusterGroupUpgrade to report Completed:
+
+```terminal
+$ oc get cgu -n default
+```
+
+
+```terminal
+NAME                              AGE   STATE       DETAILS
+cgu-ibu-prep            31h   Completed   All clusters are compliant with all the managed policies
+cgu-ibu-upgrade         31h   Completed   All clusters are compliant with all the managed policies
+```
+4. When you are satisfied with the changes and ready to finalize the upgrade, create a ClusterGroupUpgrade CR on target hub cluster that references the policy that finalizes the upgrade:
+
+```yaml
+apiVersion: ran.openshift.io/v1alpha1
+kind: ClusterGroupUpgrade
+metadata:
+  name: cgu-ibu-finalize
+  namespace: default
+spec:
+  actions:
+    beforeEnable:
+      removeClusterAnnotations:
+      - import.open-cluster-management.io/disable-auto-import
+  clusters:
+  - spoke1
+  enable: true
+  managedPolicies:
+  - example-group-ibu-finalize-stage-policy
+  remediationStrategy:
+    canaries:
+      - spoke1
+    maxConcurrency: 1
+    timeout: 240
+```
+
+
+[IMPORTANT]
+----
+Ensure that no other ClusterGroupUpgrade CRs are in progress because this causes TALM to continuously reconcile them. Delete all "In-Progress" ClusterGroupUpgrade CRs before applying the cgu-ibu-finalize.yaml.
+----
+5. Apply the policy by running the following command:
+
+```terminal
+$ oc apply -f cgu-ibu-finalize.yaml
+```
+
+6. Monitor the status by running the following command: and wait for the cgu-ibu-finalize ClusterGroupUpgrade to report Completed:
+
+```terminal
+$ oc get cgu -n default
+```
+
+
+```terminal
+NAME                    AGE   STATE       DETAILS
+cgu-ibu-finalize        30h   Completed   All clusters are compliant with all the managed policies
+cgu-ibu-prep            31h   Completed   All clusters are compliant with all the managed policies
+cgu-ibu-upgrade         31h   Completed   All clusters are compliant with all the managed policies
+```
+
+* (Optional) Moving to the Rollback stage of the image-based upgrade with Lifecycle Agent and GitOps ZTP
+
+# (Optional) Moving to the Rollback stage with Lifecycle Agent and GitOps ZTP
+
+If you encounter an issue after upgrade, you can start a manual rollback.
+
+1. Revert the du-profile or the corresponding policy-binding label to the original platform version in the SiteConfig CR:
+
+```yaml
+apiVersion: ran.openshift.io/v1
+kind: SiteConfig
+[...]
+spec:
+  [...]
+    clusterLabels:
+      du-profile: "4.14.x"
+```
+
+2. When you are ready to initiate the rollback, add the Rollback policy to your existing group PolicyGenTemplate CR:
+
+```yaml
+[...]
+- fileName: ibu/ImageBasedUpgrade.yaml
+  policyName: "rollback-stage-policy"
+  spec:
+    stage: Rollback
+  status:
+    conditions:
+      - message: Rollback completed
+        reason: Completed
+        status: "True"
+        type: RollbackCompleted
+```
+
+3. Create a ClusterGroupUpgrade CR on target hub cluster that references the Rollback policy:
+
+```yaml
+apiVersion: ran.openshift.io/v1alpha1
+kind: ClusterGroupUpgrade
+metadata:
+  name: cgu-ibu-rollback
+  namespace: default
+spec:
+  actions:
+    beforeEnable:
+      removeClusterAnnotations:
+      - import.open-cluster-management.io/disable-auto-import
+  clusters:
+  - spoke1
+  enable: true
+  managedPolicies:
+  - example-group-ibu-rollback-stage-policy
+  remediationStrategy:
+    canaries:
+      - spoke1
+    maxConcurrency: 1
+    timeout: 240
+```
+
+4. Apply the Rollback policy by running the following command:
+
+```terminal
+$ oc apply -f cgu-ibu-rollback.yml
+```
+
+5. When you are satisfied with the changes and you are ready to finalize the rollback, create a ClusterGroupUpgrade CR on target hub cluster that references the policy that finalizes the rollback:
+
+```yaml
+apiVersion: ran.openshift.io/v1alpha1
+kind: ClusterGroupUpgrade
+metadata:
+  name: cgu-ibu-finalize
+  namespace: default
+spec:
+  actions:
+    beforeEnable:
+      removeClusterAnnotations:
+      - import.open-cluster-management.io/disable-auto-import
+  clusters:
+  - spoke1
+  enable: true
+  managedPolicies:
+  - example-group-ibu-finalize-stage-policy
+  remediationStrategy:
+    canaries:
+      - spoke1
+    maxConcurrency: 1
+    timeout: 240
+```
+
+6. Apply the policy by running the following command:
+
+```terminal
+$ oc apply -f cgu-ibu-finalize.yml
+```
+
+
+# Troubleshooting image-based upgrades with Lifecycle Agent
+
+You can encounter issues during the image-based upgrade.
+
+## Collecting logs
+
+You can use the oc adm must-gather CLI to collect information for debugging and troubleshooting.
+
+* Collect data about the Operators by running the following command:
+
+```terminal
+$  oc adm must-gather \
+--dest-dir=must-gather/tmp \
+--image=$(oc -n openshift-lifecycle-agent get deployment.apps/lifecycle-agent-controller-manager -o jsonpath='{.spec.template.spec.containers[?(@.name == "manager")].image}') \
+--image=quay.io/konveyor/oadp-must-gather:latest \1
+--image=quay.io/openshift/origin-must-gather:latest 2
+```
+
+(Optional) You can add this options if you need to gather more information from the OADP Operator.
+(Optional) You can add this options if you need to gather more information from the SR-IOV Operator.
+
+## AbortFailed or FinalizeFailed error
+
+Issue:: 
+During the finalize stage or when you stop the process at the Prep stage, Lifecycle Agent cleans up the following resources:
+* Stateroot that is no longer required
+* Precaching resources
+* OADP CRs
+* ImageBasedUpgrade CR
+If the Lifecycle Agent fails to perform the above steps, it transitions to the AbortFailed or FinalizeFailed states.
+The condition message and log show which steps failed.
+
+```yaml
+message: failed to delete all the backup CRs. Perform cleanup manually then add 'lca.openshift.io/manual-cleanup-done' annotation to ibu CR to transition back to Idle
+      observedGeneration: 5
+      reason: AbortFailed
+      status: "False"
+      type: Idle
+```
+Resolution:: 
+1. Inspect the logs to determine why the failure occurred.
+2. To prompt Lifecycle Agent to retry the cleanup, add the lca.openshift.io/manual-cleanup-done annotation to the ImageBasedUpgrade CR.
+
+After observing this annotation, Lifecycle Agent retries the cleanup and, if it is successful, the ImageBasedUpgrade stage transitions to Idle.
+
+If the cleanup fails again, you can manually clean up the resources.
+
+### Cleaning up stateroot manually
+
+Issue:: Stopping at the Prep stage, Lifecycle Agent cleans up the new stateroot. When finalizing after a successful upgrade or a rollback, Lifecycle Agent cleans up the old stateroot.
+If this step fails, it is recommended that you inspect the logs to determine why the failure occurred.
+Resolution:: 
+1. Check if there are any existing deployments in the stateroot by running the following command:
+
+```terminal
+$ ostree admin status
+```
+
+2. If there are any, clean up the existing deployment by running the following command:
+
+```terminal
+$ ostree admin undeploy <index_of_deployment>
+```
+
+3. After cleaning up all the deployments of the stateroot, wipe the stateroot directory by running the following commands:
+
+[WARNING]
+----
+Ensure that the booted deployment is not in this stateroot.
+----
+
+```terminal
+$ stateroot="<stateroot_to_delete>"
+```
+
+
+```terminal
+$ unshare -m /bin/sh -c "mount -o remount,rw /sysroot && rm -rf /sysroot/ostree/deploy/${stateroot}"
+```
+
+### Cleaning up OADP resources manually
+
+Issue:: Automatic cleanup of OADP resources can fail due to connection issues between Lifecycle Agent and the S3 backend. By restoring the connection and adding the lca.openshift.io/manual-cleanup-done annotation, the Lifecycle Agent can successfully cleanup backup resources.
+Resolution:: 
+
+1. Check the backend connectivity by running the following command:
+
+```terminal
+$ oc get backupstoragelocations.velero.io -n openshift-adp
+```
+
+Example output
+
+```terminal
+NAME                          PHASE       LAST VALIDATED   AGE   DEFAULT
+dataprotectionapplication-1   Available   33s              8d    true
+```
+
+2. Remove all backup resources and then add the lca.openshift.io/manual-cleanup-done annotation to the ImageBasedUpgrade CR.
+
+## LVM Storage volume contents not restored
+
+When LVM Storage is used to provide dynamic persistent volume storage, LVM Storage might not restore the persistent volume contents if it is configured incorrectly.
+
+### Missing LVM Storage-related fields in Backup CR
+
+Issue:: Your Backup CRs might be missing fields that are needed to restore your persistent volumes.
+You can check for events in your application pod to determine if you have this issue by running the following:
+
+```terminal
+$ oc describe pod <your_app_name>
+```
+
+
+```terminal
+Events:
+  Type     Reason            Age                From               Message
+  ----     ------            ----               ----               -------
+  Warning  FailedScheduling  58s (x2 over 66s)  default-scheduler  0/1 nodes are available: pod has unbound immediate PersistentVolumeClaims. preemption: 0/1 nodes are available: 1 Preemption is not helpful for scheduling..
+  Normal   Scheduled         56s                default-scheduler  Successfully assigned default/db-1234 to sno1.example.lab
+  Warning  FailedMount       24s (x7 over 55s)  kubelet            MountVolume.SetUp failed for volume "pvc-1234" : rpc error: code = Unknown desc = VolumeID is not found
+```
+Resolution:: You must include logicalvolumes.topolvm.io in the application Backup CR.
+Without this resource, the application restores its persistent volume claims and persistent volume manifests correctly, however, the logicalvolume associated with this persistent volume is not restored properly after pivot.
+Example Backup CR
+
+```yaml
+apiVersion: velero.io/v1
+kind: Backup
+metadata:
+  labels:
+    velero.io/storage-location: default
+  name: small-app
+  namespace: openshift-adp
+spec:
+  includedNamespaces:
+  - test
+  includedNamespaceScopedResources:
+  - secrets
+  - persistentvolumeclaims
+  - deployments
+  - statefulsets
+  includedClusterScopedResources: 1
+  - persistentVolumes
+  - volumesnapshotcontents
+  - logicalvolumes.topolvm.io
+```
+
+To restore the persistent volumes for your application, you must configure this section as shown.
+
+### Missing LVM Storage-related fields in Restore CR
+
+Issue:: The expected resources for the applications are restored but the persistent volume contents are not preserved after upgrading.
+1. List the persistent volumes for you applications by running the following command before pivot:
+
+```terminal
+$ oc get pv,pvc,logicalvolumes.topolvm.io -A
+```
+
+
+```terminal
+NAME                        CAPACITY   ACCESS MODES   RECLAIM POLICY   STATUS   CLAIM            STORAGECLASS   REASON   AGE
+persistentvolume/pvc-1234   1Gi        RWO            Retain           Bound    default/pvc-db   lvms-vg1                4h45m
+
+NAMESPACE   NAME                           STATUS   VOLUME     CAPACITY   ACCESS MODES   STORAGECLASS   AGE
+default     persistentvolumeclaim/pvc-db   Bound    pvc-1234   1Gi        RWO            lvms-vg1       4h45m
+
+NAMESPACE   NAME                                AGE
+            logicalvolume.topolvm.io/pvc-1234   4h45m
+```
+2. List the persistent volumes for you applications by running the following command after pivot:
+
+```terminal
+$ oc get pv,pvc,logicalvolumes.topolvm.io -A
+```
+
+
+```terminal
+NAME                        CAPACITY   ACCESS MODES   RECLAIM POLICY   STATUS   CLAIM            STORAGECLASS   REASON   AGE
+persistentvolume/pvc-1234   1Gi        RWO            Delete           Bound    default/pvc-db   lvms-vg1                19s
+
+NAMESPACE   NAME                           STATUS   VOLUME     CAPACITY   ACCESS MODES   STORAGECLASS   AGE
+default     persistentvolumeclaim/pvc-db   Bound    pvc-1234   1Gi        RWO            lvms-vg1       19s
+
+NAMESPACE   NAME                                AGE
+            logicalvolume.topolvm.io/pvc-1234   18s
+```
+Resolution:: The reason for this issue is that the logicalvolume status is not preserved in the Restore CR.
+This status is important because it is required for Velero to reference the volumes that must be preserved after pivoting.
+You must include the following fields in the application Restore CR:
+Example Restore CR
+
+```yaml
+apiVersion: velero.io/v1
+kind: Restore
+metadata:
+  name: sample-vote-app
+  namespace: openshift-adp
+  labels:
+    velero.io/storage-location: default
+  annotations:
+    lca.openshift.io/apply-wave: "3"
+spec:
+  backupName:
+    sample-vote-app
+  restorePVs: true 1
+  restoreStatus: 2
+    includedResources:
+      - logicalvolumes
+```
+
+To preserve the persistent volumes for your application, you must set restorePVs to true.
+To preserve the persistent volumes for your application, you must configure this section as shown.
+
+## Debugging failed Backup and Restore CRs
+
+Issue:: The backup or restoration of artifacts failed.
+Resolution:: You can debug Backup and Restore CRs and retrieve logs with the Velero CLI tool.
+The Velero CLI tool provides more detailed information than the OpenShift CLI tool.
+1. Describe the Backup CR that contains errors by running the following command:
+
+```terminal
+$ oc exec -n openshift-adp velero-7c87d58c7b-sw6fc -c velero -- ./velero describe backup -n openshift-adp backup-acm-klusterlet --details
+```
+
+2. Describe the Restore CR that contains errors by running the following command:
+
+```terminal
+$ oc exec -n openshift-adp velero-7c87d58c7b-sw6fc -c velero -- ./velero describe restore -n openshift-adp restore-acm-klusterlet --details
+```
+
+3. Download the backed up resources to a local directory by running the following command:
+
+```terminal
+$ oc exec -n openshift-adp velero-7c87d58c7b-sw6fc -c velero -- ./velero backup download -n openshift-adp backup-acm-klusterlet -o ~/backup-acm-klusterlet.tar.gz
+```
