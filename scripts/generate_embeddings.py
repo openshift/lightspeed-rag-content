@@ -134,7 +134,11 @@ if __name__ == "__main__":
     args = parser.parse_args()
     print(f"Arguments used: {args}")
 
-    PERSIST_FOLDER = args.output
+    # OLS-823: sanitize directory
+    PERSIST_FOLDER = os.path.normpath("/" + args.output).lstrip("/")
+    if PERSIST_FOLDER == "":
+        PERSIST_FOLDER = "."
+
     EMBEDDINGS_ROOT_DIR = os.path.abspath(args.folder)
     if EMBEDDINGS_ROOT_DIR.endswith("/"):
         EMBEDDINGS_ROOT_DIR = EMBEDDINGS_ROOT_DIR[:-1]

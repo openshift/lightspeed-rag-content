@@ -23,8 +23,13 @@ if __name__ == "__main__":
     # workaround for https://github.com/UKPLab/sentence-transformers/pull/2460
     os.makedirs(os.path.join(args.local_dir, "2_Normalize"), exist_ok=True)
 
+    # OLS-823: sanitize local directory
+    local_directory = os.path.normpath("/" + args.local_dir).lstrip("/")
+    if local_directory == "":
+        local_directory = "."
+
     # pretend local_dir is HF cache
-    with open(os.path.join(args.local_dir, "version.txt"), "w", encoding="utf-8") as f:
+    with open(os.path.join(local_directory, "version.txt"), "w", encoding="utf-8") as f:
         f.write("1")
 
     # remove pytorch_model.bin, load the model from model.safetensors
