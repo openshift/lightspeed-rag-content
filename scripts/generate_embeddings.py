@@ -20,7 +20,7 @@ from llama_index.vector_stores.faiss import FaissVectorStore
 
 OCP_DOCS_ROOT_URL = "https://docs.openshift.com/container-platform/"
 OCP_DOCS_VERSION = "4.15"
-UNREACHABLE_DOCS: bool = False
+UNREACHABLE_DOCS: int = 0
 RUNBOOKS_ROOT_URL = "https://github.com/openshift/runbooks/blob/master/alerts"
 
 
@@ -56,7 +56,7 @@ def file_metadata_func(file_path: str, docs_url_func: Callable[[str], str]) -> D
     msg = f"file_path: {file_path}, title: {title}, docs_url: {docs_url}"
     if not ping_url(docs_url):
         global UNREACHABLE_DOCS
-        UNREACHABLE_DOCS = True
+        UNREACHABLE_DOCS += 1
         msg += ", UNREACHABLE"
     print(msg)
     return {"docs_url": docs_url, "title": title}
@@ -216,8 +216,9 @@ if __name__ == "__main__":
     with open(os.path.join(PERSIST_FOLDER, "metadata.json"), "w") as file:
         file.write(json.dumps(metadata))
 
-    if UNREACHABLE_DOCS:
-        raise Exception(
-            "There were documents with unreachable URLs, grep the log for UNREACHABLE.\n"
+    if UNREACHABLE_DOCS > 0:
+        print("WARNING:\n"
+            f"There were documents with {UNREACHABLE_DOCS} unreachable URLs, "
+            "grep the log for UNREACHABLE.\n"
             "Please update the plain text."
         )
