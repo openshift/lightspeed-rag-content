@@ -66,7 +66,7 @@ Each cluster machine must meet the following minimum requirements:
 
 
 
-1. One CPU is equivalent to one physical core when simultaneous multithreading (SMT), or hyperthreading, is not enabled. When enabled, use the following formula to calculate the corresponding ratio: (threads per core × cores) × sockets = CPUs.
+1. One CPU is equivalent to one physical core when simultaneous multithreading (SMT), or Hyper-Threading, is not enabled. When enabled, use the following formula to calculate the corresponding ratio: (threads per core × cores) × sockets = CPUs.
 2. Red Hat OpenShift Container Platform and Kubernetes are sensitive to disk performance, and faster storage is recommended, particularly for etcd on the control plane nodes which require a 10 ms p99 fsync duration. Note that on many cloud platforms, storage size and IOPS scale together, so you might need to over-allocate storage volume to obtain sufficient performance.
 3. As with all user-provisioned installations, if you choose to use RHEL compute machines in your cluster, you take responsibility for all operating system life cycle management and maintenance, including performing system updates, applying patches, and completing all other required tasks. Use of RHEL 7 compute machines is deprecated and has been removed in Red Hat OpenShift Container Platform 4.10 and later.
 
@@ -415,6 +415,164 @@ If you are deploying a three-node cluster with zero compute nodes, the Ingress C
 ----
 If you are using HAProxy as a load balancer, you can check that the haproxy process is listening on ports 6443, 22623, 443, and 80 by running netstat -nltupe on the HAProxy node.
 ----
+
+## Optional: Creating a manifest object that includes a customized br-ex bridge
+
+As an alternative to using the configure-ovs.sh shell script to set a customized br-ex bridge on a bare-metal platform, you can create a MachineConfig object that includes a customized br-ex bridge network configuration.
+
+
+[IMPORTANT]
+----
+{FeatureName} is a Technology Preview feature only. Technology Preview features are not supported with Red Hat production service level agreements (SLAs) and might not be functionally complete. Red Hat does not recommend using them in production. These features provide early access to upcoming product features, enabling customers to test functionality and provide feedback during the development process.
+For more information about the support scope of Red Hat Technology Preview features, see Technology Preview Features Support Scope.
+----
+
+Consider the following use cases for creating a manifest object that includes a customized br-ex bridge:
+
+* You want to make postinstallation changes to the bridge, such as changing the Open vSwitch (OVS) or OVN-Kubernetes br-ex bridge network. The configure-ovs.sh shell script does not support making postinstallation changes to the bridge.
+* You want to deploy the bridge on a different interface than the interface available on a host or server IP address.
+* You want to make advanced configurations to the bridge that are not possible with the configure-ovs.sh shell script. Using the script for these configurations might result in the bridge failing to connect multiple network interfaces and facilitating data forwarding between the interfaces.
+
+
+[NOTE]
+----
+If you require an environment with a single network interface controller (NIC) and default network settings, use the configure-ovs.sh shell script.
+----
+
+After you install Red Hat Enterprise Linux CoreOS (RHCOS) and the system reboots, the Machine Config Operator injects Ignition configuration files into each node in your cluster, so that each node received the br-ex bridge network configuration. To prevent configuration conflicts, the configure-ovs.sh shell script receives a signal to not configure the br-ex bridge.
+
+* Optional: You have installed the nmstate API so that you can validate the NMState configuration.
+
+1. Create a NMState configuration file that has decoded base64 information for your customized br-ex bridge network:
+Example of an NMState configuration for a customized br-ex bridge network
+
+```yaml
+interfaces:
+- name: enp2s0 1
+  type: ethernet 2
+  state: up 3
+  ipv4:
+    enabled: false 4
+  ipv6:
+    enabled: false
+- name: br-ex
+  type: ovs-bridge
+  state: up
+  ipv4:
+    enabled: false
+    dhcp: false
+  ipv6:
+    enabled: false
+    dhcp: false
+  bridge:
+    port:
+    - name: enp2s0 5
+    - name: br-ex
+- name: br-ex
+  type: ovs-interface
+  state: up
+  copy-mac-from: enp2s0
+  ipv4:
+    enabled: true
+    dhcp: true
+  ipv6:
+    enabled: false
+    dhcp: false
+# ...
+```
+
+Name of the interface.
+The type of ethernet.
+The requested state for the interface after creation.
+Disables IPv4 and IPv6 in this example.
+The node NIC to which the bridge attaches.
+2. Use the cat command to base64-encode the contents of the NMState configuration:
+
+```terminal
+$ cat <nmstate_configuration>.yaml | base64 1
+```
+
+Replace <nmstate_configuration> with the name of your NMState resource YAML file.
+3. Create a MachineConfig manifest file and define a customized br-ex bridge network configuration analogous to the following example:
+
+```yaml
+apiVersion: machineconfiguration.openshift.io/v1
+kind: MachineConfig
+metadata:
+  labels:
+    machineconfiguration.openshift.io/role: worker 1
+  name: 10-br-ex-worker 2
+spec:
+  config:
+    ignition:
+      version: 3.2.0
+    storage:
+      files:
+      - contents:
+          source: data:text/plain;charset=utf-8;base64,<base64_encoded_nmstate_configuration> 3
+        mode: 0644
+        overwrite: true
+        path: /etc/nmstate/openshift/cluster.yml
+# ...
+```
+
+For each node in your cluster, specify the hostname path to your node and the base-64 encoded Ignition configuration file data for the machine type. If you have a single global configuration specified in an /etc/nmstate/openshift/cluster.yml configuration file that you want to apply to all nodes in your cluster, you do not need to specify the hostname path for each node. The worker role is the default role for nodes in your cluster. The .yaml extension does not work when specifying the hostname path for each node or all nodes in the MachineConfig manifest file.
+The name of the policy.
+Writes the encoded base64 information to the specified path.
+
+## Optional: Scaling each machine set to compute nodes
+
+To apply a customized br-ex bridge configuration to all compute nodes in your Red Hat OpenShift Container Platform cluster, you must edit your MachineConfig custom resource (CR) and modify its roles. Additionally, you must create a BareMetalHost CR that defines information for your bare-metal machine, such as hostname, credentials, and so on.
+
+After you configure these resources, you must scale machine sets, so that the machine sets can apply the resource configuration to each compute node and reboot the nodes.
+
+* You created a MachineConfig manifest object that includes a customized br-ex bridge configuration.
+
+1. Edit the MachineConfig CR by entering the following command:
+
+```terminal
+$ oc edit mc <machineconfig_custom_resource_name>
+```
+
+2. Add each compute node configuration to the CR, so that the CR can manage roles for each defined compute node in your cluster.
+3. Create a Secret object named extraworker-secret that has a minimal static IP configuration.
+4. Apply the extraworker-secret secret to each node in your cluster by entering the following command. This step provides each compute node access to the Ignition config file.
+
+```terminal
+$ oc apply -f ./extraworker-secret.yaml
+```
+
+5. Create a BareMetalHost resource and specify the network secret in the preprovisioningNetworkDataName parameter:
+Example BareMetalHost resource with an attached network secret
+
+```yaml
+apiVersion: metal3.io/v1alpha1
+kind: BareMetalHost
+spec:
+# ...
+  preprovisioningNetworkDataName: ostest-extraworker-0-network-config-secret
+# ...
+```
+
+6. To mange the BareMetalHost object within the openshift-machine-api namespace of your cluster, change to the namespace by entering the following command:
+
+```terminal
+$ oc project openshift-machine-api
+```
+
+7. Get the machine sets:
+
+```terminal
+$ oc get machinesets
+```
+
+8. Scale each machine set by entering the following command. You must run this command for each machine set.
+
+```terminal
+$ oc scale machineset <machineset_name> --replicas=<n> 1
+```
+
+Where <machineset_name> is the name of the machine set and <n> is the number of compute nodes.
 
 # Preparing the user-provisioned infrastructure
 
@@ -947,24 +1105,25 @@ Phase 1:: You can customize the following network-related fields in the install-
 * networking.serviceNetwork
 * networking.machineNetwork
 
-For more information on these fields, refer to Installation configuration parameters.
+For more information, see "Installation configuration parameters".
 
 [NOTE]
 ----
-Set the networking.machineNetwork to match the CIDR that the preferred NIC resides in.
+Set the networking.machineNetwork to match the Classless Inter-Domain Routing (CIDR) where the preferred subnet is located.
 ----
 
 [IMPORTANT]
 ----
-The CIDR range 172.17.0.0/16 is reserved by libVirt. You cannot use this range or any range that overlaps with this range for any networks in your cluster.
+The CIDR range 172.17.0.0/16 is reserved by libVirt. You cannot use any other CIDR range that overlaps with the 172.17.0.0/16 CIDR range for networks in your cluster.
 ----
 Phase 2:: After creating the manifest files by running openshift-install create manifests, you can define a customized Cluster Network Operator manifest with only the fields you want to modify. You can use the manifest to specify advanced network configuration.
 
-You cannot override the values specified in phase 1 in the install-config.yaml file during phase 2. However, you can further customize the network plugin during phase 2.
+During phase 2, you cannot override the values that you specified in phase 1 in the install-config.yaml file. However, you can customize the network plugin during phase 2.
 
 # Specifying advanced network configuration
 
 You can use advanced network configuration for your network plugin to integrate your cluster into your existing network environment.
+
 You can specify advanced network configuration only before you install the cluster.
 
 
