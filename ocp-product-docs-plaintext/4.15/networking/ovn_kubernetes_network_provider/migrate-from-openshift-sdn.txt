@@ -145,7 +145,37 @@ Perform the migration only when an interruption in service is acceptable.
 $ oc get Network.config.openshift.io cluster -o yaml > cluster-openshift-sdn.yaml
 ```
 
-2. To prepare all the nodes for the migration, set the migration field on the Cluster Network Operator configuration object by entering the following command:
+2. Verify that the  OVN_SDN_MIGRATION_TIMEOUT environment variable is set and is equal to 0s by running the following command:
+
+```bash
+#!/bin/bash
+
+if [ -n "$OVN_SDN_MIGRATION_TIMEOUT" ] && [ "$OVN_SDN_MIGRATION_TIMEOUT" = "0s" ]; then
+    unset OVN_SDN_MIGRATION_TIMEOUT
+fi
+
+#loops the timeout command of the script to repeatedly check the cluster Operators until all are available.
+
+co_timeout=${OVN_SDN_MIGRATION_TIMEOUT:-1200s}
+timeout "$co_timeout" bash <<EOT
+until
+  oc wait co --all --for='condition=AVAILABLE=True' --timeout=10s && \
+  oc wait co --all --for='condition=PROGRESSING=False' --timeout=10s && \
+  oc wait co --all --for='condition=DEGRADED=False' --timeout=10s;
+do
+  sleep 10
+  echo "Some ClusterOperators Degraded=False,Progressing=True,or Available=False";
+done
+EOT
+```
+
+3. Remove the configuration from the Cluster Network Operator (CNO) configuration object by running the following command:
+
+```terminal
+$ oc patch Network.operator.openshift.io cluster --type='merge' \ --patch '{"spec":{"migration":null}}'
+```
+
+4. To prepare all the nodes for the migration, set the migration field on the CNO configuration object by running the following command:
 
 ```terminal
 $ oc patch Network.operator.openshift.io cluster --type='merge' \
@@ -157,7 +187,19 @@ $ oc patch Network.operator.openshift.io cluster --type='merge' \
 ----
 This step does not deploy OVN-Kubernetes immediately. Instead, specifying the migration field triggers the Machine Config Operator (MCO) to apply new machine configs to all the nodes in the cluster in preparation for the OVN-Kubernetes deployment.
 ----
-3. Optional: You can disable automatic migration of several OpenShift SDN capabilities to the OVN-Kubernetes equivalents:
+1. Check that the reboot is finished by running the following command:
+
+```terminal
+$ oc get mcp
+```
+
+2. Check that all cluster Operators are available by running the following command:
+
+```terminal
+$ oc get co
+```
+
+3. Alternatively: You can disable automatic migration of several OpenShift SDN capabilities to the OVN-Kubernetes equivalents:
 * Egress IPs
 * Egress firewall
 * Multicast
@@ -183,7 +225,7 @@ $ oc patch Network.operator.openshift.io cluster --type='merge' \
 
 where:
 bool: Specifies whether to enable migration of the feature. The default is true.
-4. Optional: You can customize the following settings for OVN-Kubernetes to meet your network infrastructure requirements:
+5. Optional: You can customize the following settings for OVN-Kubernetes to meet your network infrastructure requirements:
 * Maximum transmission unit (MTU). Consider the following before customizing the MTU for this optional step:
 * If you use the default MTU, and you want to keep the default MTU during migration, this step can be ignored.
 * If you used a custom MTU, and you want to keep the custom MTU during migration, you must declare the custom MTU value in this step.
@@ -230,7 +272,7 @@ $ oc patch Network.operator.openshift.io cluster --type=merge \
     }}}}'
 ```
 
-5. As the MCO updates machines in each machine config pool, it reboots each node one by one. You must wait until all the nodes are updated. Check the machine config pool status by entering the following command:
+6. As the MCO updates machines in each machine config pool, it reboots each node one by one. You must wait until all the nodes are updated. Check the machine config pool status by entering the following command:
 
 ```terminal
 $ oc get mcp
@@ -243,7 +285,7 @@ A successfully updated node has the following status: UPDATED=true, UPDATING=fal
 ----
 By default, the MCO updates one machine per pool at a time, causing the total time the migration takes to increase with the size of the cluster.
 ----
-6. Confirm the status of the new machine configuration on the hosts:
+7. Confirm the status of the new machine configuration on the hosts:
 1. To list the machine configuration state and the name of the applied machine configuration, enter the following command:
 
 ```terminal
@@ -314,7 +356,7 @@ $ oc logs <pod> -n openshift-machine-config-operator
 
 where pod is the name of a machine config daemon pod.
 3. Resolve any errors in the logs shown by the output from the previous command.
-7. To start the migration, configure the OVN-Kubernetes network plugin by using one of the following commands:
+8. To start the migration, configure the OVN-Kubernetes network plugin by using one of the following commands:
 * To specify the network provider without changing the cluster network IP address block, enter the following command:
 
 ```terminal
@@ -346,7 +388,7 @@ where cidr is a CIDR block and prefix is the slice of the CIDR block apportioned
 ----
 You cannot change the service network address block during the migration.
 ----
-8. Verify that the Multus daemon set rollout is complete before continuing with subsequent steps:
+9. Verify that the Multus daemon set rollout is complete before continuing with subsequent steps:
 
 ```terminal
 $ oc -n openshift-multus rollout status daemonset/multus
@@ -363,11 +405,12 @@ Waiting for daemon set "multus" rollout to finish: 5 of 6 updated pods are avail
 daemon set "multus" successfully rolled out
 ```
 
-9. To complete changing the network plugin, reboot each node in your cluster. You can reboot the nodes in your cluster with either of the following approaches:
+10. To complete changing the network plugin, reboot each node in your cluster. You can reboot the nodes in your cluster with either of the following approaches:
 
 [IMPORTANT]
 ----
 The following scripts reboot all of the nodes in the cluster at the same time. This can cause your cluster to be unstable. Another option is to reboot your nodes manually one at a time. Rebooting nodes one-by-one causes considerable downtime in a cluster with many nodes.
+Cluster Operators will not work correctly before you reboot the nodes.
 ----
 * With the oc rsh command, you can use a bash script similar to the following:
 
@@ -397,7 +440,7 @@ do
 done
 ```
 
-10. Confirm that the migration succeeded:
+11. Confirm that the migration succeeded:
 1. To confirm that the network plugin is OVN-Kubernetes, enter the following command.  The value of status.networkType must be OVNKubernetes.
 
 ```terminal
@@ -426,7 +469,7 @@ $ oc get co
 
 
 The status of every cluster Operator must be the following: AVAILABLE="True", PROGRESSING="False", DEGRADED="False". If a cluster Operator is not available or degraded, check the logs for the cluster Operator for more information.
-11. Complete the following steps only if the migration succeeds and your cluster is in a good state:
+12. Complete the following steps only if the migration succeeds and your cluster is in a good state:
 1. To remove the migration configuration from the CNO configuration object, enter the following command:
 
 ```terminal
@@ -459,6 +502,7 @@ $ oc delete namespace openshift-sdn
 * OVN-Kubernetes capabilities
 * Configuring an egress IP address
 * Configuring an egress firewall for a project
+* OVN-Kubernetes egress firewall blocks process to deploy application as DeploymentConfig
 * Enabling multicast for a project
 * OpenShift SDN capabilities
 * Configuring egress IPs for a project

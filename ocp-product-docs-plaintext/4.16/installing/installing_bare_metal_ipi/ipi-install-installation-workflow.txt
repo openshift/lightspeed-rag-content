@@ -259,6 +259,164 @@ bridge-slave-eno2  f31c3353-54b7-48de-893a-02d2b34c4736  ethernet  eno2
 ```
 
 
+## Optional: Creating a manifest object that includes a customized br-ex bridge
+
+As an alternative to using the configure-ovs.sh shell script to set a customized br-ex bridge on a bare-metal platform, you can create a MachineConfig object that includes a customized br-ex bridge network configuration.
+
+
+[IMPORTANT]
+----
+{FeatureName} is a Technology Preview feature only. Technology Preview features are not supported with Red Hat production service level agreements (SLAs) and might not be functionally complete. Red Hat does not recommend using them in production. These features provide early access to upcoming product features, enabling customers to test functionality and provide feedback during the development process.
+For more information about the support scope of Red Hat Technology Preview features, see Technology Preview Features Support Scope.
+----
+
+Consider the following use cases for creating a manifest object that includes a customized br-ex bridge:
+
+* You want to make postinstallation changes to the bridge, such as changing the Open vSwitch (OVS) or OVN-Kubernetes br-ex bridge network. The configure-ovs.sh shell script does not support making postinstallation changes to the bridge.
+* You want to deploy the bridge on a different interface than the interface available on a host or server IP address.
+* You want to make advanced configurations to the bridge that are not possible with the configure-ovs.sh shell script. Using the script for these configurations might result in the bridge failing to connect multiple network interfaces and facilitating data forwarding between the interfaces.
+
+
+[NOTE]
+----
+If you require an environment with a single network interface controller (NIC) and default network settings, use the configure-ovs.sh shell script.
+----
+
+After you install Red Hat Enterprise Linux CoreOS (RHCOS) and the system reboots, the Machine Config Operator injects Ignition configuration files into each node in your cluster, so that each node received the br-ex bridge network configuration. To prevent configuration conflicts, the configure-ovs.sh shell script receives a signal to not configure the br-ex bridge.
+
+* Optional: You have installed the nmstate API so that you can validate the NMState configuration.
+
+1. Create a NMState configuration file that has decoded base64 information for your customized br-ex bridge network:
+Example of an NMState configuration for a customized br-ex bridge network
+
+```yaml
+interfaces:
+- name: enp2s0 1
+  type: ethernet 2
+  state: up 3
+  ipv4:
+    enabled: false 4
+  ipv6:
+    enabled: false
+- name: br-ex
+  type: ovs-bridge
+  state: up
+  ipv4:
+    enabled: false
+    dhcp: false
+  ipv6:
+    enabled: false
+    dhcp: false
+  bridge:
+    port:
+    - name: enp2s0 5
+    - name: br-ex
+- name: br-ex
+  type: ovs-interface
+  state: up
+  copy-mac-from: enp2s0
+  ipv4:
+    enabled: true
+    dhcp: true
+  ipv6:
+    enabled: false
+    dhcp: false
+# ...
+```
+
+Name of the interface.
+The type of ethernet.
+The requested state for the interface after creation.
+Disables IPv4 and IPv6 in this example.
+The node NIC to which the bridge attaches.
+2. Use the cat command to base64-encode the contents of the NMState configuration:
+
+```terminal
+$ cat <nmstate_configuration>.yaml | base64 1
+```
+
+Replace <nmstate_configuration> with the name of your NMState resource YAML file.
+3. Create a MachineConfig manifest file and define a customized br-ex bridge network configuration analogous to the following example:
+
+```yaml
+apiVersion: machineconfiguration.openshift.io/v1
+kind: MachineConfig
+metadata:
+  labels:
+    machineconfiguration.openshift.io/role: worker 1
+  name: 10-br-ex-worker 2
+spec:
+  config:
+    ignition:
+      version: 3.2.0
+    storage:
+      files:
+      - contents:
+          source: data:text/plain;charset=utf-8;base64,<base64_encoded_nmstate_configuration> 3
+        mode: 0644
+        overwrite: true
+        path: /etc/nmstate/openshift/cluster.yml
+# ...
+```
+
+For each node in your cluster, specify the hostname path to your node and the base-64 encoded Ignition configuration file data for the machine type. If you have a single global configuration specified in an /etc/nmstate/openshift/cluster.yml configuration file that you want to apply to all nodes in your cluster, you do not need to specify the hostname path for each node. The worker role is the default role for nodes in your cluster. The .yaml extension does not work when specifying the hostname path for each node or all nodes in the MachineConfig manifest file.
+The name of the policy.
+Writes the encoded base64 information to the specified path.
+
+## Optional: Scaling each machine set to compute nodes
+
+To apply a customized br-ex bridge configuration to all compute nodes in your Red Hat OpenShift Container Platform cluster, you must edit your MachineConfig custom resource (CR) and modify its roles. Additionally, you must create a BareMetalHost CR that defines information for your bare-metal machine, such as hostname, credentials, and so on.
+
+After you configure these resources, you must scale machine sets, so that the machine sets can apply the resource configuration to each compute node and reboot the nodes.
+
+* You created a MachineConfig manifest object that includes a customized br-ex bridge configuration.
+
+1. Edit the MachineConfig CR by entering the following command:
+
+```terminal
+$ oc edit mc <machineconfig_custom_resource_name>
+```
+
+2. Add each compute node configuration to the CR, so that the CR can manage roles for each defined compute node in your cluster.
+3. Create a Secret object named extraworker-secret that has a minimal static IP configuration.
+4. Apply the extraworker-secret secret to each node in your cluster by entering the following command. This step provides each compute node access to the Ignition config file.
+
+```terminal
+$ oc apply -f ./extraworker-secret.yaml
+```
+
+5. Create a BareMetalHost resource and specify the network secret in the preprovisioningNetworkDataName parameter:
+Example BareMetalHost resource with an attached network secret
+
+```yaml
+apiVersion: metal3.io/v1alpha1
+kind: BareMetalHost
+spec:
+# ...
+  preprovisioningNetworkDataName: ostest-extraworker-0-network-config-secret
+# ...
+```
+
+6. To mange the BareMetalHost object within the openshift-machine-api namespace of your cluster, change to the namespace by entering the following command:
+
+```terminal
+$ oc project openshift-machine-api
+```
+
+7. Get the machine sets:
+
+```terminal
+$ oc get machinesets
+```
+
+8. Scale each machine set by entering the following command. You must run this command for each machine set.
+
+```terminal
+$ oc scale machineset <machineset_name> --replicas=<n> 1
+```
+
+Where <machineset_name> is the name of the machine set and <n> is the number of compute nodes.
+
 # Establishing communication between subnets
 
 In a typical Red Hat OpenShift Container Platform cluster setup, all nodes, including the control plane and compute nodes, reside in the same network. However, for edge computing scenarios, it can be beneficial to locate compute nodes closer to the edge. This often involves using different network segments or subnets for the remote nodes than the subnet used by the control plane and local compute nodes. Such a setup can reduce latency for the edge and allow for enhanced scalability.
@@ -2161,7 +2319,13 @@ Red Hat OpenShift Container Platform installs the chrony Network Time Protocol (
 
 Red Hat OpenShift Container Platform nodes must agree on a date and time to run properly. When compute nodes retrieve the date and time from the NTP servers on the control plane nodes, it enables the installation and operation of clusters that are not connected to a routable network and thereby do not have access to a higher stratum NTP server.
 
-1. Create a Butane config, 99-master-chrony-conf-override.bu, including the contents of the chrony.conf file for the control plane nodes.
+1. Install Butane on your installation host by using the following command:
+
+```terminal
+$ sudo dnf -y install butane
+```
+
+2. Create a Butane config, 99-master-chrony-conf-override.bu, including the contents of the chrony.conf file for the control plane nodes.
 
 [NOTE]
 ----
@@ -2215,13 +2379,13 @@ storage:
 ```
 
 You must replace <cluster-name> with the name of the cluster and replace <domain> with the fully qualified domain name.
-2. Use Butane to generate a MachineConfig object file, 99-master-chrony-conf-override.yaml, containing the configuration to be delivered to the control plane nodes:
+3. Use Butane to generate a MachineConfig object file, 99-master-chrony-conf-override.yaml, containing the configuration to be delivered to the control plane nodes:
 
 ```terminal
 $ butane 99-master-chrony-conf-override.bu -o 99-master-chrony-conf-override.yaml
 ```
 
-3. Create a Butane config, 99-worker-chrony-conf-override.bu, including the contents of the chrony.conf file for the compute nodes that references the NTP servers on the control plane nodes.
+4. Create a Butane config, 99-worker-chrony-conf-override.bu, including the contents of the chrony.conf file for the compute nodes that references the NTP servers on the control plane nodes.
 Butane config example
 
 ```yaml
@@ -2258,7 +2422,7 @@ storage:
 ```
 
 You must replace <cluster-name> with the name of the cluster and replace <domain> with the fully qualified domain name.
-4. Use Butane to generate a MachineConfig object file, 99-worker-chrony-conf-override.yaml, containing the configuration to be delivered to the worker nodes:
+5. Use Butane to generate a MachineConfig object file, 99-worker-chrony-conf-override.yaml, containing the configuration to be delivered to the worker nodes:
 
 ```terminal
 $ butane 99-worker-chrony-conf-override.bu -o 99-worker-chrony-conf-override.yaml
@@ -2797,58 +2961,3 @@ $ echo "  source: quay.io/openshift-release-dev/ocp-v4.0-art-dev" >> install-con
 * (Optional) Deployed routers on compute nodes.
 * (Optional) Created a disconnected registry.
 * (Optional) Validate disconnected registry settings if in use.
-
-# Deploying the cluster via the Red Hat OpenShift Container Platform installer
-
-Run the Red Hat OpenShift Container Platform installer:
-
-
-```terminal
-$ ./openshift-baremetal-install --dir ~/clusterconfigs --log-level debug create cluster
-```
-
-
-# Following the installation
-
-During the deployment process, you can check the installation&#8217;s overall status by issuing the tail command to the .openshift_install.log log file in the install directory folder:
-
-
-```terminal
-$ tail -f /path/to/install-dir/.openshift_install.log
-```
-
-
-# Verifying static IP address configuration
-
-If the DHCP reservation for a cluster node specifies an infinite lease, after the installer successfully provisions the node, the dispatcher script checks the node&#8217;s network configuration. If the script determines that the network configuration contains an infinite DHCP lease, it creates a new connection using the IP address of the DHCP lease as a static IP address.
-
-
-[NOTE]
-----
-The dispatcher script might run on successfully provisioned nodes while the provisioning of other nodes in the cluster is ongoing.
-----
-
-Verify the network configuration is working properly.
-
-1. Check the network interface configuration on the node.
-2. Turn off the DHCP server and reboot the Red Hat OpenShift Container Platform node and ensure that the network configuration works properly.
-
-# Preparing to reinstall a cluster on bare metal
-
-Before you reinstall a cluster on bare metal, you must perform cleanup operations.
-
-1. Remove or reformat the disks for the bootstrap, control plane node, and compute nodes. If you are working in a hypervisor environment, you must add any disks you removed.
-2. Delete the artifacts that the previous installation generated:
-
-```terminal
-$ cd ; /bin/rm -rf auth/ bootstrap.ign master.ign worker.ign metadata.json \
-.openshift_install.log .openshift_install_state.json
-```
-
-3. Generate new manifests and Ignition config files. See “Creating the Kubernetes manifest and Ignition config files" for more information.
-4. Upload the new bootstrap, control plane, and compute node Ignition config files that the installation program created to your HTTP server. This will overwrite the previous Ignition files.
-
-# Additional resources
-
-* Red Hat OpenShift Container Platform Creating the Kubernetes manifest and Ignition config files
-* Understanding update channels and releases
