@@ -120,7 +120,8 @@ Perform the migration only when an interruption in service is acceptable.
 * A recent backup of the etcd database is available.
 * A reboot can be triggered manually for each node.
 * The cluster is in a known good state, without any errors.
-* Before migration to OVN-Kubernetes, a security group rule must be in place to allow UDP packets on port 6081 for all nodes on all cloud platforms.
+* Before migration to the OVN-Kubernetes plugin, a security group rule must be in place to allow UDP packets on port 6081 for all nodes on all cloud platforms.
+* Before migration to the OVN-Kubernetes plugin, you must either set all timeouts for webhooks to 3 seconds or remove the webhooks.
 
 1. To backup the configuration for the cluster network, enter the following command:
 
@@ -155,7 +156,8 @@ EOT
 3. Remove the configuration from the Cluster Network Operator (CNO) configuration object by running the following command:
 
 ```terminal
-$ oc patch Network.operator.openshift.io cluster --type='merge' \ --patch '{"spec":{"migration":null}}'
+$ oc patch Network.operator.openshift.io cluster --type='merge' \
+--patch '{"spec":{"migration":null}}'
 ```
 
 4. To prepare all the nodes for the migration, set the migration field on the CNO configuration object by running the following command:
@@ -517,19 +519,7 @@ During the limited live migration, both OVN-Kubernetes and OpenShift SDN run in 
 * Some parameters of OVN-Kubernetes cannot be changed after installation. The following parameters can be set only before starting the limited live migration:
 * InternalTransitSwitchSubnet
 * internalJoinSubnet
-* OVN-Kubernetes reserves the 100.64.0.0/16 and 100.88.0.0/16 IP address ranges. If OpenShift SDN has been configured to use either of these IP address ranges, you must patch them to use a different IP address range before starting the limited live migration.
-* 100.64.0.0/16. This IP address range is used for the internalJoinSubnet parameter of OVN-Kubernetes by default. If this IP address range is already in use, enter the following command to update it to a different range, for example, 100.63.0.0/16:
-
-```terminal
-$ oc patch network.operator.openshift.io cluster --type='merge' -p='{"spec":{"defaultNetwork":{"ovnKubernetesConfig":{"ipv4":{"internalJoinSubnet": "100.63.0.0/16"}}}}}'
-```
-
-* 100.88.0.0/16. This IP address range is used for the internalTransSwitchSubnet parameter of OVN-Kubernetes by default. If this IP address range is already in use, enter the following command to update it to a different range, for example, 100.99.0.0/16:
-
-```terminal
-$ oc patch network.operator.openshift.io cluster --type='merge' -p='{"spec":{"defaultNetwork":{"ovnKubernetesConfig":{"ipv4":{"internalTransitSwitchSubnet": "100.99.0.0/16"}}}}}'
-```
-
+* OVN-Kubernetes reserves the 100.64.0.0/16 and 100.88.0.0/16 IP address ranges. These subnets cannot be overlapped with any other internal or external network. If these IP addresses have been used by OpenShift SDN or any external networks that might communicate with this cluster, you must patch them to use a different IP address range before starting the limited live migration. See "Patching OVN-Kubernetes address ranges" for more information.
 * In most cases, the limited live migration is independent of the secondary interfaces of pods created by the Multus CNI plugin. However, if these secondary interfaces were set up on the default network interface controller (NIC) of the host, for example, using MACVLAN, IPVLAN, SR-IOV, or bridge interfaces with the default NIC as the control node, OVN-Kubernetes might encounter malfunctions. Users should remove such configurations before proceeding with the limited live migration.
 * When there are multiple NICs inside of the host, and the default route is not on the interface that has the Kubernetes NodeIP, you must use the offline migration instead.
 * All DaemonSet objects in the openshift-sdn namespace, which are not managed by the Cluster Network Operator (CNO), must be removed before initiating the limited live migration. These unmanaged daemon sets can cause the migration status to remain incomplete if not properly handled.
@@ -542,24 +532,125 @@ The following table summarizes the live migration process by segmenting between 
 
 ## Migrating to the OVN-Kubernetes network plugin by using the limited live migration method
 
-The following procedure checks for egress router resources and uses the limited live migration method to migrate from the OpenShift SDN network plugin to the OVN-Kubernetes network plugin.
+Migrating to the OVN-Kubernetes network plugin by using the limited live migration method is a multiple step process that requires users to check the behavior of egress IP resources, egress firewall resources, and multicast enabled namespaces. Administrators must also review any network policies in their deployment and remove egress router resources before initiating the limited live migration process. The following procedures should be used in succession.
 
-* A cluster has been configured with the OpenShift SDN CNI network plugin in the network policy isolation mode.
-* You have installed the OpenShift CLI (oc).
+### Checking cluster resources before initiating the limited live migration
+
+Before migrating to OVN-Kubernetes by using the limited live migration, you should check for egress IP resources, egress firewall resources, and multicast enabled namespaces on your OpenShift SDN deployment. You should also review any network policies in your deployment. If you find that your cluster has these resources before migration, you should check their behavior after migration to ensure that they are working as intended.
+
+The following procedure shows you how to check for egress IP resources, egress firewall resources, multicast enabled namespaces, and network policies. No action is necessary after checking for these resources.
+
 * You have access to the cluster as a user with the cluster-admin role.
-* You have created a recent backup of the etcd database.
-* The cluster is in a known good state without any errors.
-* Before migration to OVN-Kubernetes, a security group rule must be in place to allow UDP packets on port 6081 for all nodes on all cloud platforms.
-* Cluster administrators must remove any egress router pods before beginning the limited live migration. For more information about egress router pods, see "Deploying an egress router pod in redirect mode".
-* You have reviewed the "Considerations for limited live migration to the OVN-Kubernetes network plugin" section of this document.
 
-1. Before initiating the limited live migration, you must check for any egress router pods. If there is an egress router pod on the cluster when performing a limited live migration, the Network Operator blocks the migration and returns the following error:
+1. As an Red Hat OpenShift Container Platform cluster administrator, check for egress firewall resources. You can do this by using the oc CLI, or by using the Red Hat OpenShift Container Platform web console.
+1. To check for egress firewall resource by using the oc CLI tool:
+1. To check for egress firewall resources, enter the following command:
 
-```text
-The cluster configuration is invalid (network type live migration is not supported for pods with `pod.network.openshift.io/assign-macvlan` annotation. Please remove all egress router pods). Use `oc edit network.config.openshift.io cluster` to fix.
+```terminal
+$ oc get egressnetworkpolicies.network.openshift.io -A
 ```
 
-* Enter the following command to locate egress router pods on your cluster:
+Example output
+
+```terminal
+NAMESPACE    NAME                      AGE
+<namespace>  <example_egressfirewall>  5d
+```
+
+2. You can check the intended behavior of an egress firewall resource by using the -o yaml flag. For example:
+
+```terminal
+$ oc get egressnetworkpolicy <example_egressfirewall> -n <namespace> -o yaml
+```
+
+Example output
+
+```terminal
+apiVersion: network.openshift.io/v1
+kind: EgressNetworkPolicy
+metadata:
+  name: <example_egress_policy>
+  namespace: <namespace>
+spec:
+  egress:
+  - type: Allow
+    to:
+      cidrSelector: 0.0.0.0/0
+  - type: Deny
+    to:
+      cidrSelector: 10.0.0.0/8
+```
+
+2. To check for egress firewall resources by using the Red Hat OpenShift Container Platform web console:
+1. On the Red Hat OpenShift Container Platform web console, click Observe -> Metrics.
+2. In the Expression box, type sdn_controller_num_egress_firewalls and click Run queries. If you have egress firewall resources, they are returned in the Expression box.
+2. Check your cluster for egress IP resources. You can do this by using the oc CLI, or by using the Red Hat OpenShift Container Platform web console.
+1. To check for egress IPs by using the oc CLI tool:
+1. To list namespaces with egress IP resources, enter the following command
+
+```terminal
+$ oc get netnamespace -A | awk '$3 != ""'
+```
+
+Example output
+
+```terminal
+NAME        NETID      EGRESS IPS
+namespace1  14173093   ["10.0.158.173"]
+namespace2  14173020   ["10.0.158.173"]
+```
+
+2. To check for egress IPs by using the Red Hat OpenShift Container Platform web console:
+1. On the Red Hat OpenShift Container Platform web console, click Observe -> Metrics.
+2. In the Expression box, type sdn_controller_num_egress_ips and click Run queries. If you have egress firewall resources, they are returned in the Expression box.
+3. Check your cluster for multicast enabled namespaces. You can do this by using the oc CLI, or by using the Red Hat OpenShift Container Platform web console.
+1. To check for multicast enabled namespaces by using the oc CLI tool:
+1. To locate namespaces with multicast enabled, enter the following command:
+
+```terminal
+$ oc get netnamespace -o json | jq -r '.items[] | select(.metadata.annotations."netnamespace.network.openshift.io/multicast-enabled" == "true") | .metadata.name'
+```
+
+Example output
+
+```terminal
+namespace1
+namespace3
+```
+
+2. To check for multicast enabled namespaces by using the Red Hat OpenShift Container Platform web console:
+1. On the Red Hat OpenShift Container Platform web console, click Observe -> Metrics.
+2. In the Expression box, type sdn_controller_num_multicast_enabled_namespaces and click Run queries. If you have multicast enabled namespaces, they are returned in the Expression box.
+4. Check your cluster for any network policies. You can do this by using the oc CLI.
+1. To check for network policies by using the oc CLI tool, enter the following command:
+
+```terminal
+$ oc get networkpolicy -n <namespace>
+```
+
+Example output
+
+```terminal
+NAME              POD-SELECTOR   AGE
+allow-multicast   app=my-app     11m
+```
+
+
+### Removing egress router pods before initiating the limited live migration
+
+Before initiating the limited live migration, you must check for, and remove, any egress router pods. If there is an egress router pod on the cluster when performing a limited live migration, the Network Operator blocks the migration and returns the following error:
+
+
+```text
+The cluster configuration is invalid (network type live migration is not supported for pods with `pod.network.openshift.io/assign-macvlan` annotation.
+
+Please remove all egress router pods). Use `oc edit network.config.openshift.io cluster` to fix.
+```
+
+
+* You have access to the cluster as a user with the cluster-admin role.
+
+1. To locate egress router pods on your cluster, enter the following command:
 
 ```terminal
 $ oc get pods --all-namespaces -o json | jq '.items[] | select(.metadata.annotations."pod.network.openshift.io/assign-macvlan" == "true") | {name: .metadata.name, namespace: .metadata.namespace}'
@@ -574,22 +665,45 @@ Example output
 }
 ```
 
-* Alternatively, you can query metrics on the Red Hat OpenShift Container Platform web console or by using the oc CLI to check for egress router pods. For more information, see "Checking limited live migration metrics".
-2. Enter the following command to remove an egress router pod:
+2. Alternatively, you can query metrics on the Red Hat OpenShift Container Platform web console.
+1. On the Red Hat OpenShift Container Platform web console, click Observe -> Metrics.
+2. In the Expression box, enter network_attachment_definition_instances{networks="egress-router"}. Then, click Add.
+3. To remove an egress router pod, enter the following command:
 
 ```terminal
 $ oc delete pod <egress_pod_name> -n <egress_router_project>
 ```
 
-3. Enter the following command to patch the cluster-level networking configuration and initiate the migration from OpenShift SDN to OVN-Kubernetes:
+
+### Initiating the limited live migration process
+
+After you have checked the behavior of egress IP resources, egress firewall resources, and multicast enabled namespaces, and removed any egress router resources, you can initiate the limited live migration process.
+
+* A cluster has been configured with the OpenShift SDN CNI network plugin in the network policy isolation mode.
+* You have installed the OpenShift CLI (oc).
+* You have access to the cluster as a user with the cluster-admin role.
+* You have created a recent backup of the etcd database.
+* The cluster is in a known good state without any errors.
+* Before migration to OVN-Kubernetes, a security group rule must be in place to allow UDP packets on port 6081 for all nodes on all cloud platforms.
+* If the 100.64.0.0/16 and 100.88.0.0/16 address ranges were previously in use by OpenShift-SDN, you have patched them. The first step of this procedure checks whether these address ranges are in use. If they are in use, see "Patching OVN-Kubernetes address ranges".
+* You have checked for egress IP resources, egress firewall resources, and multicast enabled namespaces.
+* You have removed any egress router pods before beginning the limited live migration. For more information about egress router pods, see "Deploying an egress router pod in redirect mode".
+* You have reviewed the "Considerations for limited live migration to the OVN-Kubernetes network plugin" section of this document.
+
+1. To patch the cluster-level networking configuration and initiate the migration from OpenShift SDN to OVN-Kubernetes, enter the following command:
 
 ```terminal
 $ oc patch Network.config.openshift.io cluster --type='merge' --patch '{"metadata":{"annotations":{"network.openshift.io/network-type-migration":""}},"spec":{"networkType":"OVNKubernetes"}}'
 ```
 
 
-After running these commands, the migration process begins. During this process, the Machine Config Operator reboots the nodes in your cluster twice. It is expected that the migration takes approximately twice as long as a cluster upgrade.
-4. Optional: You can enter the following commands to ensure that the migration process has completed, and to check the status of the network.config:
+After running this command, the migration process begins. During this process, the Machine Config Operator reboots the nodes in your cluster twice. The migration takes approximately twice as long as a cluster upgrade.
+
+[IMPORTANT]
+----
+This oc patch command checks for overlapping CIDRs in use by OpenShift SDN. If overlapping CIDRs are detected, you must patch them before the limited live migration process can start. For more information, see "Patching OVN-Kubernetes address ranges".
+----
+2. Optional: To ensure that the migration process has completed, and to check the status of the network.config, you can enter the following commands:
 
 ```terminal
 $ oc get network.config.openshift.io cluster -o jsonpath='{.status.networkType}'
@@ -602,27 +716,227 @@ $ oc get network.config cluster -o=jsonpath='{.status.conditions}' | jq .
 
 
 You can check limited live migration metrics for troubleshooting issues. For more information, see "Checking limited live migration metrics".
-5. Complete the following steps only if the migration succeeds and your cluster is in a good state:
-1. To remove the migration configuration from the network.config custom resource, enter the following command:
+
+### Patching OVN-Kubernetes address ranges
+
+OVN-Kubernetes reserves the following IP address ranges:
+
+* 100.64.0.0/16. This IP address range is used for the internalJoinSubnet parameter of OVN-Kubernetes by default.
+* 100.88.0.0/16. This IP address range is used for the internalTransSwitchSubnet parameter of OVN-Kubernetes by default.
+
+If these IP addresses have been used by OpenShift SDN or any external networks that might communicate with this cluster, you must patch them to use a different IP address range before initiating the limited live migration.
+
+The following procedure can be used to patch CIDR ranges that are in use by OpenShift SDN if the migration was initially blocked.
+
+
+[NOTE]
+----
+This is an optional procedure and must only be used if the migration was blocked after using the oc patch Network.config.openshift.io cluster --type='merge' --patch '{"metadata":{"annotations":{"network.openshift.io/network-type-migration":""}},"spec":{"networkType":"OVNKubernetes"}}' command "Initiating the limited live migration process".
+----
+
+* You have access to the cluster as a user with the cluster-admin role.
+
+1. If the 100.64.0.0/16 IP address range is already in use, enter the following command to patch it to a different range. The following example uses  100.63.0.0/16.
 
 ```terminal
-$ oc patch Network.operator.openshift.io cluster --type='merge' \
-  --patch '{ "spec": { "migration": null } }'
+$ oc patch network.operator.openshift.io cluster --type='merge' -p='{"spec":{"defaultNetwork":{"ovnKubernetesConfig":{"ipv4":{"internalJoinSubnet": "100.63.0.0/16"}}}}}'
 ```
 
-2. To remove custom configuration for the OpenShift SDN network provider, enter the following command:
+2. If the 100.88.0.0/16 IP address range is already in use, enter the following command to patch it to a different range. The following example uses  100.99.0.0/16.
 
 ```terminal
-$ oc patch Network.operator.openshift.io cluster --type='merge' \
-  --patch '{ "spec": { "defaultNetwork": { "openshiftSDNConfig": null } } }'
+$ oc patch network.operator.openshift.io cluster --type='merge' -p='{"spec":{"defaultNetwork":{"ovnKubernetesConfig":{"ipv4":{"internalTransitSwitchSubnet": "100.99.0.0/16"}}}}}'
 ```
 
-3. To remove the OpenShift SDN network provider namespace, enter the following command:
+
+After patching the 100.64.0.0/16 and 100.88.0.0/16 IP address ranges, you can initiate the limited live migration.
+
+### Checking cluster resources after initiating the limited live migration
+
+The following procedure shows you how to check for egress IP resources, egress firewall resources, multicast enabled namespaces, and network policies when your deploying is using OVN-Kubernetes. If you had these resources on OpenShift SDN, you should check them after migration to ensure that they are working properly.
+
+* You have access to the cluster as a user with the cluster-admin role.
+* You have successfully migrated from OpenShift SDN to OVN-Kubernetes by using the limited live migration.
+
+1. As an Red Hat OpenShift Container Platform cluster administrator, check for egress firewall resources. You can do this by using the oc CLI, or by using the Red Hat OpenShift Container Platform web console.
+1. To check for egress firewall resource by using the oc CLI tool:
+1. To check for egress firewall resources, enter the following command:
 
 ```terminal
-$ oc delete namespace openshift-sdn
+$ oc get egressfirewalls.k8s.ovn.org -A
 ```
 
+Example output
+
+```terminal
+NAMESPACE    NAME                      AGE
+<namespace>  <example_egressfirewall>   5d
+```
+
+2. You can check the intended behavior of an egress firewall resource by using the -o yaml flag. For example:
+
+```terminal
+$ oc get egressfirewall <example_egressfirewall> -n <namespace> -o yaml
+```
+
+Example output
+
+```terminal
+apiVersion: k8s.ovn.org/v1
+kind: EgressFirewall
+metadata:
+  name: <example_egress_policy>
+  namespace: <namespace>
+spec:
+  egress:
+  - type: Allow
+    to:
+      cidrSelector: 192.168.0.0/16
+  - type: Deny
+    to:
+      cidrSelector: 0.0.0.0/0
+```
+
+
+Ensure that the behavior of this resource is intended because it could have changed after migration. For more information about egress firewalls, see "Configuring an egress firewall for a project".
+2. To check for egress firewall resources by using the Red Hat OpenShift Container Platform web console:
+1. On the Red Hat OpenShift Container Platform web console, click Observe -> Metrics.
+2. In the Expression box, type ovnkube_controller_num_egress_firewall_rules and click Run queries. If you have egress firewall resources, they are returned in the Expression box.
+2. Check your cluster for egress IP resources. You can do this by using the oc CLI, or by using the Red Hat OpenShift Container Platform web console.
+1. To check for egress IPs by using the oc CLI tool:
+1. To list the namespace with egress IP resources, enter the following command:
+
+```terminal
+$ oc get egressip
+```
+
+Example output
+
+```terminal
+NAME                EGRESSIPS    ASSIGNED NODE                              ASSIGNED EGRESSIPS
+egress-sample       192.0.2.10   ip-10-0-42-79.us-east-2.compute.internal   192.0.2.10
+egressip-sample-2   192.0.2.14   ip-10-0-42-79.us-east-2.compute.internal   192.0.2.14
+```
+
+2. To provide detailed information about an egress IP, enter the following command:
+
+```terminal
+$ oc get egressip <egressip_name> -o yaml
+```
+
+Example output
+
+```terminal
+apiVersion: k8s.ovn.org/v1
+kind: EgressIP
+metadata:
+  annotations:
+    kubectl.kubernetes.io/last-applied-configuration: |
+      {"apiVersion":"k8s.ovn.org/v1","kind":"EgressIP","metadata":{"annotations":{},"name":"egressip-sample"},"spec":{"egressIPs":["192.0.2.12","192.0.2.13"],"namespaceSelector":{"matchLabels":{"name":"my-namespace"}}}}
+  creationTimestamp: "2024-06-27T15:48:36Z"
+  generation: 7
+  name: egressip-sample
+  resourceVersion: "125511578"
+  uid: b65833c8-781f-4cc9-bc96-d970259a7631
+spec:
+  egressIPs:
+  - 192.0.2.12
+  - 192.0.2.13
+  namespaceSelector:
+    matchLabels:
+      name: my-namespace
+```
+
+
+Repeat this for all egress IPs. Ensure that the behavior of each resource is intended because it could have changed after migration. For more information about EgressIPs, see "Configuring an EgressIP address".
+2. To check for egress IPs by using the Red Hat OpenShift Container Platform web console:
+1. On the Red Hat OpenShift Container Platform web console, click Observe -> Metrics.
+2. In the Expression box, type ovnkube_clustermanager_num_egress_ips and click Run queries. If you have egress firewall resources, they are returned in the Expression box.
+3. Check your cluster for multicast enabled namespaces. You can only do this by using the oc CLI.
+1. To locate namespaces with multicast enabled, enter the following command:
+
+```terminal
+$ oc get namespace -o json | jq -r '.items[] | select(.metadata.annotations."k8s.ovn.org/multicast-enabled" == "true") | .metadata.name'
+```
+
+Example output
+
+```terminal
+namespace1
+namespace3
+```
+
+2. To describe each multicast enabled namespace, enter the following command:
+
+```terminal
+$ oc describe namespace <namespace>
+```
+
+Example output
+
+```terminal
+Name:         my-namespace
+Labels:       kubernetes.io/metadata.name=my-namespace
+              pod-security.kubernetes.io/audit=restricted
+              pod-security.kubernetes.io/audit-version=v1.24
+              pod-security.kubernetes.io/warn=restricted
+              pod-security.kubernetes.io/warn-version=v1.24
+Annotations:  k8s.ovn.org/multicast-enabled: true
+              openshift.io/sa.scc.mcs: s0:c25,c0
+              openshift.io/sa.scc.supplemental-groups: 1000600000/10000
+              openshift.io/sa.scc.uid-range: 1000600000/10000
+Status:       Active
+```
+
+
+Ensure that multicast functionality is correctly configured and working as expected in each namespace. For more information, see "Enabling multicast for a project".
+4. Check your cluster's network policies. You can only do this by using the oc CLI.
+1. To obtain information about network policies within a namespace, enter the following command:
+
+```terminal
+$ oc get networkpolicy -n <namespace>
+```
+
+Example output
+
+```terminal
+NAME              POD-SELECTOR   AGE
+allow-multicast   app=my-app     11m
+```
+
+2. To provide detailed information about the network policy, enter the following command:
+
+```terminal
+$ oc describe networkpolicy allow-multicast -n <namespace>
+```
+
+Example output
+
+```terminal
+Name:         allow-multicast
+Namespace:    my-namespace
+Created on:   2024-07-24 14:55:03 -0400 EDT
+Labels:       <none>
+Annotations:  <none>
+Spec:
+  PodSelector:     app=my-app
+  Allowing ingress traffic:
+    To Port: <any> (traffic allowed to all ports)
+    From:
+      IPBlock:
+        CIDR: 224.0.0.0/4
+        Except:
+  Allowing egress traffic:
+    To Port: <any> (traffic allowed to all ports)
+    To:
+      IPBlock:
+        CIDR: 224.0.0.0/4
+        Except:
+  Policy Types: Ingress, Egress
+```
+
+
+Ensure that the behavior of the network policy is as intended. Optimization for network policies differ between SDN and OVN-K, so users might need to adjust their policies to achieve optimal performance for different CNIs. For more information, see "About network policy".
 
 ## Checking limited live migration metrics
 
@@ -649,7 +963,7 @@ eyJhbGciOiJSUzI1NiIsImtpZCI6IlZiSUtwclcwbEJ2VW9We...
 2. Enter the following command to request information about the openshift_network_operator_live_migration_condition metric:
 
 ```terminal
-$ oc -n openshift-monitoring exec -c prometheus prometheus-k8s-0 -- curl -k -H "Authorization: <eyJhbGciOiJSUzI1NiIsImtpZCI6IlZiSUtwclcwbEJ2VW9We...>" "https://<openshift_API_endpoint>" --data-urlencode "query=openshift_network_operator_live_migration_condition" | jq`
+$ oc -n openshift-monitoring exec -c prometheus prometheus-k8s-0 -- curl -k -H "Authorization: <eyJhbGciOiJSUzI1NiIsImtpZCI6IlZiSUtwclcwbEJ2VW9We...>" "https://<openshift_API_endpoint>" --data-urlencode "query=openshift_network_operator_live_migration_condition" | jq
 ```
 
 Example output
@@ -697,6 +1011,7 @@ The following table shows you the available metrics and the label values populat
 * About network policy
 * Changing the cluster MTU
 * MTU value selection
+* About network policy
 * OVN-Kubernetes capabilities
 * Configuring an egress IP address
 * Configuring an egress firewall for a project
