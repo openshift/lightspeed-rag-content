@@ -2,6 +2,11 @@
 
 
 As a cluster administrator, you can migrate to the OVN-Kubernetes network plugin from the OpenShift SDN network plugin using the offline migration method or the limited live migration method.
+
+[WARNING]
+----
+It is not possible to upgrade a cluster to Red Hat OpenShift Container Platform 4.17 if it is using the OpenShift SDN network plugin. You must migrate to the OVN-Kubernetes plugin before upgrading to Red Hat OpenShift Container Platform 4.17.
+----
 To learn more about OVN-Kubernetes, read About the OVN-Kubernetes network plugin.
 
 # Offline migration to the OVN-Kubernetes network plugin overview
@@ -38,6 +43,12 @@ While the OVN-Kubernetes network plugin implements many of the capabilities pres
 * OVN-Kubernetes, the default network provider in Red Hat OpenShift Container Platform 4.14 and later versions, uses the following IP address ranges internally: 100.64.0.0/16, 169.254.169.0/29, 100.88.0.0/16, fd98::/64, fd69::/125, and fd97::/64. If your cluster uses OVN-Kubernetes, do not include any of these IP address ranges in any other CIDR definitions in your cluster or infrastructure.
 
 The following sections highlight the differences in configuration between the aforementioned capabilities in OVN-Kubernetes and OpenShift SDN network plugins.
+
+## Primary network interface
+
+The OpenShift SDN plugin allows application of the NodeNetworkConfigurationPolicy (NNCP) custom resource (CR) to the primary interface on a node. The OVN-Kubernetes network plugin does not have this capability.
+
+If you have an NNCP applied to the primary interface, you must delete the NNCP before migrating to the OVN-Kubernetes network plugin. Deleting the NNCP does not remove the configuration from the primary interface, but the Kubernetes-NMState cannot manage this configuration. Instead, the configure-ovs.sh shell script manages the primary interface and the configuration attached to this interface.
 
 ## Namespace isolation
 
@@ -104,24 +115,22 @@ The following table summarizes the migration process by segmenting between the u
 
 ## Migrating to the OVN-Kubernetes network plugin by using the offline migration method
 
-As a cluster administrator, you can change the network plugin for your cluster to OVN-Kubernetes.
-During the migration, you must reboot every node in your cluster.
+As a cluster administrator, you can change the network plugin for your cluster to OVN-Kubernetes. During the migration, you must reboot every node in your cluster.
 
 
 [IMPORTANT]
 ----
-While performing the migration, your cluster is unavailable and workloads might be interrupted.
-Perform the migration only when an interruption in service is acceptable.
+While performing the migration, your cluster is unavailable and workloads might be interrupted. Perform the migration only when an interruption in service is acceptable.
 ----
 
-* A cluster configured with the OpenShift SDN CNI network plugin in the network policy isolation mode.
-* Install the OpenShift CLI (oc).
-* Access to the cluster as a user with the cluster-admin role.
-* A recent backup of the etcd database is available.
-* A reboot can be triggered manually for each node.
-* The cluster is in a known good state, without any errors.
-* Before migration to the OVN-Kubernetes plugin, a security group rule must be in place to allow UDP packets on port 6081 for all nodes on all cloud platforms.
-* Before migration to the OVN-Kubernetes plugin, you must either set all timeouts for webhooks to 3 seconds or remove the webhooks.
+* You have a cluster configured with the OpenShift SDN CNI network plugin in the network policy isolation mode.
+* You installed the OpenShift CLI (`oc`).
+* You have access to the cluster as a user with the cluster-admin role.
+* You have a recent backup of the etcd database.
+* You can manually reboot each node.
+* You checked that your cluster is in a known good state without any errors.
+* You created a security group rule that allows User Datagram Protocol (UDP) packets on port 6081 for all nodes on all cloud platforms.
+* You set all timeouts for webhooks to 3 seconds or removed the webhooks.
 
 1. To backup the configuration for the cluster network, enter the following command:
 
@@ -160,7 +169,29 @@ $ oc patch Network.operator.openshift.io cluster --type='merge' \
 --patch '{"spec":{"migration":null}}'
 ```
 
-4. To prepare all the nodes for the migration, set the migration field on the CNO configuration object by running the following command:
+4. Delete the NodeNetworkConfigurationPolicy (NNCP) custom resource (CR) that defines the primary network interface for the OpenShift SDN network plugin by completing the following steps:
+1. Check that the existing NNCP CR bonded the primary interface to your cluster by entering the following command:
+
+```terminal
+$ oc get nncp
+```
+
+Example output
+
+```terminal
+NAME          STATUS      REASON
+bondmaster0   Available   SuccessfullyConfigured
+```
+
+
+Network Manager stores the connection profile for the bonded primary interface in the /etc/NetworkManager/system-connections system path.
+2. Remove the NNCP from your cluster:
+
+```terminal
+$ oc delete nncp <nncp_manifest_filename>
+```
+
+5. To prepare all the nodes for the migration, set the migration field on the CNO configuration object by running the following command:
 
 ```terminal
 $ oc patch Network.operator.openshift.io cluster --type='merge' \
@@ -210,7 +241,7 @@ $ oc patch Network.operator.openshift.io cluster --type='merge' \
 
 where:
 bool: Specifies whether to enable migration of the feature. The default is true.
-5. Optional: You can customize the following settings for OVN-Kubernetes to meet your network infrastructure requirements:
+6. Optional: You can customize the following settings for OVN-Kubernetes to meet your network infrastructure requirements:
 * Maximum transmission unit (MTU). Consider the following before customizing the MTU for this optional step:
 * If you use the default MTU, and you want to keep the default MTU during migration, this step can be ignored.
 * If you used a custom MTU, and you want to keep the custom MTU during migration, you must declare the custom MTU value in this step.
@@ -257,7 +288,7 @@ $ oc patch Network.operator.openshift.io cluster --type=merge \
     }}}}'
 ```
 
-6. As the MCO updates machines in each machine config pool, it reboots each node one by one. You must wait until all the nodes are updated. Check the machine config pool status by entering the following command:
+7. As the MCO updates machines in each machine config pool, it reboots each node one by one. You must wait until all the nodes are updated. Check the machine config pool status by entering the following command:
 
 ```terminal
 $ oc get mcp
@@ -270,7 +301,7 @@ A successfully updated node has the following status: UPDATED=true, UPDATING=fal
 ----
 By default, the MCO updates one machine per pool at a time, causing the total time the migration takes to increase with the size of the cluster.
 ----
-7. Confirm the status of the new machine configuration on the hosts:
+8. Confirm the status of the new machine configuration on the hosts:
 1. To list the machine configuration state and the name of the applied machine configuration, enter the following command:
 
 ```terminal
@@ -341,7 +372,7 @@ $ oc logs <pod> -n openshift-machine-config-operator
 
 where pod is the name of a machine config daemon pod.
 3. Resolve any errors in the logs shown by the output from the previous command.
-8. To start the migration, configure the OVN-Kubernetes network plugin by using one of the following commands:
+9. To start the migration, configure the OVN-Kubernetes network plugin by using one of the following commands:
 * To specify the network provider without changing the cluster network IP address block, enter the following command:
 
 ```terminal
@@ -373,7 +404,7 @@ where cidr is a CIDR block and prefix is the slice of the CIDR block apportioned
 ----
 You cannot change the service network address block during the migration.
 ----
-9. Verify that the Multus daemon set rollout is complete before continuing with subsequent steps:
+10. Verify that the Multus daemon set rollout is complete before continuing with subsequent steps:
 
 ```terminal
 $ oc -n openshift-multus rollout status daemonset/multus
@@ -390,7 +421,7 @@ Waiting for daemon set "multus" rollout to finish: 5 of 6 updated pods are avail
 daemon set "multus" successfully rolled out
 ```
 
-10. To complete changing the network plugin, reboot each node in your cluster. You can reboot the nodes in your cluster with either of the following approaches:
+11. To complete changing the network plugin, reboot each node in your cluster. You can reboot the nodes in your cluster with either of the following approaches:
 
 [IMPORTANT]
 ----
@@ -425,7 +456,7 @@ do
 done
 ```
 
-11. Confirm that the migration succeeded:
+12. Confirm that the migration succeeded:
 1. To confirm that the network plugin is OVN-Kubernetes, enter the following command.  The value of status.networkType must be OVNKubernetes.
 
 ```terminal
@@ -454,7 +485,7 @@ $ oc get co
 
 
 The status of every cluster Operator must be the following: AVAILABLE="True", PROGRESSING="False", DEGRADED="False". If a cluster Operator is not available or degraded, check the logs for the cluster Operator for more information.
-12. Complete the following steps only if the migration succeeds and your cluster is in a good state:
+13. Complete the following steps only if the migration succeeds and your cluster is in a good state:
 1. To remove the migration configuration from the CNO configuration object, enter the following command:
 
 ```terminal
@@ -513,6 +544,7 @@ Before using the limited live migration method to the OVN-Kubernetes network plu
 * The limited live migration is not supported on HyperShift clusters.
 * OpenShift SDN does not support IPsec. After the migration, cluster administrators can enable IPsec.
 * OpenShift SDN does not support IPv6. After the migration, cluster administrators can enable dual-stack.
+* The OpenShift SDN plugin allows application of the NodeNetworkConfigurationPolicy (NNCP) custom resource (CR) to the primary interface on a node. The OVN-Kubernetes network plugin does not have this capability.
 * The cluster MTU is the MTU value for pod interfaces. It is always less than your hardware MTU to account for the cluster network overlay overhead. The overhead is 100 bytes for OVN-Kubernetes and 50 bytes for OpenShift SDN.
 
 During the limited live migration, both OVN-Kubernetes and OpenShift SDN run in parallel. OVN-Kubernetes manages the cluster network of some nodes, while OpenShift SDN manages the cluster network of others. To ensure that cross-CNI traffic remains functional, the Cluster Network Operator updates the routable MTU to ensure that both CNIs share the same overlay MTU. As a result, after the migration has completed, the cluster MTU is 50 bytes less.
@@ -524,9 +556,9 @@ During the limited live migration, both OVN-Kubernetes and OpenShift SDN run in 
 * When there are multiple NICs inside of the host, and the default route is not on the interface that has the Kubernetes NodeIP, you must use the offline migration instead.
 * All DaemonSet objects in the openshift-sdn namespace, which are not managed by the Cluster Network Operator (CNO), must be removed before initiating the limited live migration. These unmanaged daemon sets can cause the migration status to remain incomplete if not properly handled.
 
-## How the live migration process works
+## How the limited live migration process works
 
-The following table summarizes the live migration process by segmenting between the user-initiated steps in the process and the actions that the migration script performs in response.
+The following table summarizes the limited live migration process by segmenting between the user-initiated steps in the process and the actions that the migration script performs in response.
 
 
 
@@ -536,9 +568,9 @@ Migrating to the OVN-Kubernetes network plugin by using the limited live migrati
 
 ### Checking cluster resources before initiating the limited live migration
 
-Before migrating to OVN-Kubernetes by using the limited live migration, you should check for egress IP resources, egress firewall resources, and multicast enabled namespaces on your OpenShift SDN deployment. You should also review any network policies in your deployment. If you find that your cluster has these resources before migration, you should check their behavior after migration to ensure that they are working as intended.
+Before migrating to OVN-Kubernetes by using the limited live migration, you should check for egress IP resources, egress firewall resources, and multicast-enabled namespaces on your OpenShift SDN deployment. You should also review any network policies in your deployment. If you find that your cluster has these resources before migration, you should check their behavior after migration to ensure that they are working as intended.
 
-The following procedure shows you how to check for egress IP resources, egress firewall resources, multicast enabled namespaces, and network policies. No action is necessary after checking for these resources.
+The following procedure shows you how to check for egress IP resources, egress firewall resources, multicast-enabled namespaces, network policies, and an NNCP. No action is necessary after checking for these resources.
 
 * You have access to the cluster as a user with the cluster-admin role.
 
@@ -642,7 +674,7 @@ Before initiating the limited live migration, you must check for, and remove, an
 
 
 ```text
-The cluster configuration is invalid (network type live migration is not supported for pods with `pod.network.openshift.io/assign-macvlan` annotation.
+The cluster configuration is invalid (network type limited live migration is not supported for pods with `pod.network.openshift.io/assign-macvlan` annotation.
 
 Please remove all egress router pods). Use `oc edit network.config.openshift.io cluster` to fix.
 ```
@@ -672,6 +704,43 @@ Example output
 
 ```terminal
 $ oc delete pod <egress_pod_name> -n <egress_router_project>
+```
+
+
+### Removing the NodeNetworkConfigurationPolicy (NNCP) custom resource (CR)
+
+The OpenShift SDN plugin allows application of the NodeNetworkConfigurationPolicy (NNCP) custom resource (CR) to the primary interface on a node. The OVN-Kubernetes network plugin does not have this capability.
+
+If you have an NNCP applied to the primary interface, you must delete the NNCP before migrating to the OVN-Kubernetes network plugin. Deleting the NNCP does not remove the configuration from the primary interface, but the Kubernetes-NMState cannot manage this configuration. Instead, the configure-ovs.sh shell script manages the primary interface and the configuration attached to it.
+
+* You created an NNCP CR and applied it to the primary interface of your network.
+
+1. Remove the configuration from the Cluster Network Operator (CNO) configuration object by running the following command:
+
+```terminal
+$ oc patch Network.operator.openshift.io cluster --type='merge' \ --patch '{"spec":{"migration":null}}'
+```
+
+2. Delete the NodeNetworkConfigurationPolicy (NNCP) custom resource (CR) that defines the primary network interface for the OpenShift SDN network plugin by completing the following steps:
+1. Check that the existing NNCP CR bonded the primary interface to your cluster by entering the following command:
+
+```terminal
+$ oc get nncp
+```
+
+Example output
+
+```terminal
+NAME          STATUS      REASON
+bondmaster0   Available   SuccessfullyConfigured
+```
+
+
+Network Manager stores the connection profile for the bonded primary interface in the /etc/NetworkManager/system-connections system path.
+2. Remove the NNCP from your cluster:
+
+```terminal
+$ oc delete nncp <nncp_manifest_filename>
 ```
 
 
