@@ -22,7 +22,7 @@ RUN set -e && for OCP_VERSION in $(ls -1 ocp-product-docs-plaintext); do \
             -i ocp-product-docs-$(echo $OCP_VERSION | sed 's/\./_/g') -v ${OCP_VERSION}; \
     done
 
-FROM registry.access.redhat.com/ubi9/ubi-minimal@sha256:f182b500ff167918ca1010595311cf162464f3aa1cab755383d38be61b4d30aa
+FROM registry.access.redhat.com/ubi9/ubi-minimal@sha256:1b6d711648229a1c987f39cfdfccaebe2bd92d0b5d8caa5dbaa5234a9278a0b2
 COPY --from=lightspeed-rag-builder /workdir/vector_db/ocp_product_docs /rag/vector_db/ocp_product_docs
 COPY --from=lightspeed-rag-builder /workdir/embeddings_model /rag/embeddings_model
 
