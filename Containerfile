@@ -40,7 +40,7 @@ LABEL io.openshift.tags="openshift,lightspeed,ai,assistant,rag"
 LABEL name=openshift-lightspeed-rag-content
 LABEL release=0.0.1
 LABEL url="https://github.com/openshift/lightspeed-rag-content"
-LABEL vendor="Red Hat"
+LABEL vendor="Red Hat, Inc."
 LABEL version=0.0.1
 LABEL summary="Red Hat OpenShift Lightspeed RAG content"
 
