@@ -1,0 +1,840 @@
+# Managing cluster extensions
+
+
+
+[IMPORTANT]
+----
+Operator Lifecycle Manager (OLM) v1 is a Technology Preview feature only. Technology Preview features are not supported with Red Hat production service level agreements (SLAs) and might not be functionally complete. Red Hat does not recommend using them in production. These features provide early access to upcoming product features, enabling customers to test functionality and provide feedback during the development process.
+For more information about the support scope of Red Hat Technology Preview features, see Technology Preview Features Support Scope.
+----
+After a catalog has been added to your cluster, you have access to the versions, patches, and over-the-air updates of the extensions and Operators that are published to the catalog.
+You can manage extensions declaratively from the CLI using custom resources (CRs).
+
+# Finding Operators to install from a catalog
+
+After you add a catalog to your cluster, you can query the catalog to find Operators and extensions to install. Before you can query catalogs, you must port forward the catalog server service.
+
+* You have added a catalog to your cluster.
+* You have installed the jq CLI tool.
+
+1. Port forward the catalog server service in the openshift-catalogd namespace by running the following command:
+
+```terminal
+$ oc -n openshift-catalogd port-forward svc/catalogd-catalogserver 8080:80
+```
+
+2. Download the catalog's JSON file locally by running the following command:
+
+```terminal
+$ curl -L http://localhost:8080/catalogs/<catalog_name>/all.json \
+  -C - -o /<path>/<catalog_name>.json
+```
+
+Example command
+
+```terminal
+$ curl -L http://localhost:8080/catalogs/redhat-operators/all.json \
+  -C - -o /home/username/catalogs/rhoc.json
+```
+3. Run one of the following commands to return a list of Operators and extensions in a catalog.
+
+include:snippets/olmv1-tp-extension-support.adoc[]
+* Get a list of all the Operators and extensions from the local catalog file by running the following command:
+
+```terminal
+$ jq -s '.[] | select(.schema == "olm.package") | .name' \
+  /<path>/<filename>.json
+```
+
+Example command
+
+```terminal
+$ jq -s '.[] | select(.schema == "olm.package") | .name' \
+  /home/username/catalogs/rhoc.json
+```
+Example output
+
+```text
+NAME                                                        AGE
+"3scale-operator"
+"advanced-cluster-management"
+"amq-broker-rhel8"
+"amq-online"
+"amq-streams"
+"amq7-interconnect-operator"
+"ansible-automation-platform-operator"
+"ansible-cloud-addons-operator"
+"apicast-operator"
+"aws-efs-csi-driver-operator"
+"aws-load-balancer-operator"
+"bamoe-businessautomation-operator"
+"bamoe-kogito-operator"
+"bare-metal-event-relay"
+"businessautomation-operator"
+...
+```
+* Get list of packages that support AllNamespaces install mode and do not use webhooks from the local catalog file by running the following command:
+
+```terminal
+$ jq -c 'select(.schema == "olm.bundle") | \
+  {"package":.package, "version":.properties[] | \
+  select(.type == "olm.bundle.object").value.data | @base64d | fromjson | \
+  select(.kind == "ClusterServiceVersion" and (.spec.installModes[] | \
+  select(.type == "AllNamespaces" and .supported == true) != null) \
+  and .spec.webhookdefinitions == null).spec.version}' \
+  /<path>/<catalog_name>.json
+```
+
+Example output
+
+```text
+{"package":"3scale-operator","version":"0.10.0-mas"}
+{"package":"3scale-operator","version":"0.10.5"}
+{"package":"3scale-operator","version":"0.11.0-mas"}
+{"package":"3scale-operator","version":"0.11.1-mas"}
+{"package":"3scale-operator","version":"0.11.2-mas"}
+{"package":"3scale-operator","version":"0.11.3-mas"}
+{"package":"3scale-operator","version":"0.11.5-mas"}
+{"package":"3scale-operator","version":"0.11.6-mas"}
+{"package":"3scale-operator","version":"0.11.7-mas"}
+{"package":"3scale-operator","version":"0.11.8-mas"}
+{"package":"amq-broker-rhel8","version":"7.10.0-opr-1"}
+{"package":"amq-broker-rhel8","version":"7.10.0-opr-2"}
+{"package":"amq-broker-rhel8","version":"7.10.0-opr-3"}
+{"package":"amq-broker-rhel8","version":"7.10.0-opr-4"}
+{"package":"amq-broker-rhel8","version":"7.10.1-opr-1"}
+{"package":"amq-broker-rhel8","version":"7.10.1-opr-2"}
+{"package":"amq-broker-rhel8","version":"7.10.2-opr-1"}
+{"package":"amq-broker-rhel8","version":"7.10.2-opr-2"}
+...
+```
+4. Inspect the contents of an Operator or extension's metadata by running the following command:
+
+```terminal
+$ jq -s '.[] | select( .schema == "olm.package") | \
+  select( .name == "<package_name>")' /<path>/<catalog_name>.json
+```
+
+Example command
+
+```terminal
+$ jq -s '.[] | select( .schema == "olm.package") | \
+  select( .name == "openshift-pipelines-operator-rh")' \
+  /home/username/rhoc.json
+```
+Example output
+
+```text
+{
+  "defaultChannel": "stable",
+  "icon": {
+    "base64data": "PHN2ZyB4bWxu..."
+    "mediatype": "image/png"
+  },
+  "name": "openshift-pipelines-operator-rh",
+  "schema": "olm.package"
+}
+```
+
+## Common catalog queries
+
+You can query catalogs by using the jq CLI tool.
+
+
+
+
+
+
+
+# Installing a cluster extension from a catalog
+
+Operator Lifecycle Manager (OLM) v1 supports installing cluster extensions, including legacy OLM Operators via the registry+v1 bundle format, that are scoped to the cluster. You can install an extension from a catalog by creating a custom resource (CR) and applying it to the cluster.
+
+
+[IMPORTANT]
+----
+OLM v1 does not support dependency resolution. If an extension declares dependencies for other APIs or packages, the dependencies must be present on the cluster before you attempt to install the extension.
+Currently, OLM v1 supports the installation of extensions that meet the following criteria:
+* The extension must use the AllNamespaces install mode.
+* The extension must not use webhooks.
+Cluster extensions that use webhooks or that target a single or specified set of namespaces cannot be installed.
+----
+
+* You have added a catalog to your cluster.
+* You have downloaded a local copy of the catalog file.
+* You have installed the jq CLI tool.
+
+1. Inspect a package for channel and version information from a local copy of your catalog file by completing the following steps:
+1. Get a list of channels from a selected package by running the following command:
+
+```terminal
+$ jq -s '.[] | select( .schema == "olm.channel" ) | \
+  select( .package == "<package_name>") | \
+  .name' /<path>/<catalog_name>.json
+```
+
+Example command
+
+```terminal
+$ jq -s '.[] | select( .schema == "olm.channel" ) | \
+  select( .package == "openshift-pipelines-operator-rh") | \
+  .name' /home/username/rhoc.json
+```
+Example output
+
+```text
+"latest"
+"pipelines-1.11"
+"pipelines-1.12"
+"pipelines-1.13"
+"pipelines-1.14"
+```
+2. Get a list of the versions published in a channel by running the following command:
+
+```terminal
+$ jq -s '.[] | select( .package == "<package_name>" ) | \
+  select( .schema == "olm.channel" ) | \
+  select( .name == "<channel_name>" ) | .entries | \
+  .[] | .name' /<path>/<catalog_name>.json
+```
+
+Example command
+
+```terminal
+$ jq -s '.[] | select( .package == "openshift-pipelines-operator-rh" ) | \
+select( .schema == "olm.channel" ) | select( .name == "latest" ) | \
+.entries | .[] | .name' /home/username/rhoc.json
+```
+Example output
+
+```text
+"openshift-pipelines-operator-rh.v1.12.0"
+"openshift-pipelines-operator-rh.v1.12.1"
+"openshift-pipelines-operator-rh.v1.12.2"
+"openshift-pipelines-operator-rh.v1.13.0"
+"openshift-pipelines-operator-rh.v1.13.1"
+"openshift-pipelines-operator-rh.v1.11.1"
+"openshift-pipelines-operator-rh.v1.12.0"
+"openshift-pipelines-operator-rh.v1.12.1"
+"openshift-pipelines-operator-rh.v1.12.2"
+"openshift-pipelines-operator-rh.v1.13.0"
+"openshift-pipelines-operator-rh.v1.14.1"
+"openshift-pipelines-operator-rh.v1.14.2"
+"openshift-pipelines-operator-rh.v1.14.3"
+"openshift-pipelines-operator-rh.v1.14.4"
+```
+2. If you want to install your extension into a new namespace, run the following command:
+
+```terminal
+$ oc adm new-project <new_namespace>
+```
+
+3. Create a CR, similar to the following example:
+Example pipelines-operator.yaml CR
+
+```yaml
+apiVersion: olm.operatorframework.io/v1alpha1
+kind: ClusterExtension
+metadata:
+  name: pipelines-operator
+spec:
+  packageName: openshift-pipelines-operator-rh
+  installNamespace: <namespace>
+  channel: <channel>
+  version: "<version>"
+```
+
+
+where:
+<namespace>:: Specifies the namespace where you want the bundle installed, such as openshift-operators or my-extension. Extensions are still cluster-scoped and might contain resources that are installed in different namespaces.
+<channel>:: Optional: Specifies the channel, such as pipelines-1.11 or latest, for the package you want to install or update.
+<version>:: Optional: Specifies the version or version range, such as 1.11.1, 1.12.x, or >=1.12.1, of the package you want to install or update. For more information, see "Example custom resources (CRs) that specify a target version" and "Support for version ranges".
+
+[IMPORTANT]
+----
+If you try to install an Operator or extension that does not have unique name, the installation might fail or lead to an unpredictable result. This occurs for the following reasons:
+* If mulitple catalogs are installed on a cluster, Operator Lifecycle Manager (OLM) v1 does not include a mechanism to specify a catalog when you install an Operator or extension.
+* OLM v1 requires that all of the Operators and extensions that are available to install on a cluster use a unique name for their bundles and packages.
+----
+4. Apply the CR to the cluster by running the following command:
+
+```terminal
+$ oc apply -f pipeline-operator.yaml
+```
+
+Example output
+
+```text
+clusterextension.olm.operatorframework.io/pipelines-operator created
+```
+
+
+1. View the Operator or extension's CR in the YAML format by running the following command:
+
+```terminal
+$ oc get clusterextension pipelines-operator -o yaml
+```
+
+Example output
+
+```text
+apiVersion: v1
+items:
+- apiVersion: olm.operatorframework.io/v1alpha1
+  kind: ClusterExtension
+  metadata:
+    annotations:
+      kubectl.kubernetes.io/last-applied-configuration: |
+        {"apiVersion":"olm.operatorframework.io/v1alpha1","kind":"ClusterExtension","metadata":{"annotations":{},"name":"pipelines-operator"},"spec":{"channel":"latest","installNamespace":"openshift-operators","packageName":"openshift-pipelines-operator-rh","pollInterval":"30m"}}
+    creationTimestamp: "2024-06-10T17:50:51Z"
+    generation: 1
+    name: pipelines-operator
+    resourceVersion: "53324"
+    uid: c54237be-cde4-46d4-9b31-d0ec6acc19bf
+  spec:
+    channel: latest
+    installNamespace: openshift-operators
+    packageName: openshift-pipelines-operator-rh
+    upgradeConstraintPolicy: Enforce
+  status:
+    conditions:
+    - lastTransitionTime: "2024-06-10T17:50:58Z"
+      message: resolved to "registry.redhat.io/openshift-pipelines/pipelines-operator-bundle@sha256:dd3d18367da2be42539e5dde8e484dac3df33ba3ce1d5bcf896838954f3864ec"
+      observedGeneration: 1
+      reason: Success
+      status: "True"
+      type: Resolved
+    - lastTransitionTime: "2024-06-10T17:51:11Z"
+      message: installed from "registry.redhat.io/openshift-pipelines/pipelines-operator-bundle@sha256:dd3d18367da2be42539e5dde8e484dac3df33ba3ce1d5bcf896838954f3864ec"
+      observedGeneration: 1
+      reason: Success
+      status: "True"
+      type: Installed
+    - lastTransitionTime: "2024-06-10T17:50:58Z"
+      message: ""
+      observedGeneration: 1
+      reason: Deprecated
+      status: "False"
+      type: Deprecated
+    - lastTransitionTime: "2024-06-10T17:50:58Z"
+      message: ""
+      observedGeneration: 1
+      reason: Deprecated
+      status: "False"
+      type: PackageDeprecated
+    - lastTransitionTime: "2024-06-10T17:50:58Z"
+      message: ""
+      observedGeneration: 1
+      reason: Deprecated
+      status: "False"
+      type: ChannelDeprecated
+    - lastTransitionTime: "2024-06-10T17:50:58Z"
+      message: ""
+      observedGeneration: 1
+      reason: Deprecated
+      status: "False"
+      type: BundleDeprecated
+    installedBundle:
+      name: openshift-pipelines-operator-rh.v1.14.4
+      version: 1.14.4
+    resolvedBundle:
+      name: openshift-pipelines-operator-rh.v1.14.4
+      version: 1.14.4
+kind: List
+metadata:
+  resourceVersion: ""
+```
+
+where:
+spec.channel:: Displays the channel defined in the CR of the extension.
+spec.version:: Displays the version or version range defined in the CR of the extension.
+status.conditions:: Displays information about the status and health of the extension.
+type: Deprecated:: Displays whether one or more of following are deprecated:
+type: PackageDeprecated:: Displays whether the resolved package is deprecated.
+type: ChannelDeprecated:: Displays whether the resolved channel is deprecated.
+type: BundleDeprecated:: Displays whether the resolved bundle is deprecated.
+
+The value of False in the status field indicates that the reason: Deprecated condition is not deprecated. The value of True in the status field indicates that the reason: Deprecated condition is deprecated.
+installedBundle.name:: Displays the name of the bundle installed.
+installedBundle.version:: Displays the version of the bundle installed.
+resolvedBundle.name:: Displays the name of the resolved bundle.
+resolvedBundle.version:: Displays the verson of the resolved bundle.
+2. Get information about your bundle deployment by running the following command:
+
+```terminal
+$ oc get bundleDeployment pipelines-operator -o yaml
+```
+
+Example output
+
+```text
+apiVersion: core.rukpak.io/v1alpha2
+kind: BundleDeployment
+metadata:
+  creationTimestamp: "2024-06-10T17:50:58Z"
+  finalizers:
+  - core.rukpak.io/delete-cached-bundle
+  generation: 1
+  name: pipelines-operator
+  ownerReferences:
+  - apiVersion: olm.operatorframework.io/v1alpha1
+    blockOwnerDeletion: true
+    controller: true
+    kind: ClusterExtension
+    name: pipelines-operator
+    uid: c54237be-cde4-46d4-9b31-d0ec6acc19bf
+  resourceVersion: "53414"
+  uid: 74367cfc-578e-4da0-815f-fe40f3ca5d1c
+spec:
+  installNamespace: openshift-operators
+  provisionerClassName: core-rukpak-io-registry
+  source:
+    image:
+      ref: registry.redhat.io/openshift-pipelines/pipelines-operator-bundle@sha256:dd3d18367da2be42539e5dde8e484dac3df33ba3ce1d5bcf896838954f3864ec
+    type: image
+status:
+  conditions:
+  - lastTransitionTime: "2024-06-10T17:51:09Z"
+    message: Successfully unpacked the image Bundle
+    reason: UnpackSuccessful
+    status: "True"
+    type: Unpacked
+  - lastTransitionTime: "2024-06-10T17:51:10Z"
+    message: Instantiated bundle pipelines-operator successfully
+    reason: InstallationSucceeded
+    status: "True"
+    type: Installed
+  - lastTransitionTime: "2024-06-10T17:51:19Z"
+    message: BundleDeployment is healthy
+    reason: Healthy
+    status: "True"
+    type: Healthy
+  contentURL: https://core.openshift-rukpak.svc/bundles/pipelines-operator.tgz
+  observedGeneration: 1
+  resolvedSource:
+    image:
+      ref: registry.redhat.io/openshift-pipelines/pipelines-operator-bundle@sha256:dd3d18367da2be42539e5dde8e484dac3df33ba3ce1d5bcf896838954f3864ec
+    type: image
+```
+
+* Example custom resources (CRs) that specify a target version
+* Support for version ranges
+
+# Updating a cluster extension
+
+You can update your cluster extension or Operator by manually editing the custom resource (CR) and applying the changes.
+
+* You have a catalog installed.
+* You have downloaded a local copy of the catalog file.
+* You have an Operator or extension installed.
+* You have installed the jq CLI tool.
+
+1. Inspect a package for channel and version information from a local copy of your catalog file by completing the following steps:
+1. Get a list of channels from a selected package by running the following command:
+
+```terminal
+$ jq -s '.[] | select( .schema == "olm.channel" ) | \
+  select( .package == "<package_name>") | \
+  .name' /<path>/<catalog_name>.json
+```
+
+Example command
+
+```terminal
+$ jq -s '.[] | select( .schema == "olm.channel" ) | \
+  select( .package == "openshift-pipelines-operator-rh") | \
+  .name' /home/username/rhoc.json
+```
+Example output
+
+```text
+"latest"
+"pipelines-1.11"
+"pipelines-1.12"
+"pipelines-1.13"
+"pipelines-1.14"
+```
+2. Get a list of the versions published in a channel by running the following command:
+
+```terminal
+$ jq -s '.[] | select( .package == "<package_name>" ) | \
+  select( .schema == "olm.channel" ) | \
+  select( .name == "<channel_name>" ) | .entries | \
+  .[] | .name' /<path>/<catalog_name>.json
+```
+
+Example command
+
+```terminal
+$ jq -s '.[] | select( .package == "openshift-pipelines-operator-rh" ) | \
+select( .schema == "olm.channel" ) | select( .name == "latest" ) | \
+.entries | .[] | .name' /home/username/rhoc.json
+```
+Example output
+
+```text
+"openshift-pipelines-operator-rh.v1.11.1"
+"openshift-pipelines-operator-rh.v1.12.0"
+"openshift-pipelines-operator-rh.v1.12.1"
+"openshift-pipelines-operator-rh.v1.12.2"
+"openshift-pipelines-operator-rh.v1.13.0"
+"openshift-pipelines-operator-rh.v1.14.1"
+"openshift-pipelines-operator-rh.v1.14.2"
+"openshift-pipelines-operator-rh.v1.14.3"
+"openshift-pipelines-operator-rh.v1.14.4"
+```
+2. Find out what version or channel is specified in your Operator or extension's CR by running the following command:
+
+```terminal
+$ oc get clusterextension <operator_name> -o yaml
+```
+
+Example command
+
+```terminal
+$ oc get clusterextension pipelines-operator -o yaml
+```
+
+Example output
+
+```text
+apiVersion: olm.operatorframework.io/v1alpha1
+kind: ClusterExtension
+metadata:
+  annotations:
+    kubectl.kubernetes.io/last-applied-configuration: |
+      {"apiVersion":"olm.operatorframework.io/v1alpha1","kind":"ClusterExtension","metadata":{"annotations":{},"name":"pipelines-operator"},"spec":{"channel":"latest","installNamespace":"openshift-operators","packageName":"openshift-pipelines-operator-rh","pollInterval":"30m","version":"\u003c1.12"}}
+  creationTimestamp: "2024-06-11T15:55:37Z"
+  generation: 1
+  name: pipelines-operator
+  resourceVersion: "69776"
+  uid: 6a11dff3-bfa3-42b8-9e5f-d8babbd6486f
+spec:
+  channel: latest
+  installNamespace: openshift-operators
+  packageName: openshift-pipelines-operator-rh
+  upgradeConstraintPolicy: Enforce
+  version: <1.12
+status:
+  conditions:
+  - lastTransitionTime: "2024-06-11T15:56:09Z"
+    message: installed from "registry.redhat.io/openshift-pipelines/pipelines-operator-bundle@sha256:e09d37bb1e754db42324fd18c1cb3e7ce77e7b7fcbf4932d0535391579938280"
+    observedGeneration: 1
+    reason: Success
+    status: "True"
+    type: Installed
+  - lastTransitionTime: "2024-06-11T15:55:50Z"
+    message: resolved to "registry.redhat.io/openshift-pipelines/pipelines-operator-bundle@sha256:e09d37bb1e754db42324fd18c1cb3e7ce77e7b7fcbf4932d0535391579938280"
+    observedGeneration: 1
+    reason: Success
+    status: "True"
+    type: Resolved
+  - lastTransitionTime: "2024-06-11T15:55:50Z"
+    message: ""
+    observedGeneration: 1
+    reason: Deprecated
+    status: "False"
+    type: Deprecated
+  - lastTransitionTime: "2024-06-11T15:55:50Z"
+    message: ""
+    observedGeneration: 1
+    reason: Deprecated
+    status: "False"
+    type: PackageDeprecated
+  - lastTransitionTime: "2024-06-11T15:55:50Z"
+    message: ""
+    observedGeneration: 1
+    reason: Deprecated
+    status: "False"
+    type: ChannelDeprecated
+  - lastTransitionTime: "2024-06-11T15:55:50Z"
+    message: ""
+    observedGeneration: 1
+    reason: Deprecated
+    status: "False"
+    type: BundleDeprecated
+  installedBundle:
+    name: openshift-pipelines-operator-rh.v1.11.1
+    version: 1.11.1
+  resolvedBundle:
+    name: openshift-pipelines-operator-rh.v1.11.1
+    version: 1.11.1
+```
+3. Edit your CR by using one of the following methods:
+* If you want to pin your Operator or extension to specific version, such as 1.12.1, edit your CR similar to the following example:
+Example pipelines-operator.yaml CR
+
+```yaml
+apiVersion: olm.operatorframework.io/v1alpha1
+kind: ClusterExtension
+metadata:
+  name: pipelines-operator
+spec:
+  packageName: openshift-pipelines-operator-rh
+  installNamespace: <namespace>
+  version: "1.12.1" 1
+```
+
+Update the version from 1.11.1 to 1.12.1
+* If you want to define a range of acceptable update versions, edit your CR similar to the following example:
+Example CR with a version range specified
+
+```yaml
+apiVersion: olm.operatorframework.io/v1alpha1
+kind: ClusterExtension
+metadata:
+  name: pipelines-operator
+spec:
+  packageName: openshift-pipelines-operator-rh
+  installNamespace: <namespace>
+  version: ">1.11.1, <1.13" 1
+```
+
+Specifies that the desired version range is greater than version 1.11.1 and less than 1.13. For more information, see "Support for version ranges" and "Version comparison strings".
+* If you want to update to the latest version that can be resolved from a channel, edit your CR similar to the following example:
+Example CR with a specified channel
+
+```yaml
+apiVersion: olm.operatorframework.io/v1alpha1
+kind: ClusterExtension
+metadata:
+  name: pipelines-operator
+spec:
+  packageName: openshift-pipelines-operator-rh
+  installNamespace: <namespace>
+  channel: pipelines-1.13 1
+```
+
+Installs the latest release that can be resolved from the specified channel. Updates to the channel are automatically installed.
+* If you want to specify a channel and version or version range, edit your CR similar to the following example:
+Example CR with a specified channel and version range
+
+```yaml
+apiVersion: olm.operatorframework.io/v1alpha1
+kind: ClusterExtension
+metadata:
+  name: pipelines-operator
+spec:
+  packageName: openshift-pipelines-operator-rh
+  installNamespace: <namespace>
+  channel: latest
+  version: "<1.13"
+```
+
+
+For more information, see "Example custom resources (CRs) that specify a target version".
+4. Apply the update to the cluster by running the following command:
+
+```terminal
+$ oc apply -f pipelines-operator.yaml
+```
+
+Example output
+
+```text
+clusterextension.olm.operatorframework.io/pipelines-operator configured
+```
+
+
+[TIP]
+----
+You can patch and apply the changes to your CR from the CLI by running the following command:
+
+```terminal
+$ oc patch clusterextension/pipelines-operator -p \
+  '{"spec":{"version":"<1.13"}}' \
+  --type=merge
+```
+
+
+```text
+clusterextension.olm.operatorframework.io/pipelines-operator patched
+```
+
+----
+
+* Verify that the channel and version updates have been applied by running the following command:
+
+```terminal
+$ oc get clusterextension pipelines-operator -o yaml
+```
+
+Example output
+
+```yaml
+apiVersion: olm.operatorframework.io/v1alpha1
+kind: ClusterExtension
+metadata:
+  annotations:
+    kubectl.kubernetes.io/last-applied-configuration: |
+      {"apiVersion":"olm.operatorframework.io/v1alpha1","kind":"ClusterExtension","metadata":{"annotations":{},"name":"pipelines-operator"},"spec":{"channel":"latest","installNamespace":"openshift-operators","packageName":"openshift-pipelines-operator-rh","pollInterval":"30m","version":"\u003c1.13"}}
+  creationTimestamp: "2024-06-11T18:23:26Z"
+  generation: 2
+  name: pipelines-operator
+  resourceVersion: "66310"
+  uid: ce0416ba-13ea-4069-a6c8-e5efcbc47537
+spec:
+  channel: latest
+  installNamespace: openshift-operators
+  packageName: openshift-pipelines-operator-rh
+  upgradeConstraintPolicy: Enforce
+  version: <1.13
+status:
+  conditions:
+  - lastTransitionTime: "2024-06-11T18:23:33Z"
+    message: resolved to "registry.redhat.io/openshift-pipelines/pipelines-operator-bundle@sha256:814742c8a7cc7e2662598e114c35c13993a7b423cfe92548124e43ea5d469f82"
+    observedGeneration: 2
+    reason: Success
+    status: "True"
+    type: Resolved
+  - lastTransitionTime: "2024-06-11T18:23:52Z"
+    message: installed from "registry.redhat.io/openshift-pipelines/pipelines-operator-bundle@sha256:814742c8a7cc7e2662598e114c35c13993a7b423cfe92548124e43ea5d469f82"
+    observedGeneration: 2
+    reason: Success
+    status: "True"
+    type: Installed
+  - lastTransitionTime: "2024-06-11T18:23:33Z"
+    message: ""
+    observedGeneration: 2
+    reason: Deprecated
+    status: "False"
+    type: Deprecated
+  - lastTransitionTime: "2024-06-11T18:23:33Z"
+    message: ""
+    observedGeneration: 2
+    reason: Deprecated
+    status: "False"
+    type: PackageDeprecated
+  - lastTransitionTime: "2024-06-11T18:23:33Z"
+    message: ""
+    observedGeneration: 2
+    reason: Deprecated
+    status: "False"
+    type: ChannelDeprecated
+  - lastTransitionTime: "2024-06-11T18:23:33Z"
+    message: ""
+    observedGeneration: 2
+    reason: Deprecated
+    status: "False"
+    type: BundleDeprecated
+  installedBundle:
+    name: openshift-pipelines-operator-rh.v1.12.2
+    version: 1.12.2
+  resolvedBundle:
+    name: openshift-pipelines-operator-rh.v1.12.2
+    version: 1.12.2
+```
+
+* If you specify a target version or channel that is deprecated or does not exist, you can run the following command to check the status of your extension:
+
+```terminal
+$ oc get clusterextension <operator_name> -o yaml
+```
+
+Example output for a version that does not exist
+
+```text
+apiVersion: olm.operatorframework.io/v1alpha1
+kind: ClusterExtension
+metadata:
+  annotations:
+    kubectl.kubernetes.io/last-applied-configuration: |
+      {"apiVersion":"olm.operatorframework.io/v1alpha1","kind":"ClusterExtension","metadata":{"annotations":{},"name":"pipelines-operator"},"spec":{"channel":"latest","installNamespace":"openshift-operators","packageName":"openshift-pipelines-operator-rh","pollInterval":"30m","version":"3.0"}}
+  creationTimestamp: "2024-06-11T18:23:26Z"
+  generation: 3
+  name: pipelines-operator
+  resourceVersion: "71852"
+  uid: ce0416ba-13ea-4069-a6c8-e5efcbc47537
+spec:
+  channel: latest
+  installNamespace: openshift-operators
+  packageName: openshift-pipelines-operator-rh
+  upgradeConstraintPolicy: Enforce
+  version: "3.0"
+status:
+  conditions:
+  - lastTransitionTime: "2024-06-11T18:29:02Z"
+    message: 'error upgrading from currently installed version "1.12.2": no package
+      "openshift-pipelines-operator-rh" matching version "3.0" found in channel "latest"'
+    observedGeneration: 3
+    reason: ResolutionFailed
+    status: "False"
+    type: Resolved
+  - lastTransitionTime: "2024-06-11T18:29:02Z"
+    message: installation has not been attempted as resolution failed
+    observedGeneration: 3
+    reason: InstallationStatusUnknown
+    status: Unknown
+    type: Installed
+  - lastTransitionTime: "2024-06-11T18:29:02Z"
+    message: deprecation checks have not been attempted as resolution failed
+    observedGeneration: 3
+    reason: Deprecated
+    status: Unknown
+    type: Deprecated
+  - lastTransitionTime: "2024-06-11T18:29:02Z"
+    message: deprecation checks have not been attempted as resolution failed
+    observedGeneration: 3
+    reason: Deprecated
+    status: Unknown
+    type: PackageDeprecated
+  - lastTransitionTime: "2024-06-11T18:29:02Z"
+    message: deprecation checks have not been attempted as resolution failed
+    observedGeneration: 3
+    reason: Deprecated
+    status: Unknown
+    type: ChannelDeprecated
+  - lastTransitionTime: "2024-06-11T18:29:02Z"
+    message: deprecation checks have not been attempted as resolution failed
+    observedGeneration: 3
+    reason: Deprecated
+    status: Unknown
+    type: BundleDeprecated
+```
+
+* Upgrade edges
+
+# Deleting an Operator
+
+You can delete an Operator and its custom resource definitions (CRDs) by deleting the ClusterExtension custom resource (CR).
+
+* You have a catalog installed.
+* You have an Operator installed.
+
+* Delete an Operator and its CRDs by running the following command:
+
+```terminal
+$ oc delete clusterextension <operator_name>
+```
+
+Example output
+
+```text
+clusterextension.olm.operatorframework.io "<operator_name>" deleted
+```
+
+
+* Run the following commands to verify that your Operator and its resources were deleted:
+* Verify the Operator is deleted by running the following command:
+
+```terminal
+$ oc get clusterextensions
+```
+
+Example output
+
+```text
+No resources found
+```
+
+* Verify that the Operator's system namespace is deleted by running the following command:
+
+```terminal
+$ oc get ns <operator_name>-system
+```
+
+Example output
+
+```text
+Error from server (NotFound): namespaces "<operator_name>-system" not found
+```

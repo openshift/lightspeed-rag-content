@@ -1,0 +1,538 @@
+# Troubleshooting network issues
+
+
+
+# How the network interface is selected
+
+For installations on bare metal or with virtual machines that have more than one network interface controller (NIC), the NIC that Red Hat OpenShift Container Platform uses for communication with the Kubernetes API server is determined by the nodeip-configuration.service service unit that is run by systemd when the node boots. The nodeip-configuration.service selects the IP from the interface associated with the default route.
+
+After the nodeip-configuration.service service determines the correct NIC, the service creates the /etc/systemd/system/kubelet.service.d/20-nodenet.conf file. The 20-nodenet.conf file sets the KUBELET_NODE_IP environment variable to the IP address that the service selected.
+
+When the kubelet service starts, it reads the value of the environment variable from the 20-nodenet.conf file and sets the IP address as the value of the --node-ip kubelet command-line argument. As a result, the kubelet service uses the selected IP address as the node IP address.
+
+If hardware or networking is reconfigured after installation, or if there is a networking layout where the node IP should not come from the default route interface, it is possible for the nodeip-configuration.service service to select a different NIC after a reboot. In some cases, you might be able to detect that a different NIC is selected by reviewing the INTERNAL-IP column in the output from the oc get nodes -o wide command.
+
+If network communication is disrupted or misconfigured because a different NIC is selected, you might receive the following error: EtcdCertSignerControllerDegraded. You can create a hint file that includes the NODEIP_HINT variable to override the default IP selection logic. For more information, see Optional: Overriding the default node IP selection logic.
+
+## Optional: Overriding the default node IP selection logic
+
+To override the default IP selection logic, you can create a hint file that includes the NODEIP_HINT variable to override the default IP selection logic. Creating a hint file allows you to select a specific node IP address from the interface in the subnet of the IP address specified in the NODEIP_HINT variable.
+
+For example, if a node has two interfaces, eth0 with an address of 10.0.0.10/24, and eth1 with an address of 192.0.2.5/24, and the default route points to eth0 (10.0.0.10),the node IP address would normally use the 10.0.0.10 IP address.
+
+Users can configure the NODEIP_HINT variable to point at a known IP in the subnet, for example, a subnet gateway such as 192.0.2.1 so that the other subnet, 192.0.2.0/24, is selected. As a result, the 192.0.2.5 IP address on eth1 is used for the node.
+
+The following procedure shows how to override the default node IP selection logic.
+
+1. Add a hint file to your /etc/default/nodeip-configuration file, for example:
+
+```text
+NODEIP_HINT=192.0.2.1
+```
+
+
+[IMPORTANT]
+----
+* Do not use the exact IP address of a node as a hint, for example, 192.0.2.5. Using the exact IP address of a node causes the node using the hint IP address to fail to configure correctly.
+* The IP address in the hint file is only used to determine the correct subnet. It will not receive traffic as a result of appearing in the hint file.
+----
+2. Generate the base-64 encoded content by running the following command:
+
+```terminal
+$ echo -n 'NODEIP_HINT=192.0.2.1' | base64 -w0
+```
+
+Example output
+
+```terminal
+Tk9ERUlQX0hJTlQ9MTkyLjAuMCxxxx==
+```
+
+3. Activate the hint by creating a machine config manifest for both master and worker roles before deploying the cluster:
+99-nodeip-hint-master.yaml
+
+```yaml
+apiVersion: machineconfiguration.openshift.io/v1
+kind: MachineConfig
+metadata:
+  labels:
+    machineconfiguration.openshift.io/role: master
+  name: 99-nodeip-hint-master
+spec:
+  config:
+    ignition:
+      version: 3.2.0
+    storage:
+      files:
+      - contents:
+          source: data:text/plain;charset=utf-8;base64,<encoded_content> 1
+        mode: 0644
+        overwrite: true
+        path: /etc/default/nodeip-configuration
+```
+
+Replace <encoded_contents> with the  base64-encoded content of the /etc/default/nodeip-configuration file, for example, Tk9ERUlQX0hJTlQ9MTkyLjAuMCxxxx==. Note that a space is not acceptable after the comma and before the encoded content.
+99-nodeip-hint-worker.yaml
+
+```yaml
+apiVersion: machineconfiguration.openshift.io/v1
+kind: MachineConfig
+metadata:
+ labels:
+   machineconfiguration.openshift.io/role: worker
+   name: 99-nodeip-hint-worker
+spec:
+ config:
+   ignition:
+     version: 3.2.0
+   storage:
+     files:
+     - contents:
+         source: data:text/plain;charset=utf-8;base64,<encoded_content> 1
+       mode: 0644
+       overwrite: true
+       path: /etc/default/nodeip-configuration
+```
+
+Replace <encoded_contents> with the  base64-encoded content of the /etc/default/nodeip-configuration file, for example, Tk9ERUlQX0hJTlQ9MTkyLjAuMCxxxx==. Note that a space is not acceptable after the comma and before the encoded content.
+4. Save the manifest to the directory where you store your cluster configuration, for example, ~/clusterconfigs.
+5. Deploy the cluster.
+
+## Configuring OVN-Kubernetes to use a secondary OVS bridge
+
+You can create an additional or secondary Open vSwitch (OVS) bridge, br-ex1, that OVN-Kubernetes manages and the Multiple External Gateways (MEG) implementation uses for defining external gateways for an Red Hat OpenShift Container Platform node. You can define a MEG in an AdminPolicyBasedExternalRoute custom resource (CR). The MEG implementation provides a pod with access to multiple gateways, equal-cost multipath (ECMP) routes, and the Bidirectional Forwarding Detection (BFD) implementation.
+
+Consider a use case for pods impacted by the Multiple External Gateways (MEG) feature and you want to egress traffic to a different interface, for example br-ex1, on a node. Egress traffic for pods not impacted by MEG get routed to the default OVS br-ex bridge.
+
+You must define the additional bridge in an interface definition of a machine configuration manifest file. The Machine Config Operator uses the manifest to create a new file at /etc/ovnk/extra_bridge on the host. The new file includes the name of the network interface that the additional OVS bridge configures for a node.
+
+After you create and edit the manifest file, the Machine Config Operator completes tasks in the following order:
+
+1. Drains nodes in singular order based on the selected machine configuration pool.
+2. Injects Ignition configuration files into each node, so that each node receives the additional br-ex1 bridge network configuration.
+3. Verify that the br-ex MAC address matches the MAC address for the interface that br-ex uses for the network connection.
+4. Executes the configure-ovs.sh shell script that references the new interface definition.
+5. Adds br-ex and br-ex1 to the host node.
+6. Uncordons the nodes.
+
+
+[NOTE]
+----
+After all the nodes return to the Ready state and the OVN-Kubernetes Operator detects and configures br-ex and br-ex1, the Operator applies the k8s.ovn.org/l3-gateway-config annotation to each node.
+----
+
+For more information about useful situations for the additional br-ex1 bridge and a situation that always requires the default br-ex bridge, see "Configuration for a localnet topology".
+
+1. Optional: Create an interface connection that your additional bridge, br-ex1, can use by completing the following steps. The example steps show the creation of a new bond and its dependent interfaces that are all defined in a machine configuration manifest file. The additional bridge uses the MachineConfig object to form a additional bond interface.
+
+[IMPORTANT]
+----
+Do not use the Kubernetes NMState Operator to define or a NodeNetworkConfigurationPolicy (NNCP) manifest file to define the additional interface.
+Also ensure that the additional interface or sub-interfaces when defining a bond interface are not used by an existing br-ex OVN Kubernetes network deployment.
+----
+1. Create the following interface definition files. These files get added to a machine configuration manifest file so that host nodes can access the definition files.
+Example of the first interface definition file that is named eno1.config
+
+```ini
+[connection]
+id=eno1
+type=ethernet
+interface-name=eno1
+master=bond1
+slave-type=bond
+autoconnect=true
+autoconnect-priority=20
+```
+
+Example of the second interface definition file that is named eno2.config
+
+```ini
+[connection]
+id=eno2
+type=ethernet
+interface-name=eno2
+master=bond1
+slave-type=bond
+autoconnect=true
+autoconnect-priority=20
+```
+
+Example of the second bond interface definition file that is named bond1.config
+
+```ini
+[connection]
+id=bond1
+type=bond
+interface-name=bond1
+autoconnect=true
+connection.autoconnect-slaves=1
+autoconnect-priority=20
+
+[bond]
+mode=802.3ad
+miimon=100
+xmit_hash_policy="layer3+4"
+
+[ipv4]
+method=auto
+```
+
+2. Convert the definition files to Base64 encoded strings by running the following command:
+
+```terminal
+$ base64 <directory_path>/en01.config
+```
+
+
+```terminal
+$ base64 <directory_path>/eno2.config
+```
+
+
+```terminal
+$ base64 <directory_path>/bond1.config
+```
+
+2. Prepare the environment variables. Replace <machine_role> with the node role, such as worker, and replace <interface_name> with the name of your additional br-ex bridge name.
+
+```terminal
+$ export ROLE=<machine_role>
+```
+
+3. Define each interface definition in a machine configuration manifest file:
+Example of a machine configuration file with definitions added for bond1, eno1, and en02
+
+```yaml
+apiVersion: machineconfiguration.openshift.io/v1
+kind: MachineConfig
+metadata:
+  labels:
+    machineconfiguration.openshift.io/role: ${worker}
+  name: 12-${ROLE}-sec-bridge-cni
+spec:
+  config:
+    ignition:
+      version: 3.2.0
+    storage:
+      files:
+      - contents:
+          source: data:;base64,<base-64-encoded-contents-for-bond1.conf>
+        path: /etc/NetworkManager/system-connections/bond1.nmconnection
+        filesystem: root
+        mode: 0600
+      - contents:
+          source: data:;base64,<base-64-encoded-contents-for-eno1.conf>
+        path: /etc/NetworkManager/system-connections/eno1.nmconnection
+        filesystem: root
+        mode: 0600
+      - contents:
+          source: data:;base64,<base-64-encoded-contents-for-eno2.conf>
+        path: /etc/NetworkManager/system-connections/eno2.nmconnection
+        filesystem: root
+        mode: 0600
+# ...
+```
+
+4. Create a machine configuration manifest file for configuring the network plugin by entering the following command in your terminal:
+
+```terminal
+$ oc create -f <machine_config_file_name>
+```
+
+5. Create an Open vSwitch (OVS) bridge, br-ex1, on nodes by using the OVN-Kubernetes network plugin to create an extra_bridge file`. Ensure that you save the file in the /etc/ovnk/extra_bridge path of the host. The file must state the interface name that supports the additional bridge and not the default interface that supports br-ex, which holds the primary IP address of the node.
+Example configuration for the extra_bridge file, /etc/ovnk/extra_bridge, that references a additional interface
+
+```text
+bond1
+```
+
+6. Create a machine configuration manifest file that defines the existing static interface that hosts br-ex1 on any nodes restarted on your cluster:
+Example of a machine configuration file that defines bond1 as the interface for hosting br-ex1
+
+```yaml
+apiVersion: machineconfiguration.openshift.io/v1
+kind: MachineConfig
+metadata:
+  labels:
+    machineconfiguration.openshift.io/role: ${worker}
+  name: 12-worker-extra-bridge
+spec:
+  config:
+    ignition:
+      version: 3.2.0
+    storage:
+      files:
+        - path: /etc/ovnk/extra_bridge
+          mode: 0420
+          overwrite: true
+          contents:
+            source: data:text/plain;charset=utf-8,bond1
+          filesystem: root
+```
+
+7. Apply the machine-configuration to your selected nodes:
+
+```terminal
+$ oc create -f <machine_config_file_name>
+```
+
+8. Optional: You can override the br-ex selection logic for nodes by creating a machine configuration file that in turn creates a /var/lib/ovnk/iface_default_hint resource.
+
+[NOTE]
+----
+The resource lists the name of the interface that br-ex selects for your cluster. By default, br-ex selects the primary interface for a node based on boot order and the IP address subnet in the machine network. Certain machine network configurations might require that br-ex continues to select the default interfaces or bonds for a host node.
+----
+1. Create a machine configuration file on the host node to override the default interface.
+
+[IMPORTANT]
+----
+Only create this machine configuration file for the purposes of changing the br-ex selection logic. Using this file to change the IP addresses of existing nodes in your cluster is not supported.
+----
+Example of a machine configuration file that overrides the default interface
+
+```yaml
+apiVersion: machineconfiguration.openshift.io/v1
+kind: MachineConfig
+metadata:
+  labels:
+    machineconfiguration.openshift.io/role: ${worker}
+  name: 12-worker-br-ex-override
+spec:
+  config:
+    ignition:
+      version: 3.2.0
+    storage:
+      files:
+        - path: /var/lib/ovnk/iface_default_hint
+          mode: 0420
+          overwrite: true
+          contents:
+            source: data:text/plain;charset=utf-8,bond0 1
+          filesystem: root
+```
+
+Ensure bond0 exists on the node before you apply the machine configuration file to the node.
+2. Before you apply the configuration to all new nodes in your cluster, reboot the host node to verify that br-ex selects the intended interface and does not conflict with the new interfaces that you defined on br-ex1.
+3. Apply the machine configuration file to all new nodes in your cluster:
+
+```terminal
+$ oc create -f <machine_config_file_name>
+```
+
+
+1. Identify the IP addresses of nodes with the exgw-ip-addresses label in your cluster to verify that the nodes use the additional bridge instead of the default bridge:
+
+```terminal
+$ oc get nodes -o json | grep --color exgw-ip-addresses
+```
+
+Example output
+
+```terminal
+"k8s.ovn.org/l3-gateway-config":
+   \"exgw-ip-address\":\"172.xx.xx.yy/24\",\"next-hops\":[\"xx.xx.xx.xx\"],
+```
+
+2. Observe that the additional bridge exists on target nodes by reviewing the network interface names on the host node:
+
+```terminal
+$ oc debug node/<node_name> -- chroot /host sh -c "ip a | grep mtu | grep br-ex"
+```
+
+Example output
+
+```terminal
+Starting pod/worker-1-debug ...
+To use host binaries, run `chroot /host`
+# ...
+5: br-ex: <BROADCAST,MULTICAST,UP,LOWER_UP> mtu 1500 qdisc noqueue state UNKNOWN group default qlen 1000
+6: br-ex1: <BROADCAST,MULTICAST,UP,LOWER_UP> mtu 1500 qdisc noqueue state UNKNOWN group default qlen 1000
+```
+
+3. Optional: If you use /var/lib/ovnk/iface_default_hint, check that the MAC address of br-ex matches the MAC address of the primary selected interface:
+
+```terminal
+$ oc debug node/<node_name> -- chroot /host sh -c "ip a | grep -A1 -E 'br-ex|bond0'
+```
+
+Example output that shows the primary interface for br-ex as bond0
+
+```terminal
+Starting pod/worker-1-debug ...
+To use host binaries, run `chroot /host`
+# ...
+sh-5.1# ip a | grep -A1 -E 'br-ex|bond0'
+2: bond0: <BROADCAST,MULTICAST,UP,LOWER_UP> mtu 1500 qdisc fq_codel master ovs-system state UP group default qlen 1000
+    link/ether fa:16:3e:47:99:98 brd ff:ff:ff:ff:ff:ff
+--
+5: br-ex: <BROADCAST,MULTICAST,UP,LOWER_UP> mtu 1500 qdisc noqueue state UNKNOWN group default qlen 1000
+    link/ether fa:16:3e:47:99:98 brd ff:ff:ff:ff:ff:ff
+    inet 10.xx.xx.xx/21 brd 10.xx.xx.255 scope global dynamic noprefixroute br-ex
+```
+
+
+* Configure an external gateway on the default network
+
+# Troubleshooting Open vSwitch issues
+
+To troubleshoot some Open vSwitch (OVS) issues, you might need to configure the log level to include more information.
+
+If you modify the log level on a node temporarily, be aware that you can receive log messages from the machine config daemon on the node like the following example:
+
+
+```terminal
+E0514 12:47:17.998892    2281 daemon.go:1350] content mismatch for file /etc/systemd/system/ovs-vswitchd.service: [Unit]
+```
+
+
+To avoid the log messages related to the mismatch, revert the log level change after you complete your troubleshooting.
+
+## Configuring the Open vSwitch log level temporarily
+
+For short-term troubleshooting, you can configure the Open vSwitch (OVS) log level temporarily.
+The following procedure does not require rebooting the node.
+In addition, the configuration change does not persist whenever you reboot the node.
+
+After you perform this procedure to change the log level, you can receive log messages from the machine config daemon that indicate a content mismatch for the ovs-vswitchd.service.
+To avoid the log messages, repeat this procedure and set the log level to the original value.
+
+* You have access to the cluster as a user with the cluster-admin role.
+* You have installed the OpenShift CLI (oc).
+
+1. Start a debug pod for a node:
+
+```terminal
+$ oc debug node/<node_name>
+```
+
+2. Set /host as the root directory within the debug shell. The debug pod mounts the root file system from the host in /host within the pod. By changing the root directory to /host, you can run binaries from the host file system:
+
+```terminal
+# chroot /host
+```
+
+3. View the current syslog level for OVS modules:
+
+```terminal
+# ovs-appctl vlog/list
+```
+
+
+The following example output shows the log level for syslog set to info.
+Example output
+
+```terminal
+                 console    syslog    file
+                 -------    ------    ------
+backtrace          OFF       INFO       INFO
+bfd                OFF       INFO       INFO
+bond               OFF       INFO       INFO
+bridge             OFF       INFO       INFO
+bundle             OFF       INFO       INFO
+bundles            OFF       INFO       INFO
+cfm                OFF       INFO       INFO
+collectors         OFF       INFO       INFO
+command_line       OFF       INFO       INFO
+connmgr            OFF       INFO       INFO
+conntrack          OFF       INFO       INFO
+conntrack_tp       OFF       INFO       INFO
+coverage           OFF       INFO       INFO
+ct_dpif            OFF       INFO       INFO
+daemon             OFF       INFO       INFO
+daemon_unix        OFF       INFO       INFO
+dns_resolve        OFF       INFO       INFO
+dpdk               OFF       INFO       INFO
+...
+```
+
+4. Specify the log level in the /etc/systemd/system/ovs-vswitchd.service.d/10-ovs-vswitchd-restart.conf file:
+
+```text
+Restart=always
+ExecStartPre=-/bin/sh -c '/usr/bin/chown -R :$${OVS_USER_ID##*:} /var/lib/openvswitch'
+ExecStartPre=-/bin/sh -c '/usr/bin/chown -R :$${OVS_USER_ID##*:} /etc/openvswitch'
+ExecStartPre=-/bin/sh -c '/usr/bin/chown -R :$${OVS_USER_ID##*:} /run/openvswitch'
+ExecStartPost=-/usr/bin/ovs-appctl vlog/set syslog:dbg
+ExecReload=-/usr/bin/ovs-appctl vlog/set syslog:dbg
+```
+
+
+In the preceding example, the log level is set to dbg.
+Change the last two lines by setting syslog:<log_level> to off, emer, err, warn, info, or dbg. The off log level filters out all log messages.
+5. Restart the service:
+
+```terminal
+# systemctl daemon-reload
+```
+
+
+```terminal
+# systemctl restart ovs-vswitchd
+```
+
+
+## Configuring the Open vSwitch log level permanently
+
+For long-term changes to the Open vSwitch (OVS) log level, you can change the log level permanently.
+
+* You have access to the cluster as a user with the cluster-admin role.
+* You have installed the OpenShift CLI (oc).
+
+1. Create a file, such as 99-change-ovs-loglevel.yaml, with a MachineConfig object like the following example:
+
+```yaml
+apiVersion: machineconfiguration.openshift.io/v1
+kind: MachineConfig
+metadata:
+  labels:
+    machineconfiguration.openshift.io/role: master  1
+  name: 99-change-ovs-loglevel
+spec:
+  config:
+    ignition:
+      version: 3.2.0
+    systemd:
+      units:
+      - dropins:
+        - contents: |
+            [Service]
+              ExecStartPost=-/usr/bin/ovs-appctl vlog/set syslog:dbg  2
+              ExecReload=-/usr/bin/ovs-appctl vlog/set syslog:dbg
+          name: 20-ovs-vswitchd-restart.conf
+        name: ovs-vswitchd.service
+```
+
+After you perform this procedure to configure control plane nodes, repeat the procedure and set the role to worker to configure worker nodes.
+Set the syslog:<log_level> value. Log levels are off, emer, err, warn, info, or dbg. Setting the value to off filters out all log messages.
+2. Apply the machine config:
+
+```terminal
+$ oc apply -f 99-change-ovs-loglevel.yaml
+```
+
+
+* Understanding the Machine Config Operator
+* Checking machine config pool status
+
+## Displaying Open vSwitch logs
+
+Use the following procedure to display Open vSwitch (OVS) logs.
+
+* You have access to the cluster as a user with the cluster-admin role.
+* You have installed the OpenShift CLI (oc).
+
+* Run one of the following commands:
+* Display the logs by using the oc command from outside the cluster:
+
+```terminal
+$ oc adm node-logs <node_name> -u ovs-vswitchd
+```
+
+* Display the logs after logging on to a node in the cluster:
+
+```terminal
+# journalctl -b -f -u ovs-vswitchd.service
+```
+
+
+One way to log on to a node is by using the oc debug node/<node_name> command.

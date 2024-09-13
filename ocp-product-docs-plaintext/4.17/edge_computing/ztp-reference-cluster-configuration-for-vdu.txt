@@ -1,0 +1,1835 @@
+# Recommended single-node OpenShift cluster configuration for vDU application workloads
+
+
+Use the following reference information to understand the single-node OpenShift configurations required to deploy virtual distributed unit (vDU) applications in the cluster. Configurations include cluster optimizations for high performance workloads, enabling workload partitioning, and minimizing the number of reboots required postinstallation.
+* To deploy a single cluster by hand, see Manually installing a single-node OpenShift cluster with GitOps ZTP.
+* To deploy a fleet of clusters using GitOps Zero Touch Provisioning (ZTP), see Deploying far edge sites with GitOps ZTP.
+
+# Running low latency applications on Red Hat OpenShift Container Platform
+
+Red Hat OpenShift Container Platform enables low latency processing for applications running on commercial off-the-shelf (COTS) hardware by using several technologies and specialized hardware devices:
+
+Real-time kernel for RHCOS:: Ensures workloads are handled with a high degree of process determinism.
+CPU isolation:: Avoids CPU scheduling delays and ensures CPU capacity is available consistently.
+NUMA-aware topology management:: Aligns memory and huge pages with CPU and PCI devices to pin guaranteed container memory and huge pages to the non-uniform memory access (NUMA) node. Pod resources for all Quality of Service (QoS) classes stay on the same NUMA node. This decreases latency and improves performance of the node.
+Huge pages memory management:: Using huge page sizes improves system performance by reducing the amount of system resources required to access page tables.
+Precision timing synchronization using PTP:: Allows synchronization between nodes in the network with sub-microsecond accuracy.
+
+# Recommended cluster host requirements for vDU application workloads
+
+Running vDU application workloads requires a bare-metal host with sufficient resources to run Red Hat OpenShift Container Platform services and production workloads.
+
+
+
+
+[NOTE]
+----
+One vCPU is equivalent to one physical core when simultaneous multithreading (SMT), or Hyper-Threading, is not enabled. When enabled, use the following formula to calculate the corresponding ratio:
+* (threads per core × cores) × sockets = vCPUs
+----
+
+
+[IMPORTANT]
+----
+The server must have a Baseboard Management Controller (BMC) when booting with virtual media.
+----
+
+# Configuring host firmware for low latency and high performance
+
+Bare-metal hosts require the firmware to be configured before the host can be provisioned. The firmware configuration is dependent on the specific hardware and the particular requirements of your installation.
+
+1. Set the UEFI/BIOS Boot Mode to UEFI.
+2. In the host boot sequence order, set Hard drive first.
+3. Apply the specific firmware configuration for your hardware. The following table describes a representative firmware configuration for an Intel Xeon Skylake server and later hardware generations, based on the Intel FlexRAN 4G and 5G baseband PHY reference design.
+
+[IMPORTANT]
+----
+The exact firmware configuration depends on your specific hardware and network requirements. The following sample configuration is for illustrative purposes only.
+----
+Sample firmware configuration
+
+
+
+[NOTE]
+----
+Enable global SR-IOV and VT-d settings in the firmware for the host. These settings are relevant to bare-metal environments.
+----
+
+# Connectivity prerequisites for managed cluster networks
+
+Before you can install and provision a managed cluster with the GitOps Zero Touch Provisioning (ZTP) pipeline, the managed cluster host must meet the following networking prerequisites:
+
+* There must be bi-directional connectivity between the GitOps ZTP container in the hub cluster and the Baseboard Management Controller (BMC) of the target bare-metal host.
+* The managed cluster must be able to resolve and reach the API hostname of the hub hostname and *.apps hostname. Here is an example of the API hostname of the hub and *.apps hostname:
+* api.hub-cluster.internal.domain.com
+* console-openshift-console.apps.hub-cluster.internal.domain.com
+* The hub cluster must be able to resolve and reach the API and *.apps hostname of the managed cluster. Here is an example of the API hostname of the managed cluster and *.apps hostname:
+* api.sno-managed-cluster-1.internal.domain.com
+* console-openshift-console.apps.sno-managed-cluster-1.internal.domain.com
+
+# Workload partitioning in single-node OpenShift with GitOps ZTP
+
+Workload partitioning configures Red Hat OpenShift Container Platform services, cluster management workloads, and infrastructure pods to run on a reserved number of host CPUs.
+
+To configure workload partitioning with GitOps Zero Touch Provisioning (ZTP), you configure a cpuPartitioningMode field in the SiteConfig custom resource (CR) that you use to install the cluster and you apply a PerformanceProfile CR that configures the isolated and reserved CPUs on the host.
+
+Configuring the SiteConfig CR enables workload partitioning at cluster installation time and applying the PerformanceProfile CR configures the specific allocation of CPUs to reserved and isolated sets.
+Both of these steps happen at different points during cluster provisioning.
+
+
+[NOTE]
+----
+Configuring workload partitioning by using the cpuPartitioningMode field in the SiteConfig CR is a Tech Preview feature in Red Hat OpenShift Container Platform 4.13.
+Alternatively, you can specify cluster management CPU resources with the cpuset field of the SiteConfig custom resource (CR) and the reserved field of the group PolicyGenerator or PolicyGentemplate CR.
+The GitOps ZTP pipeline uses these values to populate the required fields in the workload partitioning MachineConfig CR (cpuset) and the PerformanceProfile CR (reserved) that configure the single-node OpenShift cluster.
+This method is a General Availability feature in Red Hat OpenShift Container Platform 4.14.
+----
+
+The workload partitioning configuration pins the Red Hat OpenShift Container Platform infrastructure pods to the reserved CPU set.
+Platform services such as systemd, CRI-O, and kubelet run on the reserved CPU set.
+The isolated CPU sets are exclusively allocated to your container workloads.
+Isolating CPUs ensures that the workload has guaranteed access to the specified CPUs without contention from other applications running on the same node.
+All CPUs that are not isolated should be reserved.
+
+
+[IMPORTANT]
+----
+Ensure that reserved and isolated CPU sets do not overlap with each other.
+----
+
+* For the recommended single-node OpenShift workload partitioning configuration, see Workload partitioning.
+
+# Recommended cluster install manifests
+
+The ZTP pipeline applies the following custom resources (CRs) during cluster installation. These configuration CRs ensure that the cluster meets the feature and performance requirements necessary for running a vDU application.
+
+
+[NOTE]
+----
+When using the GitOps ZTP plugin and SiteConfig CRs for cluster deployment, the following MachineConfig CRs are included by default.
+----
+
+Use the SiteConfig extraManifests filter to alter the CRs that are included by default. For more information, see Advanced managed cluster configuration with SiteConfig CRs.
+
+## Workload partitioning
+
+Single-node OpenShift clusters that run DU workloads require workload partitioning. This limits the cores allowed to run platform services, maximizing the CPU core for application payloads.
+
+
+[NOTE]
+----
+Workload partitioning can be enabled during cluster installation only.
+You cannot disable workload partitioning postinstallation.
+You can however change the set of CPUs assigned to the isolated and reserved sets through the PerformanceProfile CR.
+Changes to CPU settings cause the node to reboot.
+----
+
+
+[NOTE]
+----
+When transitioning to using cpuPartitioningMode for enabling workload partitioning, remove the workload partitioning MachineConfig CRs from the /extra-manifest folder that you use to provision the cluster.
+----
+
+
+```yaml
+apiVersion: ran.openshift.io/v1
+kind: SiteConfig
+metadata:
+  name: "<site_name>"
+  namespace: "<site_name>"
+spec:
+  baseDomain: "example.com"
+  cpuPartitioningMode: AllNodes 1
+```
+
+
+Set the cpuPartitioningMode field to AllNodes to configure workload partitioning for all nodes in the cluster.
+
+Check that the applications and cluster system CPU pinning is correct. Run the following commands:
+
+1. Open a remote shell prompt to the managed cluster:
+
+```terminal
+$ oc debug node/example-sno-1
+```
+
+2. Check that the OpenShift infrastructure applications CPU pinning is correct:
+
+```terminal
+sh-4.4# pgrep ovn | while read i; do taskset -cp $i; done
+```
+
+Example output
+
+```terminal
+pid 8481's current affinity list: 0-1,52-53
+pid 8726's current affinity list: 0-1,52-53
+pid 9088's current affinity list: 0-1,52-53
+pid 9945's current affinity list: 0-1,52-53
+pid 10387's current affinity list: 0-1,52-53
+pid 12123's current affinity list: 0-1,52-53
+pid 13313's current affinity list: 0-1,52-53
+```
+
+3. Check that the system applications CPU pinning is correct:
+
+```terminal
+sh-4.4# pgrep systemd | while read i; do taskset -cp $i; done
+```
+
+Example output
+
+```terminal
+pid 1's current affinity list: 0-1,52-53
+pid 938's current affinity list: 0-1,52-53
+pid 962's current affinity list: 0-1,52-53
+pid 1197's current affinity list: 0-1,52-53
+```
+
+
+## Reduced platform management footprint
+
+To reduce the overall management footprint of the platform, a MachineConfig custom resource (CR) is required that places all Kubernetes-specific mount points in a new namespace separate from the host operating system.
+The following base64-encoded example MachineConfig CR illustrates this configuration.
+
+
+```yaml
+# Automatically generated by extra-manifests-builder
+# Do not make changes directly.
+apiVersion: machineconfiguration.openshift.io/v1
+kind: MachineConfig
+metadata:
+  labels:
+    machineconfiguration.openshift.io/role: master
+  name: container-mount-namespace-and-kubelet-conf-master
+spec:
+  config:
+    ignition:
+      version: 3.2.0
+    storage:
+      files:
+        - contents:
+            source: data:text/plain;charset=utf-8;base64,IyEvYmluL2Jhc2gKCmRlYnVnKCkgewogIGVjaG8gJEAgPiYyCn0KCnVzYWdlKCkgewogIGVjaG8gVXNhZ2U6ICQoYmFzZW5hbWUgJDApIFVOSVQgW2VudmZpbGUgW3Zhcm5hbWVdXQogIGVjaG8KICBlY2hvIEV4dHJhY3QgdGhlIGNvbnRlbnRzIG9mIHRoZSBmaXJzdCBFeGVjU3RhcnQgc3RhbnphIGZyb20gdGhlIGdpdmVuIHN5c3RlbWQgdW5pdCBhbmQgcmV0dXJuIGl0IHRvIHN0ZG91dAogIGVjaG8KICBlY2hvICJJZiAnZW52ZmlsZScgaXMgcHJvdmlkZWQsIHB1dCBpdCBpbiB0aGVyZSBpbnN0ZWFkLCBhcyBhbiBlbnZpcm9ubWVudCB2YXJpYWJsZSBuYW1lZCAndmFybmFtZSciCiAgZWNobyAiRGVmYXVsdCAndmFybmFtZScgaXMgRVhFQ1NUQVJUIGlmIG5vdCBzcGVjaWZpZWQiCiAgZXhpdCAxCn0KClVOSVQ9JDEKRU5WRklMRT0kMgpWQVJOQU1FPSQzCmlmIFtbIC16ICRVTklUIHx8ICRVTklUID09ICItLWhlbHAiIHx8ICRVTklUID09ICItaCIgXV07IHRoZW4KICB1c2FnZQpmaQpkZWJ1ZyAiRXh0cmFjdGluZyBFeGVjU3RhcnQgZnJvbSAkVU5JVCIKRklMRT0kKHN5c3RlbWN0bCBjYXQgJFVOSVQgfCBoZWFkIC1uIDEpCkZJTEU9JHtGSUxFI1wjIH0KaWYgW1sgISAtZiAkRklMRSBdXTsgdGhlbgogIGRlYnVnICJGYWlsZWQgdG8gZmluZCByb290IGZpbGUgZm9yIHVuaXQgJFVOSVQgKCRGSUxFKSIKICBleGl0CmZpCmRlYnVnICJTZXJ2aWNlIGRlZmluaXRpb24gaXMgaW4gJEZJTEUiCkVYRUNTVEFSVD0kKHNlZCAtbiAtZSAnL15FeGVjU3RhcnQ9LipcXCQvLC9bXlxcXSQvIHsgcy9eRXhlY1N0YXJ0PS8vOyBwIH0nIC1lICcvXkV4ZWNTdGFydD0uKlteXFxdJC8geyBzL15FeGVjU3RhcnQ9Ly87IHAgfScgJEZJTEUpCgppZiBbWyAkRU5WRklMRSBdXTsgdGhlbgogIFZBUk5BTUU9JHtWQVJOQU1FOi1FWEVDU1RBUlR9CiAgZWNobyAiJHtWQVJOQU1FfT0ke0VYRUNTVEFSVH0iID4gJEVOVkZJTEUKZWxzZQogIGVjaG8gJEVYRUNTVEFSVApmaQo=
+          mode: 493
+          path: /usr/local/bin/extractExecStart
+        - contents:
+            source: data:text/plain;charset=utf-8;base64,IyEvYmluL2Jhc2gKbnNlbnRlciAtLW1vdW50PS9ydW4vY29udGFpbmVyLW1vdW50LW5hbWVzcGFjZS9tbnQgIiRAIgo=
+          mode: 493
+          path: /usr/local/bin/nsenterCmns
+    systemd:
+      units:
+        - contents: |
+            [Unit]
+            Description=Manages a mount namespace that both kubelet and crio can use to share their container-specific mounts
+
+            [Service]
+            Type=oneshot
+            RemainAfterExit=yes
+            RuntimeDirectory=container-mount-namespace
+            Environment=RUNTIME_DIRECTORY=%t/container-mount-namespace
+            Environment=BIND_POINT=%t/container-mount-namespace/mnt
+            ExecStartPre=bash -c "findmnt ${RUNTIME_DIRECTORY} || mount --make-unbindable --bind ${RUNTIME_DIRECTORY} ${RUNTIME_DIRECTORY}"
+            ExecStartPre=touch ${BIND_POINT}
+            ExecStart=unshare --mount=${BIND_POINT} --propagation slave mount --make-rshared /
+            ExecStop=umount -R ${RUNTIME_DIRECTORY}
+          name: container-mount-namespace.service
+        - dropins:
+            - contents: |
+                [Unit]
+                Wants=container-mount-namespace.service
+                After=container-mount-namespace.service
+
+                [Service]
+                ExecStartPre=/usr/local/bin/extractExecStart %n /%t/%N-execstart.env ORIG_EXECSTART
+                EnvironmentFile=-/%t/%N-execstart.env
+                ExecStart=
+                ExecStart=bash -c "nsenter --mount=%t/container-mount-namespace/mnt \
+                    ${ORIG_EXECSTART}"
+              name: 90-container-mount-namespace.conf
+          name: crio.service
+        - dropins:
+            - contents: |
+                [Unit]
+                Wants=container-mount-namespace.service
+                After=container-mount-namespace.service
+
+                [Service]
+                ExecStartPre=/usr/local/bin/extractExecStart %n /%t/%N-execstart.env ORIG_EXECSTART
+                EnvironmentFile=-/%t/%N-execstart.env
+                ExecStart=
+                ExecStart=bash -c "nsenter --mount=%t/container-mount-namespace/mnt \
+                    ${ORIG_EXECSTART} --housekeeping-interval=30s"
+              name: 90-container-mount-namespace.conf
+            - contents: |
+                [Service]
+                Environment="OPENSHIFT_MAX_HOUSEKEEPING_INTERVAL_DURATION=60s"
+                Environment="OPENSHIFT_EVICTION_MONITORING_PERIOD_DURATION=30s"
+              name: 30-kubelet-interval-tuning.conf
+          name: kubelet.service
+```
+
+
+## SCTP
+
+Stream Control Transmission Protocol (SCTP) is a key protocol used in RAN applications. This MachineConfig object adds the SCTP kernel module to the node to enable this protocol.
+
+
+```yaml
+# Automatically generated by extra-manifests-builder
+# Do not make changes directly.
+apiVersion: machineconfiguration.openshift.io/v1
+kind: MachineConfig
+metadata:
+  labels:
+    machineconfiguration.openshift.io/role: master
+  name: load-sctp-module-master
+spec:
+  config:
+    ignition:
+      version: 2.2.0
+    storage:
+      files:
+        - contents:
+            source: data:,
+            verification: {}
+          filesystem: root
+          mode: 420
+          path: /etc/modprobe.d/sctp-blacklist.conf
+        - contents:
+            source: data:text/plain;charset=utf-8,sctp
+          filesystem: root
+          mode: 420
+          path: /etc/modules-load.d/sctp-load.conf
+```
+
+
+
+```yaml
+# Automatically generated by extra-manifests-builder
+# Do not make changes directly.
+apiVersion: machineconfiguration.openshift.io/v1
+kind: MachineConfig
+metadata:
+  labels:
+    machineconfiguration.openshift.io/role: worker
+  name: load-sctp-module-worker
+spec:
+  config:
+    ignition:
+      version: 2.2.0
+    storage:
+      files:
+        - contents:
+            source: data:,
+            verification: {}
+          filesystem: root
+          mode: 420
+          path: /etc/modprobe.d/sctp-blacklist.conf
+        - contents:
+            source: data:text/plain;charset=utf-8,sctp
+          filesystem: root
+          mode: 420
+          path: /etc/modules-load.d/sctp-load.conf
+```
+
+
+## Setting rcu_normal
+
+The following MachineConfig CR configures the system to set rcu_normal to 1 after the system has finished startup. This improves kernel latency for vDU applications.
+
+
+```yaml
+# Automatically generated by extra-manifests-builder
+# Do not make changes directly.
+apiVersion: machineconfiguration.openshift.io/v1
+kind: MachineConfig
+metadata:
+  labels:
+    machineconfiguration.openshift.io/role: master
+  name: 08-set-rcu-normal-master
+spec:
+  config:
+    ignition:
+      version: 3.2.0
+    storage:
+      files:
+        - contents:
+            source: data:text/plain;charset=utf-8;base64,IyEvYmluL2Jhc2gKIwojIERpc2FibGUgcmN1X2V4cGVkaXRlZCBhZnRlciBub2RlIGhhcyBmaW5pc2hlZCBib290aW5nCiMKIyBUaGUgZGVmYXVsdHMgYmVsb3cgY2FuIGJlIG92ZXJyaWRkZW4gdmlhIGVudmlyb25tZW50IHZhcmlhYmxlcwojCgojIERlZmF1bHQgd2FpdCB0aW1lIGlzIDYwMHMgPSAxMG06Ck1BWElNVU1fV0FJVF9USU1FPSR7TUFYSU1VTV9XQUlUX1RJTUU6LTYwMH0KCiMgRGVmYXVsdCBzdGVhZHktc3RhdGUgdGhyZXNob2xkID0gMiUKIyBBbGxvd2VkIHZhbHVlczoKIyAgNCAgLSBhYnNvbHV0ZSBwb2QgY291bnQgKCsvLSkKIyAgNCUgLSBwZXJjZW50IGNoYW5nZSAoKy8tKQojICAtMSAtIGRpc2FibGUgdGhlIHN0ZWFkeS1zdGF0ZSBjaGVjawpTVEVBRFlfU1RBVEVfVEhSRVNIT0xEPSR7U1RFQURZX1NUQVRFX1RIUkVTSE9MRDotMiV9CgojIERlZmF1bHQgc3RlYWR5LXN0YXRlIHdpbmRvdyA9IDYwcwojIElmIHRoZSBydW5uaW5nIHBvZCBjb3VudCBzdGF5cyB3aXRoaW4gdGhlIGdpdmVuIHRocmVzaG9sZCBmb3IgdGhpcyB0aW1lCiMgcGVyaW9kLCByZXR1cm4gQ1BVIHV0aWxpemF0aW9uIHRvIG5vcm1hbCBiZWZvcmUgdGhlIG1heGltdW0gd2FpdCB0aW1lIGhhcwojIGV4cGlyZXMKU1RFQURZX1NUQVRFX1dJTkRPVz0ke1NURUFEWV9TVEFURV9XSU5ET1c6LTYwfQoKIyBEZWZhdWx0IHN0ZWFkeS1zdGF0ZSBhbGxvd3MgYW55IHBvZCBjb3VudCB0byBiZSAic3RlYWR5IHN0YXRlIgojIEluY3JlYXNpbmcgdGhpcyB3aWxsIHNraXAgYW55IHN0ZWFkeS1zdGF0ZSBjaGVja3MgdW50aWwgdGhlIGNvdW50IHJpc2VzIGFib3ZlCiMgdGhpcyBudW1iZXIgdG8gYXZvaWQgZmFsc2UgcG9zaXRpdmVzIGlmIHRoZXJlIGFyZSBzb21lIHBlcmlvZHMgd2hlcmUgdGhlCiMgY291bnQgZG9lc24ndCBpbmNyZWFzZSBidXQgd2Uga25vdyB3ZSBjYW4ndCBiZSBhdCBzdGVhZHktc3RhdGUgeWV0LgpTVEVBRFlfU1RBVEVfTUlOSU1VTT0ke1NURUFEWV9TVEFURV9NSU5JTVVNOi0wfQoKIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIwoKd2l0aGluKCkgewogIGxvY2FsIGxhc3Q9JDEgY3VycmVudD0kMiB0aHJlc2hvbGQ9JDMKICBsb2NhbCBkZWx0YT0wIHBjaGFuZ2UKICBkZWx0YT0kKCggY3VycmVudCAtIGxhc3QgKSkKICBpZiBbWyAkY3VycmVudCAtZXEgJGxhc3QgXV07IHRoZW4KICAgIHBjaGFuZ2U9MAogIGVsaWYgW1sgJGxhc3QgLWVxIDAgXV07IHRoZW4KICAgIHBjaGFuZ2U9MTAwMDAwMAogIGVsc2UKICAgIHBjaGFuZ2U9JCgoICggIiRkZWx0YSIgKiAxMDApIC8gbGFzdCApKQogIGZpCiAgZWNobyAtbiAibGFzdDokbGFzdCBjdXJyZW50OiRjdXJyZW50IGRlbHRhOiRkZWx0YSBwY2hhbmdlOiR7cGNoYW5nZX0lOiAiCiAgbG9jYWwgYWJzb2x1dGUgbGltaXQKICBjYXNlICR0aHJlc2hvbGQgaW4KICAgIColKQogICAgICBhYnNvbHV0ZT0ke3BjaGFuZ2UjIy19ICMgYWJzb2x1dGUgdmFsdWUKICAgICAgbGltaXQ9JHt0aHJlc2hvbGQlJSV9CiAgICAgIDs7CiAgICAqKQogICAgICBhYnNvbHV0ZT0ke2RlbHRhIyMtfSAjIGFic29sdXRlIHZhbHVlCiAgICAgIGxpbWl0PSR0aHJlc2hvbGQKICAgICAgOzsKICBlc2FjCiAgaWYgW1sgJGFic29sdXRlIC1sZSAkbGltaXQgXV07IHRoZW4KICAgIGVjaG8gIndpdGhpbiAoKy8tKSR0aHJlc2hvbGQiCiAgICByZXR1cm4gMAogIGVsc2UKICAgIGVjaG8gIm91dHNpZGUgKCsvLSkkdGhyZXNob2xkIgogICAgcmV0dXJuIDEKICBmaQp9CgpzdGVhZHlzdGF0ZSgpIHsKICBsb2NhbCBsYXN0PSQxIGN1cnJlbnQ9JDIKICBpZiBbWyAkbGFzdCAtbHQgJFNURUFEWV9TVEFURV9NSU5JTVVNIF1dOyB0aGVuCiAgICBlY2hvICJsYXN0OiRsYXN0IGN1cnJlbnQ6JGN1cnJlbnQgV2FpdGluZyB0byByZWFjaCAkU1RFQURZX1NUQVRFX01JTklNVU0gYmVmb3JlIGNoZWNraW5nIGZvciBzdGVhZHktc3RhdGUiCiAgICByZXR1cm4gMQogIGZpCiAgd2l0aGluICIkbGFzdCIgIiRjdXJyZW50IiAiJFNURUFEWV9TVEFURV9USFJFU0hPTEQiCn0KCndhaXRGb3JSZWFkeSgpIHsKICBsb2dnZXIgIlJlY292ZXJ5OiBXYWl0aW5nICR7TUFYSU1VTV9XQUlUX1RJTUV9cyBmb3IgdGhlIGluaXRpYWxpemF0aW9uIHRvIGNvbXBsZXRlIgogIGxvY2FsIHQ9MCBzPTEwCiAgbG9jYWwgbGFzdENjb3VudD0wIGNjb3VudD0wIHN0ZWFkeVN0YXRlVGltZT0wCiAgd2hpbGUgW1sgJHQgLWx0ICRNQVhJTVVNX1dBSVRfVElNRSBdXTsgZG8KICAgIHNsZWVwICRzCiAgICAoKHQgKz0gcykpCiAgICAjIERldGVjdCBzdGVhZHktc3RhdGUgcG9kIGNvdW50CiAgICBjY291bnQ9JChjcmljdGwgcHMgMj4vZGV2L251bGwgfCB3YyAtbCkKICAgIGlmIFtbICRjY291bnQgLWd0IDAgXV0gJiYgc3RlYWR5c3RhdGUgIiRsYXN0Q2NvdW50IiAiJGNjb3VudCI7IHRoZW4KICAgICAgKChzdGVhZHlTdGF0ZVRpbWUgKz0gcykpCiAgICAgIGVjaG8gIlN0ZWFkeS1zdGF0ZSBmb3IgJHtzdGVhZHlTdGF0ZVRpbWV9cy8ke1NURUFEWV9TVEFURV9XSU5ET1d9cyIKICAgICAgaWYgW1sgJHN0ZWFkeVN0YXRlVGltZSAtZ2UgJFNURUFEWV9TVEFURV9XSU5ET1cgXV07IHRoZW4KICAgICAgICBsb2dnZXIgIlJlY292ZXJ5OiBTdGVhZHktc3RhdGUgKCsvLSAkU1RFQURZX1NUQVRFX1RIUkVTSE9MRCkgZm9yICR7U1RFQURZX1NUQVRFX1dJTkRPV31zOiBEb25lIgogICAgICAgIHJldHVybiAwCiAgICAgIGZpCiAgICBlbHNlCiAgICAgIGlmIFtbICRzdGVhZHlTdGF0ZVRpbWUgLWd0IDAgXV07IHRoZW4KICAgICAgICBlY2hvICJSZXNldHRpbmcgc3RlYWR5LXN0YXRlIHRpbWVyIgogICAgICAgIHN0ZWFkeVN0YXRlVGltZT0wCiAgICAgIGZpCiAgICBmaQogICAgbGFzdENjb3VudD0kY2NvdW50CiAgZG9uZQogIGxvZ2dlciAiUmVjb3Zlcnk6IFJlY292ZXJ5IENvbXBsZXRlIFRpbWVvdXQiCn0KCnNldFJjdU5vcm1hbCgpIHsKICBlY2hvICJTZXR0aW5nIHJjdV9ub3JtYWwgdG8gMSIKICBlY2hvIDEgPiAvc3lzL2tlcm5lbC9yY3Vfbm9ybWFsCn0KCm1haW4oKSB7CiAgd2FpdEZvclJlYWR5CiAgZWNobyAiV2FpdGluZyBmb3Igc3RlYWR5IHN0YXRlIHRvb2s6ICQoYXdrICd7cHJpbnQgaW50KCQxLzM2MDApImgiLCBpbnQoKCQxJTM2MDApLzYwKSJtIiwgaW50KCQxJTYwKSJzIn0nIC9wcm9jL3VwdGltZSkiCiAgc2V0UmN1Tm9ybWFsCn0KCmlmIFtbICIke0JBU0hfU09VUkNFWzBdfSIgPSAiJHswfSIgXV07IHRoZW4KICBtYWluICIke0B9IgogIGV4aXQgJD8KZmkK
+          mode: 493
+          path: /usr/local/bin/set-rcu-normal.sh
+    systemd:
+      units:
+        - contents: |
+            [Unit]
+            Description=Disable rcu_expedited after node has finished booting by setting rcu_normal to 1
+
+            [Service]
+            Type=simple
+            ExecStart=/usr/local/bin/set-rcu-normal.sh
+
+            # Maximum wait time is 600s = 10m:
+            Environment=MAXIMUM_WAIT_TIME=600
+
+            # Steady-state threshold = 2%
+            # Allowed values:
+            #  4  - absolute pod count (+/-)
+            #  4% - percent change (+/-)
+            #  -1 - disable the steady-state check
+            # Note: '%' must be escaped as '%%' in systemd unit files
+            Environment=STEADY_STATE_THRESHOLD=2%%
+
+            # Steady-state window = 120s
+            # If the running pod count stays within the given threshold for this time
+            # period, return CPU utilization to normal before the maximum wait time has
+            # expires
+            Environment=STEADY_STATE_WINDOW=120
+
+            # Steady-state minimum = 40
+            # Increasing this will skip any steady-state checks until the count rises above
+            # this number to avoid false positives if there are some periods where the
+            # count doesn't increase but we know we can't be at steady-state yet.
+            Environment=STEADY_STATE_MINIMUM=40
+
+            [Install]
+            WantedBy=multi-user.target
+          enabled: true
+          name: set-rcu-normal.service
+```
+
+
+## Automatic kernel crash dumps with kdump
+
+kdump is a Linux kernel feature that creates a kernel crash dump when the kernel crashes. kdump is enabled with the following MachineConfig CRs.
+
+
+```yaml
+apiVersion: machineconfiguration.openshift.io/v1
+kind: MachineConfig
+metadata:
+  labels:
+    machineconfiguration.openshift.io/role: master
+  name: 05-kdump-config-master
+spec:
+  config:
+    ignition:
+      version: 3.2.0
+    systemd:
+      units:
+        - enabled: true
+          name: kdump-remove-ice-module.service
+          contents: |
+            [Unit]
+            Description=Remove ice module when doing kdump
+            Before=kdump.service
+            [Service]
+            Type=oneshot
+            RemainAfterExit=true
+            ExecStart=/usr/local/bin/kdump-remove-ice-module.sh
+            [Install]
+            WantedBy=multi-user.target
+    storage:
+      files:
+        - contents:
+            source: data:text/plain;charset=utf-8;base64,IyEvdXNyL2Jpbi9lbnYgYmFzaAoKIyBUaGlzIHNjcmlwdCByZW1vdmVzIHRoZSBpY2UgbW9kdWxlIGZyb20ga2R1bXAgdG8gcHJldmVudCBrZHVtcCBmYWlsdXJlcyBvbiBjZXJ0YWluIHNlcnZlcnMuCiMgVGhpcyBpcyBhIHRlbXBvcmFyeSB3b3JrYXJvdW5kIGZvciBSSEVMUExBTi0xMzgyMzYgYW5kIGNhbiBiZSByZW1vdmVkIHdoZW4gdGhhdCBpc3N1ZSBpcwojIGZpeGVkLgoKc2V0IC14CgpTRUQ9Ii91c3IvYmluL3NlZCIKR1JFUD0iL3Vzci9iaW4vZ3JlcCIKCiMgb3ZlcnJpZGUgZm9yIHRlc3RpbmcgcHVycG9zZXMKS0RVTVBfQ09ORj0iJHsxOi0vZXRjL3N5c2NvbmZpZy9rZHVtcH0iClJFTU9WRV9JQ0VfU1RSPSJtb2R1bGVfYmxhY2tsaXN0PWljZSIKCiMgZXhpdCBpZiBmaWxlIGRvZXNuJ3QgZXhpc3QKWyAhIC1mICR7S0RVTVBfQ09ORn0gXSAmJiBleGl0IDAKCiMgZXhpdCBpZiBmaWxlIGFscmVhZHkgdXBkYXRlZAoke0dSRVB9IC1GcSAke1JFTU9WRV9JQ0VfU1RSfSAke0tEVU1QX0NPTkZ9ICYmIGV4aXQgMAoKIyBUYXJnZXQgbGluZSBsb29rcyBzb21ldGhpbmcgbGlrZSB0aGlzOgojIEtEVU1QX0NPTU1BTkRMSU5FX0FQUEVORD0iaXJxcG9sbCBucl9jcHVzPTEgLi4uIGhlc3RfZGlzYWJsZSIKIyBVc2Ugc2VkIHRvIG1hdGNoIGV2ZXJ5dGhpbmcgYmV0d2VlbiB0aGUgcXVvdGVzIGFuZCBhcHBlbmQgdGhlIFJFTU9WRV9JQ0VfU1RSIHRvIGl0CiR7U0VEfSAtaSAncy9eS0RVTVBfQ09NTUFORExJTkVfQVBQRU5EPSJbXiJdKi8mICcke1JFTU9WRV9JQ0VfU1RSfScvJyAke0tEVU1QX0NPTkZ9IHx8IGV4aXQgMAo=
+          mode: 448
+          path: /usr/local/bin/kdump-remove-ice-module.sh
+```
+
+
+
+```yaml
+# Automatically generated by extra-manifests-builder
+# Do not make changes directly.
+apiVersion: machineconfiguration.openshift.io/v1
+kind: MachineConfig
+metadata:
+  labels:
+    machineconfiguration.openshift.io/role: master
+  name: 06-kdump-enable-master
+spec:
+  config:
+    ignition:
+      version: 3.2.0
+    systemd:
+      units:
+        - enabled: true
+          name: kdump.service
+  kernelArguments:
+    - crashkernel=512M
+```
+
+
+
+```yaml
+apiVersion: machineconfiguration.openshift.io/v1
+kind: MachineConfig
+metadata:
+  labels:
+    machineconfiguration.openshift.io/role: worker
+  name: 05-kdump-config-worker
+spec:
+  config:
+    ignition:
+      version: 3.2.0
+    systemd:
+      units:
+        - enabled: true
+          name: kdump-remove-ice-module.service
+          contents: |
+            [Unit]
+            Description=Remove ice module when doing kdump
+            Before=kdump.service
+            [Service]
+            Type=oneshot
+            RemainAfterExit=true
+            ExecStart=/usr/local/bin/kdump-remove-ice-module.sh
+            [Install]
+            WantedBy=multi-user.target
+    storage:
+      files:
+        - contents:
+            source: data:text/plain;charset=utf-8;base64,IyEvdXNyL2Jpbi9lbnYgYmFzaAoKIyBUaGlzIHNjcmlwdCByZW1vdmVzIHRoZSBpY2UgbW9kdWxlIGZyb20ga2R1bXAgdG8gcHJldmVudCBrZHVtcCBmYWlsdXJlcyBvbiBjZXJ0YWluIHNlcnZlcnMuCiMgVGhpcyBpcyBhIHRlbXBvcmFyeSB3b3JrYXJvdW5kIGZvciBSSEVMUExBTi0xMzgyMzYgYW5kIGNhbiBiZSByZW1vdmVkIHdoZW4gdGhhdCBpc3N1ZSBpcwojIGZpeGVkLgoKc2V0IC14CgpTRUQ9Ii91c3IvYmluL3NlZCIKR1JFUD0iL3Vzci9iaW4vZ3JlcCIKCiMgb3ZlcnJpZGUgZm9yIHRlc3RpbmcgcHVycG9zZXMKS0RVTVBfQ09ORj0iJHsxOi0vZXRjL3N5c2NvbmZpZy9rZHVtcH0iClJFTU9WRV9JQ0VfU1RSPSJtb2R1bGVfYmxhY2tsaXN0PWljZSIKCiMgZXhpdCBpZiBmaWxlIGRvZXNuJ3QgZXhpc3QKWyAhIC1mICR7S0RVTVBfQ09ORn0gXSAmJiBleGl0IDAKCiMgZXhpdCBpZiBmaWxlIGFscmVhZHkgdXBkYXRlZAoke0dSRVB9IC1GcSAke1JFTU9WRV9JQ0VfU1RSfSAke0tEVU1QX0NPTkZ9ICYmIGV4aXQgMAoKIyBUYXJnZXQgbGluZSBsb29rcyBzb21ldGhpbmcgbGlrZSB0aGlzOgojIEtEVU1QX0NPTU1BTkRMSU5FX0FQUEVORD0iaXJxcG9sbCBucl9jcHVzPTEgLi4uIGhlc3RfZGlzYWJsZSIKIyBVc2Ugc2VkIHRvIG1hdGNoIGV2ZXJ5dGhpbmcgYmV0d2VlbiB0aGUgcXVvdGVzIGFuZCBhcHBlbmQgdGhlIFJFTU9WRV9JQ0VfU1RSIHRvIGl0CiR7U0VEfSAtaSAncy9eS0RVTVBfQ09NTUFORExJTkVfQVBQRU5EPSJbXiJdKi8mICcke1JFTU9WRV9JQ0VfU1RSfScvJyAke0tEVU1QX0NPTkZ9IHx8IGV4aXQgMAo=
+          mode: 448
+          path: /usr/local/bin/kdump-remove-ice-module.sh
+```
+
+
+
+```yaml
+# Automatically generated by extra-manifests-builder
+# Do not make changes directly.
+apiVersion: machineconfiguration.openshift.io/v1
+kind: MachineConfig
+metadata:
+  labels:
+    machineconfiguration.openshift.io/role: worker
+  name: 06-kdump-enable-worker
+spec:
+  config:
+    ignition:
+      version: 3.2.0
+    systemd:
+      units:
+        - enabled: true
+          name: kdump.service
+  kernelArguments:
+    - crashkernel=512M
+```
+
+
+## Disable automatic CRI-O cache wipe
+
+After an uncontrolled host shutdown or cluster reboot, CRI-O automatically deletes the entire CRI-O cache, causing all images to be pulled from the registry when the node reboots.
+This can result in unacceptably slow recovery times or recovery failures.
+To prevent this from happening in single-node OpenShift clusters that you install with GitOps ZTP, disable the CRI-O delete cache feature during cluster installation.
+
+
+```yaml
+# Automatically generated by extra-manifests-builder
+# Do not make changes directly.
+apiVersion: machineconfiguration.openshift.io/v1
+kind: MachineConfig
+metadata:
+  labels:
+    machineconfiguration.openshift.io/role: master
+  name: 99-crio-disable-wipe-master
+spec:
+  config:
+    ignition:
+      version: 3.2.0
+    storage:
+      files:
+        - contents:
+            source: data:text/plain;charset=utf-8;base64,W2NyaW9dCmNsZWFuX3NodXRkb3duX2ZpbGUgPSAiIgo=
+          mode: 420
+          path: /etc/crio/crio.conf.d/99-crio-disable-wipe.toml
+```
+
+
+
+```yaml
+# Automatically generated by extra-manifests-builder
+# Do not make changes directly.
+apiVersion: machineconfiguration.openshift.io/v1
+kind: MachineConfig
+metadata:
+  labels:
+    machineconfiguration.openshift.io/role: worker
+  name: 99-crio-disable-wipe-worker
+spec:
+  config:
+    ignition:
+      version: 3.2.0
+    storage:
+      files:
+        - contents:
+            source: data:text/plain;charset=utf-8;base64,W2NyaW9dCmNsZWFuX3NodXRkb3duX2ZpbGUgPSAiIgo=
+          mode: 420
+          path: /etc/crio/crio.conf.d/99-crio-disable-wipe.toml
+```
+
+
+## Configuring crun as the default container runtime
+
+The following ContainerRuntimeConfig custom resources (CRs) configure crun as the default OCI container runtime for control plane and worker nodes.
+The crun container runtime is fast and lightweight and has a low memory footprint.
+
+
+[IMPORTANT]
+----
+For optimal performance, enable crun for control plane and worker nodes in single-node OpenShift, three-node OpenShift, and standard clusters.
+To avoid the cluster rebooting when the CR is applied, apply the change as a GitOps ZTP additional Day 0 install-time manifest.
+----
+
+
+```yaml
+apiVersion: machineconfiguration.openshift.io/v1
+kind: ContainerRuntimeConfig
+metadata:
+  name: enable-crun-master
+spec:
+  machineConfigPoolSelector:
+    matchLabels:
+      pools.operator.machineconfiguration.openshift.io/master: ""
+  containerRuntimeConfig:
+    defaultRuntime: crun
+```
+
+
+
+```yaml
+apiVersion: machineconfiguration.openshift.io/v1
+kind: ContainerRuntimeConfig
+metadata:
+  name: enable-crun-worker
+spec:
+  machineConfigPoolSelector:
+    matchLabels:
+      pools.operator.machineconfiguration.openshift.io/worker: ""
+  containerRuntimeConfig:
+    defaultRuntime: crun
+```
+
+
+# Recommended postinstallation cluster configurations
+
+When the cluster installation is complete, the ZTP pipeline applies the following custom resources (CRs) that are required to run DU workloads.
+
+
+[NOTE]
+----
+In GitOps ZTP v4.10 and earlier, you configure UEFI secure boot with a MachineConfig CR. This is no longer required in GitOps ZTP v4.11 and later. In v4.11, you configure UEFI secure boot for single-node OpenShift clusters by updating the spec.clusters.nodes.bootMode field in the SiteConfig CR that you use to install the cluster. For more information, see Deploying a managed cluster with SiteConfig and GitOps ZTP.
+----
+
+## Operators
+
+Single-node OpenShift clusters that run DU workloads require the following Operators to be installed:
+
+* Local Storage Operator
+* Logging Operator
+* PTP Operator
+* SR-IOV Network Operator
+
+You also need to configure a custom CatalogSource CR, disable the default OperatorHub configuration, and configure an ImageContentSourcePolicy mirror registry that is accessible from the clusters that you install.
+
+
+```yaml
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: openshift-local-storage
+  annotations:
+    workload.openshift.io/allowed: management
+---
+apiVersion: operators.coreos.com/v1
+kind: OperatorGroup
+metadata:
+  name: openshift-local-storage
+  namespace: openshift-local-storage
+  annotations: {}
+spec:
+  targetNamespaces:
+    - openshift-local-storage
+```
+
+
+
+```yaml
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: openshift-logging
+  annotations:
+    workload.openshift.io/allowed: management
+---
+apiVersion: operators.coreos.com/v1
+kind: OperatorGroup
+metadata:
+  name: cluster-logging
+  namespace: openshift-logging
+  annotations: {}
+spec:
+  targetNamespaces:
+    - openshift-logging
+```
+
+
+
+```yaml
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: openshift-ptp
+  annotations:
+    workload.openshift.io/allowed: management
+  labels:
+    openshift.io/cluster-monitoring: "true"
+---
+apiVersion: operators.coreos.com/v1
+kind: OperatorGroup
+metadata:
+  name: ptp-operators
+  namespace: openshift-ptp
+  annotations: {}
+spec:
+  targetNamespaces:
+    - openshift-ptp
+```
+
+
+
+```yaml
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: openshift-sriov-network-operator
+  annotations:
+    workload.openshift.io/allowed: management
+---
+apiVersion: operators.coreos.com/v1
+kind: OperatorGroup
+metadata:
+  name: sriov-network-operators
+  namespace: openshift-sriov-network-operator
+  annotations: {}
+spec:
+  targetNamespaces:
+    - openshift-sriov-network-operator
+```
+
+
+
+```yaml
+apiVersion: operators.coreos.com/v1alpha1
+kind: CatalogSource
+metadata:
+  name: default-cat-source
+  namespace: openshift-marketplace
+  annotations:
+    target.workload.openshift.io/management: '{"effect": "PreferredDuringScheduling"}'
+spec:
+  displayName: default-cat-source
+  image: $imageUrl
+  publisher: Red Hat
+  sourceType: grpc
+  updateStrategy:
+    registryPoll:
+      interval: 1h
+status:
+  connectionState:
+    lastObservedState: READY
+```
+
+
+
+```yaml
+apiVersion: operator.openshift.io/v1alpha1
+kind: ImageContentSourcePolicy
+metadata:
+  name: disconnected-internal-icsp
+  annotations: {}
+spec:
+#    repositoryDigestMirrors:
+#    - $mirrors
+```
+
+
+
+```yaml
+apiVersion: config.openshift.io/v1
+kind: OperatorHub
+metadata:
+  name: cluster
+  annotations: {}
+spec:
+  disableAllDefaultSources: true
+```
+
+
+## Operator subscriptions
+
+Single-node OpenShift clusters that run DU workloads require the following Subscription CRs. The subscription provides the location to download the following Operators:
+
+* Local Storage Operator
+* Logging Operator
+* PTP Operator
+* SR-IOV Network Operator
+* SRIOV-FEC Operator
+
+For each Operator subscription, specify the channel to get the Operator from. The recommended channel is stable.
+
+You can specify Manual or Automatic updates.
+In Automatic mode, the Operator automatically updates to the latest versions in the channel as they become available in the registry.
+In Manual mode, new Operator versions are installed only when they are explicitly approved.
+
+
+[TIP]
+----
+Use Manual mode for subscriptions. This allows you to control the timing of Operator updates to fit within scheduled maintenance windows.
+----
+
+
+```yaml
+apiVersion: operators.coreos.com/v1alpha1
+kind: Subscription
+metadata:
+  name: local-storage-operator
+  namespace: openshift-local-storage
+  annotations: {}
+spec:
+  channel: "stable"
+  name: local-storage-operator
+  source: redhat-operators-disconnected
+  sourceNamespace: openshift-marketplace
+  installPlanApproval: Manual
+status:
+  state: AtLatestKnown
+```
+
+
+
+```yaml
+apiVersion: operators.coreos.com/v1alpha1
+kind: Subscription
+metadata:
+  name: sriov-network-operator-subscription
+  namespace: openshift-sriov-network-operator
+  annotations: {}
+spec:
+  channel: "stable"
+  name: sriov-network-operator
+  source: redhat-operators-disconnected
+  sourceNamespace: openshift-marketplace
+  installPlanApproval: Manual
+status:
+  state: AtLatestKnown
+```
+
+
+
+```yaml
+---
+apiVersion: operators.coreos.com/v1alpha1
+kind: Subscription
+metadata:
+  name: ptp-operator-subscription
+  namespace: openshift-ptp
+  annotations: {}
+spec:
+  channel: "stable"
+  name: ptp-operator
+  source: redhat-operators-disconnected
+  sourceNamespace: openshift-marketplace
+  installPlanApproval: Manual
+status:
+  state: AtLatestKnown
+```
+
+
+
+```yaml
+apiVersion: operators.coreos.com/v1alpha1
+kind: Subscription
+metadata:
+  name: cluster-logging
+  namespace: openshift-logging
+  annotations: {}
+spec:
+  channel: "stable"
+  name: cluster-logging
+  source: redhat-operators-disconnected
+  sourceNamespace: openshift-marketplace
+  installPlanApproval: Manual
+status:
+  state: AtLatestKnown
+```
+
+
+## Cluster logging and log forwarding
+
+Single-node OpenShift clusters that run DU workloads require logging and log forwarding for debugging. The following ClusterLogging and ClusterLogForwarder custom resources (CRs) are required.
+
+
+```yaml
+apiVersion: logging.openshift.io/v1
+kind: ClusterLogging
+metadata:
+  name: instance
+  namespace: openshift-logging
+  annotations: {}
+spec:
+  managementState: "Managed"
+  collection:
+    type: "vector"
+```
+
+
+
+```yaml
+apiVersion: "logging.openshift.io/v1"
+kind: ClusterLogForwarder
+metadata:
+  name: instance
+  namespace: openshift-logging
+  annotations: {}
+spec:
+#  outputs: $outputs
+#  pipelines: $pipelines
+
+#apiVersion: "logging.openshift.io/v1"
+#kind: ClusterLogForwarder
+#metadata:
+#  name: instance
+#  namespace: openshift-logging
+#spec:
+#  outputs:
+#    - type: "kafka"
+#      name: kafka-open
+#      url: tcp://10.46.55.190:9092/test
+#  pipelines:
+#  - inputRefs:
+#    - audit
+#    - infrastructure
+#    labels:
+#      label1: test1
+#      label2: test2
+#      label3: test3
+#      label4: test4
+#    name: all-to-default
+#    outputRefs: 
+#    - kafka-open
+```
+
+
+Set the spec.outputs.url field to the URL of the Kafka server where the logs are forwarded to.
+
+## Performance profile
+
+Single-node OpenShift clusters that run DU workloads require a Node Tuning Operator performance profile to use real-time host capabilities and services.
+
+
+[NOTE]
+----
+In earlier versions of Red Hat OpenShift Container Platform, the Performance Addon Operator was used to implement automatic tuning to achieve low latency performance for OpenShift applications. In Red Hat OpenShift Container Platform 4.11 and later, this functionality is part of the Node Tuning Operator.
+----
+
+The following example PerformanceProfile CR illustrates the required single-node OpenShift cluster configuration.
+
+
+```yaml
+apiVersion: performance.openshift.io/v2
+kind: PerformanceProfile
+metadata:
+  # if you change this name make sure the 'include' line in TunedPerformancePatch.yaml
+  # matches this name: include=openshift-node-performance-${PerformanceProfile.metadata.name}
+  # Also in file 'validatorCRs/informDuValidator.yaml': 
+  # name: 50-performance-${PerformanceProfile.metadata.name}
+  name: openshift-node-performance-profile
+  annotations:
+    ran.openshift.io/reference-configuration: "ran-du.redhat.com"
+spec:
+  additionalKernelArgs:
+    - "rcupdate.rcu_normal_after_boot=0"
+    - "efi=runtime"
+    - "vfio_pci.enable_sriov=1"
+    - "vfio_pci.disable_idle_d3=1"
+    - "module_blacklist=irdma"
+  cpu:
+    isolated: $isolated
+    reserved: $reserved
+  hugepages:
+    defaultHugepagesSize: $defaultHugepagesSize
+    pages:
+      - size: $size
+        count: $count
+        node: $node
+  machineConfigPoolSelector:
+    pools.operator.machineconfiguration.openshift.io/$mcp: ""
+  nodeSelector:
+    node-role.kubernetes.io/$mcp: ''
+  numa:
+    topologyPolicy: "restricted"
+  # To use the standard (non-realtime) kernel, set enabled to false
+  realTimeKernel:
+    enabled: true
+  workloadHints:
+    # WorkloadHints defines the set of upper level flags for different type of workloads.
+    # See https://github.com/openshift/cluster-node-tuning-operator/blob/master/docs/performanceprofile/performance_profile.md#workloadhints
+    # for detailed descriptions of each item.
+    # The configuration below is set for a low latency, performance mode.
+    realTime: true
+    highPowerConsumption: false
+    perPodPowerManagement: false
+```
+
+
+
+
+## Configuring cluster time synchronization
+
+Run a one-time system time synchronization job for control plane or worker nodes.
+
+
+```yaml
+# Automatically generated by extra-manifests-builder
+# Do not make changes directly.
+apiVersion: machineconfiguration.openshift.io/v1
+kind: MachineConfig
+metadata:
+  labels:
+    machineconfiguration.openshift.io/role: master
+  name: 99-sync-time-once-master
+spec:
+  config:
+    ignition:
+      version: 3.2.0
+    systemd:
+      units:
+        - contents: |
+            [Unit]
+            Description=Sync time once
+            After=network-online.target
+            Wants=network-online.target
+            [Service]
+            Type=oneshot
+            TimeoutStartSec=300
+            ExecCondition=/bin/bash -c 'systemctl is-enabled chronyd.service --quiet && exit 1 || exit 0'
+            ExecStart=/usr/sbin/chronyd -n -f /etc/chrony.conf -q
+            RemainAfterExit=yes
+            [Install]
+            WantedBy=multi-user.target
+          enabled: true
+          name: sync-time-once.service
+```
+
+
+
+```yaml
+# Automatically generated by extra-manifests-builder
+# Do not make changes directly.
+apiVersion: machineconfiguration.openshift.io/v1
+kind: MachineConfig
+metadata:
+  labels:
+    machineconfiguration.openshift.io/role: worker
+  name: 99-sync-time-once-worker
+spec:
+  config:
+    ignition:
+      version: 3.2.0
+    systemd:
+      units:
+        - contents: |
+            [Unit]
+            Description=Sync time once
+            After=network-online.target
+            Wants=network-online.target
+            [Service]
+            Type=oneshot
+            TimeoutStartSec=300
+            ExecCondition=/bin/bash -c 'systemctl is-enabled chronyd.service --quiet && exit 1 || exit 0'
+            ExecStart=/usr/sbin/chronyd -n -f /etc/chrony.conf -q
+            RemainAfterExit=yes
+            [Install]
+            WantedBy=multi-user.target
+          enabled: true
+          name: sync-time-once.service
+```
+
+
+## PTP
+
+Single-node OpenShift clusters use Precision Time Protocol (PTP) for network time synchronization.
+The following example PtpConfig CRs illustrate the required PTP configurations for ordinary clocks, boundary clocks, and grandmaster clocks.
+The exact configuration you apply will depend on the node hardware and specific use case.
+
+
+```yaml
+apiVersion: ptp.openshift.io/v1
+kind: PtpConfig
+metadata:
+  name: du-ptp-slave
+  namespace: openshift-ptp
+  annotations: {}
+spec:
+  profile:
+    - name: "slave"
+      # The interface name is hardware-specific
+      interface: $interface
+      ptp4lOpts: "-2 -s"
+      phc2sysOpts: "-a -r -n 24"
+      ptpSchedulingPolicy: SCHED_FIFO
+      ptpSchedulingPriority: 10
+      ptpSettings:
+        logReduce: "true"
+      ptp4lConf: |
+        [global]
+        #
+        # Default Data Set
+        #
+        twoStepFlag 1
+        slaveOnly 1
+        priority1 128
+        priority2 128
+        domainNumber 24
+        #utc_offset 37
+        clockClass 255
+        clockAccuracy 0xFE
+        offsetScaledLogVariance 0xFFFF
+        free_running 0
+        freq_est_interval 1
+        dscp_event 0
+        dscp_general 0
+        dataset_comparison G.8275.x
+        G.8275.defaultDS.localPriority 128
+        #
+        # Port Data Set
+        #
+        logAnnounceInterval -3
+        logSyncInterval -4
+        logMinDelayReqInterval -4
+        logMinPdelayReqInterval -4
+        announceReceiptTimeout 3
+        syncReceiptTimeout 0
+        delayAsymmetry 0
+        fault_reset_interval -4
+        neighborPropDelayThresh 20000000
+        masterOnly 0
+        G.8275.portDS.localPriority 128
+        #
+        # Run time options
+        #
+        assume_two_step 0
+        logging_level 6
+        path_trace_enabled 0
+        follow_up_info 0
+        hybrid_e2e 0
+        inhibit_multicast_service 0
+        net_sync_monitor 0
+        tc_spanning_tree 0
+        tx_timestamp_timeout 50
+        unicast_listen 0
+        unicast_master_table 0
+        unicast_req_duration 3600
+        use_syslog 1
+        verbose 0
+        summary_interval 0
+        kernel_leap 1
+        check_fup_sync 0
+        clock_class_threshold 7
+        #
+        # Servo Options
+        #
+        pi_proportional_const 0.0
+        pi_integral_const 0.0
+        pi_proportional_scale 0.0
+        pi_proportional_exponent -0.3
+        pi_proportional_norm_max 0.7
+        pi_integral_scale 0.0
+        pi_integral_exponent 0.4
+        pi_integral_norm_max 0.3
+        step_threshold 2.0
+        first_step_threshold 0.00002
+        max_frequency 900000000
+        clock_servo pi
+        sanity_freq_limit 200000000
+        ntpshm_segment 0
+        #
+        # Transport options
+        #
+        transportSpecific 0x0
+        ptp_dst_mac 01:1B:19:00:00:00
+        p2p_dst_mac 01:80:C2:00:00:0E
+        udp_ttl 1
+        udp6_scope 0x0E
+        uds_address /var/run/ptp4l
+        #
+        # Default interface options
+        #
+        clock_type OC
+        network_transport L2
+        delay_mechanism E2E
+        time_stamping hardware
+        tsproc_mode filter
+        delay_filter moving_median
+        delay_filter_length 10
+        egressLatency 0
+        ingressLatency 0
+        boundary_clock_jbod 0
+        #
+        # Clock description
+        #
+        productDescription ;;
+        revisionData ;;
+        manufacturerIdentity 00:00:00
+        userDescription ;
+        timeSource 0xA0
+  recommend:
+    - profile: "slave"
+      priority: 4
+      match:
+        - nodeLabel: "node-role.kubernetes.io/$mcp"
+```
+
+
+
+```yaml
+apiVersion: ptp.openshift.io/v1
+kind: PtpConfig
+metadata:
+  name: boundary
+  namespace: openshift-ptp
+  annotations: {}
+spec:
+  profile:
+    - name: "boundary"
+      ptp4lOpts: "-2"
+      phc2sysOpts: "-a -r -n 24"
+      ptpSchedulingPolicy: SCHED_FIFO
+      ptpSchedulingPriority: 10
+      ptpSettings:
+        logReduce: "true"
+      ptp4lConf: |
+        # The interface name is hardware-specific
+        [$iface_slave]
+        masterOnly 0
+        [$iface_master_1]
+        masterOnly 1
+        [$iface_master_2]
+        masterOnly 1
+        [$iface_master_3]
+        masterOnly 1
+        [global]
+        #
+        # Default Data Set
+        #
+        twoStepFlag 1
+        slaveOnly 0
+        priority1 128
+        priority2 128
+        domainNumber 24
+        #utc_offset 37
+        clockClass 248
+        clockAccuracy 0xFE
+        offsetScaledLogVariance 0xFFFF
+        free_running 0
+        freq_est_interval 1
+        dscp_event 0
+        dscp_general 0
+        dataset_comparison G.8275.x
+        G.8275.defaultDS.localPriority 128
+        #
+        # Port Data Set
+        #
+        logAnnounceInterval -3
+        logSyncInterval -4
+        logMinDelayReqInterval -4
+        logMinPdelayReqInterval -4
+        announceReceiptTimeout 3
+        syncReceiptTimeout 0
+        delayAsymmetry 0
+        fault_reset_interval -4
+        neighborPropDelayThresh 20000000
+        masterOnly 0
+        G.8275.portDS.localPriority 128
+        #
+        # Run time options
+        #
+        assume_two_step 0
+        logging_level 6
+        path_trace_enabled 0
+        follow_up_info 0
+        hybrid_e2e 0
+        inhibit_multicast_service 0
+        net_sync_monitor 0
+        tc_spanning_tree 0
+        tx_timestamp_timeout 50
+        unicast_listen 0
+        unicast_master_table 0
+        unicast_req_duration 3600
+        use_syslog 1
+        verbose 0
+        summary_interval 0
+        kernel_leap 1
+        check_fup_sync 0
+        clock_class_threshold 135
+        #
+        # Servo Options
+        #
+        pi_proportional_const 0.0
+        pi_integral_const 0.0
+        pi_proportional_scale 0.0
+        pi_proportional_exponent -0.3
+        pi_proportional_norm_max 0.7
+        pi_integral_scale 0.0
+        pi_integral_exponent 0.4
+        pi_integral_norm_max 0.3
+        step_threshold 2.0
+        first_step_threshold 0.00002
+        max_frequency 900000000
+        clock_servo pi
+        sanity_freq_limit 200000000
+        ntpshm_segment 0
+        #
+        # Transport options
+        #
+        transportSpecific 0x0
+        ptp_dst_mac 01:1B:19:00:00:00
+        p2p_dst_mac 01:80:C2:00:00:0E
+        udp_ttl 1
+        udp6_scope 0x0E
+        uds_address /var/run/ptp4l
+        #
+        # Default interface options
+        #
+        clock_type BC
+        network_transport L2
+        delay_mechanism E2E
+        time_stamping hardware
+        tsproc_mode filter
+        delay_filter moving_median
+        delay_filter_length 10
+        egressLatency 0
+        ingressLatency 0
+        boundary_clock_jbod 0
+        #
+        # Clock description
+        #
+        productDescription ;;
+        revisionData ;;
+        manufacturerIdentity 00:00:00
+        userDescription ;
+        timeSource 0xA0
+  recommend:
+    - profile: "boundary"
+      priority: 4
+      match:
+        - nodeLabel: "node-role.kubernetes.io/$mcp"
+```
+
+
+
+```yaml
+apiVersion: ptp.openshift.io/v1
+kind: PtpConfig
+metadata:
+  name: grandmaster
+  namespace: openshift-ptp
+  annotations: {}
+spec:
+  profile:
+    - name: "grandmaster"
+      ptp4lOpts: "-2 --summary_interval -4"
+      phc2sysOpts: -r -u 0 -m -w -N 8 -R 16 -s $iface_master -n 24
+      ptpSchedulingPolicy: SCHED_FIFO
+      ptpSchedulingPriority: 10
+      ptpSettings:
+        logReduce: "true"
+      plugins:
+        e810:
+          enableDefaultConfig: false
+          settings:
+            LocalMaxHoldoverOffSet: 1500
+            LocalHoldoverTimeout: 14400
+            MaxInSpecOffset: 100
+          pins: $e810_pins
+          #  "$iface_master":
+          #    "U.FL2": "0 2"
+          #    "U.FL1": "0 1"
+          #    "SMA2": "0 2"
+          #    "SMA1": "0 1"
+          ublxCmds:
+            - args: #ubxtool -P 29.20 -z CFG-HW-ANT_CFG_VOLTCTRL,1
+                - "-P"
+                - "29.20"
+                - "-z"
+                - "CFG-HW-ANT_CFG_VOLTCTRL,1"
+              reportOutput: false
+            - args: #ubxtool -P 29.20 -e GPS
+                - "-P"
+                - "29.20"
+                - "-e"
+                - "GPS"
+              reportOutput: false
+            - args: #ubxtool -P 29.20 -d Galileo
+                - "-P"
+                - "29.20"
+                - "-d"
+                - "Galileo"
+              reportOutput: false
+            - args: #ubxtool -P 29.20 -d GLONASS
+                - "-P"
+                - "29.20"
+                - "-d"
+                - "GLONASS"
+              reportOutput: false
+            - args: #ubxtool -P 29.20 -d BeiDou
+                - "-P"
+                - "29.20"
+                - "-d"
+                - "BeiDou"
+              reportOutput: false
+            - args: #ubxtool -P 29.20 -d SBAS
+                - "-P"
+                - "29.20"
+                - "-d"
+                - "SBAS"
+              reportOutput: false
+            - args: #ubxtool -P 29.20 -t -w 5 -v 1 -e SURVEYIN,600,50000
+                - "-P"
+                - "29.20"
+                - "-t"
+                - "-w"
+                - "5"
+                - "-v"
+                - "1"
+                - "-e"
+                - "SURVEYIN,600,50000"
+              reportOutput: true
+            - args: #ubxtool -P 29.20 -p MON-HW
+                - "-P"
+                - "29.20"
+                - "-p"
+                - "MON-HW"
+              reportOutput: true
+            - args: #ubxtool -P 29.20 -p CFG-MSG,1,38,248
+                - "-P"
+                - "29.20"
+                - "-p"
+                - "CFG-MSG,1,38,248"
+              reportOutput: true
+      ts2phcOpts: " "
+      ts2phcConf: |
+        [nmea]
+        ts2phc.master 1
+        [global]
+        use_syslog  0
+        verbose 1
+        logging_level 7
+        ts2phc.pulsewidth 100000000
+        #cat /dev/GNSS to find available serial port
+        #example value of gnss_serialport is /dev/ttyGNSS_1700_0
+        ts2phc.nmea_serialport $gnss_serialport
+        [$iface_master]
+        ts2phc.extts_polarity rising
+        ts2phc.extts_correction 0
+      ptp4lConf: |
+        [$iface_master]
+        masterOnly 1
+        [$iface_master_1]
+        masterOnly 1
+        [$iface_master_2]
+        masterOnly 1
+        [$iface_master_3]
+        masterOnly 1
+        [global]
+        #
+        # Default Data Set
+        #
+        twoStepFlag 1
+        priority1 128
+        priority2 128
+        domainNumber 24
+        #utc_offset 37
+        clockClass 6
+        clockAccuracy 0x27
+        offsetScaledLogVariance 0xFFFF
+        free_running 0
+        freq_est_interval 1
+        dscp_event 0
+        dscp_general 0
+        dataset_comparison G.8275.x
+        G.8275.defaultDS.localPriority 128
+        #
+        # Port Data Set
+        #
+        logAnnounceInterval -3
+        logSyncInterval -4
+        logMinDelayReqInterval -4
+        logMinPdelayReqInterval 0
+        announceReceiptTimeout 3
+        syncReceiptTimeout 0
+        delayAsymmetry 0
+        fault_reset_interval -4
+        neighborPropDelayThresh 20000000
+        masterOnly 0
+        G.8275.portDS.localPriority 128
+        #
+        # Run time options
+        #
+        assume_two_step 0
+        logging_level 6
+        path_trace_enabled 0
+        follow_up_info 0
+        hybrid_e2e 0
+        inhibit_multicast_service 0
+        net_sync_monitor 0
+        tc_spanning_tree 0
+        tx_timestamp_timeout 50
+        unicast_listen 0
+        unicast_master_table 0
+        unicast_req_duration 3600
+        use_syslog 1
+        verbose 0
+        summary_interval -4
+        kernel_leap 1
+        check_fup_sync 0
+        clock_class_threshold 7
+        #
+        # Servo Options
+        #
+        pi_proportional_const 0.0
+        pi_integral_const 0.0
+        pi_proportional_scale 0.0
+        pi_proportional_exponent -0.3
+        pi_proportional_norm_max 0.7
+        pi_integral_scale 0.0
+        pi_integral_exponent 0.4
+        pi_integral_norm_max 0.3
+        step_threshold 2.0
+        first_step_threshold 0.00002
+        clock_servo pi
+        sanity_freq_limit  200000000
+        ntpshm_segment 0
+        #
+        # Transport options
+        #
+        transportSpecific 0x0
+        ptp_dst_mac 01:1B:19:00:00:00
+        p2p_dst_mac 01:80:C2:00:00:0E
+        udp_ttl 1
+        udp6_scope 0x0E
+        uds_address /var/run/ptp4l
+        #
+        # Default interface options
+        #
+        clock_type BC
+        network_transport L2
+        delay_mechanism E2E
+        time_stamping hardware
+        tsproc_mode filter
+        delay_filter moving_median
+        delay_filter_length 10
+        egressLatency 0
+        ingressLatency 0
+        boundary_clock_jbod 0
+        #
+        # Clock description
+        #
+        productDescription ;;
+        revisionData ;;
+        manufacturerIdentity 00:00:00
+        userDescription ;
+        timeSource 0x20
+  recommend:
+    - profile: "grandmaster"
+      priority: 4
+      match:
+        - nodeLabel: "node-role.kubernetes.io/$mcp"
+```
+
+
+The following optional PtpOperatorConfig CR configures PTP events reporting for the node.
+
+
+```yaml
+apiVersion: ptp.openshift.io/v1
+kind: PtpOperatorConfig
+metadata:
+  name: default
+  namespace: openshift-ptp
+  annotations: {}
+spec:
+  daemonNodeSelector:
+    node-role.kubernetes.io/$mcp: ""
+  ptpEventConfig:
+    enableEventPublisher: true
+    transportHost: "http://ptp-event-publisher-service-NODE_NAME.openshift-ptp.svc.cluster.local:9043"
+```
+
+
+## Extended Tuned profile
+
+Single-node OpenShift clusters that run DU workloads require additional performance tuning configurations necessary for high-performance workloads. The following example Tuned CR extends the Tuned profile:
+
+
+```yaml
+apiVersion: tuned.openshift.io/v1
+kind: Tuned
+metadata:
+  name: performance-patch
+  namespace: openshift-cluster-node-tuning-operator
+  annotations: {}
+spec:
+  profile:
+    - name: performance-patch
+      # Please note:
+      # - The 'include' line must match the associated PerformanceProfile name, following below pattern
+      #   include=openshift-node-performance-${PerformanceProfile.metadata.name}
+      # - When using the standard (non-realtime) kernel, remove the kernel.timer_migration override from
+      #   the [sysctl] section and remove the entire section if it is empty.
+      data: |
+        [main]
+        summary=Configuration changes profile inherited from performance created tuned
+        include=openshift-node-performance-openshift-node-performance-profile
+        [scheduler]
+        group.ice-ptp=0:f:10:*:ice-ptp.*
+        group.ice-gnss=0:f:10:*:ice-gnss.*
+        group.ice-dplls=0:f:10:*:ice-dplls.*
+        [service]
+        service.stalld=start,enable
+        service.chronyd=stop,disable
+  recommend:
+    - machineConfigLabels:
+        machineconfiguration.openshift.io/role: "$mcp"
+      priority: 19
+      profile: performance-patch
+```
+
+
+
+
+## SR-IOV
+
+Single root I/O virtualization (SR-IOV) is commonly used to enable fronthaul and midhaul networks. The following YAML example configures SR-IOV for a single-node OpenShift cluster.
+
+
+[NOTE]
+----
+The configuration of the SriovNetwork CR will vary depending on your specific network and infrastructure requirements.
+----
+
+
+```yaml
+apiVersion: sriovnetwork.openshift.io/v1
+kind: SriovOperatorConfig
+metadata:
+  name: default
+  namespace: openshift-sriov-network-operator
+  annotations: {}
+spec:
+  configDaemonNodeSelector:
+    "node-role.kubernetes.io/$mcp": ""
+  # Injector and OperatorWebhook pods can be disabled (set to "false") below
+  # to reduce the number of management pods. It is recommended to start with the 
+  # webhook and injector pods enabled, and only disable them after verifying the
+  # correctness of user manifests.
+  #   If the injector is disabled, containers using sr-iov resources must explicitly assign
+  #   them in the  "requests"/"limits" section of the container spec, for example:
+  #    containers:
+  #    - name: my-sriov-workload-container
+  #      resources:
+  #        limits:
+  #          openshift.io/<resource_name>:  "1"
+  #        requests:
+  #          openshift.io/<resource_name>:  "1"
+  enableInjector: false
+  enableOperatorWebhook: false
+  logLevel: 0
+```
+
+
+
+
+
+```yaml
+apiVersion: sriovnetwork.openshift.io/v1
+kind: SriovNetwork
+metadata:
+  name: ""
+  namespace: openshift-sriov-network-operator
+  annotations: {}
+spec:
+  #  resourceName: ""
+  networkNamespace: openshift-sriov-network-operator
+#  vlan: ""
+#  spoofChk: ""
+#  ipam: ""
+#  linkState: ""
+#  maxTxRate: ""
+#  minTxRate: ""
+#  vlanQoS: ""
+#  trust: ""
+#  capabilities: ""
+```
+
+
+
+
+
+```yaml
+apiVersion: sriovnetwork.openshift.io/v1
+kind: SriovNetworkNodePolicy
+metadata:
+  name: $name
+  namespace: openshift-sriov-network-operator
+  annotations: {}
+spec:
+  # The attributes for Mellanox/Intel based NICs as below.
+  #     deviceType: netdevice/vfio-pci
+  #     isRdma: true/false
+  deviceType: $deviceType
+  isRdma: $isRdma
+  nicSelector:
+    # The exact physical function name must match the hardware used    
+    pfNames: [$pfNames]
+  nodeSelector:
+    node-role.kubernetes.io/$mcp: ""
+  numVfs: $numVfs
+  priority: $priority
+  resourceName: $resourceName
+```
+
+
+
+
+
+```yaml
+# Automatically generated by extra-manifests-builder
+# Do not make changes directly.
+apiVersion: machineconfiguration.openshift.io/v1
+kind: MachineConfig
+metadata:
+  labels:
+    machineconfiguration.openshift.io/role: master
+  name: 07-sriov-related-kernel-args-master
+spec:
+  config:
+    ignition:
+      version: 3.2.0
+  kernelArguments:
+    - intel_iommu=on
+    - iommu=pt
+```
+
+
+## Console Operator
+
+Use the cluster capabilities feature to prevent the Console Operator from being installed.
+When the node is centrally managed it is not needed.
+Removing the Operator provides additional space and capacity for application workloads.
+
+To disable the Console Operator during the installation of the managed cluster, set the following in the spec.clusters.0.installConfigOverrides field of the SiteConfig custom resource (CR):
+
+
+```yaml
+installConfigOverrides:  "{\"capabilities\":{\"baselineCapabilitySet\": \"None\" }}"
+```
+
+
+## Alertmanager
+
+Single-node OpenShift clusters that run DU workloads require reduced CPU resources consumed by the Red Hat OpenShift Container Platform monitoring components. The following ConfigMap custom resource (CR) disables Alertmanager.
+
+
+```yaml
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: cluster-monitoring-config
+  namespace: openshift-monitoring
+  annotations: {}
+data:
+  config.yaml: |
+    alertmanagerMain:
+      enabled: false
+    telemeterClient:
+      enabled: false
+    prometheusK8s:
+       retention: 24h
+```
+
+
+## Operator Lifecycle Manager
+
+Single-node OpenShift clusters that run distributed unit workloads require consistent access to CPU resources. Operator Lifecycle Manager (OLM) collects performance data from Operators at regular intervals, resulting in an increase in CPU utilisation. The following ConfigMap custom resource (CR) disables the collection of Operator performance data by OLM.
+
+
+```yaml
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: collect-profiles-config
+  namespace: openshift-operator-lifecycle-manager
+data:
+  pprof-config.yaml: |
+    disabled: True
+```
+
+
+## LVM Storage
+
+You can dynamically provision local storage on single-node OpenShift clusters with Logical Volume Manager (LVM) Storage.
+
+
+[NOTE]
+----
+The recommended storage solution for single-node OpenShift is the Local Storage Operator. Alternatively, you can use LVM Storage but it requires additional CPU resources to be allocated.
+----
+
+The following YAML example configures the storage of the node to be available to Red Hat OpenShift Container Platform applications.
+
+
+```yaml
+apiVersion: lvm.topolvm.io/v1alpha1
+kind: LVMCluster
+metadata:
+  name: lvmcluster
+  namespace: openshift-storage
+  annotations: {}
+spec: {}
+#example: creating a vg1 volume group leveraging all available disks on the node
+#         except the installation disk.
+#  storage:
+#    deviceClasses:
+#    - name: vg1
+#      thinPoolConfig:
+#        name: thin-pool-1
+#        sizePercent: 90
+#        overprovisionRatio: 10
+```
+
+
+
+
+## Network diagnostics
+
+Single-node OpenShift clusters that run DU workloads require less inter-pod network connectivity checks to reduce the additional load created by these pods. The following custom resource (CR) disables these checks.
+
+
+```yaml
+apiVersion: operator.openshift.io/v1
+kind: Network
+metadata:
+  name: cluster
+  annotations: {}
+spec:
+  disableNetworkDiagnostics: true
+```
+
+
+* Deploying far edge sites using ZTP

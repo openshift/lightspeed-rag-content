@@ -1,0 +1,306 @@
+# Configuring Operator projects for multi-platform support
+
+
+Operator projects that support multiple architectures and operating systems, or platforms, can run on more Kubernetes and Red Hat OpenShift Container Platform clusters than Operator projects that support only a single platform. Example architectures include amd64, arm64, ppc64le, and s390x. Example operating systems include Linux and Windows.
+Perform the following actions to ensure your Operator project can run on multiple Red Hat OpenShift Container Platform platforms:
+* Build a manifest list that specifies the platforms that your Operator supports.
+* Set your Operator's node affinity to support multi-architecture compute machines.
+
+[IMPORTANT]
+----
+The Red Hat-supported version of the Operator SDK CLI tool, including the related scaffolding and testing tools for Operator projects, is deprecated and is planned to be removed in a future release of Red Hat OpenShift Container Platform. Red Hat will provide bug fixes and support for this feature during the current release lifecycle, but this feature will no longer receive enhancements and will be removed from future Red Hat OpenShift Container Platform releases.
+The Red Hat-supported version of the Operator SDK is not recommended for creating new Operator projects. Operator authors with existing Operator projects can use the version of the Operator SDK CLI tool released with Red Hat OpenShift Container Platform 4.17 to maintain their projects and create Operator releases targeting newer versions of Red Hat OpenShift Container Platform.
+The following related base images for Operator projects are not deprecated. The runtime functionality and configuration APIs for these base images are still supported for bug fixes and for addressing CVEs.
+* The base image for Ansible-based Operator projects
+* The base image for Helm-based Operator projects
+For the most recent list of major functionality that has been deprecated or removed within Red Hat OpenShift Container Platform, refer to the Deprecated and removed features section of the Red Hat OpenShift Container Platform release notes.
+For information about the unsupported, community-maintained, version of the Operator SDK, see Operator SDK (Operator Framework).
+----
+
+# Building a manifest list of the platforms your Operator supports
+
+You can use the make docker-buildx command to build a manifest list of the platforms supported by your Operator and operands. A manifest list references specific image manifests for one or more architectures. An image manifest specifies the platforms that an image supports.
+
+For more information, see OpenContainers Image Index Spec or Image Manifest v2, Schema 2.
+
+
+[IMPORTANT]
+----
+If your Operator project deploys an application or other workload resources, the following procedure assumes the application's multi-platform images are built during the application release process.
+----
+
+* An Operator project built using the Operator SDK version 1.31.0 or later
+* Docker installed
+
+1. Inspect the image manifests of your Operator and operands to find which platforms your Operator project can support. Run the following command to inspect an image manifest:
+
+```terminal
+$ docker manifest inspect <image_manifest> 1
+```
+
+Specifies an image manifest, such as redhat/ubi9:latest.
+
+The platforms that your Operator and operands mutually support determine the platform compatibility of your Operator project.
+Example output
+
+```json
+{
+    "manifests": [
+        {
+            "digest": "sha256:c0669ef34cdc14332c0f1ab0c2c01acb91d96014b172f1a76f3a39e63d1f0bda",
+            "mediaType": "application/vnd.docker.distribution.manifest.v2+json",
+            "platform": {
+                "architecture": "amd64",
+                "os": "linux"
+            },
+            "size": 528
+        },
+...
+        {
+            "digest": "sha256:30e6d35703c578ee703230b9dc87ada2ba958c1928615ac8a674fcbbcbb0f281",
+            "mediaType": "application/vnd.docker.distribution.manifest.v2+json",
+            "platform": {
+                "architecture": "arm64",
+                "os": "linux",
+                "variant": "v8"
+            },
+            "size": 528
+        },
+...
+```
+
+2. If the previous command does not output platform information, then the specified base image might be a single image instead of an image manifest. You can find which architectures an image supports by running the following command:
+
+```terminal
+$ docker inspect <image>
+```
+
+3. For Go-based Operator projects, the Operator SDK explicitly references the amd64 architecture in your project's Dockerfile. Make the following change
+to your Dockerfile to set an environment variable to the value specified by the platform flag:
+Example Dockerfile
+
+```docker
+FROM golang:1.19 as builder
+ARG TARGETOS
+ARG TARGETARCH
+...
+RUN CGO_ENABLED=0 GOOS=${TARGETOS:-linux} GOARCH=${TARGETARCH} go build -a -o manager main.go 1
+```
+
+Change the GOARCH field from amd64 to $TARGETARCH.
+4. Your Operator project's makefile defines the PLATFORMS environment variable. If your Operator's images do not support all of the platforms set by default, edit the variable to specify the supported platforms. The following example defines the supported platforms as linux/arm64 and linux/amd64:
+Example makefile
+
+```make
+# ...
+PLATFORMS ?= linux/arm64,linux/amd64 1
+.PHONY: docker-buildx
+# ...
+```
+
+The following PLATFORMS values are set by default: linux/arm64, linux/amd64, linux/s390x, and linux/ppc64le.
+
+When you run the make docker buildx command to generate a manifest list, the Operator SDK creates an image manifest for each of the platforms specified by the PLATFORMS variable.
+5. Run the following command from your Operator project directory to build your manager image. Running the command builds a manager image with multi-platform support and pushes the manifest list to your registry.
+
+```terminal
+$ make docker-buildx \
+  IMG=<image_registry>/<organization_name>/<repository_name>:<version_or_sha>
+```
+
+
+# About node affinity rules for multi-architecture compute machines and Operator workloads
+
+You must set node affinity rules to ensure your Operator workloads can run on multi-architecture compute machines. Node affinity is a set of rules used by the scheduler to define a pod&#8217;s placement. Setting node affinity rules ensures your Operator&#8217;s workloads are scheduled to compute machines with compatible architectures.
+
+If your Operator performs better on particular architectures, you can set preferred node affinity rules to schedule pods to machines with the specified architectures.
+
+For more information, see "About clusters with multi-architecture compute machines" and "Controlling pod placement on nodes using node affinity rules".
+
+* Controlling pod placement on nodes using node affinity rules
+* Using node affinity to control where an Operator is installed
+* About clusters with multi-architecture compute machines
+
+## Using required node affinity rules to support multi-architecture compute machines for Operator projects
+
+If you want your Operator to support multi-architecture compute machines, you must define your Operator&#8217;s required node affinity rules.
+
+* An Operator project created or maintained with Operator SDK 1.31.0 or later.
+* A manifest list defining the platforms your Operator supports.
+
+1. Search your Operator project for Kubernetes manifests that define pod spec and pod template spec objects.
+
+[IMPORTANT]
+----
+Because object type names are not declared in YAML files, look for the mandatory containers field in your Kubernetes manifests. The containers field is required when specifying both pod spec and pod template spec objects.
+You must set node affinity rules in all Kubernetes manifests that define a pod spec or pod template spec, including objects such as Pod, Deployment, DaemonSet, and StatefulSet.
+----
+Example Kubernetes manifest
+
+```yaml
+apiVersion: v1
+kind: Pod
+metadata:
+  name: s1
+spec:
+  containers:
+    - name: <container_name>
+      image: docker.io/<org>/<image_name>
+```
+
+2. Set the required node affinity rules in the Kubernetes manifests that define pod spec and pod template spec objects, similar to the following example:
+Example Kubernetes manifest
+
+```yaml
+apiVersion: v1
+kind: Pod
+metadata:
+  name: s1
+spec:
+  containers:
+    - name: <container_name>
+      image: docker.io/<org>/<image_name>
+  affinity:
+    nodeAffinity:
+      requiredDuringSchedulingIgnoredDuringExecution: 1
+        nodeSelectorTerms: 2
+        - matchExpressions: 3
+          - key: kubernetes.io/arch 4
+            operator: In
+            values:
+            - amd64
+            - arm64
+            - ppc64le
+            - s390x
+          - key: kubernetes.io/os 5
+            operator: In
+            values:
+                - linux
+```
+
+Defines a required rule.
+If you specify multiple nodeSelectorTerms associated with nodeAffinity types, then the pod can be scheduled onto a node if one of the nodeSelectorTerms is satisfied.
+If you specify multiple matchExpressions associated with nodeSelectorTerms, then the pod can be scheduled onto a node only if all matchExpressions are satisfied.
+Specifies the architectures defined in the manifest list.
+Specifies the operating systems defined in the manifest list.
+3. Go-based Operator projects that use dynamically created workloads might embed pod spec and pod template spec objects in the Operator's logic.
+
+If your project embeds pod spec or pod template spec objects in the Operator&#8217;s logic, edit your Operator&#8217;s logic similar to the following example. The following example shows how to update a PodSpec object by using the Go API:
+
+```go
+Template: corev1.PodTemplateSpec{
+    ...
+    Spec: corev1.PodSpec{
+        Affinity: &corev1.Affinity{
+            NodeAffinity: &corev1.NodeAffinity{
+                RequiredDuringSchedulingIgnoredDuringExecution: &corev1.NodeSelector{
+                    NodeSelectorTerms: []corev1.NodeSelectorTerm{
+                        {
+                            MatchExpressions: []corev1.NodeSelectorRequirement{
+                                {
+                                    Key:      "kubernetes.io/arch",
+                                    Operator: "In",
+                                    Values:   []string{"amd64","arm64","ppc64le","s390x"},
+                                },
+                                {
+                                    Key:      "kubernetes.io/os",
+                                    Operator: "In",
+                                    Values:   []string{"linux"},
+                                },
+                            },
+                        },
+                    },
+                },
+            },
+        },
+        SecurityContext: &corev1.PodSecurityContext{
+            ...
+        },
+        Containers: []corev1.Container{{
+            ...
+        }},
+    },
+```
+
+
+where:
+RequiredDuringSchedulingIgnoredDuringExecution:: Defines a required rule.
+NodeSelectorTerms:: If you specify multiple nodeSelectorTerms associated with nodeAffinity types, then the pod can be scheduled onto a node if one of the nodeSelectorTerms is satisfied.
+MatchExpressions:: If you specify multiple matchExpressions associated with nodeSelectorTerms, then the pod can be scheduled onto a node only if all matchExpressions are satisfied.
+kubernetes.io/arch:: Specifies the architectures defined in the manifest list.
+kubernetes.io/os:: Specifies the operating systems defined in the manifest list.
+
+
+[WARNING]
+----
+If you do not set node affinity rules and a container is scheduled to a compute machine with an incompatible architecture, the pod fails and triggers one of the following events:
+CrashLoopBackOff:: Occurs when an image manifest's entry point fails to run and an exec format error message is printed in the logs.
+ImagePullBackOff:: Occurs when a manifest list does not include a manifest for the architecture where a pod is scheduled or the node affinity terms are set to the wrong values.
+----
+
+* Configuring a required node affinity rule
+* Sample node affinity rules
+
+## Using preferred node affinity rules to configure support for multi-architecture compute machines for Operator projects
+
+If your Operator performs better on particular architectures, you can configure preferred node affinity rules to schedule pods to nodes to the specified architectures.
+
+* An Operator project created or maintained with Operator SDK 1.31.0 or later.
+* A manifest list defining the platforms your Operator supports.
+* Required node affinity rules are set for your Operator project.
+
+1. Search your Operator project for Kubernetes manifests that define pod spec and pod template spec objects.
+Example Kubernetes manifest
+
+```yaml
+apiVersion: v1
+kind: Pod
+metadata:
+  name: s1
+spec:
+  containers:
+    - name: <container_name>
+      image: docker.io/<org>/<image_name>
+```
+
+2. Set your Operator's preferred node affinity rules in the Kubernetes manifests that define pod spec and pod template spec objects, similar to the following example:
+Example Kubernetes manifest
+
+```yaml
+apiVersion: v1
+kind: Pod
+metadata:
+  name: s1
+spec:
+  containers:
+    - name: <container_name>
+      image: docker.io/<org>/<image_name>
+  affinity:
+      nodeAffinity:
+        preferredDuringSchedulingIgnoredDuringExecution: 1
+          - preference:
+            matchExpressions: 2
+              - key: kubernetes.io/arch 3
+                operator: In 4
+                values:
+                - amd64
+                - arm64
+            weight: 90 5
+```
+
+Defines a preferred rule.
+If you specify multiple matchExpressions associated with nodeSelectorTerms, then the pod can be scheduled onto a node only if all matchExpressions are satisfied.
+Specifies the architectures defined in the manifest list.
+Specifies an operator. The Operator can be In, NotIn,  Exists, or DoesNotExist. For example, use the value of In to require the label to be in the node.
+Specifies a weight for the node, valid values are 1-100. The node with highest weight is preferred.
+
+* Configuring a preferred node affinity rule
+
+# Next steps
+
+* Label the platforms your Operator supports for Operator Lifecycle Manager (OLM)
+* Bundle your Operator and Deploy with OLM
+* Go-based Operator projects
+* Ansible-based Operator projects
+* Helm-based Operator projects
+* Validate your Operator's multi-platform readiness

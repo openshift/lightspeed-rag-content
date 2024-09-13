@@ -1,0 +1,519 @@
+# Troubleshooting logging alerts
+
+
+You can use the following procedures to troubleshoot logging alerts on your cluster.
+
+# Elasticsearch cluster health status is red
+
+At least one primary shard and its replicas are not allocated to a node. Use the following procedure to troubleshoot this alert.
+
+
+[TIP]
+----
+Some commands in this documentation reference an Elasticsearch pod by using a $ES_POD_NAME shell variable. If you want to copy and paste the commands directly from this documentation, you must set this variable to a value that is valid for your Elasticsearch cluster.
+You can list the available Elasticsearch pods by running the following command:
+
+```terminal
+$ oc -n openshift-logging get pods -l component=elasticsearch
+```
+
+Choose one of the pods listed and set the $ES_POD_NAME variable, by running the following command:
+
+```terminal
+$ export ES_POD_NAME=<elasticsearch_pod_name>
+```
+
+You can now use the $ES_POD_NAME variable in commands.
+----
+
+1. Check the Elasticsearch cluster health and verify that the cluster status is red by running the following command:
+
+```terminal
+$ oc exec -n openshift-logging -c elasticsearch $ES_POD_NAME -- health
+```
+
+2. List the nodes that have joined the cluster by running the following command:
+
+```terminal
+$ oc exec -n openshift-logging -c elasticsearch $ES_POD_NAME \
+  -- es_util --query=_cat/nodes?v
+```
+
+3. List the Elasticsearch pods and compare them with the nodes in the command output from the previous step, by running the following command:
+
+```terminal
+$ oc -n openshift-logging get pods -l component=elasticsearch
+```
+
+4. If some of the Elasticsearch nodes have not joined the cluster, perform the following steps.
+1. Confirm that Elasticsearch has an elected master node by running the following command and observing the output:
+
+```terminal
+$ oc exec -n openshift-logging -c elasticsearch $ES_POD_NAME \
+  -- es_util --query=_cat/master?v
+```
+
+2. Review the pod logs of the elected master node for issues by running the following command and observing the output:
+
+```terminal
+$ oc logs <elasticsearch_master_pod_name> -c elasticsearch -n openshift-logging
+```
+
+3. Review the logs of nodes that have not joined the cluster for issues by running the following command and observing the output:
+
+```terminal
+$ oc logs <elasticsearch_node_name> -c elasticsearch -n openshift-logging
+```
+
+5. If all the nodes have joined the cluster, check if the cluster is in the process of recovering by running the following command and observing the output:
+
+```terminal
+$ oc exec -n openshift-logging -c elasticsearch $ES_POD_NAME \
+  -- es_util --query=_cat/recovery?active_only=true
+```
+
+
+If there is no command output, the recovery process might be delayed or stalled by pending tasks.
+6. Check if there are pending tasks by running the following command and observing the output:
+
+```terminal
+$ oc exec -n openshift-logging -c elasticsearch $ES_POD_NAME \
+  -- health | grep number_of_pending_tasks
+```
+
+7. If there are pending tasks, monitor their status. If their status changes and indicates that the cluster is recovering, continue waiting. The recovery time varies according to the size of the cluster and other factors. Otherwise, if the status of the pending tasks does not change, this indicates that the recovery has stalled.
+8. If it seems like the recovery has stalled, check if the cluster.routing.allocation.enable value is set to none, by running the following command and observing the output:
+
+```terminal
+$ oc exec -n openshift-logging -c elasticsearch $ES_POD_NAME \
+  -- es_util --query=_cluster/settings?pretty
+```
+
+9. If the cluster.routing.allocation.enable value is set to none, set it to all, by running the following command:
+
+```terminal
+$ oc exec -n openshift-logging -c elasticsearch $ES_POD_NAME \
+  -- es_util --query=_cluster/settings?pretty \
+  -X PUT -d '{"persistent": {"cluster.routing.allocation.enable":"all"}}'
+```
+
+10. Check if any indices are still red by running the following command and observing the output:
+
+```terminal
+$ oc exec -n openshift-logging -c elasticsearch $ES_POD_NAME \
+  -- es_util --query=_cat/indices?v
+```
+
+11. If any indices are still red, try to clear them by performing the following steps.
+1. Clear the cache by running the following command:
+
+```terminal
+$ oc exec -n openshift-logging -c elasticsearch $ES_POD_NAME \
+  -- es_util --query=<elasticsearch_index_name>/_cache/clear?pretty
+```
+
+2. Increase the max allocation retries by running the following command:
+
+```terminal
+$ oc exec -n openshift-logging -c elasticsearch $ES_POD_NAME \
+  -- es_util --query=<elasticsearch_index_name>/_settings?pretty \
+  -X PUT -d '{"index.allocation.max_retries":10}'
+```
+
+3. Delete all the scroll items by running the following command:
+
+```terminal
+$ oc exec -n openshift-logging -c elasticsearch $ES_POD_NAME \
+  -- es_util --query=_search/scroll/_all -X DELETE
+```
+
+4. Increase the timeout by running the following command:
+
+```terminal
+$ oc exec -n openshift-logging -c elasticsearch $ES_POD_NAME \
+  -- es_util --query=<elasticsearch_index_name>/_settings?pretty \
+  -X PUT -d '{"index.unassigned.node_left.delayed_timeout":"10m"}'
+```
+
+12. If the preceding steps do not clear the red indices, delete the indices individually.
+1. Identify the red index name by running the following command:
+
+```terminal
+$ oc exec -n openshift-logging -c elasticsearch $ES_POD_NAME \
+  -- es_util --query=_cat/indices?v
+```
+
+2. Delete the red index by running the following command:
+
+```terminal
+$ oc exec -n openshift-logging -c elasticsearch $ES_POD_NAME \
+  -- es_util --query=<elasticsearch_red_index_name> -X DELETE
+```
+
+13. If there are no red indices and the cluster status is red, check for a continuous heavy processing load on a data node.
+1. Check if the Elasticsearch JVM Heap usage is high by running the following command:
+
+```terminal
+$ oc exec -n openshift-logging -c elasticsearch $ES_POD_NAME \
+  -- es_util --query=_nodes/stats?pretty
+```
+
+
+In the command output, review the node_name.jvm.mem.heap_used_percent field to determine the JVM Heap usage.
+2. Check for high CPU utilization. For more information about CPU utilitzation, see the Red Hat OpenShift Container Platform "Reviewing monitoring dashboards" documentation.
+
+* Reviewing monitoring dashboards
+* Fix a red or yellow cluster status
+
+# Elasticsearch cluster health status is yellow
+
+Replica shards for at least one primary shard are not allocated to nodes. Increase the node count by adjusting the nodeCount value in the ClusterLogging custom resource (CR).
+
+* Fix a red or yellow cluster status
+
+# Elasticsearch node disk low watermark reached
+
+Elasticsearch does not allocate shards to nodes that reach the low watermark.
+
+
+[TIP]
+----
+Some commands in this documentation reference an Elasticsearch pod by using a $ES_POD_NAME shell variable. If you want to copy and paste the commands directly from this documentation, you must set this variable to a value that is valid for your Elasticsearch cluster.
+You can list the available Elasticsearch pods by running the following command:
+
+```terminal
+$ oc -n openshift-logging get pods -l component=elasticsearch
+```
+
+Choose one of the pods listed and set the $ES_POD_NAME variable, by running the following command:
+
+```terminal
+$ export ES_POD_NAME=<elasticsearch_pod_name>
+```
+
+You can now use the $ES_POD_NAME variable in commands.
+----
+
+1. Identify the node on which Elasticsearch is deployed by running the following command:
+
+```terminal
+$ oc -n openshift-logging get po -o wide
+```
+
+2. Check if there are unassigned shards by running the following command:
+
+```terminal
+$ oc exec -n openshift-logging -c elasticsearch $ES_POD_NAME \
+  -- es_util --query=_cluster/health?pretty | grep unassigned_shards
+```
+
+3. If there are unassigned shards, check the disk space on each node, by running the following command:
+
+```terminal
+$ for pod in `oc -n openshift-logging get po -l component=elasticsearch -o jsonpath='{.items[*].metadata.name}'`; \
+  do echo $pod; oc -n openshift-logging exec -c elasticsearch $pod \
+  -- df -h /elasticsearch/persistent; done
+```
+
+4. In the command output, check the Use column to determine the used disk percentage on that node.
+Example output
+
+```terminal
+elasticsearch-cdm-kcrsda6l-1-586cc95d4f-h8zq8
+Filesystem      Size  Used Avail Use% Mounted on
+/dev/nvme1n1     19G  522M   19G   3% /elasticsearch/persistent
+elasticsearch-cdm-kcrsda6l-2-5b548fc7b-cwwk7
+Filesystem      Size  Used Avail Use% Mounted on
+/dev/nvme2n1     19G  522M   19G   3% /elasticsearch/persistent
+elasticsearch-cdm-kcrsda6l-3-5dfc884d99-59tjw
+Filesystem      Size  Used Avail Use% Mounted on
+/dev/nvme3n1     19G  528M   19G   3% /elasticsearch/persistent
+```
+
+
+If the used disk percentage is above 85%, the node has exceeded the low watermark, and shards can no longer be allocated to this node.
+5. To check the current redundancyPolicy, run the following command:
+
+```terminal
+$ oc -n openshift-logging get es elasticsearch \
+  -o jsonpath='{.spec.redundancyPolicy}'
+```
+
+
+If you are using a ClusterLogging resource on your cluster, run the following command:
+
+```terminal
+$ oc -n openshift-logging get cl \
+  -o jsonpath='{.items[*].spec.logStore.elasticsearch.redundancyPolicy}'
+```
+
+
+If the cluster redundancyPolicy value is higher than the SingleRedundancy value, set it to the SingleRedundancy value and save this change.
+6. If the preceding steps do not fix the issue, delete the old indices.
+1. Check the status of all indices on Elasticsearch by running the following command:
+
+```terminal
+$ oc exec -n openshift-logging -c elasticsearch $ES_POD_NAME -- indices
+```
+
+2. Identify an old index that can be deleted.
+3. Delete the index by running the following command:
+
+```terminal
+$ oc exec -n openshift-logging -c elasticsearch $ES_POD_NAME \
+  -- es_util --query=<elasticsearch_index_name> -X DELETE
+```
+
+
+# Elasticsearch node disk high watermark reached
+
+Elasticsearch attempts to relocate shards away from a node that has reached the high watermark to a node with low disk usage that has not crossed any watermark threshold limits.
+
+To allocate shards to a particular node, you must free up some space on that node. If increasing the disk space is not possible, try adding a new data node to the cluster, or decrease the total cluster redundancy policy.
+
+
+[TIP]
+----
+Some commands in this documentation reference an Elasticsearch pod by using a $ES_POD_NAME shell variable. If you want to copy and paste the commands directly from this documentation, you must set this variable to a value that is valid for your Elasticsearch cluster.
+You can list the available Elasticsearch pods by running the following command:
+
+```terminal
+$ oc -n openshift-logging get pods -l component=elasticsearch
+```
+
+Choose one of the pods listed and set the $ES_POD_NAME variable, by running the following command:
+
+```terminal
+$ export ES_POD_NAME=<elasticsearch_pod_name>
+```
+
+You can now use the $ES_POD_NAME variable in commands.
+----
+
+1. Identify the node on which Elasticsearch is deployed by running the following command:
+
+```terminal
+$ oc -n openshift-logging get po -o wide
+```
+
+2. Check the disk space on each node:
+
+```terminal
+$ for pod in `oc -n openshift-logging get po -l component=elasticsearch -o jsonpath='{.items[*].metadata.name}'`; \
+  do echo $pod; oc -n openshift-logging exec -c elasticsearch $pod \
+  -- df -h /elasticsearch/persistent; done
+```
+
+3. Check if the cluster is rebalancing:
+
+```terminal
+$ oc exec -n openshift-logging -c elasticsearch $ES_POD_NAME \
+  -- es_util --query=_cluster/health?pretty | grep relocating_shards
+```
+
+
+If the command output shows relocating shards, the high watermark has been exceeded. The default value of the high watermark is 90%.
+4. Increase the disk space on all nodes. If increasing the disk space is not possible, try adding a new data node to the cluster, or decrease the total cluster redundancy policy.
+5. To check the current redundancyPolicy, run the following command:
+
+```terminal
+$ oc -n openshift-logging get es elasticsearch \
+  -o jsonpath='{.spec.redundancyPolicy}'
+```
+
+
+If you are using a ClusterLogging resource on your cluster, run the following command:
+
+```terminal
+$ oc -n openshift-logging get cl \
+  -o jsonpath='{.items[*].spec.logStore.elasticsearch.redundancyPolicy}'
+```
+
+
+If the cluster redundancyPolicy value is higher than the SingleRedundancy value, set it to the SingleRedundancy value and save this change.
+6. If the preceding steps do not fix the issue, delete the old indices.
+1. Check the status of all indices on Elasticsearch by running the following command:
+
+```terminal
+$ oc exec -n openshift-logging -c elasticsearch $ES_POD_NAME -- indices
+```
+
+2. Identify an old index that can be deleted.
+3. Delete the index by running the following command:
+
+```terminal
+$ oc exec -n openshift-logging -c elasticsearch $ES_POD_NAME \
+  -- es_util --query=<elasticsearch_index_name> -X DELETE
+```
+
+
+# Elasticsearch node disk flood watermark reached
+
+Elasticsearch enforces a read-only index block on every index that has both of these conditions:
+
+* One or more shards are allocated to the node.
+* One or more disks exceed the flood stage.
+
+Use the following procedure to troubleshoot this alert.
+
+
+[TIP]
+----
+Some commands in this documentation reference an Elasticsearch pod by using a $ES_POD_NAME shell variable. If you want to copy and paste the commands directly from this documentation, you must set this variable to a value that is valid for your Elasticsearch cluster.
+You can list the available Elasticsearch pods by running the following command:
+
+```terminal
+$ oc -n openshift-logging get pods -l component=elasticsearch
+```
+
+Choose one of the pods listed and set the $ES_POD_NAME variable, by running the following command:
+
+```terminal
+$ export ES_POD_NAME=<elasticsearch_pod_name>
+```
+
+You can now use the $ES_POD_NAME variable in commands.
+----
+
+1. Get the disk space of the Elasticsearch node:
+
+```terminal
+$ for pod in `oc -n openshift-logging get po -l component=elasticsearch -o jsonpath='{.items[*].metadata.name}'`; \
+  do echo $pod; oc -n openshift-logging exec -c elasticsearch $pod \
+  -- df -h /elasticsearch/persistent; done
+```
+
+2. In the command output, check the Avail column to determine the free disk space on that node.
+Example output
+
+```terminal
+elasticsearch-cdm-kcrsda6l-1-586cc95d4f-h8zq8
+Filesystem      Size  Used Avail Use% Mounted on
+/dev/nvme1n1     19G  522M   19G   3% /elasticsearch/persistent
+elasticsearch-cdm-kcrsda6l-2-5b548fc7b-cwwk7
+Filesystem      Size  Used Avail Use% Mounted on
+/dev/nvme2n1     19G  522M   19G   3% /elasticsearch/persistent
+elasticsearch-cdm-kcrsda6l-3-5dfc884d99-59tjw
+Filesystem      Size  Used Avail Use% Mounted on
+/dev/nvme3n1     19G  528M   19G   3% /elasticsearch/persistent
+```
+
+3. Increase the disk space on all nodes. If increasing the disk space is not possible, try adding a new data node to the cluster, or decrease the total cluster redundancy policy.
+4. To check the current redundancyPolicy, run the following command:
+
+```terminal
+$ oc -n openshift-logging get es elasticsearch \
+  -o jsonpath='{.spec.redundancyPolicy}'
+```
+
+
+If you are using a ClusterLogging resource on your cluster, run the following command:
+
+```terminal
+$ oc -n openshift-logging get cl \
+  -o jsonpath='{.items[*].spec.logStore.elasticsearch.redundancyPolicy}'
+```
+
+
+If the cluster redundancyPolicy value is higher than the SingleRedundancy value, set it to the SingleRedundancy value and save this change.
+5. If the preceding steps do not fix the issue, delete the old indices.
+1. Check the status of all indices on Elasticsearch by running the following command:
+
+```terminal
+$ oc exec -n openshift-logging -c elasticsearch $ES_POD_NAME -- indices
+```
+
+2. Identify an old index that can be deleted.
+3. Delete the index by running the following command:
+
+```terminal
+$ oc exec -n openshift-logging -c elasticsearch $ES_POD_NAME \
+  -- es_util --query=<elasticsearch_index_name> -X DELETE
+```
+
+6. Continue freeing up and monitoring the disk space. After the used disk space drops below 90%, unblock writing to this node by running the following command:
+
+```terminal
+$ oc exec -n openshift-logging -c elasticsearch $ES_POD_NAME \
+  -- es_util --query=_all/_settings?pretty \
+  -X PUT -d '{"index.blocks.read_only_allow_delete": null}'
+```
+
+
+# Elasticsearch JVM heap usage is high
+
+The Elasticsearch node Java virtual machine (JVM) heap memory used is above 75%. Consider increasing the heap size.
+
+# Aggregated logging system CPU is high
+
+System CPU usage on the node is high. Check the CPU of the cluster node. Consider allocating more CPU resources to the node.
+
+# Elasticsearch process CPU is high
+
+Elasticsearch process CPU usage on the node is high. Check the CPU of the cluster node. Consider allocating more CPU resources to the node.
+
+# Elasticsearch disk space is running low
+
+Elasticsearch is predicted to run out of disk space within the next 6 hours based on current disk usage. Use the following procedure to troubleshoot this alert.
+
+1. Get the disk space of the Elasticsearch node:
+
+```terminal
+$ for pod in `oc -n openshift-logging get po -l component=elasticsearch -o jsonpath='{.items[*].metadata.name}'`; \
+  do echo $pod; oc -n openshift-logging exec -c elasticsearch $pod \
+  -- df -h /elasticsearch/persistent; done
+```
+
+2. In the command output, check the Avail column to determine the free disk space on that node.
+Example output
+
+```terminal
+elasticsearch-cdm-kcrsda6l-1-586cc95d4f-h8zq8
+Filesystem      Size  Used Avail Use% Mounted on
+/dev/nvme1n1     19G  522M   19G   3% /elasticsearch/persistent
+elasticsearch-cdm-kcrsda6l-2-5b548fc7b-cwwk7
+Filesystem      Size  Used Avail Use% Mounted on
+/dev/nvme2n1     19G  522M   19G   3% /elasticsearch/persistent
+elasticsearch-cdm-kcrsda6l-3-5dfc884d99-59tjw
+Filesystem      Size  Used Avail Use% Mounted on
+/dev/nvme3n1     19G  528M   19G   3% /elasticsearch/persistent
+```
+
+3. Increase the disk space on all nodes. If increasing the disk space is not possible, try adding a new data node to the cluster, or decrease the total cluster redundancy policy.
+4. To check the current redundancyPolicy, run the following command:
+
+```terminal
+$ oc -n openshift-logging get es elasticsearch -o jsonpath='{.spec.redundancyPolicy}'
+```
+
+
+If you are using a ClusterLogging resource on your cluster, run the following command:
+
+```terminal
+$ oc -n openshift-logging get cl \
+  -o jsonpath='{.items[*].spec.logStore.elasticsearch.redundancyPolicy}'
+```
+
+
+If the cluster redundancyPolicy value is higher than the SingleRedundancy value, set it to the SingleRedundancy value and save this change.
+5. If the preceding steps do not fix the issue, delete the old indices.
+1. Check the status of all indices on Elasticsearch by running the following command:
+
+```terminal
+$ oc exec -n openshift-logging -c elasticsearch $ES_POD_NAME -- indices
+```
+
+2. Identify an old index that can be deleted.
+3. Delete the index by running the following command:
+
+```terminal
+$ oc exec -n openshift-logging -c elasticsearch $ES_POD_NAME \
+  -- es_util --query=<elasticsearch_index_name> -X DELETE
+```
+
+
+* Fix a red or yellow cluster status
+
+# Elasticsearch FileDescriptor usage is high
+
+Based on current usage trends, the predicted number of file descriptors on the node is insufficient. Check the value of max_file_descriptors for each node as described in the Elasticsearch File Descriptors documentation.

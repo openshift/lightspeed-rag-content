@@ -1,0 +1,339 @@
+# Changing the MTU for the cluster network
+
+
+As a cluster administrator, you can change the MTU for the cluster network after cluster installation. This change is disruptive as cluster nodes must be rebooted to finalize the MTU change.
+
+# About the cluster MTU
+
+During installation the maximum transmission unit (MTU) for the cluster network is detected automatically based on the MTU of the primary network interface of nodes in the cluster. You do not usually need to override the detected MTU.
+
+You might want to change the MTU of the cluster network for several reasons:
+
+* The MTU detected during cluster installation is not correct for your infrastructure.
+* Your cluster infrastructure now requires a different MTU, such as from the addition of nodes that need a different MTU for optimal performance.
+
+Only the OVN-Kubernetes cluster network plugin supports changing the MTU value.
+
+## Service interruption considerations
+
+When you initiate an MTU change on your cluster the following effects might impact service availability:
+
+* At least two rolling reboots are required to complete the migration to a new MTU. During this time, some nodes are not available as they restart.
+* Specific applications deployed to the cluster with shorter timeout intervals than the absolute TCP timeout interval might experience disruption during the MTU change.
+
+## MTU value selection
+
+When planning your MTU migration there are two related but distinct MTU values to consider.
+
+* Hardware MTU: This MTU value is set based on the specifics of your network infrastructure.
+* Cluster network MTU: This MTU value is always less than your hardware MTU to account for the cluster network overlay overhead. The specific overhead is determined by your network plugin. For OVN-Kubernetes, the overhead is 100 bytes.
+
+If your cluster requires different MTU values for different nodes, you must subtract the overhead value for your network plugin from the lowest MTU value that is used by any node in your cluster. For example, if some nodes in your cluster have an MTU of 9001, and some have an MTU of 1500, you must set this value to 1400.
+
+
+[IMPORTANT]
+----
+To avoid selecting an MTU value that is not acceptable by a node, verify the maximum MTU value (maxmtu) that is accepted by the network interface by using the ip -d link command.
+----
+
+## How the migration process works
+
+The following table summarizes the migration process by segmenting between the user-initiated steps in the process and the actions that the migration performs in response.
+
+
+
+# Changing the cluster network MTU
+
+As a cluster administrator, you can increase or decrease the maximum transmission unit (MTU) for your cluster.
+
+
+[IMPORTANT]
+----
+The migration is disruptive and nodes in your cluster might be temporarily unavailable as the MTU update takes effect.
+----
+
+The following procedure describes how to change the cluster network MTU by using either machine configs, Dynamic Host Configuration Protocol (DHCP), or an ISO image. If you use either the DHCP or ISO approaches, you must refer to configuration artifacts that you kept after installing your cluster to complete the procedure.
+
+* You have installed the OpenShift CLI (`oc`).
+* You have access to the cluster using an account with cluster-admin permissions.
+* You have identified the target MTU for your cluster. The MTU for the OVN-Kubernetes network plugin must be set to 100 less than the lowest hardware MTU value in your cluster.
+
+1. To obtain the current MTU for the cluster network, enter the following command:
+
+```terminal
+$ oc describe network.config cluster
+```
+
+Example output
+
+```text
+...
+Status:
+  Cluster Network:
+    Cidr:               10.217.0.0/22
+    Host Prefix:        23
+  Cluster Network MTU:  1400
+  Network Type:         OVNKubernetes
+  Service Network:
+    10.217.4.0/23
+...
+```
+
+2. Prepare your configuration for the hardware MTU:
+* If your hardware MTU is specified with DHCP, update your DHCP configuration such as with the following dnsmasq configuration:
+
+```text
+dhcp-option-force=26,<mtu>
+```
+
+where:
+<mtu>:: Specifies the hardware MTU for the DHCP server to advertise.
+* If your hardware MTU is specified with a kernel command line with PXE, update that configuration accordingly.
+* If your hardware MTU is specified in a NetworkManager connection configuration, complete the following steps. This approach is the default for Red Hat OpenShift Container Platform if you do not explicitly specify your network configuration with DHCP, a kernel command line, or some other method. Your cluster nodes must all use the same underlying network configuration for the following procedure to work unmodified.
+1. Find the primary network interface by entering the following command:
+
+```terminal
+$ oc debug node/<node_name> -- chroot /host nmcli -g connection.interface-name c show ovs-if-phys0
+```
+
+
++
+where:
+<node_name>:: Specifies the name of a node in your cluster.
+1. Create the following NetworkManager configuration in the <interface>-mtu.conf file:
+Example NetworkManager connection configuration
+
+```ini
+[connection-<interface>-mtu]
+match-device=interface-name:<interface>
+ethernet.mtu=<mtu>
+```
+
+where:
+<mtu>:: Specifies the new hardware MTU value.
+<interface>:: Specifies the primary network interface name.
+2. Create two MachineConfig objects, one for the control plane nodes and another for the worker nodes in your cluster:
+1. Create the following Butane config in the control-plane-interface.bu file:
+
+```yaml
+variant: openshift
+version: 4.17.0
+metadata:
+  name: 01-control-plane-interface
+  labels:
+    machineconfiguration.openshift.io/role: master
+storage:
+  files:
+    - path: /etc/NetworkManager/conf.d/99-<interface>-mtu.conf 1
+      contents:
+        local: <interface>-mtu.conf 2
+      mode: 0600
+```
+
+Specify the NetworkManager connection name for the primary network interface.
+Specify the local filename for the updated NetworkManager configuration file from the previous step.
+2. Create the following Butane config in the worker-interface.bu file:
+
+```yaml
+variant: openshift
+version: 4.17.0
+metadata:
+  name: 01-worker-interface
+  labels:
+    machineconfiguration.openshift.io/role: worker
+storage:
+  files:
+    - path: /etc/NetworkManager/conf.d/99-<interface>-mtu.conf 1
+      contents:
+        local: <interface>-mtu.conf 2
+      mode: 0600
+```
+
+Specify the NetworkManager connection name for the primary network interface.
+Specify the local filename for the updated NetworkManager configuration file from the previous step.
+3. Create MachineConfig objects from the Butane configs by running the following command:
+
+```terminal
+$ for manifest in control-plane-interface worker-interface; do
+    butane --files-dir . $manifest.bu > $manifest.yaml
+  done
+```
+
+
+[WARNING]
+----
+Do not apply these machine configs until explicitly instructed later in this procedure. Applying these machine configs now causes a loss of stability for the cluster.
+----
+3. To begin the MTU migration, specify the migration configuration by entering the following command. The Machine Config Operator performs a rolling reboot of the nodes in the cluster in preparation for the MTU change.
+
+```terminal
+$ oc patch Network.operator.openshift.io cluster --type=merge --patch \
+  '{"spec": { "migration": { "mtu": { "network": { "from": <overlay_from>, "to": <overlay_to> } , "machine": { "to" : <machine_to> } } } } }'
+```
+
+where:
+<overlay_from>:: Specifies the current cluster network MTU value.
+<overlay_to>:: Specifies the target MTU for the cluster network. This value is set relative to the value of <machine_to>. For OVN-Kubernetes, this value must be 100 less than the value of <machine_to>.
+<machine_to>:: Specifies the MTU for the primary network interface on the underlying host network.
+Example that increases the cluster MTU
+
+```terminal
+$ oc patch Network.operator.openshift.io cluster --type=merge --patch \
+  '{"spec": { "migration": { "mtu": { "network": { "from": 1400, "to": 9000 } , "machine": { "to" : 9100} } } } }'
+```
+
+4. As the Machine Config Operator updates machines in each machine config pool, it reboots each node one by one. You must wait until all the nodes are updated. Check the machine config pool status by entering the following command:
+
+```terminal
+$ oc get machineconfigpools
+```
+
+
+A successfully updated node has the following status: UPDATED=true, UPDATING=false, DEGRADED=false.
+
+[NOTE]
+----
+By default, the Machine Config Operator updates one machine per pool at a time, causing the total time the migration takes to increase with the size of the cluster.
+----
+5. Confirm the status of the new machine configuration on the hosts:
+1. To list the machine configuration state and the name of the applied machine configuration, enter the following command:
+
+```terminal
+$ oc describe node | egrep "hostname|machineconfig"
+```
+
+Example output
+
+```text
+kubernetes.io/hostname=master-0
+machineconfiguration.openshift.io/currentConfig: rendered-master-c53e221d9d24e1c8bb6ee89dd3d8ad7b
+machineconfiguration.openshift.io/desiredConfig: rendered-master-c53e221d9d24e1c8bb6ee89dd3d8ad7b
+machineconfiguration.openshift.io/reason:
+machineconfiguration.openshift.io/state: Done
+```
+
+2. Verify that the following statements are true:
+* The value of machineconfiguration.openshift.io/state field is Done.
+* The value of the machineconfiguration.openshift.io/currentConfig field is equal to the value of the machineconfiguration.openshift.io/desiredConfig field.
+3. To confirm that the machine config is correct, enter the following command:
+
+```terminal
+$ oc get machineconfig <config_name> -o yaml | grep ExecStart
+```
+
+
+where <config_name> is the name of the machine config from the machineconfiguration.openshift.io/currentConfig field.
+
+The machine config must include the following update to the systemd configuration:
+
+```plain
+ExecStart=/usr/local/bin/mtu-migration.sh
+```
+
+6. Update the underlying network interface MTU value:
+* If you are specifying the new MTU with a NetworkManager connection configuration, enter the following command. The MachineConfig Operator automatically performs a rolling reboot of the nodes in your cluster.
+
+```terminal
+$ for manifest in control-plane-interface worker-interface; do
+    oc create -f $manifest.yaml
+  done
+```
+
+* If you are specifying the new MTU with a DHCP server option or a kernel command line and PXE, make the necessary changes for your infrastructure.
+7. As the Machine Config Operator updates machines in each machine config pool, it reboots each node one by one. You must wait until all the nodes are updated. Check the machine config pool status by entering the following command:
+
+```terminal
+$ oc get machineconfigpools
+```
+
+
+A successfully updated node has the following status: UPDATED=true, UPDATING=false, DEGRADED=false.
+
+[NOTE]
+----
+By default, the Machine Config Operator updates one machine per pool at a time, causing the total time the migration takes to increase with the size of the cluster.
+----
+8. Confirm the status of the new machine configuration on the hosts:
+1. To list the machine configuration state and the name of the applied machine configuration, enter the following command:
+
+```terminal
+$ oc describe node | egrep "hostname|machineconfig"
+```
+
+Example output
+
+```text
+kubernetes.io/hostname=master-0
+machineconfiguration.openshift.io/currentConfig: rendered-master-c53e221d9d24e1c8bb6ee89dd3d8ad7b
+machineconfiguration.openshift.io/desiredConfig: rendered-master-c53e221d9d24e1c8bb6ee89dd3d8ad7b
+machineconfiguration.openshift.io/reason:
+machineconfiguration.openshift.io/state: Done
+```
+
+
+Verify that the following statements are true:
+* The value of machineconfiguration.openshift.io/state field is Done.
+* The value of the machineconfiguration.openshift.io/currentConfig field is equal to the value of the machineconfiguration.openshift.io/desiredConfig field.
+2. To confirm that the machine config is correct, enter the following command:
+
+```terminal
+$ oc get machineconfig <config_name> -o yaml | grep path:
+```
+
+
+where <config_name> is the name of the machine config from the machineconfiguration.openshift.io/currentConfig field.
+
+If the machine config is successfully deployed, the previous output contains the /etc/NetworkManager/conf.d/99-<interface>-mtu.conf file path and the ExecStart=/usr/local/bin/mtu-migration.sh line.
+9. To finalize the MTU migration, enter the following command for the OVN-Kubernetes network plugin:
+
+```terminal
+$ oc patch Network.operator.openshift.io cluster --type=merge --patch \
+  '{"spec": { "migration": null, "defaultNetwork":{ "ovnKubernetesConfig": { "mtu": <mtu> }}}}'
+```
+
+where:
+<mtu>:: Specifies the new cluster network MTU that you specified with <overlay_to>.
+10. After finalizing the MTU migration, each machine config pool node is rebooted one by one. You must wait until all the nodes are updated. Check the machine config pool status by entering the following command:
+
+```terminal
+$ oc get machineconfigpools
+```
+
+
+A successfully updated node has the following status: UPDATED=true, UPDATING=false, DEGRADED=false.
+
+1. To get the current MTU for the cluster network, enter the following command:
+
+```terminal
+$ oc describe network.config cluster
+```
+
+2. Get the current MTU for the primary network interface of a node:
+1. To list the nodes in your cluster, enter the following command:
+
+```terminal
+$ oc get nodes
+```
+
+2. To obtain the current MTU setting for the primary network interface on a node, enter the following command:
+
+```terminal
+$ oc debug node/<node> -- chroot /host ip address show <interface>
+```
+
+
+where:
+<node>:: Specifies a node from the output from the previous step.
+<interface>:: Specifies the primary network interface name for the node.
+Example output
+
+```text
+ens3: <BROADCAST,MULTICAST,UP,LOWER_UP> mtu 8051
+```
+
+
+# Additional resources
+
+* Using advanced networking options for PXE and ISO installations
+* Manually creating NetworkManager profiles in key file format
+* Configuring a dynamic Ethernet connection using nmcli

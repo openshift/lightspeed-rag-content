@@ -1,0 +1,226 @@
+# Connecting a virtual machine to an SR-IOV network
+
+
+You can connect a virtual machine (VM) to a Single Root I/O Virtualization (SR-IOV) network by performing the following steps:
+* Configuring an SR-IOV network device
+* Configuring an SR-IOV network
+* Connecting the VM to the SR-IOV network
+
+# Configuring SR-IOV network devices
+
+The SR-IOV Network Operator adds the SriovNetworkNodePolicy.sriovnetwork.openshift.io CustomResourceDefinition to Red Hat OpenShift Container Platform.
+You can configure an SR-IOV network device by creating a SriovNetworkNodePolicy custom resource (CR).
+
+
+[NOTE]
+----
+When applying the configuration specified in a SriovNetworkNodePolicy object, the SR-IOV Operator might drain the nodes, and in some cases, reboot nodes.
+It might take several minutes for a configuration change to apply.
+----
+
+* You installed the OpenShift CLI (oc).
+* You have access to the cluster as a user with the cluster-admin role.
+* You have installed the SR-IOV Network Operator.
+* You have enough available nodes in your cluster to handle the evicted workload from drained nodes.
+* You have not selected any control plane nodes for SR-IOV network device configuration.
+
+1. Create an SriovNetworkNodePolicy object, and then save the YAML in the <name>-sriov-node-network.yaml file. Replace <name> with the name for this configuration.
+
+```yaml
+apiVersion: sriovnetwork.openshift.io/v1
+kind: SriovNetworkNodePolicy
+metadata:
+  name: <name> 1
+  namespace: openshift-sriov-network-operator 2
+spec:
+  resourceName: <sriov_resource_name> 3
+  nodeSelector:
+    feature.node.kubernetes.io/network-sriov.capable: "true" 4
+  priority: <priority> 5
+  mtu: <mtu> 6
+  numVfs: <num> 7
+  nicSelector: 8
+    vendor: "<vendor_code>" 9
+    deviceID: "<device_id>" 10
+    pfNames: ["<pf_name>", ...] 11
+    rootDevices: ["<pci_bus_id>", "..."] 12
+  deviceType: vfio-pci 13
+  isRdma: false 14
+```
+
+Specify a name for the CR object.
+Specify the namespace where the SR-IOV Operator is installed.
+Specify the resource name of the SR-IOV device plugin. You can create multiple SriovNetworkNodePolicy objects for a resource name.
+Specify the node selector to select which nodes are configured.
+Only SR-IOV network devices on selected nodes are configured. The SR-IOV
+Container Network Interface (CNI) plugin and device plugin are deployed only on selected nodes.
+Optional: Specify an integer value between 0 and 99. A smaller number gets higher priority, so a priority of 10 is higher than a priority of 99. The default value is 99.
+Optional: Specify a value for the maximum transmission unit (MTU) of the virtual function. The maximum MTU value can vary for different NIC models.
+Specify the number of the virtual functions (VF) to create for the SR-IOV physical network device. For an Intel network interface controller (NIC), the number of VFs cannot be larger than the total VFs supported by the device. For a Mellanox NIC, the number of VFs cannot be larger than 127.
+The nicSelector mapping selects the Ethernet device for the Operator to configure. You do not need to specify values for all the parameters. It is recommended to identify the Ethernet adapter with enough precision to minimize the possibility of selecting an Ethernet device unintentionally.
+If you specify rootDevices, you must also specify a value for vendor, deviceID, or pfNames.
+If you specify both pfNames and rootDevices at the same time, ensure that they point to an identical device.
+Optional: Specify the vendor hex code of the SR-IOV network device. The only allowed values are either 8086 or 15b3.
+Optional: Specify the device hex code of SR-IOV network device. The only allowed values are 158b, 1015, 1017.
+Optional: The parameter accepts an array of one or more physical function (PF) names for the Ethernet device.
+The parameter accepts an array of one or more PCI bus addresses for the physical function of the Ethernet device. Provide the address in the following format: 0000:02:00.1.
+The vfio-pci driver type is required for virtual functions in OpenShift Virtualization.
+Optional: Specify whether to enable remote direct memory access (RDMA) mode. For a Mellanox card, set isRdma to false. The default value is false.
+
+[NOTE]
+----
+If isRDMA flag is set to true, you can continue to use the RDMA enabled VF as a normal network device.
+A device can be used in either mode.
+----
+2. Optional: Label the SR-IOV capable cluster nodes with SriovNetworkNodePolicy.Spec.NodeSelector if they are not already labeled. For more information about labeling nodes, see "Understanding how to update labels on nodes".
+3. Create the SriovNetworkNodePolicy object:
+
+```terminal
+$ oc create -f <name>-sriov-node-network.yaml
+```
+
+
+where <name> specifies the name for this configuration.
+
+After applying the configuration update, all the pods in sriov-network-operator namespace transition to the Running status.
+4. To verify that the SR-IOV network device is configured, enter the following command. Replace <node_name> with the name of a node with the SR-IOV network device that you just configured.
+
+```terminal
+$ oc get sriovnetworknodestates -n openshift-sriov-network-operator <node_name> -o jsonpath='{.status.syncStatus}'
+```
+
+
+# Configuring SR-IOV additional network
+
+You can configure an additional network that uses SR-IOV hardware by creating an {rs} object.
+
+When you create an {rs} object, the SR-IOV Network Operator automatically creates a NetworkAttachmentDefinition object.
+
+
+[NOTE]
+----
+Do not modify or delete an {rs} object if it is attached to {object} in a running state.
+----
+
+* Install the OpenShift CLI (oc).
+* Log in as a user with cluster-admin privileges.
+
+1. Create the following SriovNetwork object, and then save the YAML in the <name>-sriov-network.yaml file. Replace <name> with a name for this additional network.
+
+
+```yaml
+apiVersion: sriovnetwork.openshift.io/v1
+kind: SriovNetwork
+metadata:
+  name: <name> 1
+  namespace: openshift-sriov-network-operator 2
+spec:
+  resourceName: <sriov_resource_name> 3
+  networkNamespace: <target_namespace> 4
+  vlan: <vlan> 5
+  spoofChk: "<spoof_check>" 6
+  linkState: <link_state> 7
+  maxTxRate: <max_tx_rate> 8
+  minTxRate: <min_rx_rate> 9
+  vlanQoS: <vlan_qos> 10
+  trust: "<trust_vf>" 11
+  capabilities: <capabilities> 12
+```
+
+
+Replace <name> with a name for the object. The SR-IOV Network Operator creates a NetworkAttachmentDefinition object with same name.
+Specify the namespace where the SR-IOV Network Operator is installed.
+Replace <sriov_resource_name> with the value for the .spec.resourceName parameter from the SriovNetworkNodePolicy object that defines the SR-IOV hardware for this additional network.
+Replace <target_namespace> with the target namespace for the SriovNetwork. Only {object} in the target namespace can attach to the SriovNetwork.
+Optional: Replace <vlan> with a Virtual LAN (VLAN) ID for the additional network. The integer value must be from 0 to 4095. The default value is 0.
+Optional: Replace <spoof_check> with the spoof check mode of the VF. The allowed values are the strings "on" and "off".
+
+[IMPORTANT]
+----
+You must enclose the value you specify in quotes or the CR is rejected by the SR-IOV Network Operator.
+----
+Optional: Replace <link_state> with the link state of virtual function (VF). Allowed value are enable, disable and auto.
+Optional: Replace <max_tx_rate> with a maximum transmission rate, in Mbps, for the VF.
+Optional: Replace <min_tx_rate> with a minimum transmission rate, in Mbps, for the VF. This value should always be less than or equal to Maximum transmission rate.
+
+[NOTE]
+----
+Intel NICs do not support the minTxRate parameter. For more information, see BZ#1772847.
+----
+Optional: Replace <vlan_qos> with an IEEE 802.1p priority level for the VF. The default value is 0.
+Optional: Replace <trust_vf> with the trust mode of the VF. The allowed values are the strings "on" and "off".
+
+[IMPORTANT]
+----
+You must enclose the value you specify in quotes or the CR is rejected by the SR-IOV Network Operator.
+----
+Optional: Replace <capabilities> with the capabilities to configure for this network.
+
+1. To create the object, enter the following command. Replace <name> with a name for this additional network.
+
+```terminal
+$ oc create -f <name>-sriov-network.yaml
+```
+
+2. Optional: To confirm that the NetworkAttachmentDefinition object associated with the SriovNetwork object that you created in the previous step exists, enter the following command. Replace <namespace> with the namespace you specified in the SriovNetwork object.
+
+```terminal
+$ oc get net-attach-def -n <namespace>
+```
+
+
+# Connecting a virtual machine to an SR-IOV network by using the command line
+
+You can connect the virtual machine (VM) to the SR-IOV network by including the network details in the VM configuration.
+
+1. Add the SR-IOV network details to the spec.domain.devices.interfaces and spec.networks stanzas of the VM configuration as in the following example:
+
+```yaml
+apiVersion: kubevirt.io/v1
+kind: VirtualMachine
+metadata:
+  name: example-vm
+spec:
+  domain:
+    devices:
+      interfaces:
+      - name: nic1 1
+        sriov: {}
+  networks:
+  - name: nic1 2
+    multus:
+        networkName: sriov-network 3
+# ...
+```
+
+Specify a unique name for the SR-IOV interface.
+Specify the name of the SR-IOV interface. This must be the same as the interfaces.name that you defined earlier.
+Specify the name of the SR-IOV network attachment definition.
+2. Apply the virtual machine configuration:
+
+```terminal
+$ oc apply -f <vm_sriov>.yaml 1
+```
+
+The name of the virtual machine YAML file.
+
+# Connecting a VM to an SR-IOV network by using the web console
+
+You can connect a VM to the SR-IOV network by including the network details in the VM configuration.
+
+* You must create a network attachment definition for the network.
+
+1. Navigate to Virtualization -> VirtualMachines.
+2. Click a VM to view the VirtualMachine details page.
+3. On the Configuration tab, click the Network interfaces tab.
+4. Click Add network interface.
+5. Enter the interface name.
+6. Select an SR-IOV network attachment definition from the Network list.
+7. Select SR-IOV from the Type list.
+8. Optional: Add a network Model or Mac address.
+9. Click Save.
+10. Restart or live-migrate the VM to apply the changes.
+
+# Additional resources
+
+* Configuring DPDK workloads for improved performance
