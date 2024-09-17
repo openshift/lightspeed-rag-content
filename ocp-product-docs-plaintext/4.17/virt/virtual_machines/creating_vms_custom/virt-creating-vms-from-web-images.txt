@@ -1,0 +1,154 @@
+# Creating VMs by importing images from web pages
+
+
+You can create virtual machines (VMs) by importing operating system images from web pages.
+
+[IMPORTANT]
+----
+You must install the QEMU guest agent on VMs created from operating system images that are not provided by Red Hat.
+----
+
+# Creating a VM from an image on a web page by using the web console
+
+You can create a virtual machine (VM) by importing {a-object} from a {data-source} by using the Red Hat OpenShift Container Platform web console.
+
+* You must have access to the {data-source} that contains the {object}.
+
+1. Navigate to Virtualization -> Catalog in the web console.
+2. Click a template tile without an available boot source.
+3. Click Customize VirtualMachine.
+4. On the Customize template parameters page, expand Storage and select {menu-item} from the Disk source list.
+5. Enter the image URL. Example: https://access.redhat.com/downloads/content/69/ver=/rhel---7/7.9/x86_64/product-software
+6. Set the disk size.
+7. Click Next.
+8. Click Create VirtualMachine.
+
+# Creating a VM from an image on a web page by using the command line
+
+You can create a virtual machine (VM) {title-frag} by using the command line.
+
+When the virtual machine (VM) is created, the data volume with the {object} is imported into persistent storage.
+
+* You must have access credentials for the {data-source} that contains the {object}.
+
+1. If the {data-source} requires authentication, create a Secret manifest, specifying the credentials, and save it as a data-source-secret.yaml file:
+
+```yaml
+apiVersion: v1
+kind: Secret
+metadata:
+  name: data-source-secret
+  labels:
+    app: containerized-data-importer
+type: Opaque
+data:
+  accessKeyId: "" 1
+  secretKey:   "" 2
+```
+
+Specify the Base64-encoded key ID or user name.
+Specify the Base64-encoded secret key or password.
+2. Apply the Secret manifest by running the following command:
+
+```terminal
+$ oc apply -f data-source-secret.yaml
+```
+
+3. If the VM must communicate with servers that use self-signed certificates or certificates that are not signed by the system CA bundle, create a config map in the same namespace as the VM:
+
+```terminal
+$ oc create configmap tls-certs 1
+  --from-file=</path/to/file/ca.pem> 2
+```
+
+Specify the config map name.
+Specify the path to the CA certificate.
+4. Edit the VirtualMachine manifest and save it as a vm-fedora-datavolume.yaml file:
+
+```yaml
+apiVersion: kubevirt.io/v1
+kind: VirtualMachine
+metadata:
+  creationTimestamp: null
+  labels:
+    kubevirt.io/vm: vm-fedora-datavolume
+  name: vm-fedora-datavolume 1
+spec:
+  dataVolumeTemplates:
+  - metadata:
+      creationTimestamp: null
+      name: fedora-dv 2
+    spec:
+      storage:
+        resources:
+          requests:
+            storage: 10Gi 3
+        storageClassName: <storage_class> 4
+      source:
+        http:
+          url: "https://mirror.arizona.edu/fedora/linux/releases/35/Cloud/x86_64/images/Fedora-Cloud-Base-35-1.2.x86_64.qcow2" 5
+          secretRef: data-source-secret 6
+          certConfigMap: tls-certs 7
+    status: {}
+  running: true
+  template:
+    metadata:
+      creationTimestamp: null
+      labels:
+        kubevirt.io/vm: vm-fedora-datavolume
+    spec:
+      domain:
+        devices:
+          disks:
+          - disk:
+              bus: virtio
+            name: datavolumedisk1
+        machine:
+          type: ""
+        resources:
+          requests:
+            memory: 1.5Gi
+      terminationGracePeriodSeconds: 180
+      volumes:
+      - dataVolume:
+          name: fedora-dv
+        name: datavolumedisk1
+status: {}
+```
+
+Specify the name of the VM.
+Specify the name of the data volume.
+Specify the size of the storage requested for the data volume.
+Optional: If you do not specify a storage class, the default storage class is used.
+Specify the URL of the {data-source}.
+Optional: Specify the secret name if you created a secret for the {data-source} access credentials.
+Optional: Specify a CA certificate config map.
+5. Create the VM by running the following command:
+
+```terminal
+$ oc create -f vm-fedora-datavolume.yaml
+```
+
+
+The oc create command creates the data volume and the VM. The CDI controller creates an underlying PVC with the correct annotation and the import process begins. When the import is complete, the data volume status changes to Succeeded. You can start the VM.
+
+Data volume provisioning happens in the background, so there is no need to monitor the process.
+
+1. The importer pod downloads the {object} from the specified URL and stores it on the provisioned persistent volume. View the status of the importer pod by running the following command:
+
+```terminal
+$ oc get pods
+```
+
+2. Monitor the data volume until its status is Succeeded by running the following command:
+
+```terminal
+$ oc describe dv fedora-dv 1
+```
+
+Specify the data volume name that you defined in the VirtualMachine manifest.
+3. Verify that provisioning is complete and that the VM has started by accessing its serial console:
+
+```terminal
+$ virtctl console vm-fedora-datavolume
+```

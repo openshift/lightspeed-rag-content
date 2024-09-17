@@ -1,0 +1,226 @@
+# Managing machines with the Cluster API
+
+
+
+[IMPORTANT]
+----
+Managing machines with the Cluster API is a Technology Preview feature only. Technology Preview features are not supported with Red Hat production service level agreements (SLAs) and might not be functionally complete. Red Hat does not recommend using them in production. These features provide early access to upcoming product features, enabling customers to test functionality and provide feedback during the development process.
+For more information about the support scope of Red Hat Technology Preview features, see Technology Preview Features Support Scope.
+----
+
+# Modifying a Cluster API machine template
+
+You can update the machine template resource for your cluster by modifying the YAML manifest file and applying it with the OpenShift CLI (`oc`).
+
+* You have deployed an Red Hat OpenShift Container Platform cluster that uses the Cluster API.
+* You have access to the cluster using an account with cluster-admin permissions.
+* You have installed the OpenShift CLI (`oc`).
+
+1. List the machine template resource for your cluster by running the following command:
+
+```terminal
+$ oc get <machine_template_kind> 1
+```
+
+Specify the value that corresponds to your platform. The following values are valid:
+* AWSMachineTemplate: The cluster is running on Amazon Web Services (AWS).
+* GCPMachineTemplate: The cluster is running on Google Cloud Platform (GCP).
+* VSphereMachineTemplate: The cluster is running on VMware vSphere.
+Example output
+
+```text
+NAME              AGE
+<template_name>   77m
+```
+
+2. Write the machine template resource for your cluster to a file that you can edit by running the following command:
+
+```terminal
+$ oc get <template_name> -o yaml > <template_name>.yaml
+```
+
+
+where <template_name> is the name of the machine template resource for your cluster.
+3. Make a copy of the <template_name>.yaml file with a different name. This procedure uses <modified_template_name>.yaml as an example file name.
+4. Use a text editor to make changes to the <modified_template_name>.yaml file that defines the updated machine template resource for your cluster.
+When editing the machine template resource, observe the following:
+* The parameters in the spec stanza are provider specific.
+For more information, see the sample Cluster API machine template YAML for your provider.
+* You must use a value for the metadata.name parameter that differs from any existing values.
+
+[IMPORTANT]
+----
+For any Cluster API compute machine sets that reference this template, you must update the spec.template.spec.infrastructureRef.name parameter to match the metadata.name value in the new machine template resource.
+----
+5. Apply the machine template CR by running the following command:
+
+```terminal
+$ oc apply -f <modified_template_name>.yaml 1
+```
+
+Use the edited YAML file with a new name.
+
+* For any Cluster API compute machine sets that reference this template, update the spec.template.spec.infrastructureRef.name parameter to match the metadata.name value in the new machine template resource.
+For more information, see "Modifying a compute machine set by using the CLI."
+
+* Sample YAML for a Cluster API machine template resource on Amazon Web Services
+* Sample YAML for a Cluster API machine template resource on Google Cloud Platform
+* Sample YAML for a Cluster API machine template resource on VMware vSphere
+* Modifying a compute machine set by using the CLI
+
+# Modifying a compute machine set by using the CLI
+
+When you modify a compute machine set, your changes only apply to compute machines that are created after you save the updated MachineSet custom resource (CR).
+The changes do not affect existing machines.
+You can replace the existing machines with new ones that reflect the updated configuration by scaling the compute machine set.
+
+If you need to scale a compute machine set without making other changes, you do not need to delete the machines.
+
+
+[NOTE]
+----
+By default, the Red Hat OpenShift Container Platform router pods are deployed on compute machines.
+Because the router is required to access some cluster resources, including the web console, do not scale the compute machine set to 0 unless you first relocate the router pods.
+----
+
+The output examples in this procedure use the values for an AWS cluster.
+
+* Your Red Hat OpenShift Container Platform cluster uses the Cluster API.
+* You are logged in to the cluster as an administrator by using the OpenShift CLI (`oc`).
+
+1. List the compute machine sets in your cluster by running the following command:
+
+```terminal
+$ oc get machinesets.cluster.x-k8s.io -n openshift-cluster-api
+```
+
+Example output
+
+```text
+NAME                          CLUSTER             REPLICAS   READY   AVAILABLE   AGE   VERSION
+<compute_machine_set_name_1>  <cluster_name>      1          1       1           26m
+<compute_machine_set_name_2>  <cluster_name>      1          1       1           26m
+```
+
+2. Edit a compute machine set by running the following command:
+
+```terminal
+$ oc edit machinesets.cluster.x-k8s.io <machine_set_name> \
+  -n openshift-cluster-api
+```
+
+3. Note the value of the spec.replicas field, because you need it when scaling the machine set to apply the changes.
+
+```yaml
+apiVersion: cluster.x-k8s.io/v1beta1
+kind: MachineSet
+metadata:
+  name: <machine_set_name>
+  namespace: openshift-cluster-api
+spec:
+  replicas: 2 1
+# ...
+```
+
+The examples in this procedure show a compute machine set that has a replicas value of 2.
+4. Update the compute machine set CR with the configuration options that you want and save your changes.
+5. List the machines that are managed by the updated compute machine set by running the following command:
+
+```terminal
+$ oc get machines.cluster.x-k8s.io \
+  -n openshift-cluster-api \
+  -l cluster.x-k8s.io/set-name=<machine_set_name>
+```
+
+Example output for an AWS cluster
+
+```text
+NAME                        CLUSTER          NODENAME                                    PROVIDERID                              PHASE           AGE     VERSION
+<machine_name_original_1>   <cluster_name>   <original_1_ip>.<region>.compute.internal   aws:///us-east-2a/i-04e7b2cbd61fd2075   Running         4h
+<machine_name_original_2>   <cluster_name>   <original_2_ip>.<region>.compute.internal   aws:///us-east-2a/i-04e7b2cbd61fd2075   Running         4h
+```
+
+6. For each machine that is managed by the updated compute machine set, set the delete annotation by running the following command:
+
+```terminal
+$ oc annotate machines.cluster.x-k8s.io/<machine_name_original_1> \
+  -n openshift-cluster-api \
+  cluster.x-k8s.io/delete-machine="true"
+```
+
+7. To create replacement machines with the new configuration, scale the compute machine set to twice the number of replicas by running the following command:
+
+```terminal
+$ oc scale --replicas=4 \1
+  machinesets.cluster.x-k8s.io <machine_set_name> \
+  -n openshift-cluster-api
+```
+
+The original example value of 2 is doubled to 4.
+8. List the machines that are managed by the updated compute machine set by running the following command:
+
+```terminal
+$ oc get machines.cluster.x-k8s.io \
+  -n openshift-cluster-api \
+  -l cluster.x-k8s.io/set-name=<machine_set_name>
+```
+
+Example output for an AWS cluster
+
+```text
+NAME                        CLUSTER          NODENAME                                    PROVIDERID                              PHASE           AGE     VERSION
+<machine_name_original_1>   <cluster_name>   <original_1_ip>.<region>.compute.internal   aws:///us-east-2a/i-04e7b2cbd61fd2075   Running         4h
+<machine_name_original_2>   <cluster_name>   <original_2_ip>.<region>.compute.internal   aws:///us-east-2a/i-04e7b2cbd61fd2075   Running         4h
+<machine_name_updated_1>    <cluster_name>   <updated_1_ip>.<region>.compute.internal    aws:///us-east-2a/i-04e7b2cbd61fd2075   Provisioned     55s
+<machine_name_updated_2>    <cluster_name>   <updated_2_ip>.<region>.compute.internal    aws:///us-east-2a/i-04e7b2cbd61fd2075   Provisioning    55s
+```
+
+
+When the new machines are in the Running phase, you can scale the compute machine set to the original number of replicas.
+9. To remove the machines that were created with the old configuration, scale the compute machine set to the original number of replicas by running the following command:
+
+```terminal
+$ oc scale --replicas=2 \1
+  machinesets.cluster.x-k8s.io <machine_set_name> \
+  -n openshift-cluster-api
+```
+
+The original example value of 2.
+
+* To verify that a machine created by the updated machine set has the correct configuration, examine the relevant fields in the CR for one of the new machines by running the following command:
+
+```terminal
+$ oc describe machines.cluster.x-k8s.io <machine_name_updated_1> \
+  -n openshift-cluster-api
+```
+
+* To verify that the compute machines without the updated configuration are deleted, list the machines that are managed by the updated compute machine set by running the following command:
+
+```terminal
+$ oc get machines.cluster.x-k8s.io \
+  -n openshift-cluster-api \
+  cluster.x-k8s.io/set-name=<machine_set_name>
+```
+
+Example output while deletion is in progress for an AWS cluster
+
+```text
+NAME                        CLUSTER          NODENAME                                    PROVIDERID                              PHASE      AGE     VERSION
+<machine_name_original_1>   <cluster_name>   <original_1_ip>.<region>.compute.internal   aws:///us-east-2a/i-04e7b2cbd61fd2075   Running    18m
+<machine_name_original_2>   <cluster_name>   <original_2_ip>.<region>.compute.internal   aws:///us-east-2a/i-04e7b2cbd61fd2075   Running    18m
+<machine_name_updated_1>    <cluster_name>   <updated_1_ip>.<region>.compute.internal    aws:///us-east-2a/i-04e7b2cbd61fd2075   Running    18m
+<machine_name_updated_2>    <cluster_name>   <updated_2_ip>.<region>.compute.internal    aws:///us-east-2a/i-04e7b2cbd61fd2075   Running    18m
+```
+
+Example output when deletion is complete for an AWS cluster
+
+```text
+NAME                        CLUSTER          NODENAME                                    PROVIDERID                              PHASE      AGE     VERSION
+<machine_name_updated_1>    <cluster_name>   <updated_1_ip>.<region>.compute.internal    aws:///us-east-2a/i-04e7b2cbd61fd2075   Running    18m
+<machine_name_updated_2>    <cluster_name>   <updated_2_ip>.<region>.compute.internal    aws:///us-east-2a/i-04e7b2cbd61fd2075   Running    18m
+```
+
+
+* Sample YAML for a Cluster API compute machine set resource on Amazon Web Services
+* Sample YAML for a Cluster API compute machine set resource on Google Cloud Platform
+* Sample YAML for a Cluster API compute machine set resource on VMware vSphere

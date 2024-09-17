@@ -1,0 +1,338 @@
+# Forwarding telemetry data
+
+
+You can use the OpenTelemetry Collector to forward your telemetry data.
+
+# Forwarding traces to a TempoStack instance
+
+To configure forwarding traces to a TempoStack instance, you can deploy and configure the OpenTelemetry Collector. You can deploy the OpenTelemetry Collector in the deployment mode by using the specified processors, receivers, and exporters. For other modes, see the OpenTelemetry Collector documentation linked in Additional resources.
+
+* The Red Hat build of OpenTelemetry Operator is installed.
+* The Tempo Operator is installed.
+* A TempoStack instance is deployed on the cluster.
+
+1. Create a service account for the OpenTelemetry Collector.
+Example ServiceAccount
+
+```yaml
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: otel-collector-deployment
+```
+
+2. Create a cluster role for the service account.
+Example ClusterRole
+
+```yaml
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: otel-collector
+rules:
+  1
+  2
+- apiGroups: ["", "config.openshift.io"]
+  resources: ["pods", "namespaces", "infrastructures", "infrastructures/status"]
+  verbs: ["get", "watch", "list"]
+```
+
+The k8sattributesprocessor requires permissions for pods and namespaces resources.
+The resourcedetectionprocessor requires permissions for infrastructures and status.
+3. Bind the cluster role to the service account.
+Example ClusterRoleBinding
+
+```yaml
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: otel-collector
+subjects:
+- kind: ServiceAccount
+  name: otel-collector-deployment
+  namespace: otel-collector-example
+roleRef:
+  kind: ClusterRole
+  name: otel-collector
+  apiGroup: rbac.authorization.k8s.io
+```
+
+4. Create the YAML file to define the OpenTelemetryCollector custom resource (CR).
+Example OpenTelemetryCollector
+
+```yaml
+apiVersion: opentelemetry.io/v1alpha1
+kind: OpenTelemetryCollector
+metadata:
+  name: otel
+spec:
+  mode: deployment
+  serviceAccount: otel-collector-deployment
+  config: |
+    receivers:
+      jaeger:
+        protocols:
+          grpc: {}
+          thrift_binary: {}
+          thrift_compact: {}
+          thrift_http: {}
+      opencensus: {}
+      otlp:
+        protocols:
+          grpc: {}
+          http: {}
+      zipkin: {}
+    processors:
+      batch: {}
+      k8sattributes: {}
+      memory_limiter:
+        check_interval: 1s
+        limit_percentage: 50
+        spike_limit_percentage: 30
+      resourcedetection:
+        detectors: [openshift]
+    exporters:
+      otlp:
+        endpoint: "tempo-simplest-distributor:4317" 1
+        tls:
+          insecure: true
+    service:
+      pipelines:
+        traces:
+          receivers: [jaeger, opencensus, otlp, zipkin] 2
+          processors: [memory_limiter, k8sattributes, resourcedetection, batch]
+          exporters: [otlp]
+```
+
+The Collector exporter is configured to export OTLP and points to the Tempo distributor endpoint, "tempo-simplest-distributor:4317" in this example, which is already created.
+The Collector is configured with a receiver for Jaeger traces, OpenCensus traces over the OpenCensus protocol, Zipkin traces over the Zipkin protocol, and OTLP traces over the GRPC protocol.
+
+
+[TIP]
+----
+You can deploy telemetrygen as a test:
+
+```yaml
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: telemetrygen
+spec:
+  template:
+    spec:
+      containers:
+        - name: telemetrygen
+          image: ghcr.io/open-telemetry/opentelemetry-collector-contrib/telemetrygen:latest
+          args:
+            - traces
+            - --otlp-endpoint=otel-collector:4317
+            - --otlp-insecure
+            - --duration=30s
+            - --workers=1
+      restartPolicy: Never
+  backoffLimit: 4
+```
+
+----
+
+* OpenTelemetry Collector documentation
+* Deployment examples on GitHub
+
+# Forwarding logs to a LokiStack instance
+
+You can deploy the OpenTelemetry Collector with Collector components to forward logs to a LokiStack instance.
+
+This use of the Loki Exporter is a temporary Technology Preview feature that is planned to be replaced with the publication of an improved solution in which the Loki Exporter is replaced with the OTLP HTTP Exporter.
+
+
+[IMPORTANT]
+----
+{FeatureName} is a Technology Preview feature only. Technology Preview features are not supported with Red Hat production service level agreements (SLAs) and might not be functionally complete. Red Hat does not recommend using them in production. These features provide early access to upcoming product features, enabling customers to test functionality and provide feedback during the development process.
+For more information about the support scope of Red Hat Technology Preview features, see Technology Preview Features Support Scope.
+----
+
+* The Red Hat build of OpenTelemetry Operator is installed.
+* The Loki Operator is installed.
+* A supported LokiStack instance is deployed on the cluster.
+
+1. Create a service account for the OpenTelemetry Collector.
+Example ServiceAccount object
+
+```yaml
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: otel-collector-deployment
+  namespace: openshift-logging
+```
+
+2. Create a cluster role that grants the Collector's service account the permissions to push logs to the LokiStack application tenant.
+Example ClusterRole object
+
+```yaml
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: otel-collector-logs-writer
+rules:
+ - apiGroups: ["loki.grafana.com"]
+   resourceNames: ["logs"]
+   resources: ["application"]
+   verbs: ["create"]
+ - apiGroups: [""]
+   resources: ["pods", "namespaces", "nodes"]
+   verbs: ["get", "watch", "list"]
+ - apiGroups: ["apps"]
+   resources: ["replicasets"]
+   verbs: ["get", "list", "watch"]
+ - apiGroups: ["extensions"]
+   resources: ["replicasets"]
+   verbs: ["get", "list", "watch"]
+```
+
+3. Bind the cluster role to the service account.
+Example ClusterRoleBinding object
+
+```yaml
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: otel-collector-logs-writer
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: otel-collector-logs-writer
+subjects:
+  - kind: ServiceAccount
+    name: otel-collector-deployment
+    namespace: openshift-logging
+```
+
+4. Create an OpenTelemetryCollector custom resource (CR) object.
+Example OpenTelemetryCollector CR object
+
+```yaml
+apiVersion: opentelemetry.io/v1beta1
+kind: OpenTelemetryCollector
+metadata:
+  name: otel
+  namespace: openshift-logging
+spec:
+  serviceAccount: otel-collector-deployment
+  config:
+    extensions:
+      bearertokenauth:
+        filename: "/var/run/secrets/kubernetes.io/serviceaccount/token"
+    receivers:
+      otlp:
+        protocols:
+          grpc: {}
+          http: {}
+    processors:
+      k8sattributes:
+        auth_type: "serviceAccount"
+        passthrough: false
+        extract:
+          metadata:
+            - k8s.pod.name
+            - k8s.container.name
+            - k8s.namespace.name
+          labels:
+          - tag_name: app.label.component
+            key: app.kubernetes.io/component
+            from: pod
+        pod_association:
+          - sources:
+              - from: resource_attribute
+                name: k8s.pod.name
+              - from: resource_attribute
+                name: k8s.container.name
+              - from: resource_attribute
+                name: k8s.namespace.name
+          - sources:
+              - from: connection
+      resource:
+        attributes: 1
+          - key: loki.format 2
+            action: insert
+            value: json
+          - key:  kubernetes_namespace_name
+            from_attribute: k8s.namespace.name
+            action: upsert
+          - key:  kubernetes_pod_name
+            from_attribute: k8s.pod.name
+            action: upsert
+          - key: kubernetes_container_name
+            from_attribute: k8s.container.name
+            action: upsert
+          - key: log_type
+            value: application
+            action: upsert
+          - key: loki.resource.labels 3
+            value: log_type, kubernetes_namespace_name, kubernetes_pod_name, kubernetes_container_name
+            action: insert
+      transform:
+        log_statements:
+          - context: log
+            statements:
+              - set(attributes["level"], ConvertCase(severity_text, "lower"))
+    exporters:
+      loki:
+        endpoint: https://logging-loki-gateway-http.openshift-logging.svc.cluster.local:8080/api/logs/v1/application/loki/api/v1/push 4
+        tls:
+          ca_file: "/var/run/secrets/kubernetes.io/serviceaccount/service-ca.crt"
+        auth:
+          authenticator: bearertokenauth
+      debug:
+        verbosity: detailed
+    service:
+      extensions: [bearertokenauth] 5
+      pipelines:
+        logs:
+          receivers: [otlp]
+          processors: [k8sattributes, transform, resource]
+          exporters: [loki] 6
+        logs/test:
+          receivers: [otlp]
+          processors: []
+          exporters: [debug]
+```
+
+Provides the following resource attributes to be used by the web console: kubernetes_namespace_name, kubernetes_pod_name, kubernetes_container_name, and log_type. If you specify them as values for this loki.resource.labels attribute, then the Loki Exporter processes them as labels.
+Configures the format of Loki logs. Supported values are json, logfmt and raw.
+Configures which resource attributes are processed as Loki labels.
+Points the Loki Exporter to the gateway of the LokiStack logging-loki instance and uses the application tenant.
+Enables the BearerTokenAuth Extension that is required by the Loki Exporter.
+Enables the Loki Exporter to export logs from the Collector.
+
+
+[TIP]
+----
+You can deploy telemetrygen as a test:
+
+```yaml
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: telemetrygen
+spec:
+  template:
+    spec:
+      containers:
+        - name: telemetrygen
+          image: ghcr.io/open-telemetry/opentelemetry-collector-contrib/telemetrygen:v0.106.1
+          args:
+            - logs
+            - --otlp-endpoint=otel-collector.openshift-logging.svc.cluster.local:4317
+            - --otlp-insecure
+            - --duration=180s
+            - --workers=1
+            - --logs=10
+            - --otlp-attributes=k8s.container.name="telemetrygen"
+      restartPolicy: Never
+  backoffLimit: 4
+```
+
+----
+
+* Installing LokiStack log storage

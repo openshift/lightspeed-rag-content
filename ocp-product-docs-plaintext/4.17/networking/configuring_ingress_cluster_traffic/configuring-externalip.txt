@@ -1,0 +1,311 @@
+# Configuring ExternalIPs for services
+
+
+As a cluster administrator, you can designate an IP address block that is external to the cluster that can send traffic to services in the cluster.
+This functionality is generally most useful for clusters installed on bare-metal hardware.
+
+# Prerequisites
+
+* Your network infrastructure must route traffic for the external IP addresses to your cluster.
+
+# About ExternalIP
+
+For non-cloud environments, Red Hat OpenShift Container Platform supports the assignment of external IP addresses to a Service object spec.externalIPs[] field through the ExternalIP facility.
+By setting this field, Red Hat OpenShift Container Platform assigns an additional virtual IP address to the service. The IP address can be outside the service network defined for the cluster.
+A service configured with an ExternalIP functions similarly to a service with type=NodePort, allowing you to direct traffic to a local node for load balancing.
+
+You must configure your networking infrastructure to ensure that the external IP address blocks that you define are routed to the cluster. As a result, the IP address is not configured in the network interfaces from nodes. To handle the traffic, you must configure the routing and access to the external IP by using a method such as static Address Resolution Protocol (ARP) entries.
+
+Red Hat OpenShift Container Platform extends the ExternalIP functionality in Kubernetes by adding the following capabilities:
+
+* Restrictions on the use of external IP addresses by users through a configurable policy
+* Allocation of an external IP address automatically to a service upon request
+
+
+[WARNING]
+----
+Disabled by default, use of ExternalIP functionality can be a security risk, because in-cluster traffic to an external IP address is directed to that service.
+This could allow cluster users to intercept sensitive traffic destined for external resources.
+----
+
+
+[IMPORTANT]
+----
+This feature is supported only in non-cloud deployments.
+For cloud deployments, use the load balancer services for automatic deployment of a cloud load balancer to target the endpoints of a service.
+----
+
+You can use either a MetalLB implementation or an IP failover deployment to attach an ExternalIP resource to a service in the following ways:
+
+Automatic assignment of an external IP:: Red Hat OpenShift Container Platform automatically assigns an IP address from the autoAssignCIDRs CIDR block to the spec.externalIPs[] array when you create a Service object with spec.type=LoadBalancer set.
+In this case, Red Hat OpenShift Container Platform implements a non-cloud version of the load balancer service type and assigns IP addresses to the services.
+Automatic assignment is disabled by default and must be configured by a cluster administrator as described in the following section.
+Manual assignment of an external IP:: Red Hat OpenShift Container Platform uses the IP addresses assigned to the spec.externalIPs[] array when you create a Service object. You cannot specify an IP address that is already in use by another service.
+
+## Configuration for ExternalIP
+
+Use of an external IP address in Red Hat OpenShift Container Platform is governed by the following fields in the Network.config.openshift.io CR named cluster:
+
+* spec.externalIP.autoAssignCIDRs defines an IP address block used by the load balancer when choosing an external IP address for the service. Red Hat OpenShift Container Platform supports only a single IP address block for automatic assignment. This can be simpler than having to manage the port space of a limited number of shared IP addresses when manually assigning ExternalIPs to services. If automatic assignment is enabled, a Service object with spec.type=LoadBalancer is allocated an external IP address.
+* spec.externalIP.policy defines the permissible IP address blocks when manually specifying an IP address. Red Hat OpenShift Container Platform does not apply policy rules to IP address blocks defined by spec.externalIP.autoAssignCIDRs.
+
+If routed correctly, external traffic from the configured external IP address block can reach service endpoints through any TCP or UDP port that the service exposes.
+
+
+[IMPORTANT]
+----
+As a cluster administrator, you must configure routing to externalIPs. You must also ensure that the IP address block you assign terminates at one or more nodes in your cluster. For more information, see Kubernetes External IPs.
+----
+
+Red Hat OpenShift Container Platform supports both the automatic and manual assignment of IP
+addresses, and each address is guaranteed to be assigned to a maximum of one
+service. This ensures that each service can expose its chosen ports regardless
+of the ports exposed by other services.
+
+
+[NOTE]
+----
+To use IP address blocks defined by autoAssignCIDRs in Red Hat OpenShift Container Platform, you must configure the necessary IP address assignment and routing for your host network.
+----
+
+The following YAML describes a service with an external IP address configured:
+
+
+```yaml
+apiVersion: v1
+kind: Service
+metadata:
+  name: http-service
+spec:
+  clusterIP: 172.30.163.110
+  externalIPs:
+  - 192.168.132.253
+  externalTrafficPolicy: Cluster
+  ports:
+  - name: highport
+    nodePort: 31903
+    port: 30102
+    protocol: TCP
+    targetPort: 30102
+  selector:
+    app: web
+  sessionAffinity: None
+  type: LoadBalancer
+status:
+  loadBalancer:
+    ingress:
+    - ip: 192.168.132.253
+```
+
+
+## Restrictions on the assignment of an external IP address
+
+As a cluster administrator, you can specify IP address blocks to allow and to reject.
+
+Restrictions apply only to users without cluster-admin privileges. A cluster administrator can always set the service spec.externalIPs[] field to any IP address.
+
+You configure IP address policy with a policy object defined by specifying the spec.ExternalIP.policy field.
+The policy object has the following shape:
+
+
+```json
+{
+  "policy": {
+    "allowedCIDRs": [],
+    "rejectedCIDRs": []
+  }
+}
+```
+
+
+When configuring policy restrictions, the following rules apply:
+
+* If policy={} is set, then creating a Service object with spec.ExternalIPs[] set will fail. This is the default for Red Hat OpenShift Container Platform. The behavior when policy=null is set is identical.
+* If policy is set and either policy.allowedCIDRs[] or policy.rejectedCIDRs[] is set, the following rules apply:
+* If allowedCIDRs[] and rejectedCIDRs[] are both set, then rejectedCIDRs[] has precedence over allowedCIDRs[].
+* If allowedCIDRs[] is set, creating a Service object with spec.ExternalIPs[] will succeed only if the specified IP addresses are allowed.
+* If rejectedCIDRs[] is set, creating a Service object with spec.ExternalIPs[] will succeed only if the specified IP addresses are not rejected.
+
+## Example policy objects
+
+The examples that follow demonstrate several different policy configurations.
+
+* In the following example, the policy prevents Red Hat OpenShift Container Platform from creating any service with an external IP address specified:
+Example policy to reject any value specified for Service object spec.externalIPs[]
+
+```yaml
+apiVersion: config.openshift.io/v1
+kind: Network
+metadata:
+  name: cluster
+spec:
+  externalIP:
+    policy: {}
+  ...
+```
+
+* In the following example, both the allowedCIDRs and rejectedCIDRs fields are set.
+Example policy that includes both allowed and rejected CIDR blocks
+
+```yaml
+apiVersion: config.openshift.io/v1
+kind: Network
+metadata:
+  name: cluster
+spec:
+  externalIP:
+    policy:
+      allowedCIDRs:
+      - 172.16.66.10/23
+      rejectedCIDRs:
+      - 172.16.66.10/24
+  ...
+```
+
+* In the following example, policy is set to null.
+If set to null, when inspecting the configuration object by entering oc get networks.config.openshift.io -o yaml, the policy field will not appear in the output.
+Example policy to allow any value specified for Service object spec.externalIPs[]
+
+```yaml
+apiVersion: config.openshift.io/v1
+kind: Network
+metadata:
+  name: cluster
+spec:
+  externalIP:
+    policy: null
+  ...
+```
+
+
+# ExternalIP address block configuration
+
+The configuration for ExternalIP address blocks is defined by a Network custom resource (CR) named cluster. The Network CR is part of the config.openshift.io API group.
+
+
+[IMPORTANT]
+----
+During cluster installation, the Cluster Version Operator (CVO) automatically creates a Network CR named cluster.
+Creating any other CR objects of this type is not supported.
+----
+
+The following YAML describes the ExternalIP configuration:
+
+
+```yaml
+apiVersion: config.openshift.io/v1
+kind: Network
+metadata:
+  name: cluster
+spec:
+  externalIP:
+    autoAssignCIDRs: [] 1
+    policy: 2
+      ...
+```
+
+
+Defines the IP address block in CIDR format that is available for automatic assignment of external IP addresses to a service.
+Only a single IP address range is allowed.
+Defines restrictions on manual assignment of an IP address to a service.
+If no restrictions are defined, specifying the spec.externalIP field in a Service object is not allowed.
+By default, no restrictions are defined.
+
+The following YAML describes the fields for the policy stanza:
+
+
+```yaml
+policy:
+  allowedCIDRs: [] 1
+  rejectedCIDRs: [] 2
+```
+
+
+A list of allowed IP address ranges in CIDR format.
+A list of rejected IP address ranges in CIDR format.
+
+## Example external IP configurations
+
+Several possible configurations for external IP address pools are displayed in the following examples:
+
+* The following YAML describes a configuration that enables automatically assigned external IP addresses:
+Example configuration with spec.externalIP.autoAssignCIDRs set
+
+```yaml
+apiVersion: config.openshift.io/v1
+kind: Network
+metadata:
+  name: cluster
+spec:
+  ...
+  externalIP:
+    autoAssignCIDRs:
+    - 192.168.132.254/29
+```
+
+* The following YAML configures policy rules for the allowed and rejected CIDR ranges:
+Example configuration with spec.externalIP.policy set
+
+```yaml
+apiVersion: config.openshift.io/v1
+kind: Network
+metadata:
+  name: cluster
+spec:
+  ...
+  externalIP:
+    policy:
+      allowedCIDRs:
+      - 192.168.132.0/29
+      - 192.168.132.8/29
+      rejectedCIDRs:
+      - 192.168.132.7/32
+```
+
+
+# Configure external IP address blocks for your cluster
+
+As a cluster administrator, you can configure the following ExternalIP settings:
+
+* An ExternalIP address block used by Red Hat OpenShift Container Platform to automatically populate the spec.clusterIP field for a Service object.
+* A policy object to restrict what IP addresses may be manually assigned to the spec.clusterIP array of a Service object.
+
+* Install the OpenShift CLI (oc).
+* Access to the cluster as a user with the cluster-admin role.
+
+1. Optional: To display the current external IP configuration, enter the following command:
+
+```terminal
+$ oc describe networks.config cluster
+```
+
+2. To edit the configuration, enter the following command:
+
+```terminal
+$ oc edit networks.config cluster
+```
+
+3. Modify the ExternalIP configuration, as in the following example:
+
+```yaml
+apiVersion: config.openshift.io/v1
+kind: Network
+metadata:
+  name: cluster
+spec:
+  ...
+  externalIP: 1
+  ...
+```
+
+Specify the configuration for the externalIP stanza.
+4. To confirm the updated ExternalIP configuration, enter the following command:
+
+```terminal
+$ oc get networks.config cluster -o go-template='{{.spec.externalIP}}{{"\n"}}'
+```
+
+
+# Next steps
+
+* Configuring ingress cluster traffic for a service external IP

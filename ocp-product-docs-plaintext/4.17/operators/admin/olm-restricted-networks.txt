@@ -1,0 +1,167 @@
+# Using Operator Lifecycle Manager on restricted networks
+
+
+For Red Hat OpenShift Container Platform clusters that are installed on restricted networks, also known as disconnected clusters, Operator Lifecycle Manager (OLM) by default cannot access the Red Hat-provided OperatorHub sources hosted on remote registries because those remote sources require full internet connectivity.
+However, as a cluster administrator you can still enable your cluster to use OLM in a restricted network if you have a workstation that has full internet access. The workstation, which requires full internet access to pull the remote OperatorHub content, is used to prepare local mirrors of the remote sources, and push the content to a mirror registry.
+The mirror registry can be located on a bastion host, which requires connectivity to both your workstation and the disconnected cluster, or a completely disconnected, or airgapped, host, which requires removable media to physically move the mirrored content to the disconnected environment.
+This guide describes the following process that is required to enable OLM in restricted networks:
+* Disable the default remote OperatorHub sources for OLM.
+* Use a workstation with full internet access to create and push local mirrors of the OperatorHub content to a mirror registry.
+* Configure OLM to install and manage Operators from local sources on the mirror registry instead of the default remote sources.
+After enabling OLM in a restricted network, you can continue to use your unrestricted workstation to keep your local OperatorHub sources updated as newer versions of Operators are released.
+
+[IMPORTANT]
+----
+While OLM can manage Operators from local sources, the ability for a given Operator to run successfully in a restricted network still depends on the Operator itself meeting the following criteria:
+* List any related images, or other container images that the Operator might require to perform their functions, in the relatedImages parameter of its ClusterServiceVersion (CSV) object.
+* Reference all specified images by a digest (SHA) and not by a tag.
+You can search software on the Red Hat Ecosystem Catalog for a list of Red Hat Operators that support running in disconnected mode by filtering with the following selections:
+Type:: Containerized application
+Deployment method:: Operator
+Infrastructure features:: Disconnected
+----
+* Red Hat-provided Operator catalogs
+* Enabling your Operator for restricted network environments
+
+# Prerequisites
+
+* Log in to your Red Hat OpenShift Container Platform cluster as a user with cluster-admin privileges.
+
+
+[NOTE]
+----
+If you are using OLM in a restricted network on IBM Z(R), you must have at least 12 GB allocated to the directory where you place your registry.
+----
+
+# Disabling the default OperatorHub catalog sources
+
+Operator catalogs that source content provided by Red Hat and community projects are configured for OperatorHub by default during an Red Hat OpenShift Container Platform installation.
+In a restricted network environment, you must disable the default catalogs as a cluster administrator.
+You can then configure OperatorHub to use local catalog sources.
+
+* Disable the sources for the default catalogs by adding disableAllDefaultSources: true to the OperatorHub object:
+
+```terminal
+$ oc patch OperatorHub cluster --type json \
+    -p '[{"op": "add", "path": "/spec/disableAllDefaultSources", "value": true}]'
+```
+
+
+
+[TIP]
+----
+Alternatively, you can use the web console to manage catalog sources. From the Administration -> Cluster Settings -> Configuration -> OperatorHub page, click the Sources tab, where you can create, update, delete, disable, and enable individual sources.
+----
+
+# Mirroring an Operator catalog
+
+For instructions about mirroring Operator catalogs for use with disconnected clusters, see Installing -> Mirroring images for a disconnected installation.
+
+
+[IMPORTANT]
+----
+As of Red Hat OpenShift Container Platform 4.11, the default Red Hat-provided Operator catalog releases in the file-based catalog format. The default Red Hat-provided Operator catalogs for Red Hat OpenShift Container Platform 4.6 through 4.10 released in the deprecated SQLite database format.
+The opm subcommands, flags, and functionality related to the SQLite database format are also deprecated and will be removed in a future release. The features are still supported and must be used for catalogs that use the deprecated SQLite database format.
+Many of the opm subcommands and flags for working with the SQLite database format, such as opm index prune, do not work with the file-based catalog format. For more information about working with file-based catalogs, see Operator Framework packaging format, Managing custom catalogs, and Mirroring images for a disconnected installation using the oc-mirror plugin.
+----
+
+# Adding a catalog source to a cluster
+
+Adding a catalog source to an Red Hat OpenShift Container Platform cluster enables the discovery and installation of Operators for users.
+Cluster administrators
+can create a CatalogSource object that references an index image. OperatorHub uses catalog sources to populate the user interface.
+
+
+[TIP]
+----
+Alternatively, you can use the web console to manage catalog sources. From the Administration -> Cluster Settings -> Configuration -> OperatorHub page, click the Sources tab, where you can create, update, delete, disable, and enable individual sources.
+----
+
+* You built and pushed an index image to a registry.
+* You have access to the cluster as a user with the cluster-admin role.
+
+1. Create a CatalogSource object that references your index image.
+If you used the oc adm catalog mirror command to mirror your catalog to a target registry, you can use the generated catalogSource.yaml file in your manifests directory as a starting point.
+1. Modify the following to your specifications and save it as a catalogSource.yaml file:
+
+```yaml
+apiVersion: operators.coreos.com/v1alpha1
+kind: CatalogSource
+metadata:
+  name: my-operator-catalog 1
+  namespace: {namespace} 2
+spec:
+  sourceType: grpc
+  grpcPodConfig:
+    securityContextConfig: <security_mode> 3
+  image: <registry>/<namespace>/{index-image}:{tag} 4
+  displayName: My Operator Catalog
+  publisher: <publisher_name> 5
+  updateStrategy:
+    registryPoll: 6
+      interval: 30m
+```
+
+If you mirrored content to local files before uploading to a registry, remove any backslash (/) characters from the metadata.name field to avoid an "invalid resource name" error when you create the object.
+If you want the catalog source to be available globally to users in all namespaces, specify the {namespace} namespace. Otherwise, you can specify a different namespace for the catalog to be scoped and available only for that namespace.
+Specify the value of legacy or restricted. If the field is not set, the default value is legacy. In a future Red Hat OpenShift Container Platform release, it is planned that the default value will be restricted. If your catalog cannot run with restricted permissions, it is recommended that you manually set this field to legacy.
+Specify your index image. If you specify a tag after the image name, for example :{tag}, the catalog source pod uses an image pull policy of Always, meaning the pod always pulls the image prior to starting the container. If you specify a digest, for example @sha256:<id>, the image pull policy is IfNotPresent, meaning the pod pulls the image only if it does not already exist on the node.
+Specify your name or an organization name publishing the catalog.
+Catalog sources can automatically check for new versions to keep up to date.
+2. Use the file to create the CatalogSource object:
+
+```terminal
+$ oc apply -f catalogSource.yaml
+```
+
+2. Verify the following resources are created successfully.
+1. Check the pods:
+
+```terminal
+$ oc get pods -n {namespace}
+```
+
+Example output
+
+```terminal
+NAME                                    READY   STATUS    RESTARTS  AGE
+my-operator-catalog-6njx6               1/1     Running   0         28s
+marketplace-operator-d9f549946-96sgr    1/1     Running   0         26h
+```
+
+2. Check the catalog source:
+
+```terminal
+$ oc get catalogsource -n {namespace}
+```
+
+Example output
+
+```terminal
+NAME                  DISPLAY               TYPE PUBLISHER  AGE
+my-operator-catalog   My Operator Catalog   grpc            5s
+```
+
+3. Check the package manifest:
+
+```terminal
+$ oc get packagemanifest -n {namespace}
+```
+
+Example output
+
+```terminal
+NAME                          CATALOG               AGE
+jaeger-product                My Operator Catalog   93s
+```
+
+
+You can now install the Operators from the OperatorHub page on your Red Hat OpenShift Container Platform web console.
+
+* Accessing images for Operators from private registries
+* Image template for custom catalog sources
+* Image pull policy
+
+# Next steps
+
+* Updating installed Operators

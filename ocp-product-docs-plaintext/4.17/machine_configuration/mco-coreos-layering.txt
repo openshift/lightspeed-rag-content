@@ -1,0 +1,621 @@
+# RHCOS image layering
+
+
+Red Hat Enterprise Linux CoreOS (RHCOS) image layering allows you to easily extend the functionality of your base RHCOS image by layering additional images onto the base image. This layering does not modify the base RHCOS image. Instead, it creates a custom layered image that includes all RHCOS functionality and adds additional functionality to specific nodes in the cluster.
+
+# About RHCOS image layering
+
+Image layering allows you to customize the underlying node operating system on any of your cluster worker nodes. This helps keep everything up-to-date, including the node operating system and any added customizations such as specialized software.
+
+You create a custom layered image by using a Containerfile and applying it to nodes by using a custom object. At any time, you can remove the custom layered image by deleting that custom object.
+
+With RHCOS image layering, you can install RPMs into your base image, and your custom content will be booted alongside RHCOS. The Machine Config Operator (MCO) can roll out these custom layered images and monitor these custom containers in the same way it does for the default RHCOS image. RHCOS image layering gives you greater flexibility in how you manage your RHCOS nodes.
+
+
+[IMPORTANT]
+----
+Installing realtime kernel and extensions RPMs as custom layered content is not recommended. This is because these RPMs can conflict with RPMs installed by using a machine config. If there is a conflict, the MCO enters a degraded state when it tries to install the machine config RPM. You need to remove the conflicting extension from your machine config before proceeding.
+----
+
+As soon as you apply the custom layered image to your cluster, you effectively take ownership of your custom layered images and those nodes. While Red Hat remains responsible for maintaining and updating the base RHCOS image on standard nodes, you are responsible for maintaining and updating images on nodes that use a custom layered image. You assume the responsibility for the package you applied with the custom layered image and any issues that might arise with the package.
+
+There are two methods for deploying a custom layered image onto your nodes:
+
+On-cluster layering:: With on-cluster layering, you create a MachineOSConfig object where you include the Containerfile and other parameters. The build is performed on your cluster and the resulting custom layered image is automatically pushed to your repository and applied to the machine config pool that you specified in the MachineOSConfig object. The entire process is performed completely within your cluster.
+
+[IMPORTANT]
+----
+On-cluster image layering is a Technology Preview feature only. Technology Preview features are not supported with Red Hat production service level agreements (SLAs) and might not be functionally complete. Red Hat does not recommend using them in production. These features provide early access to upcoming product features, enabling customers to test functionality and provide feedback during the development process.
+For more information about the support scope of Red Hat Technology Preview features, see Technology Preview Features Support Scope.
+----
+Out-of-cluster layering:: With out-of-cluster layering, you create a Containerfile that references an Red Hat OpenShift Container Platform image and the RPM that you want to apply, build the layered image in your own environment, and push the image to your repository. Then, in your cluster, create a MachineConfig object for the targeted node pool that points to the new image. The Machine Config Operator overrides the base RHCOS image, as specified by the osImageURL value in the associated machine config, and boots the new image.
+
+
+[IMPORTANT]
+----
+For both methods, use the same base RHCOS image installed on the rest of your cluster. Use the oc adm release info --image-for rhel-coreos command to obtain the base image used in your cluster.
+----
+
+# Example Containerfiles
+
+RHCOS image layering allows you to use the following types of images to create custom layered images:
+
+* Red Hat OpenShift Container Platform Hotfixes. You can work with Customer Experience and Engagement (CEE) to obtain and apply Hotfix packages on top of your RHCOS image. In some instances, you might want a bug fix or enhancement before it is included in an official Red Hat OpenShift Container Platform release. RHCOS image layering allows you to easily add the Hotfix before it is officially released and remove the Hotfix when the underlying RHCOS image incorporates the fix.
+
+[IMPORTANT]
+----
+Some Hotfixes require a Red Hat Support Exception and are outside of the normal scope of Red Hat OpenShift Container Platform support coverage or life cycle policies.
+----
+
+Hotfixes are provided to you based on Red Hat Hotfix policy. Apply it on top of the base image and test that new custom layered image in a non-production environment. When you are satisfied that the custom layered image is safe to use in production, you can roll it out on your own schedule to specific node pools. For any reason, you can easily roll back the custom layered image and return to using the default RHCOS.
+Example on-cluster Containerfile to apply a Hotfix
+
+```yaml
+# Using a 4.12.0 image
+containerfileArch: noarch
+content: |-
+  FROM configs AS final
+  #Install hotfix rpm
+  RUN rpm-ostree override replace https://example.com/myrepo/haproxy-1.0.16-5.el8.src.rpm && \
+      rpm-ostree cleanup -m && \
+      ostree container commit
+```
+
+Example out-of-cluster Containerfile to apply a Hotfix
+
+```yaml
+# Using a 4.12.0 image
+FROM quay.io/openshift-release-dev/ocp-v4.0-art-dev@sha256...
+#Install hotfix rpm
+RUN rpm-ostree override replace https://example.com/myrepo/haproxy-1.0.16-5.el8.src.rpm && \
+    rpm-ostree cleanup -m && \
+    ostree container commit
+```
+
+* RHEL packages. You can download Red Hat Enterprise Linux (RHEL) packages from the Red Hat Customer Portal, such as chrony, firewalld, and iputils.
+Example out-of-cluster Containerfile to apply the libreswan utility
+
+```yaml
+link:https://raw.githubusercontent.com/openshift/rhcos-image-layering-examples/master/libreswan/Containerfile[role=include]
+```
+
+
+Because libreswan requires additional RHEL packages, the image must be built on an entitled RHEL host. For RHEL entitlements to work, you must copy the etc-pki-entitlement secret into the openshift-machine-api namespace.
+* Third-party packages. You can download and install RPMs from third-party organizations, such as the following types of packages:
+* Bleeding edge drivers and kernel enhancements to improve performance or add capabilities.
+* Forensic client tools to investigate possible and actual break-ins.
+* Security agents.
+* Inventory agents that provide a coherent view of the entire cluster.
+* SSH Key management packages.
+Example on-cluster Containerfile to apply a third-party package from EPEL
+
+```yaml
+FROM configs AS final
+
+#Enable EPEL (more info at https://docs.fedoraproject.org/en-US/epel/ ) and install htop
+RUN rpm-ostree install https://dl.fedoraproject.org/pub/epel/epel-release-latest-9.noarch.rpm && \
+    rpm-ostree install htop && \
+    ostree container commit
+```
+
+Example out-of-cluster Containerfile to apply a third-party package from EPEL
+
+```yaml
+link:https://raw.githubusercontent.com/openshift/rhcos-image-layering-examples/master/htop/Containerfile[role=include]
+```
+
+
+This Containerfile installs the RHEL fish program. Because fish requires additional RHEL packages, the image must be built on an entitled RHEL host. For RHEL entitlements to work, you must copy the etc-pki-entitlement secret into the openshift-machine-api namespace.
+Example on-cluster Containerfile to apply a third-party package that has RHEL dependencies
+
+```yaml
+FROM configs AS final
+
+# RHEL entitled host is needed here to access RHEL packages
+# Install fish as third party package from EPEL
+RUN rpm-ostree install https://dl.fedoraproject.org/pub/epel/9/Everything/x86_64/Packages/f/fish-3.3.1-3.el9.x86_64.rpm && \
+    ostree container commit
+```
+
+Example out-of-cluster Containerfile to apply a third-party package that has RHEL dependencies
+
+```yaml
+link:https://raw.githubusercontent.com/openshift/rhcos-image-layering-examples/master/fish/Containerfile[role=include]
+```
+
+
+After you create the machine config, the Machine Config Operator (MCO) performs the following steps:
+
+1. Renders a new machine config for the specified pool or pools.
+2. Performs cordon and drain operations on the nodes in the pool or pools.
+3. Writes the rest of the machine config parameters onto the nodes.
+4. Applies the custom layered image to the node.
+5. Reboots the node using the new image.
+
+
+[IMPORTANT]
+----
+It is strongly recommended that you test your images outside of your production environment before rolling out to your cluster.
+----
+
+# Using on-cluster layering to apply a custom layered image
+
+To apply a custom layered image to your cluster by using the on-cluster build process, make a MachineOSConfig custom resource that includes a Containerfile, a machine config pool reference, repository push and pull secrets, and other parameters as described in the prerequisites.
+
+When you create the object, the Machine Config Operator (MCO) creates a MachineOSBuild object and a machine-os-builder pod. The build process also creates transient objects, such as config maps, which are cleaned up after the build is complete.
+
+When the build is complete, the MCO pushes the new custom layered image to your repository for use when deploying new nodes. You can see the digested image pull spec for the new custom layered image in the MachineOSBuild object and machine-os-builder pod.
+
+You should not need to interact with these new objects or the machine-os-builder pod. However, you can use all of these resources for troubleshooting, if necessary.
+
+You need a separate MachineOSConfig CR for each machine config pool where you want to use a custom layered image.
+
+
+[IMPORTANT]
+----
+On-cluster image layering is a Technology Preview feature only. Technology Preview features are not supported with Red Hat production service level agreements (SLAs) and might not be functionally complete. Red Hat does not recommend using them in production. These features provide early access to upcoming product features, enabling customers to test functionality and provide feedback during the development process.
+For more information about the support scope of Red Hat Technology Preview features, see Technology Preview Features Support Scope.
+----
+
+* You have enabled the TechPreviewNoUpgrade feature set by using the feature gates. For more information, see "Enabling features using feature gates".
+* You have the pull secret in the openshift-machine-config-operator namespace that the MCO needs to pull the base operating system image.
+* You have the push secret that the MCO needs to push the new custom layered image to your registry.
+* You have a pull secret that your nodes need to pull the new custom layered image from your registry. This should be a different secret than the one used to push the image to the repository.
+* You are familiar with how to configure a Containerfile. Instructions on how to create a Containerfile are beyond the scope of this documentation.
+* Optional: You have a separate machine config pool for the nodes where you want to apply the custom layered image.
+
+1. Create a machineOSconfig object:
+1. Create a YAML file similar to the following:
+
+```terminal
+apiVersion: machineconfiguration.openshift.io/v1alpha1
+kind: MachineOSConfig
+metadata:
+  name: layered
+spec:
+  machineConfigPool:
+    name: <mcp_name> 1
+  buildInputs:
+    containerFile: 2
+    - containerfileArch: noarch
+      content: |-
+        FROM configs AS final
+        RUN rpm-ostree install cowsay && \
+          ostree container commit
+    imageBuilder: 3
+      imageBuilderType: PodImageBuilder
+    baseImagePullSecret: 4
+      name: global-pull-secret-copy
+    renderedImagePushspec: image-registry.openshift-image-registry.svc:5000/openshift/os-image:latest  5
+    renderedImagePushSecret: 6
+      name: builder-dockercfg-7lzwl
+  buildOutputs: 7
+    currentImagePullSecret:
+      name: builder-dockercfg-7lzwl
+```
+
+Specifies the name of the machine config pool associated with the nodes where you want to deploy the custom layered image.
+Specifies the Containerfile to configure the custom layered image.
+Specifies the name of the image builder to use. This must be PodImageBuilder.
+Specifies the name of the pull secret that the MCO needs to pull the base operating system image from the registry.
+Specifies the image registry to push the newly-built custom layered image to. This can be any registry that your cluster has access to. This example uses the internal Red Hat OpenShift Container Platform registry.
+Specifies the name of the push secret that the MCO needs to push the newly-built custom layered image to that registry.
+Specifies the secret required by the image registry that the nodes need to pull the newly-built custom layered image. This should be a different secret than the one used to push the image to your repository.
+2. Create the MachineOSConfig object:
+
+```terminal
+$ oc create -f <file_name>.yaml
+```
+
+2. If necessary, when the MachineOSBuild object has been created and is in the READY state, modify the node spec for the nodes where you want to use the new custom layered image:
+1. Check that the MachineOSBuild object is READY. When the SUCCEEDED value is True, the build is complete.
+
+```terminal
+$ oc get machineosbuild
+```
+
+Example output showing that the MachineOSBuild object is ready
+
+```terminal
+NAME                                                                PREPARED   BUILDING   SUCCEEDED   INTERRUPTED   FAILED
+layered-rendered-layered-ad5a3cad36303c363cf458ab0524e7c0-builder   False      False      True        False         False
+```
+
+2. Edit the nodes where you want to deploy the custom layered image by adding a label for the machine config pool you specified in the MachineOSConfig object:
+
+```terminal
+$ oc label node <node_name> 'node-role.kubernetes.io/<mcp_name>='
+```
+
+where:
+node-role.kubernetes.io/<mcp_name>=:: Specifies a node selector that identifies the nodes to deploy the custom layered image.
+
+When you save the changes, the MCO drains, cordons, and reboots the nodes. After the reboot, the node will be using the new custom layered image.
+
+1. Verify that the new pods are running by using the following command:
+
+```terminal
+$ oc get pods -n <machineosbuilds_namespace>
+```
+
+
+```terminal
+NAME                                                              READY   STATUS    RESTARTS   AGE
+build-rendered-layered-ad5a3cad36303c363cf458ab0524e7c0           2/2     Running   0          2m40s 1
+# ...
+machine-os-builder-6fb66cfb99-zcpvq                               1/1     Running   0          2m42s 2
+```
+
+This is the build pod where the custom layered image is building.
+This pod can be used for troubleshooting.
+2. Verify that the MachineOSConfig object contains a reference to the new custom layered image:
+
+```terminal
+$ oc describe MachineOSConfig <object_name>
+```
+
+
+```yaml
+apiVersion: machineconfiguration.openshift.io/v1alpha1
+kind: MachineOSConfig
+metadata:
+  name: layered
+spec:
+  buildInputs:
+    baseImagePullSecret:
+      name: global-pull-secret-copy
+    containerFile:
+    - containerfileArch: noarch
+      content: ""
+    imageBuilder:
+      imageBuilderType: PodImageBuilder
+    renderedImagePushSecret:
+      name: builder-dockercfg-ng82t-canonical
+    renderedImagePushspec: image-registry.openshift-image-registry.svc:5000/openshift-machine-config-operator/os-image:latest
+  buildOutputs:
+    currentImagePullSecret:
+      name: global-pull-secret-copy
+  machineConfigPool:
+    name: layered
+status:
+  currentImagePullspec: image-registry.openshift-image-registry.svc:5000/openshift-machine-config-operator/os-image@sha256:f636fa5b504e92e6faa22ecd71a60b089dab72200f3d130c68dfec07148d11cd 1
+```
+
+Digested image pull spec for the new custom layered image.
+3. Verify that the MachineOSBuild object contains a reference to the new custom layered image.
+
+```terminal
+$ oc describe machineosbuild <object_name>
+```
+
+
+```yaml
+apiVersion: machineconfiguration.openshift.io/v1alpha1
+kind: MachineOSBuild
+metadata:
+  name: layered-rendered-layered-ad5a3cad36303c363cf458ab0524e7c0-builder
+spec:
+  desiredConfig:
+    name: rendered-layered-ad5a3cad36303c363cf458ab0524e7c0
+  machineOSConfig:
+    name: layered
+  renderedImagePushspec: image-registry.openshift-image-registry.svc:5000/openshift-machine-config-operator/os-image:latest
+# ...
+status:
+  conditions:
+    - lastTransitionTime: "2024-05-21T20:25:06Z"
+      message: Build Ready
+      reason: Ready
+      status: "True"
+      type: Succeeded
+  finalImagePullspec: image-registry.openshift-image-registry.svc:5000/openshift-machine-config-operator/os-image@sha256:f636fa5b504e92e6faa22ecd71a60b089dab72200f3d130c68dfec07148d11cd 1
+```
+
+Digested image pull spec for the new custom layered image.
+4. Verify that the appropriate nodes are using the new custom layered image:
+1. Start a debug session as root for a control plane node:
+
+```terminal
+$ oc debug node/<node_name>
+```
+
+2. Set /host as the root directory within the debug shell:
+
+```terminal
+sh-4.4# chroot /host
+```
+
+3. Run the rpm-ostree status command to view that the custom layered image is in use:
+
+```terminal
+sh-5.1# rpm-ostree status
+```
+
+Example output
+
+```terminal
+# ...
+Deployments:
+* ostree-unverified-registry:quay.io/openshift-release-dev/os-image@sha256:f636fa5b504e92e6faa22ecd71a60b089dab72200f3d130c68dfec07148d11cd 1
+                   Digest: sha256:bcea2546295b2a55e0a9bf6dd4789433a9867e378661093b6fdee0031ed1e8a4
+                  Version: 416.94.202405141654-0 (2024-05-14T16:58:43Z)
+```
+
+Digested image pull spec for the new custom layered image.
+
+* Enabling features using feature gates
+
+# Using out-of-cluster layering to apply a custom layered image
+
+You can easily configure Red Hat Enterprise Linux CoreOS (RHCOS) image layering on the nodes in specific machine config pools. The Machine Config Operator (MCO) reboots those nodes with the new custom layered image, overriding the base Red Hat Enterprise Linux CoreOS (RHCOS) image.
+
+To apply a custom layered image to your cluster, you must have the custom layered image in a repository that your cluster can access. Then, create a MachineConfig object that points to the custom layered image. You need a separate MachineConfig object for each machine config pool that you want to configure.
+
+
+[IMPORTANT]
+----
+When you configure a custom layered image, Red Hat OpenShift Container Platform no longer automatically updates any node that uses the custom layered image. You become responsible for manually updating your nodes as appropriate. If you roll back the custom layer, Red Hat OpenShift Container Platform will again automatically update the node. See the Additional resources section that follows for important information about updating nodes that use a custom layered image.
+----
+
+* You must create a custom layered image that is based on an Red Hat OpenShift Container Platform image digest, not a tag.
+
+[NOTE]
+----
+You should use the same base RHCOS image that is installed on the rest of your cluster. Use the oc adm release info --image-for rhel-coreos command to obtain the base image being used in your cluster.
+----
+
+For example, the following Containerfile creates a custom layered image from an Red Hat OpenShift Container Platform 4.17 image and overrides the kernel package with one from CentOS 9 Stream:
+Example Containerfile for a custom layer image
+
+```yaml
+# Using a 4.17.0 image
+FROM quay.io/openshift-release/ocp-release@sha256... 1
+#Install hotfix rpm
+RUN rpm-ostree override replace http://mirror.stream.centos.org/9-stream/BaseOS/x86_64/os/Packages/kernel-{,core-,modules-,modules-core-,modules-extra-}5.14.0-295.el9.x86_64.rpm && \ 2
+    rpm-ostree cleanup -m && \
+    ostree container commit
+```
+
+Specifies the RHCOS base image of your cluster.
+Replaces the kernel packages.
+
+[NOTE]
+----
+Instructions on how to create a Containerfile are beyond the scope of this documentation.
+----
+* Because the process for building a custom layered image is performed outside of the cluster, you must use the --authfile /path/to/pull-secret option with Podman or Buildah. Alternatively, to have the pull secret read by these tools automatically, you can add it to one of the default file locations: ~/.docker/config.json, $XDG_RUNTIME_DIR/containers/auth.json, ~/.docker/config.json, or ~/.dockercfg. Refer to the containers-auth.json man page for more information.
+* You must push the custom layered image to a repository that your cluster can access.
+
+1. Create a machine config file.
+1. Create a YAML file similar to the following:
+
+```yaml
+apiVersion: machineconfiguration.openshift.io/v1
+kind: MachineConfig
+metadata:
+  labels:
+    machineconfiguration.openshift.io/role: worker 1
+  name: os-layer-custom
+spec:
+  osImageURL: quay.io/my-registry/custom-image@sha256... 2
+```
+
+Specifies the machine config pool to apply the custom layered image.
+Specifies the path to the custom layered image in the repository.
+2. Create the MachineConfig object:
+
+```terminal
+$ oc create -f <file_name>.yaml
+```
+
+
+[IMPORTANT]
+----
+It is strongly recommended that you test your images outside of your production environment before rolling out to your cluster.
+----
+
+You can verify that the custom layered image is applied by performing any of the following checks:
+
+1. Check that the worker machine config pool has rolled out with the new machine config:
+1. Check that the new machine config is created:
+
+```terminal
+$ oc get mc
+```
+
+Sample output
+
+```terminal
+NAME                                               GENERATEDBYCONTROLLER                      IGNITIONVERSION   AGE
+00-master                                          5bdb57489b720096ef912f738b46330a8f577803   3.2.0             95m
+00-worker                                          5bdb57489b720096ef912f738b46330a8f577803   3.2.0             95m
+01-master-container-runtime                        5bdb57489b720096ef912f738b46330a8f577803   3.2.0             95m
+01-master-kubelet                                  5bdb57489b720096ef912f738b46330a8f577803   3.2.0             95m
+01-worker-container-runtime                        5bdb57489b720096ef912f738b46330a8f577803   3.2.0             95m
+01-worker-kubelet                                  5bdb57489b720096ef912f738b46330a8f577803   3.2.0             95m
+99-master-generated-registries                     5bdb57489b720096ef912f738b46330a8f577803   3.2.0             95m
+99-master-ssh                                                                                 3.2.0             98m
+99-worker-generated-registries                     5bdb57489b720096ef912f738b46330a8f577803   3.2.0             95m
+99-worker-ssh                                                                                 3.2.0             98m
+os-layer-custom                                                                                                 10s 1
+rendered-master-15961f1da260f7be141006404d17d39b   5bdb57489b720096ef912f738b46330a8f577803   3.2.0             95m
+rendered-worker-5aff604cb1381a4fe07feaf1595a797e   5bdb57489b720096ef912f738b46330a8f577803   3.2.0             95m
+rendered-worker-5de4837625b1cbc237de6b22bc0bc873   5bdb57489b720096ef912f738b46330a8f577803   3.2.0             4s  2
+```
+
+New machine config
+New rendered machine config
+2. Check that the osImageURL value in the new machine config points to the expected image:
+
+```terminal
+$ oc describe mc rendered-master-4e8be63aef68b843b546827b6ebe0913
+```
+
+Example output
+
+```terminal
+Name:         rendered-master-4e8be63aef68b843b546827b6ebe0913
+Namespace:
+Labels:       <none>
+Annotations:  machineconfiguration.openshift.io/generated-by-controller-version: 8276d9c1f574481043d3661a1ace1f36cd8c3b62
+              machineconfiguration.openshift.io/release-image-version: 4.17.0-ec.3
+API Version:  machineconfiguration.openshift.io/v1
+Kind:         MachineConfig
+...
+  Os Image URL: quay.io/my-registry/custom-image@sha256...
+```
+
+3. Check that the associated machine config pool is updating with the new machine config:
+
+```terminal
+$ oc get mcp
+```
+
+Sample output
+
+```terminal
+NAME     CONFIG                                             UPDATED   UPDATING   DEGRADED   MACHINECOUNT   READYMACHINECOUNT   UPDATEDMACHINECOUNT   DEGRADEDMACHINECOUNT   AGE
+master   rendered-master-6faecdfa1b25c114a58cf178fbaa45e2   True      False      False      3              3                   3                     0                      39m
+worker   rendered-worker-6b000dbc31aaee63c6a2d56d04cd4c1b   False     True       False      3              0                   0                     0                      39m 1
+```
+
+When the UPDATING field is True, the machine config pool is updating with the new machine config. When the field becomes False, the worker machine config pool has rolled out to the new machine config.
+4. Check the nodes to see that scheduling on the nodes is disabled. This indicates that the change is being applied:
+
+```terminal
+$ oc get nodes
+```
+
+Example output
+
+```terminal
+NAME                                         STATUS                     ROLES                  AGE   VERSION
+ip-10-0-148-79.us-west-1.compute.internal    Ready                      worker                 32m   v1.30.3
+ip-10-0-155-125.us-west-1.compute.internal   Ready,SchedulingDisabled   worker                 35m   v1.30.3
+ip-10-0-170-47.us-west-1.compute.internal    Ready                      control-plane,master   42m   v1.30.3
+ip-10-0-174-77.us-west-1.compute.internal    Ready                      control-plane,master   42m   v1.30.3
+ip-10-0-211-49.us-west-1.compute.internal    Ready                      control-plane,master   42m   v1.30.3
+ip-10-0-218-151.us-west-1.compute.internal   Ready                      worker                 31m   v1.30.3
+```
+
+2. When the node is back in the Ready state, check that the node is using the custom layered image:
+1. Open an oc debug session to the node. For example:
+
+```terminal
+$ oc debug node/ip-10-0-155-125.us-west-1.compute.internal
+```
+
+2. Set /host as the root directory within the debug shell:
+
+```terminal
+sh-4.4# chroot /host
+```
+
+3. Run the rpm-ostree status command to view that the custom layered image is in use:
+
+```terminal
+sh-4.4# sudo rpm-ostree status
+```
+
+Example output
+
+```
+State: idle
+Deployments:
+* ostree-unverified-registry:quay.io/my-registry/...
+                   Digest: sha256:...
+```
+
+
+Updating with a RHCOS custom layered image
+
+# Removing a RHCOS custom layered image
+
+You can easily revert Red Hat Enterprise Linux CoreOS (RHCOS) image layering from the nodes in specific machine config pools. The Machine Config Operator (MCO) reboots those nodes with the cluster base Red Hat Enterprise Linux CoreOS (RHCOS) image, overriding the custom layered image.
+
+To remove a Red Hat Enterprise Linux CoreOS (RHCOS) custom layered image from your cluster, you need to delete the machine config that applied the image.
+
+1. Delete the machine config that applied the custom layered image.
+
+```terminal
+$ oc delete mc os-layer-custom
+```
+
+
+After deleting the machine config, the nodes reboot.
+
+You can verify that the custom layered image is removed by performing any of the following checks:
+
+1. Check that the worker machine config pool is updating with the previous machine config:
+
+```terminal
+$ oc get mcp
+```
+
+Sample output
+
+```terminal
+NAME     CONFIG                                             UPDATED   UPDATING   DEGRADED   MACHINECOUNT   READYMACHINECOUNT   UPDATEDMACHINECOUNT   DEGRADEDMACHINECOUNT   AGE
+master   rendered-master-6faecdfa1b25c114a58cf178fbaa45e2   True      False      False      3              3                   3                     0                      39m
+worker   rendered-worker-6b000dbc31aaee63c6a2d56d04cd4c1b   False     True       False      3              0                   0                     0                      39m 1
+```
+
+When the UPDATING field is True, the machine config pool is updating with the previous machine config. When the field becomes False, the worker machine config pool has rolled out to the previous machine config.
+2. Check the nodes to see that scheduling on the nodes is disabled. This indicates that the change is being applied:
+
+```terminal
+$ oc get nodes
+```
+
+Example output
+
+```terminal
+NAME                                         STATUS                     ROLES                  AGE   VERSION
+ip-10-0-148-79.us-west-1.compute.internal    Ready                      worker                 32m   v1.30.3
+ip-10-0-155-125.us-west-1.compute.internal   Ready,SchedulingDisabled   worker                 35m   v1.30.3
+ip-10-0-170-47.us-west-1.compute.internal    Ready                      control-plane,master   42m   v1.30.3
+ip-10-0-174-77.us-west-1.compute.internal    Ready                      control-plane,master   42m   v1.30.3
+ip-10-0-211-49.us-west-1.compute.internal    Ready                      control-plane,master   42m   v1.30.3
+ip-10-0-218-151.us-west-1.compute.internal   Ready                      worker                 31m   v1.30.3
+```
+
+3. When the node is back in the Ready state, check that the node is using the base image:
+1. Open an oc debug session to the node. For example:
+
+```terminal
+$ oc debug node/ip-10-0-155-125.us-west-1.compute.internal
+```
+
+2. Set /host as the root directory within the debug shell:
+
+```terminal
+sh-4.4# chroot /host
+```
+
+3. Run the rpm-ostree status command to view that the custom layered image is in use:
+
+```terminal
+sh-4.4# sudo rpm-ostree status
+```
+
+Example output
+
+```
+State: idle
+Deployments:
+* ostree-unverified-registry:podman pull quay.io/openshift-release-dev/ocp-release@sha256:e2044c3cfebe0ff3a99fc207ac5efe6e07878ad59fd4ad5e41f88cb016dacd73
+                   Digest: sha256:e2044c3cfebe0ff3a99fc207ac5efe6e07878ad59fd4ad5e41f88cb016dacd73
+```
+
+
+# Updating with a RHCOS custom layered image
+
+When you configure Red Hat Enterprise Linux CoreOS (RHCOS) image layering, Red Hat OpenShift Container Platform no longer automatically updates the node pool that uses the custom layered image. You become responsible to manually update your nodes as appropriate.
+
+To update a node that uses a custom layered image, follow these general steps:
+
+1. The cluster automatically upgrades to version x.y.z+1, except for the nodes that use the custom layered image.
+2. You could then create a new Containerfile that references the updated Red Hat OpenShift Container Platform image and the RPM that you had previously applied.
+3. Create a new machine config that points to the updated custom layered image.
+
+Updating a node with a custom layered image is not required. However, if that node gets too far behind the current Red Hat OpenShift Container Platform version, you could experience unexpected results.

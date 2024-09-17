@@ -1,0 +1,408 @@
+# Telco RAN DU 4.17 reference design components
+
+
+The following sections describe the various Red Hat OpenShift Container Platform components and configurations that you use to configure and deploy clusters to run RAN DU workloads.
+
+# Host firmware tuning
+
+New in this release:: 
+* No reference design updates in this release
+Description:: Configure system level performance.
+See Configuring host firmware for low latency and high performance for recommended settings.
+
+If Ironic inspection is enabled, the firmware setting values are available from the per-cluster BareMetalHost CR on the hub cluster.
+You enable Ironic inspection with a label in the spec.clusters.nodes field in the SiteConfig CR that you use to install the cluster.
+For example:
+
+```yaml
+nodes:
+  - hostName: "example-node1.example.com"
+    ironicInspect: "enabled"
+```
+
+
+[NOTE]
+----
+The telco RAN DU reference SiteConfig does not enable the ironicInspect field by default.
+----
+Limits and requirements:: 
+* Hyperthreading must be enabled
+Engineering considerations:: 
+* Tune all settings for maximum performance
+
+[NOTE]
+----
+You can tune firmware selections for power savings at the expense of performance as required.
+----
+
+# Node Tuning Operator
+
+New in this release:: 
+* With this release, the Node Tuning Operator supports setting CPU frequencies in the PerformanceProfile for reserved and isolated core CPUs.
+This is an optional feature that you can use to define specific frequencies. Use this feature to set specific frequencies by enabling the intel_pstate CPUFreq driver in the Intel hardware. You must follow Intel's recommendations on frequencies for FlexRAN-like applications, which requires the default CPU frequency to be set to a lower value than default running frequency.
+* Previously, for the RAN DU-profile, setting the realTime workload hint to true in the PerformanceProfile always disabled the intel_pstate.
+With this release, the Node Tuning Operator detects the underlying Intel hardware using TuneD and appropriately sets the intel_pstate kernel parameter based on the processor's generation.
+* In this release, Red Hat OpenShift Container Platform deployments with a performance profile now default to using cgroups v2 as the underlying resource management layer. If you run workloads that are not ready for this change, you can still revert to using the older cgroups v1 mechanism.
+Description:: You tune the cluster performance by creating a performance profile.
+Settings that you configure with a performance profile include:
+* Selecting the realtime or non-realtime kernel.
+* Allocating cores to a reserved or isolated cpuset.
+Red Hat OpenShift Container Platform processes allocated to the management workload partition are pinned to reserved set.
+* Enabling kubelet features (CPU manager, topology manager, and memory manager).
+* Configuring huge pages.
+* Setting additional kernel arguments.
+* Setting per-core power tuning and max CPU frequency.
+* Reserved and isolated core frequency tuning.
+Limits and requirements:: The Node Tuning Operator uses the PerformanceProfile CR to configure the cluster. You need to configure the following settings in the RAN DU profile PerformanceProfile CR:
+* Select reserved and isolated cores and ensure that you allocate at least 4 hyperthreads (equivalent to 2 cores) on Intel 3rd Generation Xeon (Ice Lake) 2.20 GHz CPUs or better with firmware tuned for maximum performance.
+* Set the reserved cpuset to include both hyperthread siblings for each included core.
+Unreserved cores are available as allocatable CPU for scheduling workloads.
+Ensure that hyperthread siblings are not split across reserved and isolated cores.
+* Configure reserved and isolated CPUs to include all threads in all cores based on what you have set as reserved and isolated CPUs.
+* Set core 0 of each NUMA node to be included in the reserved CPU set.
+* Set the huge page size to 1G.
+
+
+[NOTE]
+----
+You should not add additional workloads to the management partition.
+Only those pods which are part of the OpenShift management platform should be annotated into the management partition.
+----
+
+Engineering considerations:: 
+* You should use the RT kernel to meet performance requirements.
+
+[NOTE]
+----
+You can use the non-RT kernel if required.
+----
+* The number of huge pages that you configure depends on the application workload requirements.
+Variation in this parameter is expected and allowed.
+* Variation is expected in the configuration of reserved and isolated CPU sets based on selected hardware and additional components in use on the system.
+Variation must still meet the specified limits.
+* Hardware without IRQ affinity support impacts isolated CPUs.
+To ensure that pods with guaranteed whole CPU QoS have full use of the allocated CPU, all hardware in the server must support IRQ affinity.
+For more information, see About support of IRQ affinity setting.
+
+
+[IMPORTANT]
+----
+{FeatureName} is a deprecated feature. Deprecated functionality is still included in Red Hat OpenShift Container Platform and continues to be supported; however, it will be removed in a future release of this product and is not recommended for new deployments.
+For the most recent list of major functionality that has been deprecated or removed within Red Hat OpenShift Container Platform, refer to the Deprecated and removed features section of the Red Hat OpenShift Container Platform release notes.
+----
+
+# PTP Operator
+
+New in this release:: 
+* Configuring linuxptp services as grandmaster clock (T-GM) for dual Intel E810 Westport Channel NICs is now a generally available feature.
+* You can configure the linuxptp services ptp4l and phc2sys as a highly available (HA) system clock for dual PTP boundary clocks (T-BC).
+Description:: See PTP timing for details of support and configuration of PTP in cluster nodes.
+The DU node can run in the following modes:
+* As an ordinary clock (OC) synced to a grandmaster clock or boundary clock (T-BC)
+* As a grandmaster clock synced from GPS with support for single or dual card E810 Westport Channel NICs.
+* As dual boundary clocks (one per NIC) with support for E810 Westport Channel NICs
+* Allow for High Availability of the system clock when there are multiple time sources on different NICs.
+* Optional: as a boundary clock for radio units (RUs)
+Events and metrics for grandmaster clocks are a Tech Preview feature added in the 4.14 telco RAN DU RDS. For more information see Using the PTP hardware fast event notifications framework.
+You can subscribe applications to PTP events that happen on the node where the DU application is running.
+Limits and requirements:: 
+* Limited to two boundary clocks for dual NIC and HA
+* Limited to two WPC card configuration for T-GM
+Engineering considerations:: 
+* Configurations are provided for ordinary clock, boundary clock, grandmaster clock, or PTP-HA
+* PTP fast event notifications uses ConfigMap CRs to store PTP event subscriptions
+* Use Intel E810-XXV-4T Westport Channel NICs for PTP grandmaster clocks with GPS timing, minimum firmware version 4.40
+
+# SR-IOV Operator
+
+New in this release:: 
+* With this release, you can use the SR-IOV Network Operator to configure QinQ (802.1ad and 802.1q) tagging. QinQ tagging provides efficient traffic management by enabling the use of both inner and outer VLAN tags. Outer VLAN tagging is hardware accelerated, leading to faster network performance. The update extends beyond the SR-IOV Network Operator itself. You can now configure QinQ on externally managed VFs by setting the outer VLAN tag using nmstate. QinQ support varies across different NICs. For a comprehensive list of known limitations for specific NIC models, see Configuring QinQ support for SR-IOV enabled workloads in the Additional resources section.
+* With this release, you can configure the SR-IOV Network Operator to drain nodes in parallel during network policy updates, dramatically accelerating the setup process. This translates to significant time savings, especially for large cluster deployments that previously took hours or even days to complete.
+Description:: The SR-IOV Operator provisions and configures the SR-IOV CNI and device plugins.
+Both netdevice (kernel VFs) and vfio (DPDK) devices are supported.
+Limits and requirements:: 
+* Use Red Hat OpenShift Container Platform supported devices
+* SR-IOV and IOMMU enablement in BIOS: The SR-IOV Network Operator will automatically enable IOMMU on the kernel command line.
+* SR-IOV VFs do not receive link state updates from the PF. If link down detection is needed you must configure this at the protocol level.
+* You can apply multi-network policies on netdevice drivers types only. Multi-network policies require the iptables tool, which cannot manage vfio driver types.
+Engineering considerations:: 
+* SR-IOV interfaces with the vfio driver type are typically used to enable additional secondary networks for applications that require high throughput or low latency.
+* Customer variation on the configuration and number of SriovNetwork and SriovNetworkNodePolicy custom resources (CRs) is expected.
+* IOMMU kernel command line settings are applied with a MachineConfig CR at install time. This ensures that the SriovOperator CR does not cause a reboot of the node when adding them.
+* SR-IOV support for draining nodes in parallel is not applicable in a single-node OpenShift cluster.
+* If you exclude the SriovOperatorConfig CR from your deployment, the CR will not be created automatically.
+* In scenarios where you pin or restrict workloads to specific nodes, the SR-IOV parallel node drain feature will not result in the rescheduling of pods. In these scenarios, the SR-IOV Operator disables the parallel node drain functionality.
+
+* Preparing the GitOps ZTP site configuration repository for version independence
+* Configuring QinQ support for SR-IOV enabled workloads
+
+# Logging
+
+New in this release:: 
+* No reference design updates in this release
+Description:: Use logging to collect logs from the far edge node for remote analysis. The recommended log collector is Vector.
+Engineering considerations:: 
+* Handling logs beyond the infrastructure and audit logs, for example, from the application workload requires additional CPU and network bandwidth based on additional logging rate.
+* As of Red Hat OpenShift Container Platform 4.14, Vector is the reference log collector.
+
+[NOTE]
+----
+Use of fluentd in the RAN use model is deprecated.
+----
+
+# SRIOV-FEC Operator
+
+New in this release:: 
+* No reference design updates in this release
+Description:: SRIOV-FEC Operator is an optional 3rd party Certified Operator supporting FEC accelerator hardware.
+Limits and requirements:: 
+* Starting with FEC Operator v2.7.0:
+* SecureBoot is supported
+* The vfio driver for the PF requires the usage of vfio-token that is injected into Pods.
+Applications in the pod can pass the VF token to DPDK by using the EAL parameter --vfio-vf-token.
+Engineering considerations:: 
+* The SRIOV-FEC Operator uses CPU cores from the isolated CPU set.
+* You can validate FEC readiness as part of the pre-checks for application deployment, for example, by extending the validation policy.
+
+# Local Storage Operator
+
+New in this release:: 
+* No reference design updates in this release
+Description:: You can create persistent volumes that can be used as PVC resources by applications with the Local Storage Operator.
+The number and type of PV resources that you create depends on your requirements.
+Engineering considerations:: 
+* Create backing storage for PV CRs before creating the PV.
+This can be a partition, a local volume, LVM volume, or full disk.
+* Refer to the device listing in LocalVolume CRs by the hardware path used to access each device to ensure correct allocation of disks and partitions.
+Logical names (for example, /dev/sda) are not guaranteed to be consistent across node reboots.
+
+For more information, see the RHEL 9 documentation on device identifiers.
+
+# LVMS Operator
+
+New in this release:: 
+* No reference design updates in this release
+
+
+[NOTE]
+----
+LVMS Operator is an optional component.
+When you use the LVMS Operator as the storage solution, it replaces the Local Storage Operator, and the CPU required will be assigned to the management partition as platform overhead. The reference configuration must include one of these storage solutions but not both.
+----
+
+Description:: The LVMS Operator provides dynamic provisioning of block and file storage.
+The LVMS Operator creates logical volumes from local devices that can be used as PVC resources by applications.
+Volume expansion and snapshots are also possible.
+
+The following example configuration creates a vg1 volume group that leverages all available disks on the node except the installation disk:
+StorageLVMCluster.yaml
+
+```yaml
+apiVersion: lvm.topolvm.io/v1alpha1
+kind: LVMCluster
+metadata:
+  name: storage-lvmcluster
+  namespace: openshift-storage
+  annotations:
+    ran.openshift.io/ztp-deploy-wave: "10"
+spec:
+  storage:
+    deviceClasses:
+    - name: vg1
+      thinPoolConfig:
+        name: thin-pool-1
+        sizePercent: 90
+        overprovisionRatio: 10
+```
+
+Limits and requirements:: 
+* In single-node OpenShift clusters, persistent storage must be provided by either LVMS or local storage, not both.
+Engineering considerations:: 
+* Ensure that sufficient disks or partitions are available for storage requirements.
+
+# Workload partitioning
+
+New in this release:: 
+* No reference design updates in this release
+Description:: Workload partitioning pins OpenShift platform and Day 2 Operator pods that are part of the DU profile to the reserved cpuset and removes the reserved CPU from node accounting.
+This leaves all unreserved CPU cores available for user workloads.
+
+The method of enabling and configuring workload partitioning changed in Red Hat OpenShift Container Platform 4.14.
+4.14 and later:: 
+* Configure partitions by setting installation parameters:
+
+```yaml
+cpuPartitioningMode: AllNodes
+```
+
+* Configure management partition cores with the reserved CPU set in the PerformanceProfile CR
+4.13 and earlier:: 
+* Configure partitions with extra MachineConfiguration CRs applied at install-time
+Limits and requirements:: 
+* Namespace and Pod CRs must be annotated to allow the pod to be applied to the management partition
+* Pods with CPU limits cannot be allocated to the partition.
+This is because mutation can change the pod QoS.
+* For more information about the minimum number of CPUs that can be allocated to the management partition, see Node Tuning Operator.
+Engineering considerations:: 
+* Workload Partitioning pins all management pods to reserved cores.
+A sufficient number of cores must be allocated to the reserved set to account for operating system, management pods, and expected spikes in CPU use that occur when the workload starts, the node reboots, or other system events happen.
+
+# Cluster tuning
+
+New in this release:: 
+* No reference design updates in this release
+Description:: See the section Cluster capabilities section for a full list of optional components that you enable or disable before installation.
+Limits and requirements:: 
+* Cluster capabilities are not available for installer-provisioned installation methods.
+* You must apply all platform tuning configurations.
+The following table lists the required platform tuning configurations:
+Cluster capabilities configurations
+
+Engineering considerations:: 
+* In this release, Red Hat OpenShift Container Platform deployments use Control Groups version 2 (cgroup v2) by default. As a consequence, performance profiles in a cluster use cgroups v2 for the underlying resource management layer. If workloads running on the cluster require cgroups v1, you can configure nodes to use cgroups v1. You can make this configuration as part of the initial cluster deployment.
+
+# Machine configuration
+
+New in this release:: 
+* No reference design updates in this release
+Limits and requirements:: 
+* The CRI-O wipe disable MachineConfig assumes that images on disk are static other than during scheduled maintenance in defined maintenance windows.
+To ensure the images are static, do not set the pod imagePullPolicy field to Always.
+Machine configuration options
+
+
+# Lifecycle Agent
+
+New in this release:: 
+* Use the Lifecycle Agent to enable image-based upgrades for single-node OpenShift clusters.
+Description:: The Lifecycle Agent provides local lifecycle management services for single-node OpenShift clusters.
+Limits and requirements:: 
+* The Lifecycle Agent is not applicable in multi-node clusters or single-node OpenShift clusters with an additional worker.
+* Requires a persistent volume.
+
+* Understanding the image-based upgrade for single-node OpenShift clusters
+
+# Reference design deployment components
+
+The following sections describe the various Red Hat OpenShift Container Platform components and configurations that you use to configure the hub cluster with Red Hat Advanced Cluster Management (RHACM).
+
+## Red Hat Advanced Cluster Management (RHACM)
+
+New in this release:: 
+* You can now use PolicyGenerator resources and Red Hat Advanced Cluster Management (RHACM) to deploy polices for managed clusters with GitOps ZTP. This is a Technology Preview feature.
+Description:: RHACM provides Multi Cluster Engine (MCE) installation and ongoing lifecycle management functionality for deployed clusters.
+You declaratively specify configurations and upgrades with Policy CRs and apply the policies to clusters with the RHACM policy controller as managed by Topology Aware Lifecycle Manager.
+* GitOps Zero Touch Provisioning (ZTP) uses the MCE feature of RHACM
+* Configuration, upgrades, and cluster status are managed with the RHACM policy controller
+During installation RHACM can apply labels to individual nodes as configured in the SiteConfig custom resource (CR).
+Limits and requirements:: 
+* A single hub cluster supports up to 3500 deployed single-node OpenShift clusters with 5 Policy CRs bound to each cluster.
+Engineering considerations:: 
+* Use RHACM policy hub-side templating to better scale cluster configuration.
+You can significantly reduce the number of policies by using a single group policy or small number of general group policies where the group and per-cluster values are substituted into templates.
+* Cluster specific configuration: managed clusters typically have some number of configuration values that are specific to the individual cluster.
+These configurations should be managed using RHACM policy hub-side templating with values pulled from ConfigMap CRs based on the cluster name.
+* To save CPU resources on managed clusters, policies that apply static configurations should be unbound from managed clusters after GitOps ZTP installation of the cluster.
+
+## Topology Aware Lifecycle Manager (TALM)
+
+New in this release:: 
+* No reference design updates in this release
+Description:: 
+Managed updates:: TALM is an Operator that runs only on the hub cluster for managing how changes (including cluster and Operator upgrades, configuration, and so on) are rolled out to the network.
+TALM does the following:
+* Progressively applies updates to fleets of clusters in user-configurable batches by using Policy CRs.
+* Adds ztp-done labels or other user configurable labels on a per-cluster basis
+Precaching for single-node OpenShift clusters:: TALM supports optional precaching of Red Hat OpenShift Container Platform, OLM Operator, and additional user images to single-node OpenShift clusters before initiating an upgrade.
+* A PreCachingConfig custom resource is available for specifying optional pre-caching configurations.
+For example:
+
+```yaml
+apiVersion: ran.openshift.io/v1alpha1
+kind: PreCachingConfig
+metadata:
+  name: example-config
+  namespace: example-ns
+spec:
+  additionalImages:
+    - quay.io/foobar/application1@sha256:3d5800990dee7cd4727d3fe238a97e2d2976d3808fc925ada29c559a47e2e
+    - quay.io/foobar/application2@sha256:3d5800123dee7cd4727d3fe238a97e2d2976d3808fc925ada29c559a47adf
+    - quay.io/foobar/applicationN@sha256:4fe1334adfafadsf987123adfffdaf1243340adfafdedga0991234afdadfs
+  spaceRequired: 45 GiB 1
+  overrides:
+    preCacheImage: quay.io/test_images/pre-cache:latest
+    platformImage: quay.io/openshift-release-dev/ocp-release@sha256:3d5800990dee7cd4727d3fe238a97e2d2976d3808fc925ada29c559a47e2e
+  operatorsIndexes:
+    - registry.example.com:5000/custom-redhat-operators:1.0.0
+  operatorsPackagesAndChannels:
+    - local-storage-operator: stable
+    - ptp-operator: stable
+    - sriov-network-operator: stable
+  excludePrecachePatterns: 2
+    - aws
+    - vsphere
+```
+
+Configurable space-required parameter allows you to validate before and after pre-caching storage space
+Configurable filtering allows exclusion of unused images
+Limits and requirements:: 
+* TALM supports concurrent cluster deployment in batches of 400
+* Precaching and backup features are for single-node OpenShift clusters only.
+Engineering considerations:: 
+* The PreCachingConfig CR is optional and does not need to be created if you just wants to precache platform related (OpenShift and OLM Operator) images.
+The PreCachingConfig CR must be applied before referencing it in the ClusterGroupUpgrade CR.
+
+## GitOps and GitOps ZTP plugins
+
+New in this release:: 
+* No reference design updates in this release
+Description:: GitOps and GitOps ZTP plugins provide a GitOps-based infrastructure for managing cluster deployment and configuration.
+Cluster definitions and configurations are maintained as a declarative state in Git.
+ZTP plugins provide support for generating installation CRs from the SiteConfig CR and automatic wrapping of configuration CRs in policies based on PolicyGenTemplate CRs.
+
+You can deploy and manage multiple versions of Red Hat OpenShift Container Platform on managed clusters using the baseline reference configuration CRs.
+You can also use custom CRs alongside the baseline CRs.
+Limits:: 
+* 300 SiteConfig CRs per ArgoCD application.
+You can use multiple applications to achieve the maximum number of clusters supported by a single hub cluster.
+* Content in the /source-crs folder in Git overrides content provided in the GitOps ZTP plugin container.
+Git takes precedence in the search path.
+* Add the /source-crs folder in the same directory as the kustomization.yaml file, which includes the PolicyGenTemplate as a generator.
+
+[NOTE]
+----
+Alternative locations for the /source-crs directory are not supported in this context.
+----
+Engineering considerations:: 
+* To avoid confusion or unintentional overwriting of files when updating content, use unique and distinguishable names for user-provided CRs in the /source-crs folder and extra manifests in Git.
+* The SiteConfig CR allows multiple extra-manifest paths. When files with the same name are found in multiple directory paths, the last file found takes precedence.
+This allows you to put the full set of version-specific Day 0 manifests (extra-manifests) in Git and reference them from the SiteConfig CR.
+With this feature, you can deploy multiple Red Hat OpenShift Container Platform versions to managed clusters simultaneously.
+* The extraManifestPath field of the SiteConfig CR is deprecated from Red Hat OpenShift Container Platform 4.15 and later.
+Use the new extraManifests.searchPaths field instead.
+
+* Preparing the GitOps ZTP site configuration repository for version independence
+* Adding custom content to the GitOps ZTP pipeline
+
+## Agent-based installer
+
+New in this release:: 
+* No reference design updates in this release
+Description:: Agent-based installer (ABI) provides installation capabilities without centralized infrastructure.
+The installation program creates an ISO image that you mount to the server.
+When the server boots it installs Red Hat OpenShift Container Platform and supplied extra manifests.
+
+[NOTE]
+----
+You can also use ABI to install Red Hat OpenShift Container Platform clusters without a hub cluster.
+An image registry is still required when you use ABI in this manner.
+----
+
+Agent-based installer (ABI) is an optional component.
+
+Limits and requirements:: 
+* You can supply a limited set of additional manifests at installation time.
+* You must include MachineConfiguration CRs that are required by the RAN DU use case.
+Engineering considerations:: 
+* ABI provides a baseline Red Hat OpenShift Container Platform installation.
+* You install Day 2 Operators and the remainder of the RAN DU use case configurations after installation.

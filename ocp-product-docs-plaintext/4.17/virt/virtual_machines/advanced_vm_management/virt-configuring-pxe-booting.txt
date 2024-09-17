@@ -1,0 +1,170 @@
+# Configuring PXE booting for virtual machines
+
+
+PXE booting, or network booting, is available in OpenShift Virtualization.
+Network booting allows a computer to boot and load an
+operating system or other program without requiring a locally attached
+storage device. For example, you can use it to choose your desired OS
+image from a PXE server when deploying a new host.
+
+# Prerequisites
+
+* A Linux bridge must be connected.
+* The PXE server must be connected to the same VLAN as the bridge.
+
+# PXE booting with a specified MAC address
+
+As an administrator, you can boot a client over the network by first creating a NetworkAttachmentDefinition object for your PXE network.
+Then, reference the network attachment definition in your virtual machine instance configuration file before you start the virtual machine instance.
+You can also specify a MAC address in the virtual machine instance configuration file, if required by the PXE server.
+
+* A Linux bridge must be connected.
+* The PXE server must be connected to the same VLAN as the bridge.
+
+1. Configure a PXE network on the cluster:
+1. Create the network attachment definition file for PXE network pxe-net-conf:
+
+```yaml
+apiVersion: "k8s.cni.cncf.io/v1"
+kind: NetworkAttachmentDefinition
+metadata:
+  name: pxe-net-conf
+spec:
+  config: '{
+    "cniVersion": "0.3.1",
+    "name": "pxe-net-conf",
+    "plugins": [
+      {
+        "type": "cnv-bridge",
+        "bridge": "br1",
+        "vlan": 1 1
+      },
+      {
+        "type": "cnv-tuning" 2
+      }
+    ]
+  }'
+```
+
+Optional: The VLAN tag.
+The cnv-tuning plugin provides support for custom MAC addresses.
+
+[NOTE]
+----
+The virtual machine instance will be attached to the bridge br1 through an access port with the requested VLAN.
+----
+2. Create the network attachment definition by using the file you created in the previous step:
+
+```terminal
+$ oc create -f pxe-net-conf.yaml
+```
+
+3. Edit the virtual machine instance configuration file to include the details of the interface and network.
+1. Specify the network and MAC address, if required by the PXE server.
+If the MAC address is not specified, a value is assigned automatically.
+
+Ensure that bootOrder is set to 1 so that the interface boots first.
+In this example, the interface is connected to a network called
+<pxe-net>:
+
+```yaml
+interfaces:
+- masquerade: {}
+  name: default
+- bridge: {}
+  name: pxe-net
+  macAddress: de:00:00:00:00:de
+  bootOrder: 1
+```
+
+
+[NOTE]
+----
+Boot order is global for interfaces and disks.
+----
+2. Assign a boot device number to the disk to ensure proper booting after operating system provisioning.
+
+Set the disk bootOrder value to 2:
+
+```yaml
+devices:
+  disks:
+  - disk:
+      bus: virtio
+    name: containerdisk
+    bootOrder: 2
+```
+
+3. Specify that the network is connected to the previously created network attachment definition. In this scenario, <pxe-net> is connected to the network attachment definition called <pxe-net-conf>:
+
+```yaml
+networks:
+- name: default
+  pod: {}
+- name: pxe-net
+  multus:
+    networkName: pxe-net-conf
+```
+
+4. Create the virtual machine instance:
+
+```terminal
+$ oc create -f vmi-pxe-boot.yaml
+```
+
+Example output
+
+```terminal
+  virtualmachineinstance.kubevirt.io "vmi-pxe-boot" created
+```
+
+5. Wait for the virtual machine instance to run:
+
+```terminal
+$ oc get vmi vmi-pxe-boot -o yaml | grep -i phase
+  phase: Running
+```
+
+6. View the virtual machine instance using VNC:
+
+```terminal
+$ virtctl vnc vmi-pxe-boot
+```
+
+7. Watch the boot screen to verify that the PXE boot is successful.
+8. Log in to the virtual machine instance:
+
+```terminal
+$ virtctl console vmi-pxe-boot
+```
+
+
+1. Verify the interfaces and MAC address on the virtual machine and that the interface connected to the bridge has the specified MAC address.
+In this case, we used eth1 for the PXE boot, without an IP address. The other interface, eth0, got an IP address from Red Hat OpenShift Container Platform.
+
+```terminal
+$ ip addr
+```
+
+Example output
+
+```terminal
+...
+3. eth1: <BROADCAST,MULTICAST> mtu 1500 qdisc noop state DOWN group default qlen 1000
+   link/ether de:00:00:00:00:de brd ff:ff:ff:ff:ff:ff
+```
+
+
+# OpenShift Virtualization networking glossary
+
+The following terms are used throughout OpenShift Virtualization documentation:
+
+Container Network Interface (CNI):: A Cloud Native Computing Foundation
+project, focused on container network connectivity.
+OpenShift Virtualization uses CNI plugins to build upon the basic Kubernetes networking functionality.
+Multus:: A "meta" CNI plugin that allows multiple CNIs to exist so that a pod or virtual machine can use the interfaces it needs.
+Custom resource definition (CRD):: A Kubernetes
+API resource that allows you to define custom resources, or an object defined by using the CRD API resource.
+Network attachment definition (NAD):: A CRD introduced by the Multus project that allows you to attach pods, virtual machines, and virtual machine instances to one or more networks.
+Node network configuration policy (NNCP):: A CRD introduced by the nmstate project, describing the requested network configuration on nodes.
+You update the node network configuration, including adding and removing interfaces, by applying a NodeNetworkConfigurationPolicy manifest to the cluster.

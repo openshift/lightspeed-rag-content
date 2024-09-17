@@ -1,0 +1,216 @@
+# Configuring the OpenShift API for Data Protection with OpenShift Virtualization
+
+
+You can install the OpenShift API for Data Protection (OADP) with OpenShift Virtualization by installing the OADP Operator and configuring a backup location. Then, you can install the Data Protection Application.
+Back up and restore virtual machines by using the OpenShift API for Data Protection.
+
+[NOTE]
+----
+OpenShift API for Data Protection with OpenShift Virtualization supports the following backup and restore storage options:
+* Container Storage Interface (CSI) backups
+* Container Storage Interface (CSI) backups with DataMover
+The following storage options are excluded:
+* File system backup and restore
+* Volume snapshot backups and restores
+For more information, see Backing up applications with File System Backup: Kopia or Restic.
+----
+To install the OADP Operator in a restricted network environment, you must first disable the default OperatorHub sources and mirror the Operator catalog. See Using Operator Lifecycle Manager on restricted networks for details.
+
+# Installing and configuring OADP with OpenShift Virtualization
+
+As a cluster administrator, you install OADP by installing the OADP Operator.
+
+The latest version of the OADP Operator installs Velero 1.14.
+
+* Access to the cluster as a user with the cluster-admin role.
+
+1. Install the OADP Operator according to the instructions for your storage provider.
+2. Install the Data Protection Application (DPA) with the kubevirt and openshift OADP plugins.
+3. Back up virtual machines by creating a Backup custom resource (CR).
+
+[WARNING]
+----
+Red Hat support is limited to only the following options:
+* CSI backups
+* CSI backups with DataMover.
+----
+
+You restore the Backup CR by creating a Restore CR.
+
+* OADP plugins
+* Backup custom resource (CR)
+* Restore CR
+* Using Operator Lifecycle Manager on restricted networks
+
+# Installing the Data Protection Application 1.3
+
+You install the Data Protection Application (DPA) by creating an instance of the DataProtectionApplication API.
+
+* You must install the OADP Operator.
+* You must configure object storage as a backup location.
+* If you use snapshots to back up PVs, your cloud provider must support either a native snapshot API or Container Storage Interface (CSI) snapshots.
+* If the backup and snapshot locations use the same credentials, you must create a Secret with the default name, cloud-credentials.
+
+[NOTE]
+----
+If you do not want to specify backup or snapshot locations during the installation, you can create a default Secret with an empty credentials-velero file. If there is no default Secret, the installation will fail.
+----
+
+1. Click Operators -> Installed Operators and select the OADP Operator.
+2. Under Provided APIs, click Create instance in the DataProtectionApplication box.
+3. Click YAML View and update the parameters of the DataProtectionApplication manifest:
+
+```yaml
+apiVersion: oadp.openshift.io/v1alpha1
+kind: DataProtectionApplication
+metadata:
+  name: <dpa_sample>
+  namespace: openshift-adp 1
+spec:
+  configuration:
+    velero:
+      defaultPlugins:
+        - kubevirt 2
+        - gcp 3
+        - csi 4
+        - openshift 5
+      resourceTimeout: 10m 6
+    nodeAgent: 7
+      enable: true 8
+      uploaderType: kopia 9
+      podConfig:
+        nodeSelector: <node_selector> 10
+  backupLocations:
+    - velero:
+        provider: gcp 11
+        default: true
+        credential:
+          key: cloud
+          name: <default_secret> 12
+        objectStorage:
+          bucket: <bucket_name> 13
+          prefix: <prefix> 14
+```
+
+The default namespace for OADP is openshift-adp. The namespace is a variable and is configurable.
+The kubevirt plugin is mandatory for OpenShift Virtualization.
+Specify the plugin for the backup provider, for example, gcp, if it exists.
+The csi plugin is mandatory for backing up PVs with CSI snapshots. The csi plugin uses the Velero CSI beta snapshot APIs. You do not need to configure a snapshot location.
+The openshift plugin is mandatory.
+Specify how many minutes to wait for several Velero resources before timeout occurs, such as Velero CRD availability, volumeSnapshot deletion, and backup repository availability. The default is 10m.
+The administrative agent that routes the administrative requests to servers.
+Set this value to true if you want to enable nodeAgent and perform File System Backup.
+Enter kopia as your uploader to use the Built-in DataMover. The nodeAgent deploys a daemon set, which means that the nodeAgent pods run on each working node. You can configure File System Backup by adding spec.defaultVolumesToFsBackup: true to the Backup CR.
+Specify the nodes on which Kopia are available. By default, Kopia runs on all nodes.
+Specify the backup provider.
+Specify the correct default name for the Secret, for example, cloud-credentials-gcp, if you use a default plugin for the backup provider. If specifying a custom name, then the custom name is used for the backup location. If you do not specify a Secret name, the default name is used.
+Specify a bucket as the backup storage location. If the bucket is not a dedicated bucket for Velero backups, you must specify a prefix.
+Specify a prefix for Velero backups, for example, velero, if the bucket is used for multiple purposes.
+4. Click Create.
+
+1. Verify the installation by viewing the OpenShift API for Data Protection (OADP) resources by running the following command:
+
+```terminal
+$ oc get all -n openshift-adp
+```
+
+Example output
+
+```
+NAME                                                     READY   STATUS    RESTARTS   AGE
+pod/oadp-operator-controller-manager-67d9494d47-6l8z8    2/2     Running   0          2m8s
+pod/node-agent-9cq4q                                     1/1     Running   0          94s
+pod/node-agent-m4lts                                     1/1     Running   0          94s
+pod/node-agent-pv4kr                                     1/1     Running   0          95s
+pod/velero-588db7f655-n842v                              1/1     Running   0          95s
+
+NAME                                                       TYPE        CLUSTER-IP       EXTERNAL-IP   PORT(S)    AGE
+service/oadp-operator-controller-manager-metrics-service   ClusterIP   172.30.70.140    <none>        8443/TCP   2m8s
+service/openshift-adp-velero-metrics-svc                   ClusterIP   172.30.10.0      <none>        8085/TCP   8h
+
+NAME                        DESIRED   CURRENT   READY   UP-TO-DATE   AVAILABLE   NODE SELECTOR   AGE
+daemonset.apps/node-agent    3         3         3       3            3           <none>          96s
+
+NAME                                                READY   UP-TO-DATE   AVAILABLE   AGE
+deployment.apps/oadp-operator-controller-manager    1/1     1            1           2m9s
+deployment.apps/velero                              1/1     1            1           96s
+
+NAME                                                           DESIRED   CURRENT   READY   AGE
+replicaset.apps/oadp-operator-controller-manager-67d9494d47    1         1         1       2m9s
+replicaset.apps/velero-588db7f655                              1         1         1       96s
+```
+
+2. Verify that the DataProtectionApplication (DPA) is reconciled by running the following command:
+
+```terminal
+$ oc get dpa dpa-sample -n openshift-adp -o jsonpath='{.status}'
+```
+
+Example output
+
+```yaml
+{"conditions":[{"lastTransitionTime":"2023-10-27T01:23:57Z","message":"Reconcile complete","reason":"Complete","status":"True","type":"Reconciled"}]}
+```
+
+3. Verify the type is set to Reconciled.
+4. Verify the backup storage location and confirm that the PHASE is Available by running the following command:
+
+```terminal
+$ oc get backupStorageLocation -n openshift-adp
+```
+
+Example output
+
+```yaml
+NAME           PHASE       LAST VALIDATED   AGE     DEFAULT
+dpa-sample-1   Available   1s               3d16h   true
+```
+
+
+## Configuring node agents and node labels
+
+The DPA of OADP uses the nodeSelector field to select which nodes can run the node agent. The nodeSelector field is the simplest recommended form of node selection constraint.
+
+Any label specified must match the labels on each node.
+
+The correct way to run the node agent on any node you choose is for you to label the nodes with a custom label:
+
+
+```terminal
+$ oc label node/<node_name> node-role.kubernetes.io/nodeAgent=""
+```
+
+
+Use the same custom label in the DPA.spec.configuration.nodeAgent.podConfig.nodeSelector, which you used for labeling nodes. For example:
+
+
+```terminal
+configuration:
+  nodeAgent:
+    enable: true
+    podConfig:
+      nodeSelector:
+        node-role.kubernetes.io/nodeAgent: ""
+```
+
+
+The following example is an anti-pattern of nodeSelector and does not work unless both labels, 'node-role.kubernetes.io/infra: ""' and 'node-role.kubernetes.io/worker: ""', are on the node:
+
+
+```terminal
+    configuration:
+      nodeAgent:
+        enable: true
+        podConfig:
+          nodeSelector:
+            node-role.kubernetes.io/infra: ""
+            node-role.kubernetes.io/worker: ""
+```
+
+
+
+[IMPORTANT]
+----
+Red Hat only supports the combination of OADP versions 1.3.0 and later, and OpenShift Virtualization versions 4.14 and later.
+OADP versions before 1.3.0 are not supported for back up and restore of OpenShift Virtualization.
+----

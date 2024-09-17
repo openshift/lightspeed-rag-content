@@ -1,0 +1,578 @@
+# Operator SDK tutorial for Helm-based Operators
+
+
+Operator developers can take advantage of Helm support in the Operator SDK to build an example Helm-based Operator for Nginx and manage its lifecycle. This tutorial walks through the following process:
+* Create a Nginx deployment
+* Ensure that the deployment size is the same as specified by the Nginx custom resource (CR) spec
+* Update the Nginx CR status using the status writer with the names of the nginx pods
+
+[IMPORTANT]
+----
+The Red Hat-supported version of the Operator SDK CLI tool, including the related scaffolding and testing tools for Operator projects, is deprecated and is planned to be removed in a future release of Red Hat OpenShift Container Platform. Red Hat will provide bug fixes and support for this feature during the current release lifecycle, but this feature will no longer receive enhancements and will be removed from future Red Hat OpenShift Container Platform releases.
+The Red Hat-supported version of the Operator SDK is not recommended for creating new Operator projects. Operator authors with existing Operator projects can use the version of the Operator SDK CLI tool released with Red Hat OpenShift Container Platform 4.17 to maintain their projects and create Operator releases targeting newer versions of Red Hat OpenShift Container Platform.
+The following related base images for Operator projects are not deprecated. The runtime functionality and configuration APIs for these base images are still supported for bug fixes and for addressing CVEs.
+* The base image for Ansible-based Operator projects
+* The base image for Helm-based Operator projects
+For the most recent list of major functionality that has been deprecated or removed within Red Hat OpenShift Container Platform, refer to the Deprecated and removed features section of the Red Hat OpenShift Container Platform release notes.
+For information about the unsupported, community-maintained, version of the Operator SDK, see Operator SDK (Operator Framework).
+----
+This process is accomplished using two centerpieces of the Operator Framework:
+Operator SDK:: The operator-sdk CLI tool and controller-runtime library API
+Operator Lifecycle Manager (OLM):: Installation, upgrade, and role-based access control (RBAC) of Operators on a cluster
+
+[NOTE]
+----
+This tutorial goes into greater detail than Getting started with Operator SDK for Helm-based Operators.
+----
+
+# Prerequisites
+
+* Operator SDK CLI installed
+* OpenShift CLI (oc) 4.17+ installed
+* Logged into an Red Hat OpenShift Container Platform 4.17 cluster with oc with an account that has cluster-admin permissions
+* To allow the cluster to pull the image, the repository where you push your image must be set as public, or you must configure an image pull secret
+
+* Installing the Operator SDK CLI
+* Getting started with the OpenShift CLI
+
+# Creating a project
+
+Use the Operator SDK CLI to create a project called {app}-operator.
+
+1. Create a directory for the project:
+
+```terminal
+$ mkdir -p $HOME/projects/{app}-operator
+```
+
+2. Change to the directory:
+
+```terminal
+$ cd $HOME/projects/{app}-operator
+```
+
+3. Run the operator-sdk init command
+with the helm plugin
+to initialize the project:
+
+```terminal
+$ operator-sdk init \
+    --plugins=helm \
+    --domain=example.com \
+    --group=demo \
+    --version=v1 \
+    --kind=Nginx
+```
+
+
+[NOTE]
+----
+By default, the helm plugin initializes a project using a boilerplate Helm chart. You can use additional flags, such as the --helm-chart flag, to initialize a project using an existing Helm chart.
+----
+
+The init command creates the nginx-operator project specifically for watching a resource with API version example.com/v1 and kind Nginx.
+4. For Helm-based projects, the init command generates the RBAC rules in the config/rbac/role.yaml file based on the resources that would be deployed by the default manifest for the chart. Verify that the rules generated in this file meet the permission requirements of the Operator.
+
+## Existing Helm charts
+
+Instead of creating your project with a boilerplate Helm chart, you can alternatively use an existing chart, either from your local file system or a remote chart repository, by using the following flags:
+
+* --helm-chart
+* --helm-chart-repo
+* --helm-chart-version
+
+If the --helm-chart flag is specified, the --group, --version, and --kind flags become optional. If left unset, the following default values are used:
+
+
+
+If the --helm-chart flag specifies a local chart archive, for example example-chart-1.2.0.tgz, or directory, the chart is validated and unpacked or copied into the project. Otherwise, the Operator SDK attempts to fetch the chart from a remote repository.
+
+If a custom repository URL is not specified by the --helm-chart-repo flag, the following chart reference formats are supported:
+
+
+
+If a custom repository URL is specified by --helm-chart-repo, the following chart reference format is supported:
+
+
+
+If the --helm-chart-version flag is unset, the Operator SDK fetches the latest available version of the Helm chart. Otherwise, it fetches the specified version. The optional --helm-chart-version flag is not used when the chart specified with the --helm-chart flag refers to a specific version, for example when it is a local path or a URL.
+
+For more details and examples, run:
+
+
+```terminal
+$ operator-sdk init --plugins helm --help
+```
+
+
+## PROJECT file
+
+Among the files generated by the operator-sdk init command is a Kubebuilder PROJECT file. Subsequent operator-sdk commands, as well as help output, that are run from the project root read this file and are aware that the project type is {type}. For example:
+
+
+```yaml
+domain: example.com
+layout:
+- helm.sdk.operatorframework.io/v1
+plugins:
+  manifests.sdk.operatorframework.io/v2: {}
+  scorecard.sdk.operatorframework.io/v2: {}
+  sdk.x-openshift.io/v1: {}
+projectName: nginx-operator
+resources:
+- api:
+    crdVersion: v1
+    namespaced: true
+  domain: example.com
+  group: demo
+  kind: Nginx
+  version: v1
+version: "3"
+```
+
+
+# Understanding the Operator logic
+
+For this example, the nginx-operator project executes the following reconciliation logic for each Nginx custom resource (CR):
+
+* Create an Nginx deployment if it does not exist.
+* Create an Nginx service if it does not exist.
+* Create an Nginx ingress if it is enabled and does not exist.
+* Ensure that the deployment, service, and optional ingress match the desired configuration as specified by the Nginx CR, for example the replica count, image, and service type.
+
+By default, the nginx-operator project watches Nginx resource events as shown in the watches.yaml file and executes Helm releases using the specified chart:
+
+
+```yaml
+# Use the 'create api' subcommand to add watches to this file.
+- group: demo
+  version: v1
+  kind: Nginx
+  chart: helm-charts/nginx
+# +kubebuilder:scaffold:watch
+```
+
+
+## Sample Helm chart
+
+When a Helm Operator project is created, the Operator SDK creates a sample Helm chart that contains a set of templates for a simple Nginx release.
+
+For this example, templates are available for deployment, service, and ingress resources, along with a NOTES.txt template, which Helm chart developers use to convey helpful information about a release.
+
+If you are not already familiar with Helm charts, review the Helm developer documentation.
+
+## Modifying the custom resource spec
+
+Helm uses a concept called values to provide customizations to the defaults of a Helm chart, which are defined in the values.yaml file.
+
+You can override these defaults by setting the desired values in the custom resource (CR) spec. You can use the number of replicas as an example.
+
+1. The helm-charts/nginx/values.yaml file has a value called replicaCount set to 1 by default. To have two Nginx instances in your deployment, your CR spec must contain replicaCount: 2.
+
+Edit the config/samples/demo_v1_nginx.yaml file to set replicaCount: 2:
+
+```yaml
+apiVersion: demo.example.com/v1
+kind: Nginx
+metadata:
+  name: nginx-sample
+...
+spec:
+...
+  replicaCount: 2
+```
+
+2. Similarly, the default service port is set to 80. To use 8080, edit the config/samples/demo_v1_nginx.yaml file to set spec.port: 8080,which adds the service port override:
+
+```yaml
+apiVersion: demo.example.com/v1
+kind: Nginx
+metadata:
+  name: nginx-sample
+spec:
+  replicaCount: 2
+  service:
+    port: 8080
+```
+
+
+The Helm Operator applies the entire spec as if it was the contents of a values file, just like the helm install -f ./overrides.yaml command.
+
+# Enabling proxy support
+
+Operator authors can develop Operators that support network proxies.
+Cluster administrators
+configure proxy support for the environment variables that are handled by Operator Lifecycle Manager (OLM). To support proxied clusters, your Operator must inspect the environment for the following standard proxy variables and pass the values to Operands:
+
+* HTTP_PROXY
+* HTTPS_PROXY
+* NO_PROXY
+
+
+[NOTE]
+----
+This tutorial uses HTTP_PROXY as an example environment variable.
+----
+
+* A cluster with cluster-wide egress proxy enabled.
+
+1. Edit the watches.yaml file to include overrides based on an environment variable by adding the overrideValues field:
+
+```yaml
+...
+- group: demo.example.com
+  version: v1alpha1
+  kind: Nginx
+  chart: helm-charts/nginx
+  overrideValues:
+    proxy.http: $HTTP_PROXY
+...
+```
+
+2. Add the proxy.http value in the helm-charts/nginx/values.yaml file:
+
+```yaml
+...
+proxy:
+  http: ""
+  https: ""
+  no_proxy: ""
+```
+
+3. To make sure the chart template supports using the variables, edit the chart template in the helm-charts/nginx/templates/deployment.yaml file to contain the following:
+
+```yaml
+containers:
+  - name: {{ .Chart.Name }}
+    securityContext:
+      - toYaml {{ .Values.securityContext | nindent 12 }}
+    image: "{{ .Values.image.repository }}:{{ .Values.image.tag | default .Chart.AppVersion }}"
+    imagePullPolicy: {{ .Values.image.pullPolicy }}
+    env:
+      - name: http_proxy
+        value: "{{ .Values.proxy.http }}"
+```
+
+4. Set the environment variable on the Operator deployment by adding the following to the config/manager/manager.yaml file:
+
+```yaml
+containers:
+ - args:
+   - --leader-elect
+   - --leader-election-id=ansible-proxy-demo
+   image: controller:latest
+   name: manager
+   env:
+     - name: "HTTP_PROXY"
+       value: "http_proxy_test"
+```
+
+
+# Running the Operator
+
+There are three ways you can use the Operator SDK CLI to build and run your Operator:
+
+* Run locally outside the cluster as a Go program.
+* Run as a deployment on the cluster.
+* Bundle your Operator and use Operator Lifecycle Manager (OLM) to deploy on the cluster.
+
+## Running locally outside the cluster
+
+You can run your Operator project as a Go program outside of the cluster. This is useful for development purposes to speed up deployment and testing.
+
+* Run the following command to install the custom resource definitions (CRDs) in the cluster configured in your ~/.kube/config file and run the Operator locally:
+
+```terminal
+$ make install run
+```
+
+Example output
+
+```terminal
+...
+{"level":"info","ts":1612652419.9289865,"logger":"controller-runtime.metrics","msg":"metrics server is starting to listen","addr":":8080"}
+{"level":"info","ts":1612652419.9296563,"logger":"helm.controller","msg":"Watching resource","apiVersion":"demo.example.com/v1","kind":"Nginx","namespace":"","reconcilePeriod":"1m0s"}
+{"level":"info","ts":1612652419.929983,"logger":"controller-runtime.manager","msg":"starting metrics server","path":"/metrics"}
+{"level":"info","ts":1612652419.930015,"logger":"controller-runtime.manager.controller.nginx-controller","msg":"Starting EventSource","source":"kind source: demo.example.com/v1, Kind=Nginx"}
+{"level":"info","ts":1612652420.2307851,"logger":"controller-runtime.manager.controller.nginx-controller","msg":"Starting Controller"}
+{"level":"info","ts":1612652420.2309358,"logger":"controller-runtime.manager.controller.nginx-controller","msg":"Starting workers","worker count":8}
+```
+
+
+## Running as a deployment on the cluster
+
+You can run your Operator project as a deployment on your cluster.
+
+1. Run the following make commands to build and push the Operator image. Modify the IMG argument in the following steps to reference a repository that you have access to. You can obtain an account for storing containers at repository sites such as Quay.io.
+1. Build the image:
+
+```terminal
+$ make docker-build IMG=<registry>/<user>/<image_name>:<tag>
+```
+
+
+[NOTE]
+----
+The Dockerfile generated by the SDK for the Operator explicitly references GOARCH=amd64 for go build. This can be amended to GOARCH=$TARGETARCH for non-AMD64 architectures. Docker will automatically set the environment variable to the value specified by –platform. With Buildah, the –build-arg will need to be used for the purpose. For more information, see Multiple Architectures.
+----
+2. Push the image to a repository:
+
+```terminal
+$ make docker-push IMG=<registry>/<user>/<image_name>:<tag>
+```
+
+
+[NOTE]
+----
+The name and tag of the image, for example IMG=<registry>/<user>/<image_name>:<tag>, in both the commands can also be set in your Makefile. Modify the IMG ?= controller:latest value to set your default image name.
+----
+2. Run the following command to deploy the Operator:
+
+```terminal
+$ make deploy IMG=<registry>/<user>/<image_name>:<tag>
+```
+
+
+By default, this command creates a namespace with the name of your Operator project in the form <project_name>-system and is used for the deployment. This command also installs the RBAC manifests from config/rbac.
+3. Run the following command to verify that the Operator is running:
+
+```terminal
+$ oc get deployment -n <project_name>-system
+```
+
+Example output
+
+```terminal
+NAME                                    READY   UP-TO-DATE   AVAILABLE   AGE
+<project_name>-controller-manager       1/1     1            1           8m
+```
+
+
+## Bundling an Operator and deploying with Operator Lifecycle Manager
+
+### Bundling an Operator
+
+The Operator bundle format is the default packaging method for Operator SDK and Operator Lifecycle Manager (OLM). You can get your Operator ready for use on OLM by using the Operator SDK to build and push your Operator project as a bundle image.
+
+* Operator SDK CLI installed on a development workstation
+* OpenShift CLI (oc) v4.17+ installed
+* Operator project initialized by using the Operator SDK
+
+1. Run the following make commands in your Operator project directory to build and push your Operator image. Modify the IMG argument in the following steps to reference a repository that you have access to. You can obtain an account for storing containers at repository sites such as Quay.io.
+1. Build the image:
+
+```terminal
+$ make docker-build IMG=<registry>/<user>/<operator_image_name>:<tag>
+```
+
+
+[NOTE]
+----
+The Dockerfile generated by the SDK for the Operator explicitly references GOARCH=amd64 for go build. This can be amended to GOARCH=$TARGETARCH for non-AMD64 architectures. Docker will automatically set the environment variable to the value specified by –platform. With Buildah, the –build-arg will need to be used for the purpose. For more information, see Multiple Architectures.
+----
+2. Push the image to a repository:
+
+```terminal
+$ make docker-push IMG=<registry>/<user>/<operator_image_name>:<tag>
+```
+
+2. Create your Operator bundle manifest by running the make bundle command, which invokes several commands, including the Operator SDK generate bundle and bundle validate subcommands:
+
+```terminal
+$ make bundle IMG=<registry>/<user>/<operator_image_name>:<tag>
+```
+
+
+Bundle manifests for an Operator describe how to display, create, and manage an application. The make bundle command creates the following files and directories in your Operator project:
+* A bundle manifests directory named bundle/manifests that contains a ClusterServiceVersion object
+* A bundle metadata directory named bundle/metadata
+* All custom resource definitions (CRDs) in a config/crd directory
+* A Dockerfile bundle.Dockerfile
+
+These files are then automatically validated by using operator-sdk bundle validate to ensure the on-disk bundle representation is correct.
+3. Build and push your bundle image by running the following commands. OLM consumes Operator bundles using an index image, which reference one or more bundle images.
+1. Build the bundle image. Set BUNDLE_IMG with the details for the registry, user namespace, and image tag where you intend to push the image:
+
+```terminal
+$ make bundle-build BUNDLE_IMG=<registry>/<user>/<bundle_image_name>:<tag>
+```
+
+2. Push the bundle image:
+
+```terminal
+$ docker push <registry>/<user>/<bundle_image_name>:<tag>
+```
+
+
+### Deploying an Operator with Operator Lifecycle Manager
+
+Operator Lifecycle Manager (OLM) helps you to install, update, and manage the lifecycle of Operators and their associated services on a Kubernetes cluster. OLM is installed by default on Red Hat OpenShift Container Platform and runs as a Kubernetes extension so that you can use the web console and the OpenShift CLI (oc) for all Operator lifecycle management functions without any additional tools.
+
+The Operator bundle format is the default packaging method for Operator SDK and OLM. You can use the Operator SDK to quickly run a bundle image on OLM to ensure that it runs properly.
+
+* Operator SDK CLI installed on a development workstation
+* Operator bundle image built and pushed to a registry
+* OLM installed on a Kubernetes-based cluster (v1.16.0 or later if you use apiextensions.k8s.io/v1 CRDs, for example Red Hat OpenShift Container Platform 4.17)
+* Logged in to the cluster with oc using an account with cluster-admin permissions
+
+* Enter the following command to run the Operator on the cluster:
+
+```terminal
+$ operator-sdk run bundle \1
+    -n <namespace> \2
+    <registry>/<user>/<bundle_image_name>:<tag> 3
+```
+
+The run bundle command creates a valid file-based catalog and installs the Operator bundle on your cluster using OLM.
+Optional: By default, the command installs the Operator in the currently active project in your ~/.kube/config file. You can add the -n flag to set a different namespace scope for the installation.
+If you do not specify an image, the command uses quay.io/operator-framework/opm:latest as the default index image. If you specify an image, the command uses the bundle image itself as the index image.
+
+[IMPORTANT]
+----
+As of Red Hat OpenShift Container Platform 4.11, the run bundle command supports the file-based catalog format for Operator catalogs by default. The deprecated SQLite database format for Operator catalogs continues to be supported; however, it will be removed in a future release. It is recommended that Operator authors migrate their workflows to the file-based catalog format.
+----
+
+This command performs the following actions:
+* Create an index image referencing your bundle image. The index image is opaque and ephemeral, but accurately reflects how a bundle would be added to a catalog in production.
+* Create a catalog source that points to your new index image, which enables OperatorHub to discover your Operator.
+* Deploy your Operator to your cluster by creating an OperatorGroup, Subscription, InstallPlan, and all other required resources, including RBAC.
+
+# Creating a custom resource
+
+After your Operator is installed, you can test it by creating a custom resource (CR) that is now provided on the cluster by the Operator.
+
+* Example {app-proper} Operator, which provides the {app-proper} CR, installed on a cluster
+
+1. Change to the namespace where your Operator is installed. For example, if you deployed the Operator using the make deploy command:
+
+```terminal
+$ oc project {app}-operator-system
+```
+
+2. Edit the sample {app-proper} CR manifest at config/samples/{group}_v1_{app}.yaml to contain the following specification:
+
+```yaml
+apiVersion: {group}.example.com/v1
+kind: {app-proper}
+metadata:
+  name: {app}-sample
+...
+spec:
+...
+  replicaCount: 3
+```
+
+3. The {app-proper} service account requires privileged access to run in Red Hat OpenShift Container Platform. Add the following security context constraint (SCC) to the service account for the {app}-sample pod:
+
+```terminal
+$ oc adm policy add-scc-to-user \
+    anyuid system:serviceaccount:{app}-operator-system:{app}-sample
+```
+
+4. Create the CR:
+
+```terminal
+$ oc apply -f config/samples/{group}_v1_{app}.yaml
+```
+
+5. Ensure that the {app-proper} Operator creates the deployment for the sample CR with the correct size:
+
+```terminal
+$ oc get deployments
+```
+
+Example output
+
+```terminal
+NAME                                    READY   UP-TO-DATE   AVAILABLE   AGE
+nginx-operator-controller-manager       1/1     1            1           8m
+nginx-sample                            3/3     3            3           1m
+```
+
+6. Check the pods and CR status to confirm the status is updated with the {app-proper} pod names.
+1. Check the pods:
+
+```terminal
+$ oc get pods
+```
+
+Example output
+
+```terminal
+NAME                                  READY     STATUS    RESTARTS   AGE
+nginx-sample-6fd7c98d8-7dqdr          1/1       Running   0          1m
+nginx-sample-6fd7c98d8-g5k7v          1/1       Running   0          1m
+nginx-sample-6fd7c98d8-m7vn7          1/1       Running   0          1m
+```
+
+2. Check the CR status:
+
+```terminal
+$ oc get {app}/{app}-sample -o yaml
+```
+
+Example output
+
+```yaml
+apiVersion: {group}.example.com/v1
+kind: {app-proper}
+metadata:
+...
+  name: {app}-sample
+...
+spec:
+  replicaCount: 3
+status:
+  nodes:
+  - {app}-sample-6fd7c98d8-7dqdr
+  - {app}-sample-6fd7c98d8-g5k7v
+  - {app}-sample-6fd7c98d8-m7vn7
+```
+
+7. Update the deployment size.
+1. Update config/samples/{group}_v1_{app}.yaml file to change the spec.size field in the {app-proper} CR from 3 to 5:
+
+```terminal
+$ oc patch {app} {app}-sample \
+    -p '{"spec":{"replicaCount": 5}}' \
+    --type=merge
+```
+
+2. Confirm that the Operator changes the deployment size:
+
+```terminal
+$ oc get deployments
+```
+
+Example output
+
+```terminal
+NAME                                    READY   UP-TO-DATE   AVAILABLE   AGE
+nginx-operator-controller-manager       1/1     1            1           10m
+nginx-sample                            5/5     5            5           3m
+```
+
+8. Delete the CR by running the following command:
+
+```terminal
+$ oc delete -f config/samples/{group}_v1_{app}.yaml
+```
+
+9. Clean up the resources that have been created as part of this tutorial.
+* If you used the make deploy command to test the Operator, run the following command:
+
+```terminal
+$ make undeploy
+```
+
+* If you used the operator-sdk run bundle command to test the Operator, run the following command:
+
+```terminal
+$ operator-sdk cleanup <project_name>
+```
+
+
+# Additional resources
+
+* See Project layout for Helm-based Operators to learn about the directory structures created by the Operator SDK.
+* If a cluster-wide egress proxy is configured, cluster administrators can override the proxy settings or inject a custom CA certificate for specific Operators running on Operator Lifecycle Manager (OLM).

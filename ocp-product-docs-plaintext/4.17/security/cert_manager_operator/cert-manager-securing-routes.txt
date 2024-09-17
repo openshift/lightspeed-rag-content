@@ -1,0 +1,146 @@
+# Securing routes with the cert-manager Operator for Red Hat OpenShift
+
+
+In the Red Hat OpenShift Container Platform, the route API is extended to provide a configurable option to reference TLS certificates via secrets. With the Creating a route with externally managed certificate Technology Preview feature enabled, you can minimize errors from manual intervention, streamline the certificate management process, and enable the Red Hat OpenShift Container Platform router to promptly serve the referenced certificate.
+
+[IMPORTANT]
+----
+Securing routes with the cert-manager Operator for Red Hat OpenShift is a Technology Preview feature only. Technology Preview features are not supported with Red Hat production service level agreements (SLAs) and might not be functionally complete. Red Hat does not recommend using them in production. These features provide early access to upcoming product features, enabling customers to test functionality and provide feedback during the development process.
+For more information about the support scope of Red Hat Technology Preview features, see Technology Preview Features Support Scope.
+----
+
+# Configuring certificates to secure routes in your cluster
+
+The following steps demonstrate the process of utilizing the cert-manager Operator for Red Hat OpenShift with the Let&#8217;s Encrypt ACME HTTP-01 challenge type to secure the route resources in your Red Hat OpenShift Container Platform cluster.
+
+* You have installed the cert-manager Operator for Red Hat OpenShift 1.14.0 or later.
+* You have enabled the RouteExternalCertificate feature gate.
+* You have the create and update permissions on the routes/custom-host sub-resource.
+* You have a Service resource that you want to expose.
+
+1. Create a Route resource for your Service resource using edge TLS termination and a custom hostname by running the following command. The hostname will be used while creating a Certificate resource in the following steps.
+
+```terminal
+$ oc create route edge <route_name> \ 1
+  --service=<service_name> \ 2
+  --hostname=<hostname> \ 3
+  --namespace=<namespace> 4
+```
+
+Specify your route's name.
+Specify the service you want to expose.
+Specify the hostname of your route.
+Specify the namespace where your route is located.
+2. Create an Issuer to configure the HTTP-01 solver by running the following command. For other ACME issuer types, see "Configuring ACME an issuer".
+Example Issuer.yaml file
+
+```yaml
+$ oc create -f - << EOF
+apiVersion: cert-manager.io/v1
+kind: Issuer
+metadata:
+  name: letsencrypt-acme
+  namespace: <namespace> 1
+spec:
+  acme:
+    server: https://acme-v02.api.letsencrypt.org/directory
+    privateKeySecretRef:
+      name: letsencrypt-acme-account-key
+    solvers:
+      - http01:
+          ingress:
+            ingressClassName: openshift-default
+EOF
+```
+
+Specify the namespace where the Issuer is located. It should be the same as your route's namespace.
+3. Create a Certificate object for the route by running the following command. The secretName specifies the TLS secret that is going to be issued and managed by cert-manager and will also be referenced in your route in the following steps.
+
+```yaml
+$ oc create -f - << EOF
+apiVersion: cert-manager.io/v1
+kind: Certificate
+metadata:
+  name: example-route-cert
+  namespace: <namespace> 1
+spec:
+  commonName: <hostname> 2
+  dnsNames:
+    - <hostname> 3
+  usages:
+    - server auth
+  issuerRef:
+    kind: Issuer
+    name: letsencrypt-acme
+  secretName: <secret_name> 4
+EOF
+```
+
+Specify the namespace where the Certificate resource is located. It should be the same as your route's namespace.
+Specify the certificate's common name using the hostname of the route.
+Add the hostname of your route to the certificate's DNS names.
+Specify the name of the secret that contains the certificate.
+4. Create a Role to provide the router service account permissions to read the referenced secret by using the following command:
+
+```terminal
+$ oc create role secret-reader \
+  --verb=get,list,watch \
+  --resource=secrets \
+  --resource-name=<secret_name> \ 1
+  --namespace=<namespace> 2
+```
+
+Specify the name of the secret that you want to grant access to. It should be consistent with your secretName specified in the Certificate resource.
+Specify the namespace where both your secret and route are located.
+5. Create a RoleBinding resource to bind the router service account with the newly created Role resource by using the following command:
+
+```terminal
+$ oc create rolebinding secret-reader-binding \
+  --role=secret-reader \
+  --serviceaccount=openshift-ingress:router \
+  --namespace=<namespace> 1
+```
+
+Specify the namespace where both your secret and route are located.
+6. Update your route's .spec.tls.externalCertificate field to reference the previously created secret and use the certificate issued by cert-manager by using the following command:
+
+```terminal
+$ oc patch route <route_name> \ 1
+  -n <namespace> \ 2
+  --type=merge \
+  -p '{"spec":{"tls":{"externalCertificate":{"name":"<secret_name>"}}}}' 3
+```
+
+Specify the route name.
+Specify the namespace where both your secret and route are located.
+Specify the name of the secret that contains the certificate.
+
+* Verify that the certificate is created and ready to use by running the following command:
+
+```terminal
+$ oc get certificate -n <namespace> 1
+$ oc get secret -n <namespace> 1
+```
+
+Specify the namespace where both your secret and route reside.
+* Verify that the router is using the referenced external certificate by running the following command. The command should return with the status code 200 OK.
+
+```terminal
+$ curl -IsS https://<hostname> 1
+```
+
+Specify the hostname of your route.
+* Verify the server certificate's subject, subjectAltName and issuer are all as expected from the curl verbose outputs by running the following command:
+
+```terminal
+$ curl -v https://<hostname> 1
+```
+
+Specify the hostname of your route.
+
+The route is now successfully secured by the certificate from the referenced secret issued by cert-manager. cert-manager will automatically manage the certificate&#8217;s lifecycle.
+
+# Additional resources
+
+* Creating a route with externally managed certificate
+* Configuring an ACME issuer

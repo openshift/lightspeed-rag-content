@@ -1,0 +1,2871 @@
+# Configuring the monitoring stack
+
+
+The Red Hat OpenShift Container Platform installation program provides only a low number of configuration options before installation. Configuring most Red Hat OpenShift Container Platform framework components, including the cluster monitoring stack, happens after the installation.
+This section explains what configuration is supported,
+shows how to configure the monitoring stack,
+and demonstrates several common configuration scenarios.
+
+[IMPORTANT]
+----
+Not all configuration parameters for the monitoring stack are exposed.
+Only the parameters and fields listed in the Config map reference for the Cluster Monitoring Operator are supported for configuration.
+----
+
+# Prerequisites
+
+* The monitoring stack imposes additional resource requirements. Consult the computing resources recommendations in Scaling the Cluster Monitoring Operator and verify that you have sufficient resources.
+
+# Maintenance and support for monitoring
+
+Not all configuration options for the monitoring stack are exposed. The only supported way of configuring Red Hat OpenShift Container Platform monitoring is by configuring the Cluster Monitoring Operator (CMO) using the options described in the Config map reference for the Cluster Monitoring Operator. Do not use other configurations, as they are unsupported.
+
+Configuration paradigms might change across Prometheus releases, and such cases can only be handled gracefully if all configuration possibilities are controlled. If you use configurations other than those described in the Config map reference for the Cluster Monitoring Operator, your changes will disappear because the CMO automatically reconciles any differences and resets any unsupported changes back to the originally defined state by default and by design.
+
+## Support considerations for monitoring
+
+
+[NOTE]
+----
+Backward compatibility for metrics, recording rules, or alerting rules is not guaranteed.
+----
+
+The following modifications are explicitly not supported:
+
+* Creating additional ServiceMonitor, PodMonitor, and PrometheusRule objects in the openshift-&#42; and kube-&#42; projects.
+* Modifying any resources or objects deployed in the openshift-monitoring or openshift-user-workload-monitoring projects. The resources created by the Red Hat OpenShift Container Platform monitoring stack are not meant to be used by any other resources, as there are no guarantees about their backward compatibility.
+
+[NOTE]
+----
+The Alertmanager configuration is deployed as the alertmanager-main secret resource in the openshift-monitoring namespace.
+If you have enabled a separate Alertmanager instance for user-defined alert routing, an Alertmanager configuration is also deployed as the alertmanager-user-workload secret resource in the openshift-user-workload-monitoring namespace.
+To configure additional routes for any instance of Alertmanager, you need to decode, modify, and then encode that secret.
+This procedure is a supported exception to the preceding statement.
+----
+* Modifying resources of the stack. The Red Hat OpenShift Container Platform monitoring stack ensures its resources are always in the state it expects them to be. If they are modified, the stack will reset them.
+* Deploying user-defined workloads to openshift-&#42;, and kube-&#42; projects. These projects are reserved for Red Hat provided components and they should not be used for user-defined workloads.
+* Enabling symptom based monitoring by using the Probe custom resource definition (CRD) in Prometheus Operator.
+* Manually deploying monitoring resources into namespaces that have the openshift.io/cluster-monitoring: "true" label.
+* Adding the openshift.io/cluster-monitoring: "true" label to namespaces. This label is reserved only for the namespaces with core Red Hat OpenShift Container Platform components and Red Hat certified components.
+* Installing custom Prometheus instances on Red Hat OpenShift Container Platform. A custom instance is a Prometheus custom resource (CR) managed by the Prometheus Operator.
+
+## Support policy for monitoring Operators
+
+Monitoring Operators ensure that Red Hat OpenShift Container Platform monitoring resources function as designed and tested. If Cluster Version Operator (CVO) control of an Operator is overridden, the Operator does not respond to configuration changes, reconcile the intended state of cluster objects, or receive updates.
+
+While overriding CVO control for an Operator can be helpful during debugging, this is  unsupported and the cluster administrator assumes full control of the individual component configurations and upgrades.
+
+The spec.overrides parameter can be added to the configuration for the CVO to allow administrators to provide a list of overrides to the behavior of the CVO for a component. Setting the spec.overrides[].unmanaged parameter to true for a component blocks cluster upgrades and alerts the administrator after a CVO override has been set:
+
+
+```terminal
+Disabling ownership via cluster version overrides prevents upgrades. Please remove overrides before continuing.
+```
+
+
+
+[WARNING]
+----
+Setting a CVO override puts the entire cluster in an unsupported state and prevents the monitoring stack from being reconciled to its intended state. This impacts the reliability features built into Operators and prevents updates from being received. Reported issues must be reproduced after removing any overrides for support to proceed.
+----
+
+## Support version matrix for monitoring components
+
+The following matrix contains information about versions of monitoring components for Red Hat OpenShift Container Platform 4.12 and later releases:
+
+
+
+
+[NOTE]
+----
+The openshift-state-metrics agent and Telemeter Client are OpenShift-specific components. Therefore, their versions correspond with the versions of Red Hat OpenShift Container Platform.
+----
+
+# Preparing to configure the monitoring stack
+
+You can configure the monitoring stack by creating and updating monitoring config maps. These config maps configure the Cluster Monitoring Operator (CMO), which in turn configures the components of the monitoring stack.
+
+## Creating a cluster monitoring config map
+
+You can configure the core Red Hat OpenShift Container Platform monitoring components by creating the cluster-monitoring-config ConfigMap object in the openshift-monitoring project. The Cluster Monitoring Operator (CMO) then configures the core components of the monitoring stack.
+
+* You have access to the cluster as a user with the cluster-admin cluster role.
+* You have installed the OpenShift CLI (oc).
+
+1. Check whether the cluster-monitoring-config ConfigMap object exists:
+
+```terminal
+$ oc -n openshift-monitoring get configmap cluster-monitoring-config
+```
+
+2. If the ConfigMap object does not exist:
+1. Create the following YAML manifest. In this example the file is called cluster-monitoring-config.yaml:
+
+```yaml
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: cluster-monitoring-config
+  namespace: openshift-monitoring
+data:
+  config.yaml: |
+```
+
+2. Apply the configuration to create the ConfigMap object:
+
+```terminal
+$ oc apply -f cluster-monitoring-config.yaml
+```
+
+
+## Creating a user-defined workload monitoring config map
+
+You can configure the user workload monitoring components with the user-workload-monitoring-config ConfigMap object in the openshift-user-workload-monitoring project. The Cluster Monitoring Operator (CMO) then configures the components that monitor user-defined projects.
+
+
+[NOTE]
+----
+* If you enable monitoring for user-defined projects, the user-workload-monitoring-config ConfigMap object is created by default.
+* When you save your changes to the user-workload-monitoring-config ConfigMap object, some or all of the pods in the openshift-user-workload-monitoring project might be redeployed. It can sometimes take a while for these components to redeploy.
+----
+
+* You have access to the cluster as a user with the cluster-admin cluster role.
+* You have installed the OpenShift CLI (oc).
+
+1. Check whether the user-workload-monitoring-config ConfigMap object exists:
+
+```terminal
+$ oc -n openshift-user-workload-monitoring get configmap user-workload-monitoring-config
+```
+
+2. If the user-workload-monitoring-config ConfigMap object does not exist:
+1. Create the following YAML manifest. In this example the file is called user-workload-monitoring-config.yaml:
+
+```yaml
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: user-workload-monitoring-config
+  namespace: openshift-user-workload-monitoring
+data:
+  config.yaml: |
+```
+
+2. Apply the configuration to create the ConfigMap object:
+
+```terminal
+$ oc apply -f user-workload-monitoring-config.yaml
+```
+
+
+[NOTE]
+----
+Configurations applied to the user-workload-monitoring-config ConfigMap object are not activated unless a cluster administrator has enabled monitoring for user-defined projects.
+----
+
+* Enabling monitoring for user-defined projects
+
+# Granting users permissions for core platform monitoring
+
+As a cluster administrator, you can monitor all core Red Hat OpenShift Container Platform and user-defined projects.
+
+You can also grant developers and other users different permissions for core platform monitoring. You can grant the permissions by assigning one of the following monitoring roles or cluster roles:
+
+
+
+* Granting user permissions by using the web console
+* Granting user permissions by using the CLI
+* Resources reference for the Cluster Monitoring Operator
+* CMO services resources
+
+# Configuring the monitoring stack
+
+In Red Hat OpenShift Container Platform 4.17, you can configure the monitoring stack using the cluster-monitoring-config or user-workload-monitoring-config ConfigMap objects. Config maps configure the Cluster Monitoring Operator (CMO), which in turn configures the components of the stack.
+
+* If you are configuring core Red Hat OpenShift Container Platform monitoring components:
+* You have access to the cluster as a user with the cluster-admin cluster role.
+* You have created the cluster-monitoring-config ConfigMap object.
+* If you are configuring components that monitor user-defined projects:
+* You have access to the cluster as a user with the cluster-admin cluster role, or as a user with the user-workload-monitoring-config-edit role in the openshift-user-workload-monitoring project.
+* A cluster administrator has enabled monitoring for user-defined projects.
+* You have installed the OpenShift CLI (oc).
+
+1. Edit the ConfigMap object.
+* To configure core Red Hat OpenShift Container Platform monitoring components:
+1. Edit the cluster-monitoring-config ConfigMap object in the openshift-monitoring project:
+
+```terminal
+$ oc -n openshift-monitoring edit configmap cluster-monitoring-config
+```
+
+2. Add your configuration under data/config.yaml as a key-value pair <component_name>: <component_configuration>:
+
+```yaml
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: cluster-monitoring-config
+  namespace: openshift-monitoring
+data:
+  config.yaml: |
+    <component>:
+      <configuration_for_the_component>
+```
+
+
+Substitute <component> and <configuration_for_the_component> accordingly.
+
+The following example ConfigMap object configures a persistent volume claim (PVC) for Prometheus. This relates to the Prometheus instance that monitors core Red Hat OpenShift Container Platform components only:
+
+```yaml
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: cluster-monitoring-config
+  namespace: openshift-monitoring
+data:
+  config.yaml: |
+    prometheusK8s: 1
+      volumeClaimTemplate:
+        spec:
+          storageClassName: fast
+          volumeMode: Filesystem
+          resources:
+            requests:
+              storage: 40Gi
+```
+
+Defines the Prometheus component and the subsequent lines define its configuration.
+* To configure components that monitor user-defined projects:
+1. Edit the user-workload-monitoring-config ConfigMap object in the openshift-user-workload-monitoring project:
+
+```terminal
+$ oc -n openshift-user-workload-monitoring edit configmap user-workload-monitoring-config
+```
+
+2. Add your configuration under data/config.yaml as a key-value pair <component_name>: <component_configuration>:
+
+```yaml
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: user-workload-monitoring-config
+  namespace: openshift-user-workload-monitoring
+data:
+  config.yaml: |
+    <component>:
+      <configuration_for_the_component>
+```
+
+
+Substitute <component> and <configuration_for_the_component> accordingly.
+
+The following example ConfigMap object configures a data retention period and minimum container resource requests for Prometheus. This relates to the Prometheus instance that monitors user-defined projects only:
+
+```yaml
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: user-workload-monitoring-config
+  namespace: openshift-user-workload-monitoring
+data:
+  config.yaml: |
+    prometheus: 1
+      retention: 24h 2
+      resources:
+        requests:
+          cpu: 200m 3
+          memory: 2Gi 4
+```
+
+Defines the Prometheus component and the subsequent lines define its configuration.
+Configures a twenty-four hour data retention period for the Prometheus instance that monitors user-defined projects.
+Defines a minimum resource request of 200 millicores for the Prometheus container.
+Defines a minimum pod resource request of 2 GiB of memory for the Prometheus container.
+
+[NOTE]
+----
+The Prometheus config map component is called prometheusK8s in the cluster-monitoring-config ConfigMap object and prometheus in the user-workload-monitoring-config ConfigMap object.
+----
+2. Save the file to apply the changes to the ConfigMap object.
+
+[WARNING]
+----
+Different configuration changes to the ConfigMap object result in different outcomes:
+* The pods are not redeployed. Therefore, there is no service outage.
+* The affected pods are redeployed:
+* For single-node clusters, this results in temporary service outage.
+* For multi-node clusters, because of high-availability, the affected pods are gradually rolled out and the monitoring stack remains available.
+* Configuring and resizing a persistent volume always results in a service outage, regardless of high availability.
+Each procedure that requires a change in the config map includes its expected outcome.
+----
+
+* Configuration reference for the cluster-monitoring-config config map
+* Configuration reference for the user-workload-monitoring-config config map
+* See Preparing to configure the monitoring stack for steps to create monitoring config maps
+* Enabling monitoring for user-defined projects
+
+# Configurable monitoring components
+
+This table shows the monitoring components you can configure and the keys used to specify the components in the
+cluster-monitoring-config and
+user-workload-monitoring-config ConfigMap objects.
+
+
+
+
+[NOTE]
+----
+The Prometheus key is called prometheusK8s in the cluster-monitoring-config ConfigMap object and prometheus in the user-workload-monitoring-config ConfigMap object.
+----
+
+# Using node selectors to move monitoring components
+
+By using the nodeSelector constraint with labeled nodes, you can move any of the monitoring stack components to specific nodes.
+By doing so, you can control the placement and distribution of the monitoring components across a cluster.
+
+By controlling placement and distribution of monitoring components, you can optimize system resource use, improve performance, and segregate workloads based on specific requirements or policies.
+
+## How node selectors work with other constraints
+
+If you move monitoring components by using node selector constraints, be aware that other constraints to control pod scheduling might exist for a cluster:
+
+* Topology spread constraints might be in place to control pod placement.
+* Hard anti-affinity rules are in place for Prometheus, Thanos Querier, Alertmanager, and other monitoring components to ensure that multiple pods for these components are always spread across different nodes and are therefore always highly available.
+
+When scheduling pods onto nodes, the pod scheduler tries to satisfy all existing constraints when determining pod placement.
+That is, all constraints compound when the pod scheduler determines which pods will be placed on which nodes.
+
+Therefore, if you configure a node selector constraint but existing constraints cannot all be satisfied, the pod scheduler cannot match all constraints and will not schedule a pod for placement onto a node.
+
+To maintain resilience and high availability for monitoring components, ensure that enough nodes are available and match all constraints when you configure a node selector constraint to move a component.
+
+* Understanding how to update labels on nodes
+* Placing pods on specific nodes using node selectors
+* Placing pods relative to other pods using affinity and anti-affinity rules
+* Controlling pod placement by using pod topology spread constraints
+* Using pod topology spread constraints for monitoring
+* Kubernetes documentation about node selectors
+
+## Moving monitoring components to different nodes
+
+To specify the nodes in your cluster on which monitoring stack components will run, configure the nodeSelector constraint in the component&#8217;s ConfigMap object to match labels assigned to the nodes.
+
+
+[NOTE]
+----
+You cannot add a node selector constraint directly to an existing scheduled pod.
+----
+
+* If you are configuring core Red Hat OpenShift Container Platform monitoring components:
+* You have access to the cluster as a user with the cluster-admin cluster role.
+* You have created the cluster-monitoring-config ConfigMap object.
+* If you are configuring components that monitor user-defined projects:
+* You have access to the cluster as a user with the cluster-admin cluster role or as a user with the user-workload-monitoring-config-edit role in the openshift-user-workload-monitoring project.
+* A cluster administrator has enabled monitoring for user-defined projects.
+* You have installed the OpenShift CLI (oc).
+
+1. If you have not done so yet, add a label to the nodes on which you want to run the monitoring components:
+
+```terminal
+$ oc label nodes <node-name> <node-label>
+```
+
+2. Edit the ConfigMap object:
+* To move a component that monitors core Red Hat OpenShift Container Platform projects:
+1. Edit the cluster-monitoring-config ConfigMap object in the openshift-monitoring project:
+
+```terminal
+$ oc -n openshift-monitoring edit configmap cluster-monitoring-config
+```
+
+2. Specify the node labels for the nodeSelector constraint for the component under data/config.yaml:
+
+```yaml
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: cluster-monitoring-config
+  namespace: openshift-monitoring
+data:
+  config.yaml: |
+    <component>: 1
+      nodeSelector:
+        <node-label-1> 2
+        <node-label-2> 3
+        <...>
+```
+
+Substitute <component> with the appropriate monitoring stack component name.
+Substitute <node-label-1> with the label you added to the node.
+Optional: Specify additional labels.
+If you specify additional labels, the pods for the component are only scheduled on the nodes that contain all of the specified labels.
+
+[NOTE]
+----
+If monitoring components remain in a Pending state after configuring the nodeSelector constraint, check the pod events for errors relating to taints and tolerations.
+----
+* To move a component that monitors user-defined projects:
+1. Edit the user-workload-monitoring-config ConfigMap object in the openshift-user-workload-monitoring project:
+
+```terminal
+$ oc -n openshift-user-workload-monitoring edit configmap user-workload-monitoring-config
+```
+
+2. Specify the node labels for the nodeSelector constraint for the component under data/config.yaml:
+
+```yaml
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: user-workload-monitoring-config
+  namespace: openshift-user-workload-monitoring
+data:
+  config.yaml: |
+    <component>: 1
+      nodeSelector:
+        <node-label-1> 2
+        <node-label-2> 3
+        <...>
+```
+
+Substitute <component> with the appropriate monitoring stack component name.
+Substitute <node-label-1> with the label you added to the node.
+Optional: Specify additional labels.
+If you specify additional labels, the pods for the component are only scheduled on the nodes that contain all of the specified labels.
+
+[NOTE]
+----
+If monitoring components remain in a Pending state after configuring the nodeSelector constraint, check the pod events for errors relating to taints and tolerations.
+----
+3. Save the file to apply the changes. The components specified in the new configuration are automatically moved to the new nodes, and the pods affected by the new configuration are redeployed.
+
+* See Preparing to configure the monitoring stack for steps to create monitoring config maps
+* Enabling monitoring for user-defined projects
+* Understanding how to update labels on nodes
+* Placing pods on specific nodes using node selectors
+* See the Kubernetes documentation for details on the nodeSelector constraint
+
+# Assigning tolerations to monitoring components
+
+You can assign tolerations to any of the monitoring stack components to enable moving them to tainted nodes.
+
+* If you are configuring core Red Hat OpenShift Container Platform monitoring components:
+* You have access to the cluster as a user with the cluster-admin cluster role.
+* You have created the cluster-monitoring-config ConfigMap object.
+* If you are configuring components that monitor user-defined projects:
+* You have access to the cluster as a user with the cluster-admin cluster role, or as a user with the user-workload-monitoring-config-edit role in the openshift-user-workload-monitoring project.
+* A cluster administrator has enabled monitoring for user-defined projects.
+* You have installed the OpenShift CLI (oc).
+
+1. Edit the ConfigMap object:
+* To assign tolerations to a component that monitors core Red Hat OpenShift Container Platform projects:
+1. Edit the cluster-monitoring-config ConfigMap object in the openshift-monitoring project:
+
+```terminal
+$ oc -n openshift-monitoring edit configmap cluster-monitoring-config
+```
+
+2. Specify tolerations for the component:
+
+```yaml
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: cluster-monitoring-config
+  namespace: openshift-monitoring
+data:
+  config.yaml: |
+    <component>:
+      tolerations:
+        <toleration_specification>
+```
+
+
+Substitute <component> and <toleration_specification> accordingly.
+
+For example, oc adm taint nodes node1 key1=value1:NoSchedule adds a taint to node1 with the key key1 and the value value1. This prevents monitoring components from deploying pods on node1 unless a toleration is configured for that taint. The following example configures the alertmanagerMain component to tolerate the example taint:
+
+```yaml
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: cluster-monitoring-config
+  namespace: openshift-monitoring
+data:
+  config.yaml: |
+    alertmanagerMain:
+      tolerations:
+      - key: "key1"
+        operator: "Equal"
+        value: "value1"
+        effect: "NoSchedule"
+```
+
+* To assign tolerations to a component that monitors user-defined projects:
+1. Edit the user-workload-monitoring-config ConfigMap object in the openshift-user-workload-monitoring project:
+
+```terminal
+$ oc -n openshift-user-workload-monitoring edit configmap user-workload-monitoring-config
+```
+
+2. Specify tolerations for the component:
+
+```yaml
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: user-workload-monitoring-config
+  namespace: openshift-user-workload-monitoring
+data:
+  config.yaml: |
+    <component>:
+      tolerations:
+        <toleration_specification>
+```
+
+
+Substitute <component> and <toleration_specification> accordingly.
+
+For example, oc adm taint nodes node1 key1=value1:NoSchedule adds a taint to node1 with the key key1 and the value value1. This prevents monitoring components from deploying pods on node1 unless a toleration is configured for that taint. The following example configures the thanosRuler component to tolerate the example taint:
+
+```yaml
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: user-workload-monitoring-config
+  namespace: openshift-user-workload-monitoring
+data:
+  config.yaml: |
+    thanosRuler:
+      tolerations:
+      - key: "key1"
+        operator: "Equal"
+        value: "value1"
+        effect: "NoSchedule"
+```
+
+2. Save the file to apply the changes. The pods affected by the new configuration are automatically redeployed.
+
+* See Preparing to configure the monitoring stack for steps to create monitoring config maps
+* Enabling monitoring for user-defined projects
+* See the Red Hat OpenShift Container Platform documentation on taints and tolerations
+* See the Kubernetes documentation on taints and tolerations
+
+# Setting the body size limit for metrics scraping
+
+By default, no limit exists for the uncompressed body size for data returned from scraped metrics targets.
+You can set a body size limit to help avoid situations in which Prometheus consumes excessive amounts of memory when scraped targets return a response that contains a large amount of data.
+In addition, by setting a body size limit, you can reduce the impact that a malicious target might have on Prometheus and on the cluster as a whole.
+
+After you set a value for enforcedBodySizeLimit, the alert PrometheusScrapeBodySizeLimitHit fires when at least one Prometheus scrape target replies with a response body larger than the configured value.
+
+
+[NOTE]
+----
+If metrics data scraped from a target has an uncompressed body size exceeding the configured size limit, the scrape fails.
+Prometheus then considers this target to be down and sets its up metric value to 0, which can trigger the TargetDown alert.
+----
+
+* You have access to the cluster as a user with the cluster-admin cluster role.
+* You have installed the OpenShift CLI (oc).
+
+1. Edit the cluster-monitoring-config ConfigMap object in the openshift-monitoring namespace:
+
+```terminal
+$ oc -n openshift-monitoring edit configmap cluster-monitoring-config
+```
+
+2. Add a value for enforcedBodySizeLimit to data/config.yaml/prometheusK8s to limit the body size that can be accepted per target scrape:
+
+```yaml
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: cluster-monitoring-config
+  namespace: openshift-monitoring
+data:
+  config.yaml: |-
+    prometheusK8s:
+      enforcedBodySizeLimit: 40MB 1
+```
+
+Specify the maximum body size for scraped metrics targets.
+This enforcedBodySizeLimit example limits the uncompressed size per target scrape to 40 megabytes.
+Valid numeric values use the Prometheus data size format: B (bytes), KB (kilobytes), MB (megabytes), GB (gigabytes), TB (terabytes), PB (petabytes), and EB (exabytes).
+The default value is 0, which specifies no limit.
+You can also set the value to automatic to calculate the limit automatically based on cluster capacity.
+3. Save the file to apply the changes. The new configuration is applied automatically.
+
+* Prometheus scrape configuration documentation
+
+# Managing CPU and memory resources for monitoring components
+
+You can ensure that the containers that run monitoring components have enough CPU and memory resources by specifying values for resource limits and requests for those components.
+
+You can configure these limits and requests for core platform monitoring components in the openshift-monitoring namespace and for the components that monitor user-defined projects in the openshift-user-workload-monitoring namespace.
+
+## About specifying limits and requests for monitoring components
+
+You can configure resource limits and request settings for core platform monitoring components and for the components that monitor user-defined projects, including the following components:
+
+* Alertmanager (for core platform monitoring and for user-defined projects)
+* kube-state-metrics
+* monitoring-plugin
+* node-exporter
+* openshift-state-metrics
+* Prometheus (for core platform monitoring and for user-defined projects)
+* Metrics Server
+* Prometheus Operator and its admission webhook service
+* Telemeter Client
+* Thanos Querier
+* Thanos Ruler
+
+By defining resource limits, you limit a container&#8217;s resource usage, which prevents the container from exceeding the specified maximum values for CPU and memory resources.
+
+By defining resource requests, you specify that a container can be scheduled only on a node that has enough CPU and memory resources available to match the requested resources.
+
+## Specifying limits and requests for monitoring components
+
+To configure CPU and memory resources, specify values for resource limits and requests in the appropriate ConfigMap object for the namespace in which the monitoring component is located:
+
+* The cluster-monitoring-config config map in the openshift-monitoring namespace for core platform monitoring
+* The user-workload-monitoring-config config map in the openshift-user-workload-monitoring namespace for components that monitor user-defined projects
+
+* If you are configuring core platform monitoring components:
+* You have access to the cluster as a user with the cluster-admin cluster role.
+* You have created a ConfigMap object named cluster-monitoring-config.
+* If you are configuring components that monitor user-defined projects:
+* You have access to the cluster as a user with the cluster-admin cluster role, or as a user with the user-workload-monitoring-config-edit role in the openshift-user-workload-monitoring project.
+* You have installed the OpenShift CLI (oc).
+
+1. To configure core platform monitoring components, edit the cluster-monitoring-config config map object in the openshift-monitoring namespace:
+
+```terminal
+$ oc -n openshift-monitoring edit configmap cluster-monitoring-config
+```
+
+2. Add values to define resource limits and requests for each core platform monitoring component you want to configure.
+
+[IMPORTANT]
+----
+Make sure that the value set for a limit is always higher than the value set for a request.
+Otherwise, an error will occur, and the container will not run.
+----
+Example
+
+```yaml
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: cluster-monitoring-config
+  namespace: openshift-monitoring
+data:
+  config.yaml: |
+    alertmanagerMain:
+      resources:
+        limits:
+          cpu: 500m
+          memory: 1Gi
+        requests:
+          cpu: 200m
+          memory: 500Mi
+    prometheusK8s:
+      resources:
+        limits:
+          cpu: 500m
+          memory: 3Gi
+        requests:
+          cpu: 200m
+          memory: 500Mi
+    prometheusOperator:
+      resources:
+        limits:
+          cpu: 500m
+          memory: 1Gi
+        requests:
+          cpu: 200m
+          memory: 500Mi
+    metricsServer:
+      resources:
+        requests:
+          cpu: 10m
+          memory: 50Mi
+        limits:
+          cpu: 50m
+          memory: 500Mi
+    kubeStateMetrics:
+      resources:
+        limits:
+          cpu: 500m
+          memory: 1Gi
+        requests:
+          cpu: 200m
+          memory: 500Mi
+    telemeterClient:
+      resources:
+        limits:
+          cpu: 500m
+          memory: 1Gi
+        requests:
+          cpu: 200m
+          memory: 500Mi
+    openshiftStateMetrics:
+      resources:
+        limits:
+          cpu: 500m
+          memory: 1Gi
+        requests:
+          cpu: 200m
+          memory: 500Mi
+    thanosQuerier:
+      resources:
+        limits:
+          cpu: 500m
+          memory: 1Gi
+        requests:
+          cpu: 200m
+          memory: 500Mi
+    nodeExporter:
+      resources:
+        limits:
+          cpu: 50m
+          memory: 150Mi
+        requests:
+          cpu: 20m
+          memory: 50Mi
+    monitoringPlugin:
+      resources:
+        limits:
+          cpu: 500m
+          memory: 1Gi
+        requests:
+          cpu: 200m
+          memory: 500Mi
+    prometheusOperatorAdmissionWebhook:
+      resources:
+        limits:
+          cpu: 50m
+          memory: 100Mi
+        requests:
+          cpu: 20m
+          memory: 50Mi
+```
+
+3. Save the file to apply the changes. The pods affected by the new configuration are automatically redeployed.
+
+* Kubernetes requests and limits documentation
+
+# Configuring persistent storage
+
+Run cluster monitoring with persistent storage to gain the following benefits:
+
+* Protect your metrics and alerting data from data loss by storing them in a persistent volume (PV). As a result, they can survive pods being restarted or recreated.
+* Avoid getting duplicate notifications and losing silences for alerts when the Alertmanager pods are restarted.
+
+For production environments, it is highly recommended to configure persistent storage.
+
+
+[IMPORTANT]
+----
+In multi-node clusters, you must configure persistent storage for Prometheus, Alertmanager, and Thanos Ruler to ensure high availability.
+----
+
+## Persistent storage prerequisites
+
+* Dedicate sufficient persistent storage to ensure that the disk does not become full.
+* Use Filesystem as the storage type value for the volumeMode parameter when you configure the persistent volume.
+
+[IMPORTANT]
+----
+* Do not use a raw block volume, which is described with volumeMode: Block in the PersistentVolume resource. Prometheus cannot use raw block volumes.
+* Prometheus does not support file systems that are not POSIX compliant.
+For example, some NFS file system implementations are not POSIX compliant.
+If you want to use an NFS file system for storage, verify with the vendor that their NFS implementation is fully POSIX compliant.
+----
+
+## Configuring a persistent volume claim
+
+To use a persistent volume (PV) for monitoring components, you must configure a persistent volume claim (PVC).
+
+* If you are configuring core Red Hat OpenShift Container Platform monitoring components:
+* You have access to the cluster as a user with the cluster-admin cluster role.
+* You have created the cluster-monitoring-config ConfigMap object.
+* If you are configuring components that monitor user-defined projects:
+* You have access to the cluster as a user with the cluster-admin cluster role, or as a user with the user-workload-monitoring-config-edit role in the openshift-user-workload-monitoring project.
+* A cluster administrator has enabled monitoring for user-defined projects.
+* You have installed the OpenShift CLI (oc).
+
+1. Edit the ConfigMap object:
+* To configure a PVC for a component that monitors core Red Hat OpenShift Container Platform projects:
+1. Edit the cluster-monitoring-config ConfigMap object in the openshift-monitoring project:
+
+```terminal
+$ oc -n openshift-monitoring edit configmap cluster-monitoring-config
+```
+
+2. Add your PVC configuration for the component under data/config.yaml:
+
+```yaml
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: cluster-monitoring-config
+  namespace: openshift-monitoring
+data:
+  config.yaml: |
+    <component>: 1
+      volumeClaimTemplate:
+        spec:
+          storageClassName: <storage_class> 2
+          resources:
+            requests:
+              storage: <amount_of_storage> 3
+```
+
+Specify the core monitoring component for which you want to configure the PVC.
+Specify an existing storage class. If a storage class is not specified, the default storage class is used.
+Specify the amount of required storage.
+
+See the Kubernetes documentation on PersistentVolumeClaims for information on how to specify volumeClaimTemplate.
+
+The following example configures a PVC that claims persistent storage for the Prometheus instance that monitors core Red Hat OpenShift Container Platform components:
+
+```yaml
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: cluster-monitoring-config
+  namespace: openshift-monitoring
+data:
+  config.yaml: |
+    prometheusK8s:
+      volumeClaimTemplate:
+        spec:
+          storageClassName: my-storage-class
+          resources:
+            requests:
+              storage: 40Gi
+```
+
+* To configure a PVC for a component that monitors user-defined projects:
+1. Edit the user-workload-monitoring-config ConfigMap object in the openshift-user-workload-monitoring project:
+
+```terminal
+$ oc -n openshift-user-workload-monitoring edit configmap user-workload-monitoring-config
+```
+
+2. Add your PVC configuration for the component under data/config.yaml:
+
+```yaml
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: user-workload-monitoring-config
+  namespace: openshift-user-workload-monitoring
+data:
+  config.yaml: |
+    <component>: 1
+      volumeClaimTemplate:
+        spec:
+          storageClassName: <storage_class> 2
+          resources:
+            requests:
+              storage: <amount_of_storage> 3
+```
+
+Specify the component for user-defined monitoring for which you want to configure the PVC.
+Specify an existing storage class. If a storage class is not specified, the default storage class is used.
+Specify the amount of required storage.
+
+See the Kubernetes documentation on PersistentVolumeClaims for information on how to specify volumeClaimTemplate.
+
+The following example configures a PVC that claims persistent storage for Thanos Ruler:
+
+```yaml
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: user-workload-monitoring-config
+  namespace: openshift-user-workload-monitoring
+data:
+  config.yaml: |
+    thanosRuler:
+      volumeClaimTemplate:
+        spec:
+          storageClassName: my-storage-class
+          resources:
+            requests:
+              storage: 10Gi
+```
+
+
+[NOTE]
+----
+Storage requirements for the thanosRuler component depend on the number of rules that are evaluated and how many samples each rule generates.
+----
+2. Save the file to apply the changes. The pods affected by the new configuration are automatically redeployed and the new storage configuration is applied.
+
+[WARNING]
+----
+When you update the config map with a PVC configuration, the affected StatefulSet object is recreated, resulting in a temporary service outage.
+----
+
+## Resizing a persistent volume
+
+You can resize a persistent volume (PV) for monitoring components, such as Prometheus, Thanos Ruler, or Alertmanager. You need to manually expand a persistent volume claim (PVC), and then update the config map in which the component is configured.
+
+
+[IMPORTANT]
+----
+You can only expand the size of the PVC. Shrinking the storage size is not possible.
+----
+
+* You have installed the OpenShift CLI (oc).
+* If you are configuring core Red Hat OpenShift Container Platform monitoring components:
+* You have access to the cluster as a user with the cluster-admin cluster role.
+* You have created the cluster-monitoring-config ConfigMap object.
+* You have configured at least one PVC for core Red Hat OpenShift Container Platform monitoring components.
+* If you are configuring components that monitor user-defined projects:
+* You have access to the cluster as a user with the cluster-admin cluster role, or as a user with the user-workload-monitoring-config-edit role in the openshift-user-workload-monitoring project.
+* A cluster administrator has enabled monitoring for user-defined projects.
+* You have configured at least one PVC for components that monitor user-defined projects.
+
+1. Manually expand a PVC with the updated storage request. For more information, see "Expanding persistent volume claims (PVCs) with a file system" in Expanding persistent volumes.
+2. Edit the ConfigMap object:
+* If you are configuring core Red Hat OpenShift Container Platform monitoring components:
+1. Edit the cluster-monitoring-config ConfigMap object in the openshift-monitoring project:
+
+```terminal
+$ oc -n openshift-monitoring edit configmap cluster-monitoring-config
+```
+
+2. Add a new storage size for the PVC configuration for the component under data/config.yaml:
+
+```yaml
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: cluster-monitoring-config
+  namespace: openshift-monitoring
+data:
+  config.yaml: |
+    <component>: 1
+      volumeClaimTemplate:
+        spec:
+          resources:
+            requests:
+              storage: <amount_of_storage> 2
+```
+
+The component for which you want to change the storage size.
+Specify the new size for the storage volume. It must be greater than the previous value.
+
+The following example sets the new PVC request to 100 gigabytes for the Prometheus instance that monitors core Red Hat OpenShift Container Platform components:
+
+```yaml
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: cluster-monitoring-config
+  namespace: openshift-monitoring
+data:
+  config.yaml: |
+    prometheusK8s:
+      volumeClaimTemplate:
+        spec:
+          resources:
+            requests:
+              storage: 100Gi
+```
+
+* If you are configuring components that monitor user-defined projects:
+
+[NOTE]
+----
+You can resize the volumes for the Thanos Ruler and for instances of Alertmanager and Prometheus that monitor user-defined projects.
+----
+1. Edit the user-workload-monitoring-config ConfigMap object in the openshift-user-workload-monitoring project:
+
+```terminal
+$ oc -n openshift-user-workload-monitoring edit configmap user-workload-monitoring-config
+```
+
+2. Update the PVC configuration for the monitoring component under data/config.yaml:
+
+```yaml
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: user-workload-monitoring-config
+  namespace: openshift-user-workload-monitoring
+data:
+  config.yaml: |
+    <component>: 1
+      volumeClaimTemplate:
+        spec:
+          resources:
+            requests:
+              storage: <amount_of_storage> 2
+```
+
+The component for which you want to change the storage size.
+Specify the new size for the storage volume. It must be greater than the previous value.
+
+The following example sets the new PVC request to 20 gigabytes for Thanos Ruler:
+
+```yaml
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: user-workload-monitoring-config
+  namespace: openshift-user-workload-monitoring
+data:
+  config.yaml: |
+    thanosRuler:
+      volumeClaimTemplate:
+        spec:
+          resources:
+            requests:
+              storage: 20Gi
+```
+
+
+[NOTE]
+----
+Storage requirements for the thanosRuler component depend on the number of rules that are evaluated and how many samples each rule generates.
+----
+3. Save the file to apply the changes. The pods affected by the new configuration are automatically redeployed.
+
+[WARNING]
+----
+When you update the config map with a new storage size, the affected StatefulSet object is recreated, resulting in a temporary service outage.
+----
+
+* Prometheus database storage requirements
+* Expanding persistent volume claims (PVCs) with a file system
+
+## Modifying the retention time and size for Prometheus metrics data
+
+By default, Prometheus retains metrics data for the following durations:
+
+* Core platform monitoring: 15 days
+* Monitoring for user-defined projects: 24 hours
+
+You can modify the retention time for
+Prometheus
+to change how soon the data is deleted. You can also set the maximum amount of disk space the retained metrics data uses. If the data reaches this size limit, Prometheus deletes the oldest data first until the disk space used is again below the limit.
+
+Note the following behaviors of these data retention settings:
+
+* The size-based retention policy applies to all data block directories in the /prometheus directory, including persistent blocks, write-ahead log (WAL) data, and m-mapped chunks.
+* Data in the /wal and /head_chunks directories counts toward the retention size limit, but Prometheus never purges data from these directories based on size- or time-based retention policies.
+Thus, if you set a retention size limit lower than the maximum size set for the /wal and /head_chunks directories, you have configured the system not to retain any data blocks in the /prometheus data directories.
+* The size-based retention policy is applied only when Prometheus cuts a new data block, which occurs every two hours after the WAL contains at least three hours of data.
+* If you do not explicitly define values for either retention or retentionSize, retention time defaults to 15 days for core platform monitoring and 24 hours for user-defined project monitoring. Retention size is not set.
+* If you define values for both retention and retentionSize, both values apply.
+If any data blocks exceed the defined retention time or the defined size limit, Prometheus purges these data blocks.
+* If you define a value for retentionSize and do not define retention, only the retentionSize value applies.
+* If you do not define a value for retentionSize and only define a value for retention, only the retention value applies.
+* If you set the retentionSize or retention value to 0, the default settings apply. The default settings set retention time to 15 days for core platform monitoring and 24 hours for user-defined project monitoring. By default, retention size is not set.
+
+
+[NOTE]
+----
+Data compaction occurs every two hours. Therefore, a persistent volume (PV) might fill up before compaction, potentially exceeding the retentionSize limit. In such cases, the KubePersistentVolumeFillingUp alert fires until the space on a PV is lower than the retentionSize limit.
+----
+
+* If you are configuring core Red Hat OpenShift Container Platform monitoring components:
+* You have access to the cluster as a user with the cluster-admin cluster role.
+* You have created the cluster-monitoring-config ConfigMap object.
+* If you are configuring components that monitor user-defined projects:
+* You have access to the cluster as a user with the cluster-admin cluster role, or as a user with the user-workload-monitoring-config-edit role in the openshift-user-workload-monitoring project.
+* A cluster administrator has enabled monitoring for user-defined projects.
+* You have installed the OpenShift CLI (oc).
+
+1. Edit the ConfigMap object:
+* To modify the retention time and size for the Prometheus instance that monitors core Red Hat OpenShift Container Platform projects:
+1. Edit the cluster-monitoring-config ConfigMap object in the openshift-monitoring project:
+
+```terminal
+$ oc -n openshift-monitoring edit configmap cluster-monitoring-config
+```
+
+2. Add the retention time and size configuration under data/config.yaml:
+
+```yaml
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: cluster-monitoring-config
+  namespace: openshift-monitoring
+data:
+  config.yaml: |
+    prometheusK8s:
+      retention: <time_specification> 1
+      retentionSize: <size_specification> 2
+```
+
+The retention time: a number directly followed by ms (milliseconds), s (seconds), m (minutes), h (hours), d (days), w (weeks), or y (years). You can also combine time values for specific times, such as 1h30m15s.
+The retention size: a number directly followed by B (bytes), KB (kilobytes), MB (megabytes), GB (gigabytes), TB (terabytes), PB (petabytes), and EB (exabytes).
+
+The following example sets the retention time to 24 hours and the retention size to 10 gigabytes for the Prometheus instance that monitors core Red Hat OpenShift Container Platform components:
+
+```yaml
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: cluster-monitoring-config
+  namespace: openshift-monitoring
+data:
+  config.yaml: |
+    prometheusK8s:
+      retention: 24h
+      retentionSize: 10GB
+```
+
+* To modify the retention time and size for the Prometheus instance that monitors user-defined projects:
+1. Edit the user-workload-monitoring-config ConfigMap object in the openshift-user-workload-monitoring project:
+
+```terminal
+$ oc -n openshift-user-workload-monitoring edit configmap user-workload-monitoring-config
+```
+
+2. Add the retention time and size configuration under data/config.yaml:
+
+```yaml
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: user-workload-monitoring-config
+  namespace: openshift-user-workload-monitoring
+data:
+  config.yaml: |
+    prometheus:
+      retention: <time_specification> 1
+      retentionSize: <size_specification> 2
+```
+
+The retention time: a number directly followed by ms (milliseconds), s (seconds), m (minutes), h (hours), d (days), w (weeks), or y (years).
+You can also combine time values for specific times, such as 1h30m15s.
+The retention size: a number directly followed by B (bytes), KB (kilobytes), MB (megabytes), GB (gigabytes), TB (terabytes), PB (petabytes), or EB (exabytes).
+
+The following example sets the retention time to 24 hours and the retention size to 10 gigabytes for the Prometheus instance that monitors user-defined projects:
+
+```yaml
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: user-workload-monitoring-config
+  namespace: openshift-user-workload-monitoring
+data:
+  config.yaml: |
+    prometheus:
+      retention: 24h
+      retentionSize: 10GB
+```
+
+2. Save the file to apply the changes. The pods affected by the new configuration are automatically redeployed.
+
+## Modifying the retention time for Thanos Ruler metrics data
+
+By default, for user-defined projects, Thanos Ruler automatically retains metrics data for 24 hours. You can modify the retention time to change how long this data is retained by specifying a time value in the user-workload-monitoring-config config map in the openshift-user-workload-monitoring namespace.
+
+* You have access to the cluster as a user with the cluster-admin cluster role or as a user with the user-workload-monitoring-config-edit role in the openshift-user-workload-monitoring project.
+* A cluster administrator has enabled monitoring for user-defined projects.
+* You have installed the OpenShift CLI (oc).
+
+1. Edit the user-workload-monitoring-config ConfigMap object in the openshift-user-workload-monitoring project:
+
+```terminal
+$ oc -n openshift-user-workload-monitoring edit configmap user-workload-monitoring-config
+```
+
+2. Add the retention time configuration under data/config.yaml:
+
+```yaml
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: user-workload-monitoring-config
+  namespace: openshift-user-workload-monitoring
+data:
+  config.yaml: |
+    thanosRuler:
+      retention: <time_specification> 1
+```
+
+Specify the retention time in the following format: a number directly followed by ms (milliseconds), s (seconds), m (minutes), h (hours), d (days), w (weeks), or y (years).
+You can also combine time values for specific times, such as 1h30m15s.
+The default is 24h.
+
+The following example sets the retention time to 10 days for Thanos Ruler data:
+
+```yaml
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: user-workload-monitoring-config
+  namespace: openshift-user-workload-monitoring
+data:
+  config.yaml: |
+    thanosRuler:
+      retention: 10d
+```
+
+3. Save the file to apply the changes. The pods affected by the new configuration are automatically redeployed.
+
+* Creating a cluster monitoring config map
+* Prometheus database storage requirements
+* Recommended configurable storage technology
+* Understanding persistent storage
+* Optimizing storage
+* Enabling monitoring for user-defined projects
+
+# Configuring remote write storage
+
+You can configure remote write storage to enable Prometheus to send ingested metrics to remote systems for long-term storage. Doing so has no impact on how or for how long Prometheus stores metrics.
+
+* If you are configuring core Red Hat OpenShift Container Platform monitoring components:
+* You have access to the cluster as a user with the cluster-admin cluster role.
+* You have created the cluster-monitoring-config ConfigMap object.
+* If you are configuring components that monitor user-defined projects:
+* You have access to the cluster as a user with the cluster-admin cluster role or as a user with the user-workload-monitoring-config-edit role in the openshift-user-workload-monitoring project.
+* A cluster administrator has enabled monitoring for user-defined projects.
+* You have installed the OpenShift CLI (oc).
+* You have set up a remote write compatible endpoint (such as Thanos) and know the endpoint URL. See the Prometheus remote endpoints and storage documentation for information about endpoints that are compatible with the remote write feature.
+
+[IMPORTANT]
+----
+Red Hat only provides information for configuring remote write senders and does not offer guidance on configuring receiver endpoints. Customers are responsible for setting up their own endpoints that are remote-write compatible. Issues with endpoint receiver configurations are not included in Red Hat production support.
+----
+* You have set up authentication credentials in a Secret object for the remote write endpoint. You must create the secret in the
+same namespace as the Prometheus object for which you configure remote write: the openshift-monitoring namespace for default platform monitoring or the openshift-user-workload-monitoring namespace for user workload monitoring.
+
+[WARNING]
+----
+To reduce security risks, use HTTPS and authentication to send metrics to an endpoint.
+----
+
+1. Edit the ConfigMap object:
+* To configure remote write for the Prometheus instance that monitors core Red Hat OpenShift Container Platform projects:
+1. Edit the cluster-monitoring-config ConfigMap object in the openshift-monitoring project:
+
+```terminal
+$ oc -n openshift-monitoring edit configmap cluster-monitoring-config
+```
+
+2. Add a remoteWrite: section under data/config.yaml/prometheusK8s.
+3. Add an endpoint URL and authentication credentials in this section:
+
+```yaml
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: cluster-monitoring-config
+  namespace: openshift-monitoring
+data:
+  config.yaml: |
+    prometheusK8s:
+      remoteWrite:
+      - url: "https://remote-write-endpoint.example.com" 1
+        <endpoint_authentication_credentials> 2
+```
+
+The URL of the remote write endpoint.
+The authentication method and credentials for the endpoint.
+Currently supported authentication methods are AWS Signature Version 4, authentication using HTTP in an Authorization request header, Basic authentication, OAuth 2.0, and TLS client.
+See Supported remote write authentication settings for sample configurations of supported authentication methods.
+4. Add write relabel configuration values after the authentication credentials:
+
+```yaml
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: cluster-monitoring-config
+  namespace: openshift-monitoring
+data:
+  config.yaml: |
+    prometheusK8s:
+      remoteWrite:
+      - url: "https://remote-write-endpoint.example.com"
+        <endpoint_authentication_credentials>
+        <your_write_relabel_configs> 1
+```
+
+The write relabel configuration settings.
+
+For <your_write_relabel_configs> substitute a list of write relabel configurations for metrics that you want to send to the remote endpoint.
+
+The following sample shows how to forward a single metric called my_metric:
+
+```yaml
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: cluster-monitoring-config
+  namespace: openshift-monitoring
+data:
+  config.yaml: |
+    prometheusK8s:
+      remoteWrite:
+      - url: "https://remote-write-endpoint.example.com"
+        writeRelabelConfigs:
+        - sourceLabels: [__name__]
+          regex: 'my_metric'
+          action: keep
+```
+
+
+See the Prometheus relabel_config documentation for information about write relabel configuration options.
+* To configure remote write for the Prometheus instance that monitors user-defined projects:
+1. Edit the user-workload-monitoring-config ConfigMap object in the openshift-user-workload-monitoring project:
+
+```terminal
+$ oc -n openshift-user-workload-monitoring edit configmap user-workload-monitoring-config
+```
+
+2. Add a remoteWrite: section under data/config.yaml/prometheus.
+3. Add an endpoint URL and authentication credentials in this section:
+
+```yaml
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: user-workload-monitoring-config
+  namespace: openshift-user-workload-monitoring
+data:
+  config.yaml: |
+    prometheus:
+      remoteWrite:
+      - url: "https://remote-write-endpoint.example.com" 1
+        <endpoint_authentication_credentials> 2
+```
+
+The URL of the remote write endpoint.
+The authentication method and credentials for the endpoint.
+Currently supported authentication methods are AWS Signature Version 4, authentication using HTTP an Authorization request header, basic authentication, OAuth 2.0, and TLS client.
+See Supported remote write authentication settings below for sample configurations of supported authentication methods.
+4. Add write relabel configuration values after the authentication credentials:
+
+```yaml
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: user-workload-monitoring-config
+  namespace: openshift-user-workload-monitoring
+data:
+  config.yaml: |
+    prometheus:
+      remoteWrite:
+      - url: "https://remote-write-endpoint.example.com"
+        <endpoint_authentication_credentials>
+        <your_write_relabel_configs> 1
+```
+
+The write relabel configuration settings.
+
+For <your_write_relabel_configs> substitute a list of write relabel configurations for metrics that you want to send to the remote endpoint.
+
+The following sample shows how to forward a single metric called my_metric:
+
+```yaml
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: user-workload-monitoring-config
+  namespace: openshift-user-workload-monitoring
+data:
+  config.yaml: |
+    prometheus:
+      remoteWrite:
+      - url: "https://remote-write-endpoint.example.com"
+        writeRelabelConfigs:
+        - sourceLabels: [__name__]
+          regex: 'my_metric'
+          action: keep
+```
+
+
+See the Prometheus relabel_config documentation for information about write relabel configuration options.
+2. Save the file to apply the changes. The new configuration is applied automatically.
+
+## Supported remote write authentication settings
+
+You can use different methods to authenticate with a remote write endpoint. Currently supported authentication methods are AWS Signature Version 4, basic authentication, authorization, OAuth 2.0, and TLS client. The following table provides details about supported authentication methods for use with remote write.
+
+
+
+## Example remote write authentication settings
+
+The following samples show different authentication settings you can use to connect to a remote write endpoint. Each sample also shows how to configure a corresponding Secret object that contains authentication credentials and other relevant settings. Each sample configures authentication for use with
+default platform monitoring
+in the {namespace-name} namespace.
+
+The following shows the settings for a sigv4 secret named sigv4-credentials in the {namespace-name} namespace.
+
+```yaml
+apiVersion: v1
+kind: Secret
+metadata:
+  name: sigv4-credentials
+  namespace: {namespace-name}
+stringData:
+  accessKey: <AWS_access_key> 1
+  secretKey: <AWS_secret_key> 2
+type: Opaque
+```
+
+The AWS API access key.
+The AWS API secret key.
+The following shows sample AWS Signature Version 4 remote write authentication settings that use a Secret object named sigv4-credentials in the {namespace-name} namespace:
+
+```yaml
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {configmap-name}
+  namespace: {namespace-name}
+data:
+  config.yaml: |
+    {prometheus-instance}:
+      remoteWrite:
+      - url: "https://authorization.example.com/api/write"
+        sigv4:
+          region: <AWS_region> 1
+          accessKey:
+            name: sigv4-credentials 2
+            key: accessKey 3
+          secretKey:
+            name: sigv4-credentials 2
+            key: secretKey 4
+          profile: <AWS_profile_name> 5
+          roleArn: <AWS_role_arn> 6
+```
+
+The AWS region.
+The name of the Secret object containing the AWS API access credentials.
+The key that contains the AWS API access key in the specified Secret object.
+The key that contains the AWS API secret key in the specified Secret object.
+The name of the AWS profile that is being used to authenticate.
+The unique identifier for the Amazon Resource Name (ARN) assigned to your role.
+
+The following shows sample basic authentication settings for a Secret object named rw-basic-auth in the {namespace-name} namespace:
+
+```yaml
+apiVersion: v1
+kind: Secret
+metadata:
+  name: rw-basic-auth
+  namespace: {namespace-name}
+stringData:
+  user: <basic_username> 1
+  password: <basic_password> 2
+type: Opaque
+```
+
+The username.
+The password.
+The following sample shows a basicAuth remote write configuration that uses a Secret object named rw-basic-auth in the {namespace-name} namespace.
+It assumes that you have already set up authentication credentials for the endpoint.
+
+```yaml
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {configmap-name}
+  namespace: {namespace-name}
+data:
+  config.yaml: |
+    {prometheus-instance}:
+      remoteWrite:
+      - url: "https://basicauth.example.com/api/write"
+        basicAuth:
+          username:
+            name: rw-basic-auth 1
+            key: user 2
+          password:
+            name: rw-basic-auth 1
+            key: password 3
+```
+
+The name of the Secret object that contains the authentication credentials.
+The key that contains the username  in the specified Secret object.
+The key that contains the password in the specified Secret object.
+
+The following shows bearer token settings for a Secret object named rw-bearer-auth in the {namespace-name} namespace:
+
+```yaml
+apiVersion: v1
+kind: Secret
+metadata:
+  name: rw-bearer-auth
+  namespace: {namespace-name}
+stringData:
+  token: <authentication_token> 1
+type: Opaque
+```
+
+The authentication token.
+The following shows sample bearer token config map settings that use a Secret object named rw-bearer-auth in the {namespace-name} namespace:
+
+```yaml
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {configmap-name}
+  namespace: {namespace-name}
+data:
+  config.yaml: |
+    enableUserWorkload: true
+    {prometheus-instance}:
+      remoteWrite:
+      - url: "https://authorization.example.com/api/write"
+        authorization:
+          type: Bearer 1
+          credentials:
+            name: rw-bearer-auth 2
+            key: token 3
+```
+
+The authentication type of the request. The default value is Bearer.
+The name of the Secret object that contains the authentication credentials.
+The key that contains the authentication token in the specified Secret object.
+
+The following shows sample OAuth 2.0 settings for a Secret object named oauth2-credentials in the {namespace-name} namespace:
+
+```yaml
+apiVersion: v1
+kind: Secret
+metadata:
+  name: oauth2-credentials
+  namespace: {namespace-name}
+stringData:
+  id: <oauth2_id> 1
+  secret: <oauth2_secret> 2
+type: Opaque
+```
+
+The Oauth 2.0 ID.
+The OAuth 2.0 secret.
+The following shows an oauth2 remote write authentication sample configuration that uses a Secret object named oauth2-credentials in the {namespace-name} namespace:
+
+```yaml
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {configmap-name}
+  namespace: {namespace-name}
+data:
+  config.yaml: |
+    {prometheus-instance}:
+      remoteWrite:
+      - url: "https://test.example.com/api/write"
+        oauth2:
+          clientId:
+            secret:
+              name: oauth2-credentials 1
+              key: id 2
+          clientSecret:
+            name: oauth2-credentials 1
+            key: secret 2
+          tokenUrl: https://example.com/oauth2/token 3
+          scopes: 4
+          - <scope_1>
+          - <scope_2>
+          endpointParams: 5
+            param1: <parameter_1>
+            param2: <parameter_2>
+```
+
+The name of the corresponding Secret object. Note that ClientId can alternatively refer to a ConfigMap object, although clientSecret must refer to a Secret object.
+The key that contains the OAuth 2.0 credentials in the specified Secret object.
+The URL used to fetch a token with the specified clientId and clientSecret.
+The OAuth 2.0 scopes for the authorization request. These scopes limit what data the tokens can access.
+The OAuth 2.0 authorization request parameters required for the authorization server.
+
+The following shows sample TLS client settings for a tls Secret object named mtls-bundle in the {namespace-name} namespace.
+
+```yaml
+apiVersion: v1
+kind: Secret
+metadata:
+  name: mtls-bundle
+  namespace: {namespace-name}
+data:
+  ca.crt: <ca_cert> 1
+  client.crt: <client_cert> 2
+  client.key: <client_key> 3
+type: tls
+```
+
+The CA certificate in the Prometheus container with which to validate the server certificate.
+The client certificate for authentication with the server.
+The client key.
+The following sample shows a tlsConfig remote write authentication configuration that uses a TLS Secret object named mtls-bundle.
+
+```yaml
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {configmap-name}
+  namespace: {namespace-name}
+data:
+  config.yaml: |
+    {prometheus-instance}:
+      remoteWrite:
+      - url: "https://remote-write-endpoint.example.com"
+        tlsConfig:
+          ca:
+            secret:
+              name: mtls-bundle 1
+              key: ca.crt 2
+          cert:
+            secret:
+              name: mtls-bundle 1
+              key: client.crt 3
+          keySecret:
+            name: mtls-bundle 1
+            key: client.key 4
+```
+
+The name of the corresponding Secret object that contains the TLS authentication credentials. Note that ca and cert can alternatively refer to a ConfigMap object, though keySecret must refer to a Secret object.
+The key in the specified Secret object that contains the CA certificate for the endpoint.
+The key in the specified Secret object that contains the client certificate for the endpoint.
+The key in the specified Secret object that contains the client key secret.
+
+* See Setting up remote write compatible endpoints for steps to create a remote write compatible endpoint (such as Thanos).
+* See Tuning remote write settings for information about how to optimize remote write settings for different use cases.
+* See Understanding secrets for steps to create and configure Secret objects in Red Hat OpenShift Container Platform.
+* See the Prometheus REST API reference for remote write for information about additional optional fields.
+
+# Adding cluster ID labels to metrics
+
+If you manage multiple Red Hat OpenShift Container Platform clusters and use the remote write feature to send metrics data from these clusters to an external storage location, you can add cluster ID labels to identify the metrics data coming from different clusters. You can then query these labels to identify the source cluster for a metric and distinguish that data from similar metrics data sent by other clusters.
+
+This way, if you manage many clusters for multiple customers and send metrics data to a single centralized storage system, you can use cluster ID labels to query metrics for a particular cluster or customer.
+
+Creating and using cluster ID labels involves three general steps:
+
+* Configuring the write relabel settings for remote write storage.
+* Adding cluster ID labels to the metrics.
+* Querying these labels to identify the source cluster or customer for a metric.
+
+## Creating cluster ID labels for metrics
+
+You can create cluster ID labels for metrics for default platform monitoring and for user workload monitoring.
+
+For default platform monitoring, you add cluster ID labels for metrics in the write_relabel settings for remote write storage in the cluster-monitoring-config config map in the openshift-monitoring namespace.
+
+For user workload monitoring, you edit the settings in the user-workload-monitoring-config config map in the openshift-user-workload-monitoring namespace.
+
+
+[NOTE]
+----
+When Prometheus scrapes user workload targets that expose a namespace label, the system stores this label as exported_namespace.
+This behavior ensures that the final namespace label value is equal to the namespace of the target pod.
+You cannot override this default configuration by setting the value of the honorLabels field to true for PodMonitor or ServiceMonitor objects.
+----
+
+* If you are configuring default platform monitoring components:
+* You have access to the cluster as a user with the cluster-admin cluster role.
+* You have created the cluster-monitoring-config ConfigMap object.
+* If you are configuring components that monitor user-defined projects:
+* You have access to the cluster as a user with the cluster-admin cluster role or as a user with the user-workload-monitoring-config-edit role in the openshift-user-workload-monitoring project.
+* A cluster administrator has enabled monitoring for user-defined projects.
+* You have installed the OpenShift CLI (oc).
+* You have configured remote write storage.
+
+1. Edit the ConfigMap object:
+* To create cluster ID labels for core Red Hat OpenShift Container Platform metrics:
+1. Edit the cluster-monitoring-config ConfigMap object in the openshift-monitoring project:
+
+```terminal
+$ oc -n openshift-monitoring edit configmap cluster-monitoring-config
+```
+
+2. In the writeRelabelConfigs: section under data/config.yaml/prometheusK8s/remoteWrite, add cluster ID relabel configuration values:
+
+```yaml
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: cluster-monitoring-config
+  namespace: openshift-monitoring
+data:
+  config.yaml: |
+    prometheusK8s:
+      remoteWrite:
+      - url: "https://remote-write-endpoint.example.com"
+        <endpoint_authentication_credentials>
+        writeRelabelConfigs: 1
+          - <relabel_config> 2
+```
+
+Add a list of write relabel configurations for metrics that you want to send to the remote endpoint.
+Substitute the label configuration for the metrics sent to the remote write endpoint.
+
+The following sample shows how to forward a metric with the cluster ID label cluster_id in default platform monitoring:
+
+```yaml
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: cluster-monitoring-config
+  namespace: openshift-monitoring
+data:
+  config.yaml: |
+    prometheusK8s:
+      remoteWrite:
+      - url: "https://remote-write-endpoint.example.com"
+        writeRelabelConfigs:
+        - sourceLabels:
+          - __tmp_openshift_cluster_id__ 1
+          targetLabel: cluster_id 2
+          action: replace 3
+```
+
+The system initially applies a temporary cluster ID source label named __tmp_openshift_cluster_id__. This temporary label gets replaced by the cluster ID label name that you specify.
+Specify the name of the cluster ID label for metrics sent to remote write storage.
+If you use a label name that already exists for a metric, that value is overwritten with the name of this cluster ID label.
+For the label name, do not use __tmp_openshift_cluster_id__. The final relabeling step removes labels that use this name.
+The replace write relabel action replaces the temporary label with the target label for outgoing metrics.
+This action is the default and is applied if no action is specified.
+* To create cluster ID labels for user-defined project metrics:
+1. Edit the user-workload-monitoring-config ConfigMap object in the openshift-user-workload-monitoring project:
+
+```terminal
+$ oc -n openshift-user-workload-monitoring edit configmap user-workload-monitoring-config
+```
+
+2. In the writeRelabelConfigs: section under data/config.yaml/prometheus/remoteWrite, add cluster ID relabel configuration values:
+
+```yaml
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: user-workload-monitoring-config
+  namespace: openshift-user-workload-monitoring
+data:
+  config.yaml: |
+    prometheus:
+      remoteWrite:
+      - url: "https://remote-write-endpoint.example.com"
+        <endpoint_authentication_credentials>
+        writeRelabelConfigs: 1
+          - <relabel_config> 2
+```
+
+Add a list of write relabel configurations for metrics that you want to send to the remote endpoint.
+Substitute the label configuration for the metrics sent to the remote write endpoint.
+
+The following sample shows how to forward a metric with the cluster ID label cluster_id in user-workload monitoring:
+
+```yaml
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: user-workload-monitoring-config
+  namespace: openshift-user-workload-monitoring
+data:
+  config.yaml: |
+    prometheus:
+      remoteWrite:
+      - url: "https://remote-write-endpoint.example.com"
+        writeRelabelConfigs:
+        - sourceLabels:
+          - __tmp_openshift_cluster_id__ 1
+          targetLabel: cluster_id 2
+          action: replace 3
+```
+
+The system initially applies a temporary cluster ID source label named __tmp_openshift_cluster_id__. This temporary label gets replaced by the cluster ID label name that you specify.
+Specify the name of the cluster ID label for metrics sent to remote write storage. If you use a label name that already exists for a metric, that value is overwritten with the name of this cluster ID label. For the label name, do not use __tmp_openshift_cluster_id__. The final relabeling step removes labels that use this name.
+The replace write relabel action replaces the temporary label with the target label for outgoing metrics. This action is the default and is applied if no action is specified.
+2. Save the file to apply the changes. The new configuration is applied automatically.
+
+* For details about write relabel configuration, see Configuring remote write storage.
+* For information about how to get your cluster ID, see Obtaining your cluster ID.
+
+# Configuring audit logs for Metrics Server
+
+You can configure audit logs for Metrics Server to help you troubleshoot issues with the server.
+Audit logs record the sequence of actions in a cluster. It can record user, application, or control plane activities.
+
+You can set audit log rules, which determine what events are recorded and what data they should include. This can be achieved with the following audit profiles:
+
+* Metadata (default): This profile enables the logging of event metadata including user, timestamps, resource, and verb. It does not record request and response bodies.
+* Request: This enables the logging of event metadata and request body, but it does not record response body. This configuration does not apply for non-resource requests.
+* RequestResponse: This enables the logging of event metadata, and request and response bodies. This configuration does not apply for non-resource requests.
+* None: None of the previously described events are recorded.
+
+You can configure the audit profiles by modifying the cluster-monitoring-config config map.
+The following example sets the profile to Request, allowing the logging of event metadata and request body for Metrics Server:
+
+
+```yaml
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: cluster-monitoring-config
+  namespace: openshift-monitoring
+data:
+  config.yaml: |
+    metricsServer:
+      audit:
+        profile: Request
+```
+
+
+# Configuring metrics collection profiles
+
+
+[IMPORTANT]
+----
+Using a metrics collection profile is a Technology Preview feature only. Technology Preview features are not supported with Red Hat production service level agreements (SLAs) and might not be functionally complete.
+Red Hat does not recommend using them in production.
+These features provide early access to upcoming product features, enabling customers to test functionality and provide feedback during the development process.
+For more information about the support scope of Red Hat Technology Preview features, see https://access.redhat.com/support/offerings/techpreview.
+----
+
+By default, Prometheus collects metrics exposed by all default metrics targets in Red Hat OpenShift Container Platform components.
+However, you might want Prometheus to collect fewer metrics from a cluster in certain scenarios:
+
+* If cluster administrators require only alert, telemetry, and console metrics and do not require other metrics to be available.
+* If a cluster increases in size, and the increased size of the default metrics data collected now requires a significant increase in CPU and memory resources.
+
+You can use a metrics collection profile to collect either the default amount of metrics data or a minimal amount of metrics data.
+When you collect minimal metrics data, basic monitoring features such as alerting continue to work.
+At the same time, the CPU and memory resources required by Prometheus decrease.
+
+## About metrics collection profiles
+
+You can enable one of two metrics collection profiles:
+
+* full: Prometheus collects metrics data exposed by all platform components. This setting is the default.
+* minimal: Prometheus collects only the metrics data required for platform alerts, recording rules, telemetry, and console dashboards.
+
+## Choosing a metrics collection profile
+
+To choose a metrics collection profile for core Red Hat OpenShift Container Platform monitoring components, edit the cluster-monitoring-config ConfigMap object.
+
+* You have installed the OpenShift CLI (oc).
+* You have enabled Technology Preview features by using the FeatureGate custom resource (CR).
+* You have created the cluster-monitoring-config ConfigMap object.
+* You have access to the cluster as a user with the cluster-admin cluster role.
+
+1. Edit the cluster-monitoring-config ConfigMap object in the openshift-monitoring project:
+
+```terminal
+$ oc -n openshift-monitoring edit configmap cluster-monitoring-config
+```
+
+2. Add the metrics collection profile setting under data/config.yaml/prometheusK8s:
+
+```yaml
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: cluster-monitoring-config
+  namespace: openshift-monitoring
+data:
+  config.yaml: |
+    prometheusK8s:
+      collectionProfile: <metrics_collection_profile_name> 1
+```
+
+The name of the metrics collection profile.
+The available values are full or minimal.
+If you do not specify a value or if the collectionProfile key name does not exist in the config map, the default setting of full is used.
+
+The following example sets the metrics collection profile to minimal for the core platform instance of Prometheus:
+
+```yaml
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: cluster-monitoring-config
+  namespace: openshift-monitoring
+data:
+  config.yaml: |
+    prometheusK8s:
+      collectionProfile: minimal
+```
+
+3. Save the file to apply the changes. The new configuration is applied automatically.
+
+* See Viewing a list of available metrics for steps to view a list of metrics being collected for a cluster.
+* See Enabling features using feature gates for steps to enable Technology Preview features.
+
+# Controlling the impact of unbound metrics attributes in user-defined projects
+
+Developers can create labels to define attributes for metrics in the form of key-value pairs. The number of potential key-value pairs corresponds to the number of possible values for an attribute. An attribute that has an unlimited number of potential values is called an unbound attribute. For example, a customer_id attribute is unbound because it has an infinite number of possible values.
+
+Every assigned key-value pair has a unique time series. The use of many unbound attributes in labels can result in an exponential increase in the number of time series created. This can impact Prometheus performance and can consume a lot of disk space.
+
+Cluster administrators
+can use the following measures to control the impact of unbound metrics attributes in user-defined projects:
+
+* Limit the number of samples that can be accepted per target scrape in user-defined projects
+* Limit the number of scraped labels, the length of label names, and the length of label values
+* Create alerts that fire when a scrape sample threshold is reached or when the target cannot be scraped
+
+
+[NOTE]
+----
+Limiting scrape samples can help prevent the issues caused by adding many unbound attributes to labels. Developers can also prevent the underlying cause by limiting the number of unbound attributes that they define for metrics. Using attributes that are bound to a limited set of possible values reduces the number of potential key-value pair combinations.
+----
+
+## Setting scrape sample and label limits for user-defined projects
+
+You can limit the number of samples that can be accepted per target scrape in user-defined projects. You can also limit the number of scraped labels, the length of label names, and the length of label values.
+
+
+[WARNING]
+----
+If you set sample or label limits, no further sample data is ingested for that target scrape after the limit is reached.
+----
+
+* You have access to the cluster as a user with the cluster-admin cluster role, or as a user with the user-workload-monitoring-config-edit role in the openshift-user-workload-monitoring project.
+* A cluster administrator has enabled monitoring for user-defined projects.
+* You have installed the OpenShift CLI (oc).
+
+1. Edit the user-workload-monitoring-config ConfigMap object in the openshift-user-workload-monitoring project:
+
+```terminal
+$ oc -n openshift-user-workload-monitoring edit configmap user-workload-monitoring-config
+```
+
+2. Add the enforcedSampleLimit configuration to data/config.yaml to limit the number of samples that can be accepted per target scrape in user-defined projects:
+
+```yaml
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: user-workload-monitoring-config
+  namespace: openshift-user-workload-monitoring
+data:
+  config.yaml: |
+    prometheus:
+      enforcedSampleLimit: 50000 1
+```
+
+A value is required if this parameter is specified. This enforcedSampleLimit example limits the number of samples that can be accepted per target scrape in user-defined projects to 50,000.
+3. Add the enforcedLabelLimit, enforcedLabelNameLengthLimit, and enforcedLabelValueLengthLimit configurations to data/config.yaml to limit the number of scraped labels, the length of label names, and the length of label values in user-defined projects:
+
+```yaml
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: user-workload-monitoring-config
+  namespace: openshift-user-workload-monitoring
+data:
+  config.yaml: |
+    prometheus:
+      enforcedLabelLimit: 500 1
+      enforcedLabelNameLengthLimit: 50 2
+      enforcedLabelValueLengthLimit: 600 3
+```
+
+Specifies the maximum number of labels per scrape.
+The default value is 0, which specifies no limit.
+Specifies the maximum length in characters of a label name.
+The default value is 0, which specifies no limit.
+Specifies the maximum length in characters of a label value.
+The default value is 0, which specifies no limit.
+4. Save the file to apply the changes. The limits are applied automatically.
+
+## Creating scrape sample alerts
+
+You can create alerts that notify you when:
+
+* The target cannot be scraped or is not available for the specified for duration
+* A scrape sample threshold is reached or is exceeded for the specified for duration
+
+* You have access to the cluster as a user with the cluster-admin cluster role, or as a user with the user-workload-monitoring-config-edit role in the openshift-user-workload-monitoring project.
+* A cluster administrator has enabled monitoring for user-defined projects.
+* You have limited the number of samples that can be accepted per target scrape in user-defined projects, by using enforcedSampleLimit.
+* You have installed the OpenShift CLI (oc).
+
+1. Create a YAML file with alerts that inform you when the targets are down and when the enforced sample limit is approaching. The file in this example is called monitoring-stack-alerts.yaml:
+
+```yaml
+apiVersion: monitoring.coreos.com/v1
+kind: PrometheusRule
+metadata:
+  labels:
+    prometheus: k8s
+    role: alert-rules
+  name: monitoring-stack-alerts 1
+  namespace: ns1 2
+spec:
+  groups:
+  - name: general.rules
+    rules:
+    - alert: TargetDown 3
+      annotations:
+        message: '{{ printf "%.4g" $value }}% of the {{ $labels.job }}/{{ $labels.service
+          }} targets in {{ $labels.namespace }} namespace are down.' 4
+      expr: 100 * (count(up == 0) BY (job, namespace, service) / count(up) BY (job,
+        namespace, service)) > 10
+      for: 10m 5
+      labels:
+        severity: warning 6
+    - alert: ApproachingEnforcedSamplesLimit 7
+      annotations:
+        message: '{{ $labels.container }} container of the {{ $labels.pod }} pod in the {{ $labels.namespace }} namespace consumes {{ $value | humanizePercentage }} of the samples limit budget.' 8
+      expr: (scrape_samples_post_metric_relabeling / (scrape_sample_limit > 0)) > 0.9 9
+      for: 10m 10
+      labels:
+        severity: warning 11
+```
+
+Defines the name of the alerting rule.
+Specifies the user-defined project where the alerting rule is deployed.
+The TargetDown alert fires if the target cannot be scraped and is not available for the for duration.
+The message that is displayed when the TargetDown alert fires.
+The conditions for the TargetDown alert must be true for this duration before the alert is fired.
+Defines the severity for the TargetDown alert.
+The ApproachingEnforcedSamplesLimit alert fires when the defined scrape sample threshold is exceeded and lasts for the specified for duration.
+The message that is displayed when the ApproachingEnforcedSamplesLimit alert fires.
+The threshold for the ApproachingEnforcedSamplesLimit alert. In this example, the alert fires when the number of ingested samples exceeds 90% of the configured limit.
+The conditions for the ApproachingEnforcedSamplesLimit alert must be true for this duration before the alert is fired.
+Defines the severity for the ApproachingEnforcedSamplesLimit alert.
+2. Apply the configuration to the user-defined project:
+
+```terminal
+$ oc apply -f monitoring-stack-alerts.yaml
+```
+
+3. Additionally, you can check if a target has hit the configured limit:
+1. In the Administrator perspective of the web console, go to Observe -> Targets and select an endpoint with a Down status that you want to check.
+
+The Scrape failed: sample limit exceeded message is displayed if the endpoint failed because of an exceeded sample limit.
+
+* Creating a user-defined workload monitoring config map
+* Enabling monitoring for user-defined projects
+* See Determining why Prometheus is consuming a lot of disk space for steps to query which metrics have the highest number of scrape samples.
+
+# Configuring external Alertmanager instances
+
+The Red Hat OpenShift Container Platform monitoring stack includes a local Alertmanager instance that routes alerts from Prometheus.
+You can add external Alertmanager instances to route alerts for core Red Hat OpenShift Container Platform projects or user-defined projects.
+
+If you add the same external Alertmanager configuration for multiple clusters and disable the local instance for each cluster, you can then manage alert routing for multiple clusters by using a single external Alertmanager instance.
+
+* If you are configuring core Red Hat OpenShift Container Platform monitoring components in the openshift-monitoring project:
+* You have access to the cluster as a user with the cluster-admin cluster role.
+* You have created the cluster-monitoring-config config map.
+* If you are configuring components that monitor user-defined projects:
+* You have access to the cluster as a user with the cluster-admin cluster role, or as a user with the user-workload-monitoring-config-edit role in the openshift-user-workload-monitoring project.
+* A cluster administrator has enabled monitoring for user-defined projects.
+* You have installed the OpenShift CLI (oc).
+
+1. Edit the ConfigMap object.
+* To configure additional Alertmanagers for routing alerts from core Red Hat OpenShift Container Platform projects:
+1. Edit the cluster-monitoring-config config map in the openshift-monitoring project:
+
+```terminal
+$ oc -n openshift-monitoring edit configmap cluster-monitoring-config
+```
+
+2. Add an additionalAlertmanagerConfigs: section under data/config.yaml/prometheusK8s.
+3. Add the configuration details for additional Alertmanagers in this section:
+
+```yaml
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: cluster-monitoring-config
+  namespace: openshift-monitoring
+data:
+  config.yaml: |
+    prometheusK8s:
+      additionalAlertmanagerConfigs:
+      - <alertmanager_specification>
+```
+
+
+For <alertmanager_specification>, substitute authentication and other configuration details for additional Alertmanager instances.
+Currently supported authentication methods are bearer token (bearerToken) and client TLS (tlsConfig).
+The following sample config map configures an additional Alertmanager using a bearer token with client TLS authentication:
+
+```yaml
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: cluster-monitoring-config
+  namespace: openshift-monitoring
+data:
+  config.yaml: |
+    prometheusK8s:
+      additionalAlertmanagerConfigs:
+      - scheme: https
+        pathPrefix: /
+        timeout: "30s"
+        apiVersion: v1
+        bearerToken:
+          name: alertmanager-bearer-token
+          key: token
+        tlsConfig:
+          key:
+            name: alertmanager-tls
+            key: tls.key
+          cert:
+            name: alertmanager-tls
+            key: tls.crt
+          ca:
+            name: alertmanager-tls
+            key: tls.ca
+        staticConfigs:
+        - external-alertmanager1-remote.com
+        - external-alertmanager1-remote2.com
+```
+
+* To configure additional Alertmanager instances for routing alerts from user-defined projects:
+1. Edit the user-workload-monitoring-config config map in the openshift-user-workload-monitoring project:
+
+```terminal
+$ oc -n openshift-user-workload-monitoring edit configmap user-workload-monitoring-config
+```
+
+2. Add a <component>/additionalAlertmanagerConfigs: section under data/config.yaml/.
+3. Add the configuration details for additional Alertmanagers in this section:
+
+```yaml
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: user-workload-monitoring-config
+  namespace: openshift-user-workload-monitoring
+data:
+  config.yaml: |
+    <component>:
+      additionalAlertmanagerConfigs:
+      - <alertmanager_specification>
+```
+
+
+For <component>, substitute one of two supported external Alertmanager components: prometheus or thanosRuler.
+
+For <alertmanager_specification>, substitute authentication and other configuration details for additional Alertmanager instances. Currently supported authentication methods are bearer token (bearerToken) and client TLS (tlsConfig). The following sample config map configures an additional Alertmanager using Thanos Ruler with a bearer token and client TLS authentication:
+
+```yaml
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: user-workload-monitoring-config
+  namespace: openshift-user-workload-monitoring
+data:
+  config.yaml: |
+    thanosRuler:
+      additionalAlertmanagerConfigs:
+      - scheme: https
+        pathPrefix: /
+        timeout: "30s"
+        apiVersion: v1
+        bearerToken:
+          name: alertmanager-bearer-token
+          key: token
+        tlsConfig:
+          key:
+            name: alertmanager-tls
+            key: tls.key
+          cert:
+            name: alertmanager-tls
+            key: tls.crt
+          ca:
+            name: alertmanager-tls
+            key: tls.ca
+        staticConfigs:
+        - external-alertmanager1-remote.com
+        - external-alertmanager1-remote2.com
+```
+
+2. Save the file to apply the changes. The pods affected by the new configuration are automatically redeployed.
+
+# Configuring secrets for Alertmanager
+
+The Red Hat OpenShift Container Platform monitoring stack includes Alertmanager, which routes alerts from Prometheus to endpoint receivers.
+If you need to authenticate with a receiver so that Alertmanager can send alerts to it, you can configure Alertmanager to use a secret that contains authentication credentials for the receiver.
+
+For example, you can configure Alertmanager to use a secret to authenticate with an endpoint receiver that requires a certificate issued by a private Certificate Authority (CA).
+You can also configure Alertmanager to use a secret to authenticate with a receiver that requires a password file for Basic HTTP authentication.
+In either case, authentication details are contained in the Secret object rather than in the ConfigMap object.
+
+## Adding a secret to the Alertmanager configuration
+
+You can add secrets to the Alertmanager configuration for core platform monitoring components by editing the cluster-monitoring-config config map in the openshift-monitoring project.
+
+After you add a secret to the config map, the secret is mounted as a volume at /etc/alertmanager/secrets/<secret_name> within the alertmanager container for the Alertmanager pods.
+
+* If you are configuring core Red Hat OpenShift Container Platform monitoring components in the openshift-monitoring project:
+* You have access to the cluster as a user with the cluster-admin cluster role.
+* You have created the cluster-monitoring-config config map.
+* You have created the secret to be configured in Alertmanager in the openshift-monitoring project.
+* If you are configuring components that monitor user-defined projects:
+* You have access to the cluster as a user with the cluster-admin cluster role, or as a user with the user-workload-monitoring-config-edit role in the openshift-user-workload-monitoring project.
+* You have created the secret to be configured in Alertmanager in the openshift-user-workload-monitoring project.
+* A cluster administrator has enabled monitoring for user-defined projects.
+* You have installed the OpenShift CLI (oc).
+
+1. Edit the ConfigMap object.
+* To add a secret configuration to Alertmanager for core platform monitoring:
+1. Edit the cluster-monitoring-config config map in the openshift-monitoring project:
+
+```terminal
+$ oc -n openshift-monitoring edit configmap cluster-monitoring-config
+```
+
+2. Add a secrets: section under data/config.yaml/alertmanagerMain with the following configuration:
+
+```yaml
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: cluster-monitoring-config
+  namespace: openshift-monitoring
+data:
+  config.yaml: |
+    alertmanagerMain:
+      secrets: 1
+      - <secret_name_1> 2
+      - <secret_name_2>
+```
+
+This section contains the secrets to be mounted into Alertmanager. The secrets must be located within the same namespace as the Alertmanager object.
+The name of the Secret object that contains authentication credentials for the receiver. If you add multiple secrets, place each one on a new line.
+
+The following sample config map settings configure Alertmanager to use two Secret objects named test-secret-basic-auth and test-secret-api-token:
+
+```yaml
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: cluster-monitoring-config
+  namespace: openshift-monitoring
+data:
+  config.yaml: |
+    alertmanagerMain:
+      secrets:
+      - test-secret-basic-auth
+      - test-secret-api-token
+```
+
+* To add a secret configuration to Alertmanager for user-defined project monitoring:
+1. Edit the user-workload-monitoring-config config map in the openshift-user-workload-monitoring project:
+
+```terminal
+$ oc -n openshift-user-workload-monitoring edit configmap user-workload-monitoring-config
+```
+
+2. Add a secrets: section under data/config.yaml/alertmanager/secrets with the following configuration:
+
+```yaml
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: user-workload-monitoring-config
+  namespace: openshift-user-workload-monitoring
+data:
+  config.yaml: |
+    alertmanager:
+      secrets: 1
+      - <secret_name_1> 2
+      - <secret_name_2>
+```
+
+This section contains the secrets to be mounted into Alertmanager. The secrets must be located within the same namespace as the Alertmanager object.
+The name of the Secret object that contains authentication credentials for the receiver. If you add multiple secrets, place each one on a new line.
+
+The following sample config map settings configure Alertmanager to use two Secret objects named test-secret and test-secret-api-token:
+
+```yaml
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: user-workload-monitoring-config
+  namespace: openshift-user-workload-monitoring
+data:
+  config.yaml: |
+    alertmanager:
+      enabled: true
+      secrets:
+      - test-secret
+      - test-api-receiver-token
+```
+
+2. Save the file to apply the changes. The new configuration is applied automatically.
+
+# Attaching additional labels to your time series and alerts
+
+You can attach custom labels to all time series and alerts leaving Prometheus by using the external labels feature of Prometheus.
+
+* If you are configuring core Red Hat OpenShift Container Platform monitoring components:
+* You have access to the cluster as a user with the cluster-admin cluster role.
+* You have created the cluster-monitoring-config ConfigMap object.
+* If you are configuring components that monitor user-defined projects:
+* You have access to the cluster as a user with the cluster-admin cluster role, or as a user with the user-workload-monitoring-config-edit role in the openshift-user-workload-monitoring project.
+* A cluster administrator has enabled monitoring for user-defined projects.
+* You have installed the OpenShift CLI (oc).
+
+1. Edit the ConfigMap object:
+* To attach custom labels to all time series and alerts leaving the Prometheus instance that monitors core Red Hat OpenShift Container Platform projects:
+1. Edit the cluster-monitoring-config ConfigMap object in the openshift-monitoring project:
+
+```terminal
+$ oc -n openshift-monitoring edit configmap cluster-monitoring-config
+```
+
+2. Define a map of labels you want to add for every metric under data/config.yaml:
+
+```yaml
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: cluster-monitoring-config
+  namespace: openshift-monitoring
+data:
+  config.yaml: |
+    prometheusK8s:
+      externalLabels:
+        <key>: <value> 1
+```
+
+Substitute <key>: <value> with a map of key-value pairs where <key> is a unique name for the new label and <value> is its value.
+
+[WARNING]
+----
+* Do not use prometheus or prometheus_replica as key names, because they are reserved and will be overwritten.
+* Do not use cluster or managed_cluster as key names. Using them can cause issues where you are unable to see data in the developer dashboards.
+----
+
+For example, to add metadata about the region and environment to all time series and alerts, use the following example:
+
+```yaml
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: cluster-monitoring-config
+  namespace: openshift-monitoring
+data:
+  config.yaml: |
+    prometheusK8s:
+      externalLabels:
+        region: eu
+        environment: prod
+```
+
+3. Save the file to apply the changes. The new configuration is applied automatically.
+* To attach custom labels to all time series and alerts leaving the Prometheus instance that monitors user-defined projects:
+1. Edit the user-workload-monitoring-config ConfigMap object in the openshift-user-workload-monitoring project:
+
+```terminal
+$ oc -n openshift-user-workload-monitoring edit configmap user-workload-monitoring-config
+```
+
+2. Define a map of labels you want to add for every metric under data/config.yaml:
+
+```yaml
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: user-workload-monitoring-config
+  namespace: openshift-user-workload-monitoring
+data:
+  config.yaml: |
+    prometheus:
+      externalLabels:
+        <key>: <value> 1
+```
+
+Substitute <key>: <value> with a map of key-value pairs where <key> is a unique name for the new label and <value> is its value.
+
+[WARNING]
+----
+* Do not use prometheus or prometheus_replica as key names, because they are reserved and will be overwritten.
+* Do not use cluster or managed_cluster as key names. Using them can cause issues where you are unable to see data in the developer dashboards.
+----
+
+[NOTE]
+----
+In the openshift-user-workload-monitoring project, Prometheus handles metrics and Thanos Ruler handles alerting and recording rules. Setting externalLabels for prometheus in the user-workload-monitoring-config ConfigMap object will only configure external labels for metrics and not for any rules.
+----
+
+For example, to add metadata about the region and environment to all time series and alerts related to user-defined projects, use the following example:
+
+```yaml
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: user-workload-monitoring-config
+  namespace: openshift-user-workload-monitoring
+data:
+  config.yaml: |
+    prometheus:
+      externalLabels:
+        region: eu
+        environment: prod
+```
+
+3. Save the file to apply the changes. The pods affected by the new configuration are automatically redeployed.
+
+* See Preparing to configure the monitoring stack for steps to create monitoring config maps.
+* Enabling monitoring for user-defined projects
+
+# Using pod topology spread constraints for monitoring
+
+You can use pod topology spread constraints to control how
+the monitoring pods
+are spread across a network topology when Red Hat OpenShift Container Platform pods are deployed in multiple availability zones.
+
+Pod topology spread constraints are suitable for controlling pod scheduling within hierarchical topologies in which nodes are spread across different infrastructure levels, such as regions and zones within those regions.
+Additionally, by being able to schedule pods in different zones, you can improve network latency in certain scenarios.
+
+* Controlling pod placement by using pod topology spread constraints
+* Kubernetes Pod Topology Spread Constraints documentation
+
+## Configuring pod topology spread constraints
+
+You can configure pod topology spread constraints for
+all the pods deployed by the Cluster Monitoring Operator
+to control how pod replicas are scheduled to nodes across zones.
+This ensures that the pods are highly available and run more efficiently, because workloads are spread across nodes in different data centers or hierarchical infrastructure zones.
+
+You can configure pod topology spread constraints for monitoring pods by using
+the cluster-monitoring-config or
+the user-workload-monitoring-config config map.
+
+* If you are configuring pods for core Red Hat OpenShift Container Platform monitoring:
+* You have access to the cluster as a user with the cluster-admin cluster role.
+* You have created the cluster-monitoring-config ConfigMap object.
+* If you are configuring pods for user-defined monitoring:
+* You have access to the cluster as a user with the cluster-admin cluster role, or as a user with the user-workload-monitoring-config-edit role in the openshift-user-workload-monitoring project.
+* A cluster administrator has enabled monitoring for user-defined projects.
+* You have installed the OpenShift CLI (oc).
+
+* To configure pod topology spread constraints for core Red Hat OpenShift Container Platform monitoring:
+1. Edit the cluster-monitoring-config config map in the openshift-monitoring project:
+
+```terminal
+$ oc -n openshift-monitoring edit configmap cluster-monitoring-config
+```
+
+2. Add the following settings under the data/config.yaml field to configure pod topology spread constraints:
+
+```yaml
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: cluster-monitoring-config
+  namespace: openshift-monitoring
+data:
+  config.yaml: |
+    <component>: 1
+      topologySpreadConstraints:
+      - maxSkew: <n> 2
+        topologyKey: <key> 3
+        whenUnsatisfiable: <value> 4
+        labelSelector: 5
+          <match_option>
+```
+
+Specify a name of the component for which you want to set up pod topology spread constraints.
+Specify a numeric value for maxSkew, which defines the degree to which pods are allowed to be unevenly distributed.
+Specify a key of node labels for topologyKey.
+Nodes that have a label with this key and identical values are considered to be in the same topology.
+The scheduler tries to put a balanced number of pods into each domain.
+Specify a value for whenUnsatisfiable.
+Available options are DoNotSchedule and ScheduleAnyway.
+Specify DoNotSchedule if you want the maxSkew value to define the maximum difference allowed between the number of matching pods in the target topology and the global minimum.
+Specify ScheduleAnyway if you want the scheduler to still schedule the pod but to give higher priority to nodes that might reduce the skew.
+Specify labelSelector to find matching pods.
+Pods that match this label selector are counted to determine the number of pods in their corresponding topology domain.
+Example configuration for Prometheus
+
+```yaml
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: cluster-monitoring-config
+  namespace: openshift-monitoring
+data:
+  config.yaml: |
+    prometheusK8s:
+      topologySpreadConstraints:
+      - maxSkew: 1
+        topologyKey: monitoring
+        whenUnsatisfiable: DoNotSchedule
+        labelSelector:
+          matchLabels:
+            app.kubernetes.io/name: prometheus
+```
+
+3. Save the file to apply the changes. The pods affected by the new configuration are automatically redeployed.
+* To configure pod topology spread constraints for user-defined monitoring:
+1. Edit the user-workload-monitoring-config config map in the openshift-user-workload-monitoring project:
+
+```terminal
+$ oc -n openshift-user-workload-monitoring edit configmap user-workload-monitoring-config
+```
+
+2. Add the following settings under the data/config.yaml field to configure pod topology spread constraints:
+
+```yaml
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: user-workload-monitoring-config
+  namespace: openshift-user-workload-monitoring
+data:
+  config.yaml: |
+    <component>: 1
+      topologySpreadConstraints:
+      - maxSkew: <n> 2
+        topologyKey: <key> 3
+        whenUnsatisfiable: <value> 4
+        labelSelector: 5
+          <match_option>
+```
+
+Specify a name of the component for which you want to set up pod topology spread constraints.
+Specify a numeric value for maxSkew, which defines the degree to which pods are allowed to be unevenly distributed.
+Specify a key of node labels for topologyKey.
+Nodes that have a label with this key and identical values are considered to be in the same topology.
+The scheduler tries to put a balanced number of pods into each domain.
+Specify a value for whenUnsatisfiable.
+Available options are DoNotSchedule and ScheduleAnyway.
+Specify DoNotSchedule if you want the maxSkew value to define the maximum difference allowed between the number of matching pods in the target topology and the global minimum.
+Specify ScheduleAnyway if you want the scheduler to still schedule the pod but to give higher priority to nodes that might reduce the skew.
+Specify labelSelector to find matching pods.
+Pods that match this label selector are counted to determine the number of pods in their corresponding topology domain.
+Example configuration for Thanos Ruler
+
+```yaml
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: user-workload-monitoring-config
+  namespace: openshift-user-workload-monitoring
+data:
+  config.yaml: |
+    thanosRuler:
+      topologySpreadConstraints:
+      - maxSkew: 1
+        topologyKey: monitoring
+        whenUnsatisfiable: ScheduleAnyway
+        labelSelector:
+          matchLabels:
+            app.kubernetes.io/name: thanos-ruler
+```
+
+3. Save the file to apply the changes. The pods affected by the new configuration are automatically redeployed.
+
+# Setting log levels for monitoring components
+
+You can configure the log level for
+Alertmanager, Prometheus Operator, Prometheus, Thanos Querier, and Thanos Ruler.
+
+The following log levels can be applied to the relevant component in the
+cluster-monitoring-config and
+user-workload-monitoring-config ConfigMap objects:
+
+* debug. Log debug, informational, warning, and error messages.
+* info. Log informational, warning, and error messages.
+* warn. Log warning and error messages only.
+* error. Log error messages only.
+
+The default log level is info.
+
+* If you are setting a log level for Alertmanager, Prometheus Operator, Prometheus, or Thanos Querier in the openshift-monitoring project:
+* You have access to the cluster as a user with the cluster-admin cluster role.
+* You have created the cluster-monitoring-config ConfigMap object.
+* If you are setting a log level for Prometheus Operator, Prometheus, or Thanos Ruler in the openshift-user-workload-monitoring project:
+* You have access to the cluster as a user with the cluster-admin cluster role, or as a user with the user-workload-monitoring-config-edit role in the openshift-user-workload-monitoring project.
+* A cluster administrator has enabled monitoring for user-defined projects.
+* You have installed the OpenShift CLI (oc).
+
+1. Edit the ConfigMap object:
+* To set a log level for a component in the openshift-monitoring project:
+1. Edit the cluster-monitoring-config ConfigMap object in the openshift-monitoring project:
+
+```terminal
+$ oc -n openshift-monitoring edit configmap cluster-monitoring-config
+```
+
+2. Add logLevel: <log_level> for a component under data/config.yaml:
+
+```yaml
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: cluster-monitoring-config
+  namespace: openshift-monitoring
+data:
+  config.yaml: |
+    <component>: 1
+      logLevel: <log_level> 2
+```
+
+The monitoring stack component for which you are setting a log level.
+For default platform monitoring, available component values are prometheusK8s, alertmanagerMain, prometheusOperator, and thanosQuerier.
+The log level to set for the component.
+The available values are error, warn, info, and debug.
+The default value is info.
+* To set a log level for a component in the openshift-user-workload-monitoring project:
+1. Edit the user-workload-monitoring-config ConfigMap object in the openshift-user-workload-monitoring project:
+
+```terminal
+$ oc -n openshift-user-workload-monitoring edit configmap user-workload-monitoring-config
+```
+
+2. Add logLevel: <log_level> for a component under data/config.yaml:
+
+```yaml
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: user-workload-monitoring-config
+  namespace: openshift-user-workload-monitoring
+data:
+  config.yaml: |
+    <component>: 1
+      logLevel: <log_level> 2
+```
+
+The monitoring stack component for which you are setting a log level.
+For user workload monitoring, available component values are alertmanager, prometheus, prometheusOperator, and thanosRuler.
+The log level to apply to the component. The available values are error, warn, info, and debug. The default value is info.
+2. Save the file to apply the changes. The pods affected by the new configuration are automatically redeployed.
+3. Confirm that the log-level has been applied by reviewing the deployment or pod configuration in the related project. The following example checks the log level in the prometheus-operator deployment in the openshift-user-workload-monitoring project:
+
+```terminal
+$ oc -n openshift-user-workload-monitoring get deploy prometheus-operator -o yaml | grep "log-level"
+```
+
+Example output
+
+```terminal
+        - --log-level=debug
+```
+
+4. Check that the pods for the component are running. The following example lists the status of pods in the openshift-user-workload-monitoring project:
+
+```terminal
+$ oc -n openshift-user-workload-monitoring get pods
+```
+
+
+[NOTE]
+----
+If an unrecognized logLevel value is included in the ConfigMap object, the pods for the component might not restart successfully.
+----
+
+# Enabling the query log file for Prometheus
+
+You can configure Prometheus to write all queries that have been run by the engine to a log file.
+You can do so for default platform monitoring and for user-defined workload monitoring.
+
+
+[IMPORTANT]
+----
+Because log rotation is not supported, only enable this feature temporarily when you need to troubleshoot an issue. After you finish troubleshooting, disable query logging by reverting the changes you made to the ConfigMap object to enable the feature.
+----
+
+* If you are enabling the query log file feature for Prometheus in the openshift-monitoring project:
+* You have access to the cluster as a user with the cluster-admin cluster role.
+* You have created the cluster-monitoring-config ConfigMap object.
+* If you are enabling the query log file feature for Prometheus in the openshift-user-workload-monitoring project:
+* You have access to the cluster as a user with the cluster-admin cluster role, or as a user with the user-workload-monitoring-config-edit role in the openshift-user-workload-monitoring project.
+* A cluster administrator has enabled monitoring for user-defined projects.
+* You have installed the OpenShift CLI (oc).
+
+* To set the query log file for Prometheus in the openshift-monitoring project:
+1. Edit the cluster-monitoring-config ConfigMap object in the openshift-monitoring project:
+
+```terminal
+$ oc -n openshift-monitoring edit configmap cluster-monitoring-config
+```
+
+2. Add queryLogFile: <path> for prometheusK8s under data/config.yaml:
+
+```yaml
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: cluster-monitoring-config
+  namespace: openshift-monitoring
+data:
+  config.yaml: |
+    prometheusK8s:
+      queryLogFile: <path> 1
+```
+
+The full path to the file in which queries will be logged.
+3. Save the file to apply the changes. The pods affected by the new configuration are automatically redeployed.
+4. Verify that the pods for the component are running. The following sample command lists the status of pods in the openshift-monitoring project:
+
+```terminal
+$ oc -n openshift-monitoring get pods
+```
+
+5. Read the query log:
+
+```terminal
+$ oc -n openshift-monitoring exec prometheus-k8s-0 -- cat <path>
+```
+
+
+[IMPORTANT]
+----
+Revert the setting in the config map after you have examined the logged query information.
+----
+* To set the query log file for Prometheus in the openshift-user-workload-monitoring project:
+1. Edit the user-workload-monitoring-config ConfigMap object in the openshift-user-workload-monitoring project:
+
+```terminal
+$ oc -n openshift-user-workload-monitoring edit configmap user-workload-monitoring-config
+```
+
+2. Add queryLogFile: <path> for prometheus under data/config.yaml:
+
+```yaml
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: user-workload-monitoring-config
+  namespace: openshift-user-workload-monitoring
+data:
+  config.yaml: |
+    prometheus:
+      queryLogFile: <path> 1
+```
+
+The full path to the file in which queries will be logged.
+3. Save the file to apply the changes. The pods affected by the new configuration are automatically redeployed.
+4. Verify that the pods for the component are running. The following example command lists the status of pods in the openshift-user-workload-monitoring project:
+
+```terminal
+$ oc -n openshift-user-workload-monitoring get pods
+```
+
+5. Read the query log:
+
+```terminal
+$ oc -n openshift-user-workload-monitoring exec prometheus-user-workload-0 -- cat <path>
+```
+
+
+[IMPORTANT]
+----
+Revert the setting in the config map after you have examined the logged query information.
+----
+
+* See Preparing to configure the monitoring stack for steps to create monitoring config maps
+* See Enabling monitoring for user-defined projects for steps to enable user-defined monitoring.
+
+# Enabling query logging for Thanos Querier
+
+For default platform monitoring in the openshift-monitoring project, you can enable the Cluster Monitoring Operator (CMO) to log all queries run by Thanos Querier.
+
+
+[IMPORTANT]
+----
+Because log rotation is not supported, only enable this feature temporarily when you need to troubleshoot an issue. After you finish troubleshooting, disable query logging by reverting the changes you made to the ConfigMap object to enable the feature.
+----
+
+* You have installed the OpenShift CLI (oc).
+* You have access to the cluster as a user with the cluster-admin cluster role.
+* You have created the cluster-monitoring-config ConfigMap object.
+
+You can enable query logging for Thanos Querier in the openshift-monitoring project:
+
+1. Edit the cluster-monitoring-config ConfigMap object in the openshift-monitoring project:
+
+```terminal
+$ oc -n openshift-monitoring edit configmap cluster-monitoring-config
+```
+
+2. Add a thanosQuerier section under data/config.yaml and add values as shown in the following example:
+
+```yaml
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: cluster-monitoring-config
+  namespace: openshift-monitoring
+data:
+  config.yaml: |
+    thanosQuerier:
+      enableRequestLogging: <value> 1
+      logLevel: <value> 2
+```
+
+Set the value to true to enable logging and false to disable logging. The default value is false.
+Set the value to debug, info, warn, or error. If no value exists for logLevel, the log level defaults to error.
+3. Save the file to apply the changes. The pods affected by the new configuration are automatically redeployed.
+
+1. Verify that the Thanos Querier pods are running. The following sample command lists the status of pods in the openshift-monitoring project:
+
+```terminal
+$ oc -n openshift-monitoring get pods
+```
+
+2. Run a test query using the following sample commands as a model:
+
+```terminal
+$ token=`oc create token prometheus-k8s -n openshift-monitoring`
+$ oc -n openshift-monitoring exec -c prometheus prometheus-k8s-0 -- curl -k -H "Authorization: Bearer $token" 'https://thanos-querier.openshift-monitoring.svc:9091/api/v1/query?query=cluster_version'
+```
+
+3. Run the following command to read the query log:
+
+```terminal
+$ oc -n openshift-monitoring logs <thanos_querier_pod_name> -c thanos-query
+```
+
+
+[NOTE]
+----
+Because the thanos-querier pods are highly available (HA) pods, you might be able to see logs in only one pod.
+----
+4. After you examine the logged query information, disable query logging by changing the enableRequestLogging value to false in the config map.
+
+* See Preparing to configure the monitoring stack for steps to create monitoring config maps.
+
+* See Preparing to configure the monitoring stack for steps to create monitoring config maps.
+
+# Disabling the local Alertmanager
+
+A local Alertmanager that routes alerts from Prometheus instances is enabled by default in the openshift-monitoring project of the Red Hat OpenShift Container Platform monitoring stack.
+
+If you do not need the local Alertmanager, you can disable it by configuring the cluster-monitoring-config config map in the openshift-monitoring project.
+
+* You have access to the cluster as a user with the cluster-admin cluster role.
+* You have created the cluster-monitoring-config config map.
+* You have installed the OpenShift CLI (oc).
+
+1. Edit the cluster-monitoring-config config map in the openshift-monitoring project:
+
+```terminal
+$ oc -n openshift-monitoring edit configmap cluster-monitoring-config
+```
+
+2. Add enabled: false for the alertmanagerMain component under data/config.yaml:
+
+```yaml
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: cluster-monitoring-config
+  namespace: openshift-monitoring
+data:
+  config.yaml: |
+    alertmanagerMain:
+      enabled: false
+```
+
+3. Save the file to apply the changes. The Alertmanager instance is disabled automatically when you apply the change.
+
+* Prometheus Alertmanager documentation
+* Managing alerts

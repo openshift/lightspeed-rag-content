@@ -1,0 +1,96 @@
+# Generic ephemeral volumes
+
+
+
+# Overview
+
+Generic ephemeral volumes are a type of ephemeral volume that can be provided by all storage drivers that support persistent volumes and dynamic provisioning. Generic ephemeral volumes are similar to emptyDir volumes in that they provide a per-pod directory for scratch data, which is usually empty after provisioning.
+
+Generic ephemeral volumes are specified inline in the pod spec and follow the pod&#8217;s lifecycle. They are created and deleted along with the pod.
+
+Generic ephemeral volumes have the following features:
+
+* Storage can be local or network-attached.
+* Volumes can have a fixed size that pods are not able to exceed.
+* Volumes might have some initial data, depending on the driver and parameters.
+* Typical operations on volumes are supported, assuming that the driver supports them, including snapshotting, cloning, resizing, and storage capacity tracking.
+
+
+[NOTE]
+----
+Generic ephemeral volumes do not support offline snapshots and resize.
+Due to this limitation, the following Container Storage Interface (CSI) drivers do not support the following features for generic ephemeral volumes:
+* Azure Disk CSI driver does not support resize.
+* Cinder CSI driver does not support snapshot.
+----
+
+# Lifecycle and persistent volume claims
+
+The parameters for a volume claim are allowed inside a volume source of a pod. Labels, annotations, and the whole set of fields for persistent volume claims (PVCs) are supported. When such a pod is created, the ephemeral volume controller then creates an actual PVC object (from the template shown in the Creating generic ephemeral volumes procedure) in the same namespace as the pod, and ensures that the PVC is deleted when the pod is deleted. This triggers volume binding and provisioning in one of two ways:
+
+* Either immediately, if the storage class uses immediate volume binding.
+
+With immediate binding, the scheduler is forced to select a node that has access to the volume after it is available.
+* When the pod is tentatively scheduled onto a node (WaitForFirstConsumervolume binding mode).
+
+This volume binding option is recommended for generic ephemeral volumes because then the scheduler can choose a suitable node for the pod.
+
+In terms of resource ownership, a pod that has generic ephemeral storage is the owner of the PVCs that provide that ephemeral storage. When the pod is deleted, the Kubernetes garbage collector deletes the PVC, which then usually triggers deletion of the volume because the default reclaim policy of storage classes is to delete volumes. You can create quasi-ephemeral local storage by using a storage class with a reclaim policy of retain: the storage outlives the pod, and in this case, you must ensure that volume clean-up happens separately. While these PVCs exist, they can be used like any other PVC. In particular, they can be referenced as data source in volume cloning or snapshotting. The PVC object also holds the current status of the volume.
+
+* Creating generic ephemeral volumes
+
+# Security
+
+You can enable the generic ephemeral volume feature to allows users who can create pods to also create persistent volume claims (PVCs) indirectly. This feature works even if these users do not have permission to create PVCs directly. Cluster administrators must be aware of this. If this does not fit your security model, use an admission webhook that rejects objects such as pods that have a generic ephemeral volume.
+
+The normal namespace quota for PVCs still applies, so even if users are allowed to use this new mechanism, they cannot use it to circumvent other policies.
+
+# Persistent volume claim naming
+
+Automatically created persistent volume claims (PVCs) are named by a combination of the pod name and the volume name, with a hyphen (-) in the middle. This naming convention also introduces a potential conflict between different pods, and between pods and manually created PVCs.
+
+For example, pod-a with volume scratch and pod with volume a-scratch both end up with the same PVC name, pod-a-scratch.
+
+Such conflicts are detected, and a PVC is only used for an ephemeral volume if it was created for the pod. This check is based on the ownership relationship. An existing PVC is not overwritten or modified, but this does not resolve the conflict. Without the right PVC, a pod cannot start.
+
+
+[IMPORTANT]
+----
+Be careful when naming pods and volumes inside the same namespace so that naming conflicts do not occur.
+----
+
+# Creating generic ephemeral volumes
+
+1. Create the pod object definition and save it to a file.
+2. Include the generic ephemeral volume information in the file.
+my-example-pod-with-generic-vols.yaml
+
+```yaml
+kind: Pod
+apiVersion: v1
+metadata:
+  name: my-app
+spec:
+  containers:
+    - name: my-frontend
+      image: busybox:1.28
+      volumeMounts:
+      - mountPath: "/mnt/storage"
+        name: data
+      command: [ "sleep", "1000000" ]
+  volumes:
+    - name: data 1
+      ephemeral:
+        volumeClaimTemplate:
+          metadata:
+            labels:
+              type: my-app-ephvol
+          spec:
+            accessModes: [ "ReadWriteOnce" ]
+            storageClassName: "gp2-csi"
+            resources:
+              requests:
+                storage: 1Gi
+```
+
+Generic ephemeral volume claim.

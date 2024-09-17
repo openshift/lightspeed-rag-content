@@ -1,0 +1,236 @@
+# Creating VMs by using container disks
+
+
+You can create virtual machines (VMs) by using container disks built from operating system images.
+You can enable auto updates for your container disks. See Managing automatic boot source updates for details.
+
+[IMPORTANT]
+----
+If the container disks are large, the I/O traffic might increase and cause worker nodes to be unavailable. You can perform the following tasks to resolve this issue:
+* Pruning DeploymentConfig objects.
+* Configuring garbage collection.
+----
+You create a VM from a container disk by performing the following steps:
+1. Build an operating system image into a container disk and upload it to your container registry.
+2. If your container registry does not have TLS, configure your environment to disable TLS for your registry.
+3. Create a VM with the container disk as the disk source by using the web console or the command line.
+
+[IMPORTANT]
+----
+You must install the QEMU guest agent on VMs created from operating system images that are not provided by Red Hat.
+----
+
+# Building and uploading a container disk
+
+You can build a virtual machine (VM) image into a container disk and upload it to a registry.
+
+The size of a container disk is limited by the maximum layer size of the registry where the container disk is hosted.
+
+
+[NOTE]
+----
+For Red Hat Quay, you can change the maximum layer size by editing the YAML configuration file that is created when Red Hat Quay is first deployed.
+----
+
+* You must have podman installed.
+* You must have a QCOW2 or RAW image file.
+
+1. Create a Dockerfile to build the VM image into a container image. The VM image must be owned by QEMU, which has a UID of 107, and placed in the /disk/ directory inside the container. Permissions for the /disk/ directory must then be set to 0440.
+
+The following example uses the Red Hat Universal Base Image (UBI) to handle these configuration changes in the first stage, and uses the minimal scratch image in the second stage to store the result:
+
+```terminal
+$ cat > Dockerfile << EOF
+FROM registry.access.redhat.com/ubi8/ubi:latest AS builder
+ADD --chown=107:107 <vm_image>.qcow2 /disk/ \1
+RUN chmod 0440 /disk/*
+
+FROM scratch
+COPY --from=builder /disk/* /disk/
+EOF
+```
+
+Where <vm_image> is the image in either QCOW2 or RAW format. If you use a remote image, replace <vm_image>.qcow2 with the complete URL.
+2. Build and tag the container:
+
+```terminal
+$ podman build -t <registry>/<container_disk_name>:latest .
+```
+
+3. Push the container image to the registry:
+
+```terminal
+$ podman push <registry>/<container_disk_name>:latest
+```
+
+
+# Disabling TLS for a container registry
+
+You can disable TLS (transport layer security) for one or more container registries by editing the insecureRegistries field of the HyperConverged custom resource.
+
+1. Open the HyperConverged CR in your default editor by running the following command:
+
+```terminal
+$ oc edit hyperconverged kubevirt-hyperconverged -n openshift-cnv
+```
+
+2. Add a list of insecure registries to the spec.storageImport.insecureRegistries field.
+Example HyperConverged custom resource
+
+```yaml
+apiVersion: hco.kubevirt.io/v1beta1
+kind: HyperConverged
+metadata:
+  name: kubevirt-hyperconverged
+  namespace: openshift-cnv
+spec:
+  storageImport:
+    insecureRegistries: 1
+      - "private-registry-example-1:5000"
+      - "private-registry-example-2:5000"
+```
+
+Replace the examples in this list with valid registry hostnames.
+
+# Creating a VM from a container disk by using the web console
+
+You can create a virtual machine (VM) by importing {a-object} from a {data-source} by using the Red Hat OpenShift Container Platform web console.
+
+1. Navigate to Virtualization -> Catalog in the web console.
+2. Click a template tile without an available boot source.
+3. Click Customize VirtualMachine.
+4. On the Customize template parameters page, expand Storage and select {menu-item} from the Disk source list.
+5. Enter the container image URL. Example: https://mirror.arizona.edu/fedora/linux/releases/38/Cloud/x86_64/images/Fedora-Cloud-Base-38-1.6.x86_64.qcow2
+6. Set the disk size.
+7. Click Next.
+8. Click Create VirtualMachine.
+
+# Creating a VM from a container disk by using the command line
+
+You can create a virtual machine (VM) {title-frag} by using the command line.
+
+When the virtual machine (VM) is created, the data volume with the {object} is imported into persistent storage.
+
+* You must have access credentials for the {data-source} that contains the {object}.
+
+1. If the {data-source} requires authentication, create a Secret manifest, specifying the credentials, and save it as a data-source-secret.yaml file:
+
+```yaml
+apiVersion: v1
+kind: Secret
+metadata:
+  name: data-source-secret
+  labels:
+    app: containerized-data-importer
+type: Opaque
+data:
+  accessKeyId: "" 1
+  secretKey:   "" 2
+```
+
+Specify the Base64-encoded key ID or user name.
+Specify the Base64-encoded secret key or password.
+2. Apply the Secret manifest by running the following command:
+
+```terminal
+$ oc apply -f data-source-secret.yaml
+```
+
+3. If the VM must communicate with servers that use self-signed certificates or certificates that are not signed by the system CA bundle, create a config map in the same namespace as the VM:
+
+```terminal
+$ oc create configmap tls-certs 1
+  --from-file=</path/to/file/ca.pem> 2
+```
+
+Specify the config map name.
+Specify the path to the CA certificate.
+4. Edit the VirtualMachine manifest and save it as a vm-fedora-datavolume.yaml file:
+
+```yaml
+apiVersion: kubevirt.io/v1
+kind: VirtualMachine
+metadata:
+  creationTimestamp: null
+  labels:
+    kubevirt.io/vm: vm-fedora-datavolume
+  name: vm-fedora-datavolume 1
+spec:
+  dataVolumeTemplates:
+  - metadata:
+      creationTimestamp: null
+      name: fedora-dv 2
+    spec:
+      storage:
+        resources:
+          requests:
+            storage: 10Gi 3
+        storageClassName: <storage_class> 4
+      source:
+        registry:
+          url: "docker://kubevirt/fedora-cloud-container-disk-demo:latest" 5
+          secretRef: data-source-secret 6
+          certConfigMap: tls-certs 7
+    status: {}
+  running: true
+  template:
+    metadata:
+      creationTimestamp: null
+      labels:
+        kubevirt.io/vm: vm-fedora-datavolume
+    spec:
+      domain:
+        devices:
+          disks:
+          - disk:
+              bus: virtio
+            name: datavolumedisk1
+        machine:
+          type: ""
+        resources:
+          requests:
+            memory: 1.5Gi
+      terminationGracePeriodSeconds: 180
+      volumes:
+      - dataVolume:
+          name: fedora-dv
+        name: datavolumedisk1
+status: {}
+```
+
+Specify the name of the VM.
+Specify the name of the data volume.
+Specify the size of the storage requested for the data volume.
+Optional: If you do not specify a storage class, the default storage class is used.
+Specify the URL of the {data-source}.
+Optional: Specify the secret name if you created a secret for the {data-source} access credentials.
+Optional: Specify a CA certificate config map.
+5. Create the VM by running the following command:
+
+```terminal
+$ oc create -f vm-fedora-datavolume.yaml
+```
+
+
+The oc create command creates the data volume and the VM. The CDI controller creates an underlying PVC with the correct annotation and the import process begins. When the import is complete, the data volume status changes to Succeeded. You can start the VM.
+
+Data volume provisioning happens in the background, so there is no need to monitor the process.
+
+1. The importer pod downloads the {object} from the specified URL and stores it on the provisioned persistent volume. View the status of the importer pod by running the following command:
+
+```terminal
+$ oc get pods
+```
+
+2. Monitor the data volume until its status is Succeeded by running the following command:
+
+```terminal
+$ oc describe dv fedora-dv 1
+```
+
+Specify the data volume name that you defined in the VirtualMachine manifest.
+3. Verify that provisioning is complete and that the VM has started by accessing its serial console:
+
+```terminal
+$ virtctl console vm-fedora-datavolume
+```
