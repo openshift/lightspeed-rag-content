@@ -99,6 +99,29 @@ Ensure that reserved and isolated CPU sets do not overlap with each other.
 
 * For the recommended single-node OpenShift workload partitioning configuration, see Workload partitioning.
 
+# About disk encryption with TPM and PCR protection
+
+You can use the diskEncryption field in the SiteConfig custom resource (CR) to configure disk encryption with Trusted Platform Module (TPM) and Platform Configuration Registers (PCRs) protection.
+
+TPM is a hardware component that stores cryptographic keys and evaluates the security state of your system. PCRs within the TPM store hash values that represent the current hardware and software configuration of your system. You can use the following PCR registers to protect the encryption keys for disk encryption:
+
+PCR 1:: Represents the Unified Extensible Firmware Interface (UEFI) state.
+PCR 7:: Represents the secure boot state.
+
+The TPM safeguards encryption keys by linking them to the system&#8217;s current state, as recorded in PCR 1 and PCR 7. The dmcrypt utility uses these keys to encrypt the disk. The binding between the encryption keys and the expected PCR registers is automatically updated after upgrades, if needed.
+
+During the system boot process, the dmcrypt utility uses the TPM PCR values to unlock the disk. If the current PCR values match with the previously linked values, the unlock succeeds. If the PCR values do not match, the encryption keys cannot be released, and the disk remains encrypted and inaccessible.
+
+
+[IMPORTANT]
+----
+{FeatureName} is a Technology Preview feature only. Technology Preview features are not supported with Red Hat production service level agreements (SLAs) and might not be functionally complete. Red Hat does not recommend using them in production. These features provide early access to upcoming product features, enabling customers to test functionality and provide feedback during the development process.
+For more information about the support scope of Red Hat Technology Preview features, see Technology Preview Features Support Scope.
+----
+
+* TPM encryption
+* For information about enabling disk encryption, see Enabling disk encryption with TPM and PCR protection.
+
 # Recommended cluster install manifests
 
 The ZTP pipeline applies the following custom resources (CRs) during cluster installation. These configuration CRs ensure that the cluster meets the feature and performance requirements necessary for running a vDU application.
@@ -610,6 +633,57 @@ spec:
     defaultRuntime: crun
 ```
 
+
+## Enabling disk encryption with TPM and PCR protection
+
+You can use the diskEncryption field in the SiteConfig custom resource (CR) to configure disk encryption with Trusted Platform Module (TPM) and Platform Configuration Registers (PCRs) protection.
+
+Configuring the SiteConfig CR enables disk encryption at the time of cluster installation.
+
+* You have installed the OpenShift CLI (`oc`).
+* You have logged in as a user with cluster-admin privileges.
+* You read the "About disk encryption with TPM and PCR protection" section.
+
+* Configure the spec.clusters.diskEncryption field in the SiteConfig CR:
+Recommended SiteConfig CR configuration to enable disk encryption with PCR protection
+
+```yaml
+apiVersion: ran.openshift.io/v1
+kind: SiteConfig
+metadata:
+  name: "encryption-tpm2"
+  namespace: "encryption-tpm2"
+spec:
+  clusters:
+  - clusterName: "encryption-tpm2"
+    clusterImageSetNameRef: "openshift-v4.13.0"
+    diskEncryption:
+      type: "tpm2" 1
+      tpm2:
+        pcrList: "1,7" 2
+    nodes:
+      - hostName: "node1"
+        role: master
+```
+
+Set the disk encryption type to tpm2.
+Configure the list of PCRs to be used for disk encryption. You must use PCR registers 1 and 7.
+
+* Check that the disk encryption with TPM and PCR protection is enabled by running the following command:
+
+```terminal
+$ clevis luks list -d <disk_path> 1
+```
+
+Replace <disk_path> with the path to the disk. For example, /dev/sda4.
+Example output
+
+```terminal
+1: tpm2 '{"hash":"sha256","key":"ecc","pcr_bank":"sha256","pcr_ids":"1,7"}'
+```
+
+
+* About disk encryption with TPM and PCR protection
 
 # Recommended postinstallation cluster configurations
 
@@ -1334,6 +1408,8 @@ spec:
 
 
 ```yaml
+# The grandmaster profile is provided for testing only
+# It is not installed on production clusters
 apiVersion: ptp.openshift.io/v1
 kind: PtpConfig
 metadata:
@@ -1416,11 +1492,11 @@ spec:
                 - "-p"
                 - "MON-HW"
               reportOutput: true
-            - args: #ubxtool -P 29.20 -p CFG-MSG,1,38,248
+            - args: #ubxtool -P 29.20 -p CFG-MSG,1,38,300
                 - "-P"
                 - "29.20"
                 - "-p"
-                - "CFG-MSG,1,38,248"
+                - "CFG-MSG,1,38,300"
               reportOutput: true
       ts2phcOpts: " "
       ts2phcConf: |
@@ -1434,6 +1510,7 @@ spec:
         #cat /dev/GNSS to find available serial port
         #example value of gnss_serialport is /dev/ttyGNSS_1700_0
         ts2phc.nmea_serialport $gnss_serialport
+        leapfile  /usr/share/zoneinfo/leap-seconds.list
         [$iface_master]
         ts2phc.extts_polarity rising
         ts2phc.extts_correction 0
