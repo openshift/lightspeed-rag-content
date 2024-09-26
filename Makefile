@@ -1,18 +1,30 @@
+# Default to CPU if not specified
+FLAVOR ?= cpu
+
+# Define behavior based on the flavor
+ifeq ($(FLAVOR),cpu)
+TORCH_GROUP := cpu
+else ifeq ($(FLAVOR),gpu)
+TORCH_GROUP := gpu
+else
+$(error Unsupported FLAVOR $(FLAVOR), must be 'cpu' or 'gpu')
+endif
+
 install-tools: ## Install required utilities/tools
-	@command -v pdm > /dev/null || { echo >&2 "pdm is not installed. Installing..."; pip install --upgrade pip pdm; }
+	@command -v pdm > /dev/null || { echo >&2 "pdm is not installed. Installing..."; pip3.11 install --upgrade pip pdm; }
 
 pdm-lock-check: ## Check that the pdm.lock file is in a good shape
-	pdm lock --check
+	pdm lock --check --group $(TORCH_GROUP) --lockfile pdm.lock.$(TORCH_GROUP)
 
 install-deps: install-tools pdm-lock-check ## Install all required dependencies, according to pdm.lock
-	pdm sync
+	pdm sync --group $(TORCH_GROUP) --lockfile pdm.lock.$(TORCH_GROUP)
 
 install-deps-test: install-tools pdm-lock-check ## Install all required dev dependencies, according to pdm.lock
-	pdm sync --dev
+	pdm sync --dev --group $(TORCH_GROUP) --lockfile pdm.lock.$(TORCH_GROUP)
 
 update-deps: ## Check pyproject.toml for changes, update the lock file if needed, then sync.
-	pdm install
-	pdm install --dev
+	pdm install --group $(TORCH_GROUP) --lockfile pdm.lock.$(TORCH_GROUP)
+	pdm install --dev --group $(TORCH_GROUP) --lockfile pdm.lock.$(TORCH_GROUP)
 
 check-types: ## Checks type hints in sources
 	mypy --explicit-package-bases --disallow-untyped-calls --disallow-untyped-defs --disallow-incomplete-defs scripts
