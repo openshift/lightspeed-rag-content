@@ -413,6 +413,13 @@ In the image delete workflow, oc-mirror plugin v2 deletes only the manifests of 
 
 To free up storage space from unnecessary images, such as those with deleted manifests, you must enable the garbage collector on your container registry. With the garbage collector enabled, the registry will delete the image blobs that no longer have references to any manifests, thereby reducing the storage previously occupied by the deleted blobs. Enabling the garbage collector differs depending on your container registry.
 
+
+[IMPORTANT]
+----
+To skip deleting the Operator catalog image when deleting images, you must list the specific Operators under the Operator catalog image in the DeleteImageSetConfiguration file. This ensures that only the specified Operators are deleted, not the catalog image.
+If only the Operator catalog image is specified, all Operators within that catalog, as well as the catalog image itself, will be deleted.
+----
+
 ## Deleting the images from disconnected environment
 
 To delete images from a disconnected environment using the oc-mirror plugin v2, follow the procedure.
@@ -493,6 +500,48 @@ $ cd <oc_mirror_workspace_path>
 ```
 
 2. Review the mapping.txt and missing.txt files that were generated. These files contain a list of all images that would be mirrored.
+
+## Troubleshooting oc-mirror plugin v2 errors
+
+oc-mirror plugin v2 now logs all image mirroring errors in a separate file, making it easier to track and diagnose failures.
+
+
+[IMPORTANT]
+----
+When errors occur while mirroring release or release component images, they are critical. This stops the mirroring process immediately.
+Errors with mirroring Operators, Operator-related images, or additional images do not stop the mirroring process. Mirroring continues, and oc-mirror plugin v2 logs updates every 8 images.
+----
+
+When an image fails to mirror, and that image is mirrored as part of one or more Operator bundles, oc-mirror plugin v2 notifies the user which Operators are incomplete, providing clarity on the Operator bundles affected by the error.
+
+1. Check for server-related issues:
+Example error
+
+```terminal
+[ERROR]  : [Worker] error mirroring image localhost:55000/openshift/graph-image:latest error: copying image 1/4 from manifest list: trying to reuse blob sha256:edab65b863aead24e3ed77cea194b6562143049a9307cd48f86b542db9eecb6e at destination: pinging container registry localhost:5000: Get "https://localhost:5000/v2/": http: server gave HTTP response to HTTPS client
+```
+
+1. Open the mirroring_error_date_time.log file in the  working-dir/logs folder located in the oc-mirror plugin v2 output directory.
+2. Look for error messages that typically indicate server-side issues, such as HTTP 500 errors, expired tokens, or timeouts.
+3. Retry the mirroring process or contact support if the issue persists.
+2. Check for incomplete mirroring of Operators:
+Example error
+
+```terminal
+error mirroring image docker://registry.redhat.io/3scale-amp2/zync-rhel9@sha256:8bb6b31e108d67476cc62622f20ff8db34efae5d58014de9502336fcc479d86d (Operator bundles: [3scale-operator.v0.11.12] - Operators: [3scale-operator]) error: initializing source docker://localhost:55000/3scale-amp2/zync-rhel9:8bb6b31e108d67476cc62622f20ff8db34efae5d58014de9502336fcc479d86d: reading manifest 8bb6b31e108d67476cc62622f20ff8db34efae5d58014de9502336fcc479d86d in localhost:55000/3scale-amp2/zync-rhel9: manifest unknown
+error mirroring image docker://registry.redhat.io/3scale-amp2/3scale-rhel7-operator-metadata@sha256:de0a70d1263a6a596d28bf376158056631afd0b6159865008a7263a8e9bf0c7d error: skipping operator bundle docker://registry.redhat.io/3scale-amp2/3scale-rhel7-operator-metadata@sha256:de0a70d1263a6a596d28bf376158056631afd0b6159865008a7263a8e9bf0c7d because one of its related images failed to mirror
+error mirroring image docker://registry.redhat.io/3scale-amp2/system-rhel7@sha256:fe77272021867cc6b6d5d0c9bd06c99d4024ad53f1ab94ec0ab69d0fda74588e (Operator bundles: [3scale-operator.v0.11.12] - Operators: [3scale-operator]) error: initializing source docker://localhost:55000/3scale-amp2/system-rhel7:fe77272021867cc6b6d5d0c9bd06c99d4024ad53f1ab94ec0ab69d0fda74588e: reading manifest fe77272021867cc6b6d5d0c9bd06c99d4024ad53f1ab94ec0ab69d0fda74588e in localhost:55000/3scale-amp2/system-rhel7: manifest unknown
+```
+
+1. Check for warnings in the console or log file indicating which Operators are incomplete.
+
+If an Operator is flagged as incomplete, the image related to that Operator likely failed to mirror.
+2. Manually mirror the missing image or retry the mirroring process.
+3. Check for errors related to generated cluster resources. Even if some images fail to mirror, oc-mirror v2 will still generate cluster resources such as IDMS.yaml and ITMS.yaml files for the successfully mirrored images.
+1. Check the output directory for the generated files.
+2. If these files are missing for specific images, ensure that no critical errors occurred for those images during the mirroring process.
+
+By following these steps, you can better diagnose issues and ensure smoother mirroring.
 
 # Benefits of enclave support
 
@@ -629,7 +678,15 @@ $ export UPDATE_URL_OVERRIDE=https://<osus.enterprise.in>/graph
 
 
 For more information on setting up OSUS on an OpenShift cluster, see "Updating a cluster in a disconnected environment using the OpenShift Update Service".
-6. Generate a mirror archive from the enterprise registry for the enclave.
+
+
+[NOTE]
+----
+When upgrading Red Hat OpenShift Container Platform Extended Update Support (EUS) versions, an intermediate version might be required between the current and target versions. For example, if the current version is 4.14 and target version is 4.16, you might need to include a version such as 4.15.8 in the ImageSetConfiguration when using the oc-mirror plugin v2.
+The oc-mirror plugin v2 might not always detect this automatically, so check the Cincinnati graph web page to confirm any required intermediate versions and add them manually to your configuration.
+----
+
+1. Generate a mirror archive from the enterprise registry for the enclave.
 
 To prepare an archive for the enclave1, the user executes oc-mirror plugin v2 in the enterprise disconnected environment by using the imageSetConfiguration specific for that enclave. This ensures that only images needed by that enclave are mirrored:
 
@@ -640,8 +697,8 @@ file:///disk-enc1/
 
 
 This action collects all the Red Hat OpenShift Container Platform content into an archive and generates an archive on disk.
-7. After the archive is generated, it will be transferred to the enclave1 network. The transport mechanism is not the responsibility of oc-mirror plugin v2.
-8. Mirror contents to the enclave registry
+2. After the archive is generated, it will be transferred to the enclave1 network. The transport mechanism is not the responsibility of oc-mirror plugin v2.
+3. Mirror contents to the enclave registry
 
 After the transfer of the archive is done, the user can execute oc-mirror plugin v2 again in order to mirror the relevant archive contents to the registry.
 

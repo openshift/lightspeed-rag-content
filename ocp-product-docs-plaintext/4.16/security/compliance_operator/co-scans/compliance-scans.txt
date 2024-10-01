@@ -23,7 +23,7 @@ You can run a scan using the Center for Internet Security (CIS) profiles. For co
 For all-in-one control plane and worker nodes, the compliance scan runs twice on the worker and control plane nodes. The compliance scan might generate inconsistent scan results. You can avoid inconsistent results by defining only a single role in the ScanSetting object.
 ----
 
-1. Inspect the ScanSetting object by running:
+1. Inspect the ScanSetting object by running the following command:
 
 ```terminal
 $ oc describe scansettings default -n openshift-compliance
@@ -32,45 +32,26 @@ $ oc describe scansettings default -n openshift-compliance
 Example output
 
 ```yaml
-Name:         default
-Namespace:    openshift-compliance
-Labels:       <none>
-Annotations:  <none>
-API Version:  compliance.openshift.io/v1alpha1
-Kind:         ScanSetting
+Name:                  default
+Namespace:             openshift-compliance
+Labels:                <none>
+Annotations:           <none>
+API Version:           compliance.openshift.io/v1alpha1
+Kind:                  ScanSetting
+Max Retry On Timeout:  3
 Metadata:
-  Creation Timestamp:  2022-10-10T14:07:29Z
-  Generation:          1
-  Managed Fields:
-    API Version:  compliance.openshift.io/v1alpha1
-    Fields Type:  FieldsV1
-    fieldsV1:
-      f:rawResultStorage:
-        .:
-        f:nodeSelector:
-          .:
-          f:node-role.kubernetes.io/master:
-        f:pvAccessModes:
-        f:rotation:
-        f:size:
-        f:tolerations:
-      f:roles:
-      f:scanTolerations:
-      f:schedule:
-      f:showNotApplicable:
-      f:strictNodeScan:
-    Manager:         compliance-operator
-    Operation:       Update
-    Time:            2022-10-10T14:07:29Z
-  Resource Version:  56111
-  UID:               c21d1d14-3472-47d7-a450-b924287aec90
+  Creation Timestamp:  2024-07-16T14:56:42Z
+  Generation:          2
+  Resource Version:    91655682
+  UID:                 50358cf1-57a8-4f69-ac50-5c7a5938e402
 Raw Result Storage:
   Node Selector:
     node-role.kubernetes.io/master:
   Pv Access Modes:
     ReadWriteOnce 1
-  Rotation:  3 2
-  Size:      1Gi 3
+  Rotation:            3 2
+  Size:                1Gi 3
+  Storage Class Name:  standard 4
   Tolerations:
     Effect:              NoSchedule
     Key:                 node-role.kubernetes.io/master
@@ -87,19 +68,22 @@ Raw Result Storage:
     Key:                 node.kubernetes.io/memory-pressure
     Operator:            Exists
 Roles:
-  master 4
-  worker 4
-Scan Tolerations: 5
+  master 5
+  worker 5
+Scan Tolerations: 6
   Operator:           Exists
-Schedule:             0 1 * * * 6
+Schedule:             0 1 * * * 7
 Show Not Applicable:  false
 Strict Node Scan:     true
+Suspend:              false
+Timeout:              30m
 Events:               <none>
 ```
 
 The Compliance Operator creates a persistent volume (PV) that contains the results of the scans. By default, the PV will use access mode ReadWriteOnce because the Compliance Operator cannot make any assumptions about the storage classes configured on the cluster. Additionally, ReadWriteOnce access mode is available on most clusters. If you need to fetch the scan results, you can do so by using a helper pod, which also binds the volume. Volumes that use the ReadWriteOnce access mode can be mounted by only one pod at time, so it is important to remember to delete the helper pods. Otherwise, the Compliance Operator will not be able to reuse the volume for subsequent scans.
 The Compliance Operator keeps results of three subsequent scans in the volume; older scans are rotated.
 The Compliance Operator will allocate one GB of storage for the scan results.
+The scansetting.rawResultStorage.storageClassName field specifies the storageClassName value to use when creating the PersistentVolumeClaim object to store the raw results. The default value is null, which will attempt to use the default storage class configured in the cluster. If there is no default class specified, then you must set a default class.
 If the scan setting uses any profiles that scan cluster nodes, scan these node roles.
 The default scan setting object scans all the nodes.
 The default scan setting object runs scans at 01:00 each day.
@@ -214,6 +198,46 @@ $ oc get compliancescan -w -n openshift-compliance
 
 
 The scans progress through the scanning phases and eventually reach the DONE phase when complete. In most cases, the result of the scan is NON-COMPLIANT. You can review the scan results and start applying remediations to make the cluster compliant. See Managing Compliance Operator remediation for more information.
+
+# Setting custom storage size for results
+
+While the custom resources such as ComplianceCheckResult represent an aggregated result of one check across all scanned nodes, it can be useful to review the raw results as produced by the scanner. The raw results are produced in the ARF format and can be large (tens of megabytes per node), it is impractical to store them in a Kubernetes resource backed by the etcd key-value store. Instead, every scan creates a persistent volume (PV) which defaults to 1GB size. Depending on your environment, you may want to increase the PV size accordingly. This is done using the rawResultStorage.size attribute that is exposed in both the ScanSetting and ComplianceScan resources.
+
+A related parameter is rawResultStorage.rotation which controls how many scans are retained in the PV before the older scans are rotated. The default value is 3, setting the rotation policy to 0 disables the rotation. Given the default rotation policy and an estimate of 100MB per a raw ARF scan report, you can calculate the right PV size for your environment.
+
+## Using custom result storage values
+
+Because Red Hat OpenShift Container Platform can be deployed in a variety of public clouds or bare metal, the Compliance Operator cannot determine available storage configurations. By default, the Compliance Operator will try to create the PV for storing results using the default storage class of the cluster, but a custom storage class can be configured using the rawResultStorage.StorageClassName attribute.
+
+
+[IMPORTANT]
+----
+If your cluster does not specify a default storage class, this attribute must be set.
+----
+
+Configure the ScanSetting custom resource to use a standard storage class and create persistent volumes that are 10GB in size and keep the last 10 results:
+
+
+```yaml
+apiVersion: compliance.openshift.io/v1alpha1
+kind: ScanSetting
+metadata:
+  name: default
+  namespace: openshift-compliance
+rawResultStorage:
+  storageClassName: standard
+  rotation: 10
+  size: 10Gi
+roles:
+- worker
+- master
+scanTolerations:
+- effect: NoSchedule
+  key: node-role.kubernetes.io/master
+  operator: Exists
+schedule: '0 1 * * *'
+```
+
 
 # Scheduling the result server pod on a worker node
 

@@ -1,0 +1,178 @@
+# Understanding user-defined networks
+
+
+
+[IMPORTANT]
+----
+UserDefinedNetwork is a Technology Preview feature only. Technology Preview features are not supported with Red Hat production service level agreements (SLAs) and might not be functionally complete. Red Hat does not recommend using them in production. These features provide early access to upcoming product features, enabling customers to test functionality and provide feedback during the development process.
+For more information about the support scope of Red Hat Technology Preview features, see Technology Preview Features Support Scope.
+----
+The OVN-Kubernetes CNI plugin supports layer2, layer3, and localnet topologies for secondary pod networks. However, for the primary network, or the main network that all pods are attached to, only a layer3 topology is supported. This allows for network models where all pods in the cluster were part of the same global layer3 network, but restricts the ability to customize primary network configurations.
+With user-defined networks, cluster administrators and users are offered highly customizable network configuration options that provide users with the ability to define their own network topologies, ensure network isolation, manage IP addressing for the workloads, and leverage advanced networking features. User-defined networks help enhance networking flexibility, security, and performance.
+User-defined networks provide the following benefits:
+1. Enhanced network isolation
+* Tenant isolation: Namespaces can have their own isolated primary network, similar to how tenants are isolated in Red Hat OpenStack Platform (RHOSP). This improves security by reducing the risk of cross-tenant traffic.
+2. Network flexibility
+* Layer 2 and layer 3 support: Cluster administrators can configure primary networks as layer 2 or layer 3 network types. This provides the flexibility of a secondary network to the primary network.
+3. Simplified network management
+* Reduced network configuration complexity: With user-defined networks, the need for complex network policies are eliminated because isolation can be achieved by grouping workloads in different networks.
+4. Advanced capabilities
+* Consistent and selectable IP addressing: Users can specify and reuse IP subnets across different namespaces and clusters, providing a consistent networking environment.
+* Support for multiple networks: The user-defined networking feature allows administrators to connect multiple namespaces to a single network, or to create distinct networks for different sets of namespaces.
+5. Simplification of application migration from Red Hat OpenStack Platform (RHOSP)
+* Network parity: With user-defined networking, the migration of applications from OpenStack to Red Hat OpenShift Container Platform is simplified by providing similar network isolation and configuration options.
+
+# Limitations for UserDefinedNetwork custom resource
+
+While user-defined networks (UDN) offer highly customizable network configuration options, there are limitations that cluster administrators and developers should be aware of when implementing and managing these networks. Consider the following limitations before implementing a user-defined network.
+
+* DNS limitations: DNS lookups for pods resolve to the pod's IP address on the cluster default network. Even if a pod is part of a user-defined network, DNS lookups will not resolve to the pod's IP address on that user-defined network.
+* Initial network assignment: You must create the namespace and network before creating pods. Assigning a namespace with pods to a new network or creating a UDN in an existing namespace will not be accepted by OVN-Kubernetes.
+
+* Health check limitations: Kubelet health checks are performed by the cluster default network, which does not confirm the network connectivity of the primary interface on the pod. Consequently, scenarios where a pod appears healthy by the default network, but has broken connectivity on the primary interface, are possible with user-defined networks.
+* Network policy limitations: Network policies that enable traffic between namespaces connected to different user-defined primary networks are not effective. These traffic policies do not take effect because there is no connectivity between these isolated networks.
+
+# Best practices for UserDefinedNetwork
+
+Before setting up a UserDefinedNetwork (UDN) resource, users should consider the following information:
+
+* openshift-* namespaces should not be used to set up a UDN.
+* 2 masquerade IPs are required for user defined networks. You must reconfigure your masquerade subnet to be large enough to hold the required number of networks. For Red Hat OpenShift Container Platform 4.17 and later versions, clusters use 169.254.0.0/17 for IPv4 and fd69::/112 for IPv6 as the default masquerade subnet. These ranges should also be avoided by users. For upgraded clusters, there is no change to the default masquerade subnet.
+* Ensure tenants are using the UserDefinedNetwork resource and not the NetworkAttachmentDefinition (NAD) resource. This can create security risks between tenants.
+* When creating network segmentation, you should only use the NAD resource if user-defined network segmentation cannot be completed using the UDN resource.
+* The cluster subnet and services CIDR for a UDN cannot overlap with the default cluster subnet CIDR. OVN-Kubernetes network plugin uses 100.64.0.0/16 as the default network's join subnet, you must not use that value to configure a UDN JoinSubnets field.
+
+[IMPORTANT]
+----
+For Red Hat OpenShift Container Platform 4.17 and later versions, clusters use 169.254.0.0/17 for IPv4 and fd69::/112 for IPv6 as the default masquerade subnet. These ranges should also be avoided by users. For upgraded clusters, there is no change to the default masquerade subnet.
+----
+
+# Creating a UserDefinedNetwork custom resource
+
+The following procedure sets up a user-defined network that is namespace scoped.
+
+1. Create a request for a user-defined network:
+1. Create a YAML file, such as my-udn-request.yaml, to define your request with content as in the following example:
+
+```yaml
+apiVersion: k8s.ovn.org/v1
+kind: UserDefinedNetwork
+metadata:
+  name: udn-1 1
+  namespace: <some_custom_namespace>
+spec:
+  topology: Layer2 2
+  layer2: 3
+    role: Primary 4
+    mtu: 9000 5
+    subnets:
+      - "10.0.0.0/24"
+      - "2001:db8::/64" 6
+    JoinSubnets: [] 7
+    IPAMLifecycle: Persistent 8
+```
+
+Name of your UserDefinedNetwork resource. This should not be default or duplicate any global namespaces created by the Cluster Network Operator (CNO).
+The topology field describes the network configuration, accepted values are Layer2 and Layer3. Layer3 topology creates a layer 2 segment per node, each with a different subnet. Layer 3 routing is used to interconnect node subnets. Layer2 topology creates one logical switch shared by all nodes.
+This field specifies the topology configuration, it can be layer2 or layer3.
+Specifies Primary or Secondary. Primary is the only role specification supported in 4.17.
+The maximum transmission units (MTU) is an optional field. The default value is 1400. The boundary for IPv4 is 574, and for IPv6 it is 1280.
+Specifies the subnet to be used for the network across the cluster. Supports both IPv6 and dual-stack. For example, 192.168.100.0/24,2001:DBB::/64. Dual-stack may set two subnets otherwise only one is allowed. When the topology field is set to Layer3, the subnet is split into smaller subnets for every node. Accepted format for subnets when Layer3 is set are: 172.16.0.0/16/24. For Layer2 values in topology field, standard CIDR ranges are accepted. If omitted the network only provides Layer2 communication and you must configure IP addresses.
+Specifies the subnets used inside the OVN-Kubernetes network topology. If omitted, the OVN-Kubernetes network plugin assigns one, which is subject to change over time.
+Specifies the IP address management system (IPAM). This field is optional and allowed when topology is layer2. The
+subnets field must be specified when this field is specified. The Persistent value specifies that workloads have persistent IP addresses. Assigned by the container network interface (CNI) and used by OVN-Kubernetes to program pod IP addresses. You must not change this for pod annotations.
+2. Apply your request by running the following command:
+
+```terminal
+$ oc apply -f my-udn-request.yaml
+```
+
+2. Verify that your request is successful by running the following command:
+
+```terminal
+$ oc get userdefinednetworks udn-1 -n default -o yaml
+```
+
+Example output
+
+```terminal
+apiVersion: k8s.ovn.org/v1
+kind: UserDefinedNetwork
+metadata:
+  creationTimestamp: "2024-08-28T17:18:47Z"
+  finalizers:
+  - k8s.ovn.org/user-defined-network-protection
+  generation: 1
+  name: udn-1
+  namespace: some-custom-namespace
+  resourceVersion: "53313"
+  uid: f483626d-6846-48a1-b88e-6bbeb8bcde8c
+spec:
+  layer2:
+    mtu: 9000
+    role: Primary
+    subnets:
+    - 10.0.0.0/24
+  topology: Layer2
+status:
+  conditions:
+  - lastTransitionTime: "2024-08-28T17:18:47Z"
+    message: NetworkAttachmentDefinition has been created
+    reason: NetworkAttachmentDefinitionReady
+    status: "True"
+    type: NetworkReady
+```
+
+
+## Configuration details and examples of UserDefinedNetworks
+
+The following sections includes configuration details and examples  for creating user-defined networks (UDN) using the custom resource definition.
+
+### Configuration details for Layer2 topology
+
+The following rules apply when creating a UDN with a Layer2 topology:
+
+* The subnets field is optional.
+* The subnets field is of type string and accepts standard CIDR formats for both IPv4 and IPv6.
+* The subnets field accepts one or two items. For two items, they must be of a different family. For example, subnets values of 10.100.0.0/16 and 2001:db8::/64.
+* Layer2 subnets may be omitted. If omitted, users must configure IP addresses for the pods. As a consequence, port security only prevents MAC spoofing.
+* The Layer2 subnets field is mandatory when ipamLifecycle is specified.
+
+
+```terminal
+apiVersion: k8s.ovn.org/v1
+kind: UserDefinedNetwork
+metadata:
+  name: udn-network-primary
+  namespace: <example_namespace2>
+spec:
+  topology: Layer2
+  layer2:
+    role: Primary
+    subnets: ["10.150.0.0/16"]
+```
+
+### Configuration details for Layer3 topology
+
+The following rules apply when creating a UDN with a Layer3 topology:
+
+* The subnets field is mandatory.
+* The type for subnets field is cidr and hostsubnet:
+* cidr is the cluster subnet and accepts a string value.
+* hostSubnet specifies the nodes subnet prefix that the cluster subnet is split to.
+
+
+```terminal
+apiVersion: k8s.ovn.org/v1
+kind: UserDefinedNetwork
+metadata:
+  name: udn-network-primary
+  namespace: <example_namespace>
+spec:
+  topology: Layer3
+  layer3:
+    role: Primary
+    subnets:
+      - cidr: 10.150.0.0/16
+        hostsubnet: 24
+```
