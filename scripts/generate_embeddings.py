@@ -22,6 +22,7 @@ OCP_DOCS_ROOT_URL = "https://docs.openshift.com/container-platform/"
 OCP_DOCS_VERSION = "4.15"
 UNREACHABLE_DOCS: int = 0
 RUNBOOKS_ROOT_URL = "https://github.com/openshift/runbooks/blob/master/alerts"
+HERMETIC_BUILD = False
 
 
 def ping_url(url: str) -> bool:
@@ -54,10 +55,11 @@ def file_metadata_func(file_path: str, docs_url_func: Callable[[str], str]) -> D
     docs_url = docs_url_func(file_path)
     title = get_file_title(file_path)
     msg = f"file_path: {file_path}, title: {title}, docs_url: {docs_url}"
-    if not ping_url(docs_url):
-        global UNREACHABLE_DOCS
-        UNREACHABLE_DOCS += 1
-        msg += ", UNREACHABLE"
+    if not HERMETIC_BUILD:
+        if not ping_url(docs_url):
+            global UNREACHABLE_DOCS
+            UNREACHABLE_DOCS += 1
+            msg += ", UNREACHABLE"
     print(msg)
     return {"docs_url": docs_url, "title": title}
 
@@ -131,6 +133,7 @@ if __name__ == "__main__":
     parser.add_argument("-o", "--output", help="Vector DB output folder")
     parser.add_argument("-i", "--index", help="Product index")
     parser.add_argument("-v", "--ocp-version", help="OCP version")
+    parser.add_argument("-hb", "--hermetic-build", type=bool, default=False, help="Hermetic build")
     args = parser.parse_args()
     print(f"Arguments used: {args}")
 
@@ -147,6 +150,7 @@ if __name__ == "__main__":
         RUNBOOKS_ROOT_DIR = RUNBOOKS_ROOT_DIR[:-1]
 
     OCP_DOCS_VERSION = args.ocp_version
+    HERMETIC_BUILD = args.hermetic_build
 
     os.environ["HF_HOME"] = args.model_dir
     os.environ["TRANSFORMERS_OFFLINE"] = "1"
