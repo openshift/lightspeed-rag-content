@@ -1,5 +1,5 @@
 install-tools: ## Install required utilities/tools
-	@command -v pdm > /dev/null || { echo >&2 "pdm is not installed. Installing..."; pip install pdm; }
+	@command -v pdm > /dev/null || { echo >&2 "pdm is not installed. Installing..."; pip install --upgrade pip pdm; }
 
 pdm-lock-check: ## Check that the pdm.lock file is in a good shape
 	pdm lock --check
