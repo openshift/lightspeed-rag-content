@@ -3,78 +3,110 @@
 
 Tune nodes for low latency by using the cluster performance profile.
 You can restrict CPUs for infra and application containers, configure huge pages, Hyper-Threading, and configure CPU partitions for latency-sensitive processes.
-* Provisioning real-time and low latency workloads
 
 # Creating a performance profile
 
-Learn about the Performance Profile Creator (PPC) and how you can use it to create a performance profile.
+You can create a cluster performance profile by using the Performance Profile Creator (PPC) tool. The PPC is a function of the Node Tuning Operator.
+
+The PPC combines information about your cluster with user-supplied configurations to generate a performance profile that is appropriate to your hardware, topology and use-case.
+
+
+[NOTE]
+----
+Performance profiles are applicable only to bare-metal environments where the cluster has direct access to the underlying hardware resources. You can configure performances profiles for both single-node OpenShift and multi-node clusters.
+----
+
+The following is a high-level workflow for creating and applying a performance profile in your cluster:
+
+* Create a machine config pool (MCP) for nodes that you want to target with performance configurations. In single-node OpenShift clusters, you must use the master MCP because there is only one node in the cluster.
+* Gather information about your cluster using the must-gather command.
+* Use the PPC tool to create a performance profile by using either of the following methods:
+* Run the PPC tool by using Podman.
+* Run the PPC tool by using a wrapper script.
+* Configure the performance profile for your use case and apply the performance profile to your cluster.
 
 ## About the Performance Profile Creator
 
-The Performance Profile Creator (PPC) is a command-line tool, delivered with the Node Tuning Operator, used to create the performance profile.
-The tool consumes must-gather data from the cluster and several user-supplied profile arguments. The PPC generates a performance profile that is appropriate for your hardware and topology.
+The Performance Profile Creator (PPC) is a command-line tool, delivered with the Node Tuning Operator, that can help you to create a performance profile for your cluster.
 
-The tool is run by one of the following methods:
+Initially, you can use the PPC tool to process the must-gather data to display key performance configurations for your cluster, including the following information:
 
-* Invoking podman
-* Calling a wrapper script
+* NUMA cell partitioning with the allocated CPU IDs
+* Hyper-Threading node configuration
 
-## Gathering data about your cluster using the must-gather command
+You can use this information to help you configure the performance profile.
 
-The Performance Profile Creator (PPC) tool requires must-gather data. As a cluster administrator, run the must-gather command to capture information about your cluster.
+Specify performance configuration arguments to the PPC tool to generate a proposed performance profile that is appropriate for your hardware, topology, and use-case.
 
-* Access to the cluster as a user with the cluster-admin role.
-* The OpenShift CLI (oc) installed.
+You can run the PPC by using one of the following methods:
 
-1. Optional: Verify that a matching machine config pool exists with a label:
+* Run the PPC by using Podman
+* Run the PPC by using the wrapper script
+
+
+[NOTE]
+----
+Using the wrapper script abstracts some of the more granular Podman tasks into an executable script. For example, the wrapper script handles tasks such as pulling and running the required container image, mounting directories into the container, and providing parameters directly to the container through Podman. Both methods achieve the same result.
+----
+
+## Creating a machine config pool to target nodes for performance tuning
+
+For multi-node clusters, you can define a machine config pool (MCP) to identify the target nodes that you want to configure with a performance profile.
+
+In single-node OpenShift clusters, you must use the master MCP because there is only one node in the cluster. You do not need to create a separate MCP for single-node OpenShift clusters.
+
+* You have cluster-admin role access.
+* You installed the OpenShift CLI (oc).
+
+1. Label the target nodes for configuration by running the following command:
 
 ```terminal
-$ oc describe mcp/worker-rt
+$ oc label node <node_name> node-role.kubernetes.io/worker-cnf="" 1
+```
+
+Replace <node_name> with the name of your node. This example applies the worker-cnf label.
+2. Create a MachineConfigPool resource containing the target nodes:
+1. Create a YAML file that defines the MachineConfigPool resource:
+Example mcp-worker-cnf.yaml file
+
+```yaml
+apiVersion: machineconfiguration.openshift.io/v1
+kind: MachineConfigPool
+metadata:
+  name: worker-cnf 1
+  labels:
+    machineconfiguration.openshift.io/role: worker-cnf 2
+spec:
+  machineConfigSelector:
+    matchExpressions:
+      - {
+           key: machineconfiguration.openshift.io/role,
+           operator: In,
+           values: [worker, worker-cnf],
+        }
+  paused: false
+  nodeSelector:
+    matchLabels:
+      node-role.kubernetes.io/worker-cnf: "" 3
+```
+
+Specify a name for the MachineConfigPool resource.
+Specify a unique label for the machine config pool.
+Specify the nodes with the target label that you defined.
+2. Apply the MachineConfigPool resource by running the following command:
+
+```terminal
+$ oc apply -f mcp-worker-cnf.yaml
 ```
 
 Example output
 
 ```terminal
-Name:         worker-rt
-Namespace:
-Labels:       machineconfiguration.openshift.io/role=worker-rt
-```
-
-2. If a matching label does not exist add a label for a machine config pool (MCP) that matches with the MCP name:
-
-```terminal
-$ oc label mcp <mcp_name> machineconfiguration.openshift.io/role=<mcp_name>
-```
-
-3. Navigate to the directory where you want to store the must-gather data.
-4. Collect cluster information by running the following command:
-
-```terminal
-$ oc adm must-gather
-```
-
-5. Optional: Create a compressed file from the must-gather directory:
-
-```terminal
-$ tar cvaf must-gather.tar.gz must-gather/
+machineconfigpool.machineconfiguration.openshift.io/worker-cnf created
 ```
 
 
-[NOTE]
-----
-Compressed output is required if you are running the Performance Profile Creator wrapper script.
-----
-
-## Running the Performance Profile Creator using Podman
-
-As a cluster administrator, you can run podman and the Performance Profile Creator to create a performance profile.
-
-* Access to the cluster as a user with the cluster-admin role.
-* A cluster installed on bare-metal hardware.
-* A node with podman and OpenShift CLI (oc) installed.
-* Access to the Node Tuning Operator image.
-
-1. Check the machine config pool:
+* Check the machine config pools in your cluster by running the following command:
 
 ```terminal
 $ oc get mcp
@@ -84,11 +116,80 @@ Example output
 
 ```terminal
 NAME         CONFIG                                                 UPDATED   UPDATING   DEGRADED   MACHINECOUNT   READYMACHINECOUNT   UPDATEDMACHINECOUNT   DEGRADEDMACHINECOUNT   AGE
-master       rendered-master-acd1358917e9f98cbdb599aea622d78b       True      False      False      3              3                   3                     0                      22h
-worker-cnf   rendered-worker-cnf-1d871ac76e1951d32b2fe92369879826   False     True       False      2              1                   1                     0                      22h
+master       rendered-master-58433c7c3c1b4ed5ffef95234d451490       True      False      False      3              3                   3                     0                      6h46m
+worker       rendered-worker-168f52b168f151e4f853259729b6azc4       True      False      False      2              2                   2                     0                      6h46m
+worker-cnf   rendered-worker-cnf-168f52b168f151e4f853259729b6azc4   True      False      False      1              1                   1                     0                      73s
 ```
 
-2. Use Podman to authenticate to registry.redhat.io:
+
+## Gathering data about your cluster for the PPC
+
+The Performance Profile Creator (PPC) tool requires must-gather data. As a cluster administrator, run the must-gather command to capture information about your cluster.
+
+* Access to the cluster as a user with the cluster-admin role.
+* You installed the OpenShift CLI (oc).
+* You identified a target MCP that you want to configure with a performance profile.
+
+1. Navigate to the directory where you want to store the must-gather data.
+2. Collect cluster information by running the following command:
+
+```terminal
+$ oc adm must-gather
+```
+
+
+The command creates a folder with the must-gather data in your local directory with a naming format similar to the following: must-gather.local.1971646453781853027.
+3. Optional: Create a compressed file from the must-gather directory:
+
+```terminal
+$ tar cvaf must-gather.tar.gz <must_gather_folder> 1
+```
+
+Replace with the name of the must-gather data folder.
+
+[NOTE]
+----
+Compressed output is required if you are running the Performance Profile Creator wrapper script.
+----
+
+* For more information about the must-gather tool,
+see Gathering data about your cluster.
+
+## Running the Performance Profile Creator using Podman
+
+As a cluster administrator, you can use Podman with the Performance Profile Creator (PPC) to create a performance profile.
+
+For more information about the PPC arguments, see the section "Performance Profile Creator arguments".
+
+
+[IMPORTANT]
+----
+The PPC uses the must-gather data from your cluster to create the performance profile. If you make any changes to your cluster, such as relabeling a node targeted for performance configuration, you must re-create the must-gather data before running PPC again.
+----
+
+* Access to the cluster as a user with the cluster-admin role.
+* A cluster installed on bare-metal hardware.
+* You installed podman and the OpenShift CLI (oc).
+* Access to the Node Tuning Operator image.
+* You identified a machine config pool containing target nodes for configuration.
+* You have access to the must-gather data for your cluster.
+
+1. Check the machine config pool by running the following command:
+
+```terminal
+$ oc get mcp
+```
+
+Example output
+
+```terminal
+NAME         CONFIG                                                 UPDATED   UPDATING   DEGRADED   MACHINECOUNT   READYMACHINECOUNT   UPDATEDMACHINECOUNT   DEGRADEDMACHINECOUNT   AGE
+master       rendered-master-58433c8c3c0b4ed5feef95434d455490       True      False      False      3              3                   3                     0                      8h
+worker       rendered-worker-668f56a164f151e4a853229729b6adc4       True      False      False      2              2                   2                     0                      8h
+worker-cnf   rendered-worker-cnf-668f56a164f151e4a853229729b6adc4   True      False      False      1              1                   1                     0                      79m
+```
+
+2. Use Podman to authenticate to registry.redhat.io by running the following command:
 
 ```terminal
 $ podman login registry.redhat.io
@@ -96,14 +197,14 @@ $ podman login registry.redhat.io
 
 
 ```bash
-Username: <username>
+Username: <user_name>
 Password: <password>
 ```
 
-3. Optional: Display help for the PPC tool:
+3. Optional: Display help for the PPC tool by running the following command:
 
 ```terminal
-$ podman run --rm --entrypoint performance-profile-creator registry.redhat.io/openshift4/ose-cluster-node-tuning-operator:v4.17 -h
+$ podman run --rm --entrypoint performance-profile-creator registry.redhat.io/openshift4/ose-cluster-node-tuning-rhel9-operator:v4.17 -h
 ```
 
 Example output
@@ -131,46 +232,71 @@ Flags:
       --user-level-networking             Run with User level Networking(DPDK) enabled
 ```
 
-4. Run the Performance Profile Creator tool in discovery mode:
-
-[NOTE]
-----
-Discovery mode inspects your cluster by using the output from must-gather.
-The output produced includes information on the following conditions:
-* The NUMA cell partitioning with the allocated CPU ids
-* Whether Hyper-Threading is enabled
-Using this information you can set appropriate values for some of the arguments supplied to the Performance Profile Creator tool.
-----
+4. To display information about the cluster, run the PPC tool with the log argument by running the following command:
 
 ```terminal
-$ podman run --entrypoint performance-profile-creator -v <path_to_must-gather>/must-gather:/must-gather:z registry.redhat.io/openshift4/ose-cluster-node-tuning-operator:v4.17 --info log --must-gather-dir-path /must-gather
+$ podman run --entrypoint performance-profile-creator -v <path_to_must_gather>:/must-gather:z registry.redhat.io/openshift4/ose-cluster-node-tuning-rhel9-operator:v4.17 --info log --must-gather-dir-path /must-gather
 ```
 
-
-[NOTE]
-----
-This command uses the performance profile creator as a new entry point to podman. It maps the must-gather data for the host into the container image and invokes the required user-supplied profile arguments to produce the my-performance-profile.yaml file.
-The -v option can be the path to either of the following components:
-* The must-gather output directory
-* An existing directory containing the must-gather decompressed .tar file
-The info option requires a value which specifies the output format. Possible values are log and JSON. The JSON format is reserved for debugging.
-----
-5. Run podman:
+* --entrypoint performance-profile-creator defines the performance profile creator as a new entry point to podman.
+* -v <path_to_must_gather> specifies the path to either of the following components:
+* The directory containing the must-gather data.
+* An existing directory containing the must-gather decompressed .tar file.
+* --info log specifies a value for the output format.
+Example output
 
 ```terminal
-$ podman run --entrypoint performance-profile-creator -v /must-gather:/must-gather:z registry.redhat.io/openshift4/ose-cluster-node-tuning-operator:v4.17 --mcp-name=worker-cnf --reserved-cpu-count=4 --rt-kernel=true --split-reserved-cpus-across-numa=false --must-gather-dir-path /must-gather --power-consumption-mode=ultra-low-latency --offlined-cpu-count=6 > my-performance-profile.yaml
+level=info msg="Cluster info:"
+level=info msg="MCP 'master' nodes:"
+level=info msg=---
+level=info msg="MCP 'worker' nodes:"
+level=info msg="Node: host.example.com (NUMA cells: 1, HT: true)"
+level=info msg="NUMA cell 0 : [0 1 2 3]"
+level=info msg="CPU(s): 4"
+level=info msg="Node: host1.example.com (NUMA cells: 1, HT: true)"
+level=info msg="NUMA cell 0 : [0 1 2 3]"
+level=info msg="CPU(s): 4"
+level=info msg=---
+level=info msg="MCP 'worker-cnf' nodes:"
+level=info msg="Node: host2.example.com (NUMA cells: 1, HT: true)"
+level=info msg="NUMA cell 0 : [0 1 2 3]"
+level=info msg="CPU(s): 4"
+level=info msg=---
 ```
 
+5. Create a performance profile by running the following command. The example uses sample PPC arguments and values:
+
+```terminal
+$ podman run --entrypoint performance-profile-creator -v <path_to_must_gather>:/must-gather:z registry.redhat.io/openshift4/ose-cluster-node-tuning-rhel9-operator:v4.17 --mcp-name=worker-cnf --reserved-cpu-count=1 --rt-kernel=true --split-reserved-cpus-across-numa=false --must-gather-dir-path /must-gather --power-consumption-mode=ultra-low-latency --offlined-cpu-count=1 > my-performance-profile.yaml
+```
+
+* -v <path_to_must_gather> specifies the path to either of the following components:
+* The directory containing the must-gather data.
+* The directory containing the must-gather decompressed .tar file.
+* --mcp-name=worker-cnf specifies the worker-=cnf machine config pool.
+* --reserved-cpu-count=1 specifies one reserved CPU.
+* --rt-kernel=true enables the real-time kernel.
+* --split-reserved-cpus-across-numa=false disables reserved CPUs splitting across NUMA nodes.
+* --power-consumption-mode=ultra-low-latency specifies minimal latency at the cost of increased power consumption.
+* --offlined-cpu-count=1 specifies one offlined CPU.
 
 [NOTE]
 ----
-The Performance Profile Creator arguments are shown in the Performance Profile Creator arguments table. The following arguments are required:
-* reserved-cpu-count
-* mcp-name
-* rt-kernel
 The mcp-name argument in this example is set to worker-cnf based on the output of the command oc get mcp. For single-node OpenShift use --mcp-name=master.
 ----
-6. Review the created YAML file:
+Example output
+
+```terminal
+level=info msg="Nodes targeted by worker-cnf MCP are: [worker-2]"
+level=info msg="NUMA cell(s): 1"
+level=info msg="NUMA cell 0 : [0 1 2 3]"
+level=info msg="CPU(s): 4"
+level=info msg="1 reserved CPUs allocated: 0 "
+level=info msg="2 isolated CPUs allocated: 2-3"
+level=info msg="Additional Kernel Args based on configuration: []"
+```
+
+6. Review the created YAML file by running the following command:
 
 ```terminal
 $ cat my-performance-profile.yaml
@@ -179,15 +305,16 @@ $ cat my-performance-profile.yaml
 Example output
 
 ```yaml
+---
 apiVersion: performance.openshift.io/v2
 kind: PerformanceProfile
 metadata:
   name: performance
 spec:
   cpu:
-    isolated: 2-39,48-79
-    offlined: 42-47
-    reserved: 0-1,40-41
+    isolated: 2-3
+    offlined: "1"
+    reserved: "0"
   machineConfigPoolSelector:
     machineconfiguration.openshift.io/role: worker-cnf
   nodeSelector:
@@ -198,6 +325,7 @@ spec:
     enabled: true
   workloadHints:
     highPowerConsumption: true
+    perPodPowerManagement: false
     realTime: true
 ```
 
@@ -207,61 +335,30 @@ spec:
 $ oc apply -f my-performance-profile.yaml
 ```
 
-
-* For more information about the must-gather tool,
-see Gathering data about your cluster.
-
-### How to run podman to create a performance profile
-
-The following example illustrates how to run podman to create a performance profile with 20 reserved CPUs that are to be split across the NUMA nodes.
-
-Node hardware configuration:
-
-* 80 CPUs
-* Hyperthreading enabled
-* Two NUMA nodes
-* Even numbered CPUs run on NUMA node 0 and odd numbered CPUs run on NUMA node 1
-
-Run podman to create the performance profile:
-
+Example output
 
 ```terminal
-$ podman run --entrypoint performance-profile-creator -v /must-gather:/must-gather:z registry.redhat.io/openshift4/ose-cluster-node-tuning-operator:v4.17 --mcp-name=worker-cnf --reserved-cpu-count=20 --rt-kernel=true --split-reserved-cpus-across-numa=true --must-gather-dir-path /must-gather > my-performance-profile.yaml
+performanceprofile.performance.openshift.io/performance created
 ```
 
 
-The created profile is described in the following YAML:
+## Running the Performance Profile Creator wrapper script
+
+The wrapper script simplifies the process of creating a performance profile with the Performance Profile Creator (PPC) tool. The script handles tasks such as pulling and running the required container image, mounting directories into the container, and providing parameters directly to the container through Podman.
+
+For more information about the Performance Profile Creator arguments, see the section "Performance Profile Creator arguments".
 
 
-```yaml
-  apiVersion: performance.openshift.io/v2
-  kind: PerformanceProfile
-  metadata:
-    name: performance
-  spec:
-    cpu:
-      isolated: 10-39,50-79
-      reserved: 0-9,40-49
-    nodeSelector:
-      node-role.kubernetes.io/worker-cnf: ""
-    numa:
-      topologyPolicy: restricted
-    realTimeKernel:
-      enabled: true
-```
-
-
-
-[NOTE]
+[IMPORTANT]
 ----
-In this case, 10 CPUs are reserved on NUMA node 0 and 10 are reserved on NUMA node 1.
+The PPC uses the must-gather data from your cluster to create the performance profile. If you make any changes to your cluster, such as relabeling a node targeted for performance configuration, you must re-create the must-gather data before running PPC again.
 ----
 
-### Running the Performance Profile Creator wrapper script
-
-The performance profile wrapper script simplifies the running of the Performance Profile Creator (PPC) tool. It hides the complexities associated with running podman and specifying the mapping directories and it enables the creation of the performance profile.
-
+* Access to the cluster as a user with the cluster-admin role.
+* A cluster installed on bare-metal hardware.
+* You installed podman and the OpenShift CLI (oc).
 * Access to the Node Tuning Operator image.
+* You identified a machine config pool containing target nodes for configuration.
 * Access to the must-gather tarball.
 
 1. Create a file on your local machine named, for example, run-perf-profile-creator.sh:
@@ -282,7 +379,7 @@ readonly IMG_EXISTS_CMD="${CONTAINER_RUNTIME} image exists"
 readonly IMG_PULL_CMD="${CONTAINER_RUNTIME} image pull"
 readonly MUST_GATHER_VOL="/must-gather"
 
-NTO_IMG="registry.redhat.io/openshift4/ose-cluster-node-tuning-operator:v4.17"
+NTO_IMG="registry.redhat.io/openshift4/ose-cluster-node-tuning-rhel9-operator:v4.17"
 MG_TARBALL=""
 DATA_DIR=""
 
@@ -362,13 +459,25 @@ main "$@"
 $ chmod a+x run-perf-profile-creator.sh
 ```
 
-4. Optional: Display the run-perf-profile-creator.sh command usage:
+4. Use Podman to authenticate to registry.redhat.io by running the following command:
+
+```terminal
+$ podman login registry.redhat.io
+```
+
+
+```bash
+Username: <user_name>
+Password: <password>
+```
+
+5. Optional: Display help for the PPC tool by running the following command:
 
 ```terminal
 $ ./run-perf-profile-creator.sh -h
 ```
 
-Expected output
+Example output
 
 ```terminal
 Wrapper usage:
@@ -376,8 +485,8 @@ Wrapper usage:
 
 Options:
    -h                 help for run-perf-profile-creator.sh
-   -p                 Node Tuning Operator image 1
-   -t                 path to a must-gather tarball 2
+   -p                 Node Tuning Operator image
+   -t                 path to a must-gather tarball
 A tool that automates creation of Performance Profiles
 
 Usage:
@@ -404,61 +513,56 @@ Flags:
 
 [NOTE]
 ----
-There two types of arguments:
-* Wrapper arguments namely -h, -p and -t
-* PPC arguments
+You can optionally set a path for the Node Tuning Operator image using the -p option. If you do not set a path, the wrapper script uses the default image: registry.redhat.io/openshift4/ose-cluster-node-tuning-rhel9-operator:vBranch Build.
 ----
-Optional: Specify the Node Tuning Operator image. If not set, the default upstream image is used: registry.redhat.io/openshift4/ose-cluster-node-tuning-operator:v4.17.
--t is a required wrapper script argument and specifies the path to a must-gather tarball.
-5. Run the performance profile creator tool in discovery mode:
-
-[NOTE]
-----
-Discovery mode inspects your cluster using the output from must-gather. The output produced includes information on:
-* The NUMA cell partitioning with the allocated CPU IDs
-* Whether hyperthreading is enabled
-Using this information you can set appropriate values for some of the arguments supplied to the Performance Profile Creator tool.
-----
+6. To display information about the cluster, run the PPC tool with the log argument by running the following command:
 
 ```terminal
-$ ./run-perf-profile-creator.sh -t /must-gather/must-gather.tar.gz -- --info=log
+$ ./run-perf-profile-creator.sh -t /<path_to_must_gather_dir>/must-gather.tar.gz -- --info=log
 ```
 
-
-[NOTE]
-----
-The info option requires a value which specifies the output format. Possible values are log and JSON. The JSON format is reserved for debugging.
-----
-6. Check the machine config pool:
-
-```terminal
-$ oc get mcp
-```
-
+* -t /<path_to_must_gather_dir>/must-gather.tar.gz specifies the path to directory containing the must-gather tarball. This is a required argument for the wrapper script.
 Example output
 
 ```terminal
-NAME         CONFIG                                                 UPDATED   UPDATING   DEGRADED   MACHINECOUNT   READYMACHINECOUNT   UPDATEDMACHINECOUNT   DEGRADEDMACHINECOUNT   AGE
-master       rendered-master-acd1358917e9f98cbdb599aea622d78b       True      False      False      3              3                   3                     0                      22h
-worker-cnf   rendered-worker-cnf-1d871ac76e1951d32b2fe92369879826   False     True       False      2              1                   1                     0                      22h
+level=info msg="Cluster info:"
+level=info msg="MCP 'master' nodes:"
+level=info msg=---
+level=info msg="MCP 'worker' nodes:"
+level=info msg="Node: host.example.com (NUMA cells: 1, HT: true)"
+level=info msg="NUMA cell 0 : [0 1 2 3]"
+level=info msg="CPU(s): 4"
+level=info msg="Node: host1.example.com (NUMA cells: 1, HT: true)"
+level=info msg="NUMA cell 0 : [0 1 2 3]"
+level=info msg="CPU(s): 4"
+level=info msg=---
+level=info msg="MCP 'worker-cnf' nodes:"
+level=info msg="Node: host2.example.com (NUMA cells: 1, HT: true)"
+level=info msg="NUMA cell 0 : [0 1 2 3]"
+level=info msg="CPU(s): 4"
+level=info msg=---
 ```
 
-7. Create a performance profile:
+7. Create a performance profile by running the following command.
 
 ```terminal
-$ ./run-perf-profile-creator.sh -t /must-gather/must-gather.tar.gz -- --mcp-name=worker-cnf --reserved-cpu-count=2 --rt-kernel=true > my-performance-profile.yaml
+$ ./run-perf-profile-creator.sh -t /path-to-must-gather/must-gather.tar.gz -- --mcp-name=worker-cnf --reserved-cpu-count=1 --rt-kernel=true --split-reserved-cpus-across-numa=false --power-consumption-mode=ultra-low-latency --offlined-cpu-count=1 > my-performance-profile.yaml
 ```
 
+
+This example uses sample PPC arguments and values.
+* --mcp-name=worker-cnf specifies the worker-=cnf machine config pool.
+* --reserved-cpu-count=1 specifies one reserved CPU.
+* --rt-kernel=true enables the real-time kernel.
+* --split-reserved-cpus-across-numa=false disables reserved CPUs splitting across NUMA nodes.
+* --power-consumption-mode=ultra-low-latency specifies minimal latency at the cost of increased power consumption.
+* --offlined-cpu-count=1 specifies one offlined CPUs.
 
 [NOTE]
 ----
-The Performance Profile Creator arguments are shown in the Performance Profile Creator arguments table. The following arguments are required:
-* reserved-cpu-count
-* mcp-name
-* rt-kernel
 The mcp-name argument in this example is set to worker-cnf based on the output of the command oc get mcp. For single-node OpenShift use --mcp-name=master.
 ----
-8. Review the created YAML file:
+8. Review the created YAML file by running the following command:
 
 ```terminal
 $ cat my-performance-profile.yaml
@@ -466,59 +570,47 @@ $ cat my-performance-profile.yaml
 
 Example output
 
-```terminal
+```yaml
+---
 apiVersion: performance.openshift.io/v2
 kind: PerformanceProfile
 metadata:
   name: performance
 spec:
   cpu:
-    isolated: 1-39,41-79
-    reserved: 0,40
+    isolated: 2-3
+    offlined: "1"
+    reserved: "0"
+  machineConfigPoolSelector:
+    machineconfiguration.openshift.io/role: worker-cnf
   nodeSelector:
     node-role.kubernetes.io/worker-cnf: ""
   numa:
     topologyPolicy: restricted
   realTimeKernel:
-    enabled: false
+    enabled: true
+  workloadHints:
+    highPowerConsumption: true
+    perPodPowerManagement: false
+    realTime: true
 ```
 
-
-[NOTE]
-----
-When you pass the argument --enable-hardware-tuning as a flag to the Performance Profile Creator, the generated PerformanceProfile includes guidance on how to set frequency settings as follows:
-
-```yaml
-apiVersion: performance.openshift.io/v2
-kind: PerformanceProfile
-metadata:
-  name: performance
-spec:
-……………………
-……………………
-#HardwareTuning is an advanced feature, and only intended to be used if
-#user is aware of the vendor recommendation on maximum cpu frequency.
-#The structure must follow
-#
-# hardwareTuning:
-#   isolatedCpuFreq: <Maximum frequency for applications running on isolated CPUs>
-#   reservedCpuFreq: <Maximum frequency for platform software running on reserved CPUs>
-```
-
-----
 9. Apply the generated profile:
-
-[NOTE]
-----
-Install the Node Tuning Operator before applying the profile.
-----
 
 ```terminal
 $ oc apply -f my-performance-profile.yaml
 ```
 
+Example output
 
-### Performance Profile Creator arguments
+```terminal
+performanceprofile.performance.openshift.io/performance created
+```
+
+
+## Performance Profile Creator arguments
+
+
 
 
 
@@ -568,7 +660,7 @@ spec:
 
 Insert values that are appropriate for your configuration for the CPU_ISOLATED, CPU_RESERVED, and HUGEPAGES_COUNT keys.
 
-### Telco RAN DU reference design performance profile template
+### Telco RAN DU reference design performance profile
 
 The following performance profile configures node-level performance settings for Red Hat OpenShift Container Platform clusters on commodity hardware to host telco RAN DU workloads.
 
@@ -620,7 +712,7 @@ spec:
 ```
 
 
-### Telco core reference design performance profile template
+### Telco core reference design performance profile
 
 The following performance profile configures node-level performance settings for Red Hat OpenShift Container Platform clusters on commodity hardware to host telco core workloads.
 
