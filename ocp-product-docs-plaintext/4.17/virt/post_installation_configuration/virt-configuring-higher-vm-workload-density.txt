@@ -1,26 +1,18 @@
 # Configuring higher VM workload density
 
 
-To increase the number of virtual machines (VMs), you can configure a higher VM workload density in your cluster by overcommitting the amount of memory (RAM).
-
-[IMPORTANT]
-----
-Configuring higher workload density is a Technology Preview feature only. Technology Preview features are not supported with Red Hat production service level agreements (SLAs) and might not be functionally complete. Red Hat does not recommend using them in production. These features provide early access to upcoming product features, enabling customers to test functionality and provide feedback during the development process.
-For more information about the support scope of Red Hat Technology Preview features, see Technology Preview Features Support Scope.
-----
-The following workloads are especially suited for higher workload density:
-* Many similar workloads
-* Underused workloads
+You can increase the number of virtual machines (VMs) on nodes by overcommitting memory (RAM). Increasing VM workload density can be useful in the following situations:
+* You have many similar workloads.
+* You have underused workloads.
 
 [NOTE]
 ----
-While overcommitted memory can lead to a higher workload density, it can also lower workload performance of a highly utilized system.
+Memory overcommitment can lower workload performance on a highly utilized system.
 ----
 
-# Using wasp-agent to configure higher VM workload density
+# Using wasp-agent to increase VM workload density
 
-The wasp-agent component enables an Red Hat OpenShift Container Platform cluster to assign swap resources to virtual machine (VM) workloads.
-Swap usage is only supported on worker nodes.
+The wasp-agent component facilitates memory overcommitment by assigning swap resources to worker nodes. It also manages pod evictions when nodes are at risk due to high swap I/O traffic or high utilization.
 
 
 [IMPORTANT]
@@ -29,12 +21,95 @@ Swap resources can be only assigned to virtual machine workloads (VM pods) of th
 For descriptions of QoS classes, see Configure Quality of Service for Pods (Kubernetes documentation).
 ----
 
-* The oc tool is available.
+* You have installed the OpenShift CLI (oc).
 * You are logged into the cluster with the cluster-admin role.
-* A memory over-commit ratio is defined.
+* A memory overcommit ratio is defined.
 * The node belongs to a worker pool.
 
-1. Create a privileged service account by entering the following commands:
+
+[NOTE]
+----
+The wasp-agent component deploys an Open Container Initiative (OCI) hook to enable swap usage for containers on the node level. The low-level nature requires the DaemonSet object to be privileged.
+----
+
+1. Configure the kubelet service to permit swap usage:
+1. Create or edit a KubeletConfig file with the parameters shown in the following example:
+Example of a KubeletConfig file
+
+```yaml
+apiVersion: machineconfiguration.openshift.io/v1
+kind: KubeletConfig
+metadata:
+  name: custom-config
+spec:
+  machineConfigPoolSelector:
+    matchLabels:
+      pools.operator.machineconfiguration.openshift.io/worker: ''  # MCP
+      #machine.openshift.io/cluster-api-machine-role: worker # machine
+      #node-role.kubernetes.io/worker: '' # node
+  kubeletConfig:
+    failSwapOn: false
+```
+
+2. Wait for the worker nodes to sync with the new configuration by running the following command:
+
+```yaml
+$ oc wait mcp worker --for condition=Updated=True --timeout=-1s
+```
+
+2. Provision swap by creating a MachineConfig object. For example:
+
+```yaml
+apiVersion: machineconfiguration.openshift.io/v1
+kind: MachineConfig
+metadata:
+  labels:
+    machineconfiguration.openshift.io/role: worker
+  name: 90-worker-swap
+spec:
+  config:
+    ignition:
+      version: 3.4.0
+    systemd:
+      units:
+        - contents: |
+            [Unit]
+            Description=Provision and enable swap
+            ConditionFirstBoot=no
+
+            [Service]
+            Type=oneshot
+            Environment=SWAP_SIZE_MB=5000
+            ExecStart=/bin/sh -c "sudo dd if=/dev/zero of=/var/tmp/swapfile count=${SWAP_SIZE_MB} bs=1M && \
+            sudo chmod 600 /var/tmp/swapfile && \
+            sudo mkswap /var/tmp/swapfile && \
+            sudo swapon /var/tmp/swapfile && \
+            free -h && \
+            sudo systemctl set-property --runtime system.slice MemorySwapMax=0 IODeviceLatencyTargetSec=\"/ 50ms\""
+
+            [Install]
+            RequiredBy=kubelet-dependencies.target
+          enabled: true
+          name: swap-provision.service
+```
+
+
+To have enough swap space for the worst-case scenario, make sure to have at least as much swap space provisioned as overcommitted RAM. Calculate the amount of swap space to be provisioned on a node by using the following formula:
+
+```terminal
+NODE_SWAP_SPACE = NODE_RAM * (MEMORY_OVER_COMMIT_PERCENT / 100% - 1)
+```
+
+Example
+
+```terminal
+NODE_SWAP_SPACE = 16 GB * (150% / 100% - 1)
+               = 16 GB * (1.5 - 1)
+               = 16 GB * (0.5)
+               =  8 GB
+```
+
+3. Create a privileged service account by running the following commands:
 
 ```terminal
 $ oc adm new-project wasp
@@ -55,12 +130,24 @@ $ oc create clusterrolebinding wasp --clusterrole=cluster-admin --serviceaccount
 $ oc adm policy add-scc-to-user -n wasp privileged -z wasp
 ```
 
+4. Wait for the worker nodes to sync with the new configuration by running the following command:
 
-[NOTE]
-----
-The wasp-agent component deploys an OCI hook to enable swap usage for containers on the node level. The low-level nature requires the DaemonSet object to be privileged.
-----
-2. Deploy wasp-agent by creating a DaemonSet object as follows:
+```yaml
+$ oc wait mcp worker --for condition=Updated=True --timeout=-1s
+```
+
+5. Determine the pull URL for the wasp agent image by running the following commands:
+
+```terminal
+$ OCP_VERSION=$(oc get clusterversion | awk 'NR==2' |cut -d' ' -f4 | cut -d'-' -f1)
+```
+
+
+```terminal
+$ oc get csv kubevirt-hyperconverged-operator.v${OCP_VERSION} -nopenshift-cnv -ojson | jq '.spec.relatedImages[] | select(.name|test(".*wasp-agent.*")) | .image'
+```
+
+6. Deploy wasp-agent by creating a DaemonSet object as shown in the following example:
 
 ```yaml
 kind: DaemonSet
@@ -81,20 +168,30 @@ spec:
         description: >-
           Configures swap for workloads
       labels:
-          name: wasp
+        name: wasp
     spec:
-      serviceAccountName: wasp
-      hostPID: true
-      hostUsers: true
-      terminationGracePeriodSeconds: 5
       containers:
-        - name: wasp-agent
+        - env:
+            - name: SWAP_UTILIZATION_THRESHOLD_FACTOR
+              value: 0.8
+            - name: MAX_AVERAGE_SWAP_IN_PAGES_PER_SECOND
+              value: "1000"
+            - name: MAX_AVERAGE_SWAP_OUT_PAGES_PER_SECOND
+              value: "1000"
+            - name: AVERAGE_WINDOW_SIZE_SECONDS
+              value: "30"
+            - name: VERBOSITY
+              value: "1"
+            - name: FSROOT
+              value: /host
+            - name: NODE_NAME
+              valueFrom:
+                fieldRef:
+                  fieldPath: spec.nodeName
           image: >-
-            registry.redhat.io/container-native-virtualization/wasp-agent-rhel9:v4.17
+            quay.io/openshift-virtualization/wasp-agent:v4.17 1
           imagePullPolicy: Always
-          env:
-          - name: "FSROOT"
-            value: "/host"
+          name: wasp-agent
           resources:
             requests:
               cpu: 100m
@@ -102,211 +199,150 @@ spec:
           securityContext:
             privileged: true
           volumeMounts:
-          - name: host
-            mountPath: "/host"
-      volumes:
-      - name: host
-        hostPath:
-          path: "/"
+            - mountPath: /host
+              name: host
+            - mountPath: /rootfs
+              name: rootfs
+      hostPID: true
+      hostUsers: true
       priorityClassName: system-node-critical
+      serviceAccountName: wasp
+      terminationGracePeriodSeconds: 5
+      volumes:
+        - hostPath:
+            path: /
+          name: host
+        - hostPath:
+            path: /
+          name: rootfs
   updateStrategy:
     type: RollingUpdate
     rollingUpdate:
       maxUnavailable: 10%
       maxSurge: 0
-status: {}
 ```
 
-3. Configure the kubelet service to permit swap:
-1. Create a KubeletConfiguration file as shown in the example:
-Example of a KubeletConfiguration file
+Replace the image value with the image URL from the previous step.
+7. Deploy alerting rules by creating a PrometheusRule object. For example:
 
 ```yaml
-apiVersion: machineconfiguration.openshift.io/v1
-kind: KubeletConfig
-metadata:
-  name: custom-config
-spec:
-  machineConfigPoolSelector:
-    matchLabels:
-      pools.operator.machineconfiguration.openshift.io/worker: ''  # MCP
-      #machine.openshift.io/cluster-api-machine-role: worker # machine
-      #node-role.kubernetes.io/worker: '' # node
-  kubeletConfig:
-    failSwapOn: false
-    evictionSoft:
-      memory.available: "1Gi"
-    evictionSoftGracePeriod:
-      memory.available: "10s"
-```
-
-
-If the cluster is already using an existing KubeletConfiguration file, add the following to the spec section:
-
-```yaml
-apiVersion: machineconfiguration.openshift.io/v1
-kind: KubeletConfig
-metadata:
-  name: custom-config
-# ...
-spec
-# ...
-    kubeletConfig:
-      evictionSoft:
-        memory.available: 1Gi
-      evictionSoftGracePeriod:
-        memory.available: 1m30s
-      failSwapOn: false
-```
-
-2. Run the following command:
-
-```yaml
-$ oc wait mcp worker --for condition=Updated=True
-```
-
-4. Create a MachineConfig object to provision swap as follows:
-
-```yaml
-apiVersion: machineconfiguration.openshift.io/v1
-kind: MachineConfig
+apiVersion: monitoring.coreos.com/v1
+kind: PrometheusRule
 metadata:
   labels:
-    machineconfiguration.openshift.io/role: worker
-  name: 90-worker-swap
-spec:
-  config:
-    ignition:
-      version: 3.4.0
-    systemd:
-      units:
-      - contents: |
-          [Unit]
-          Description=Provision and enable swap
-          ConditionFirstBoot=no
-
-          [Service]
-          Type=oneshot
-          Environment=SWAP_SIZE_MB=5000
-          ExecStart=/bin/sh -c "sudo dd if=/dev/zero of=/var/tmp/swapfile count=${SWAP_SIZE_MB} bs=1M && \
-          sudo chmod 600 /var/tmp/swapfile && \
-          sudo mkswap /var/tmp/swapfile && \
-          sudo swapon /var/tmp/swapfile && \
-          free -h && \
-          sudo systemctl set-property --runtime system.slice MemorySwapMax=0 IODeviceLatencyTargetSec=\"/ 50ms\""
-
-          [Install]
-          RequiredBy=kubelet-dependencies.target
-        enabled: true
-        name: swap-provision.service
-```
-
-
-To have enough swap space for the worst-case scenario, make sure to have at least as much swap space provisioned as overcommitted RAM. Calculate the amount of swap space to be provisioned on a node using the following formula:
-
-```terminal
-NODE_SWAP_SPACE = NODE_RAM * (MEMORY_OVER_COMMIT_PERCENT / 100% - 1)
-```
-
-
-Example:
-
-```terminal
-NODE_SWAP_SPACE = 16 GB * (150% / 100% - 1)
-                = 16 GB * (1.5 - 1)
-                = 16 GB * (0.5)
-                =  8 GB
-```
-
-5. Deploy alerting rules as follows:
-
-```yaml
-apiVersion: monitoring.openshift.io/v1
-kind: AlertingRule
-metadata:
-  name: wasp-alerts
-  namespace: openshift-monitoring
+    tier: node
+    wasp.io: ""
+  name: wasp-rules
+  namespace: wasp
 spec:
   groups:
-  - name: wasp.rules
-    rules:
-    - alert: NodeSwapping
-      annotations:
-        description: Node {{ $labels.instance }} is swapping at a rate of {{ printf "%.2f" $value }} MB/s
-        runbook_url: https://github.com/openshift-virtualization/wasp-agent/tree/main/runbooks/alerts/NodeSwapping.md
-        summary: A node is swapping memory pages
-      expr: |
-        # In MB/s
-        irate(node_memory_SwapFree_bytes{job="node-exporter"}[5m]) / 1024^2 > 0
-      for: 1m
-      labels:
-        severity: critical
+    - name: alerts.rules
+      rules:
+        - alert: NodeHighSwapActivity
+          annotations:
+            description: High swap activity detected at {{ $labels.instance }}. The rate
+              of swap out and swap in exceeds 200 in both operations in the last minute.
+              This could indicate memory pressure and may affect system performance.
+            runbook_url: https://github.com/openshift-virtualization/wasp-agent/tree/main/docs/runbooks/NodeHighSwapActivity.md
+            summary: High swap activity detected at {{ $labels.instance }}.
+          expr: rate(node_vmstat_pswpout[1m]) > 200 and rate(node_vmstat_pswpin[1m]) >
+            200
+          for: 1m
+          labels:
+            kubernetes_operator_component: kubevirt
+            kubernetes_operator_part_of: kubevirt
+            operator_health_impact: warning
+            severity: warning
 ```
 
-6. Configure OpenShift Virtualization to use memory overcommit either by using the Red Hat OpenShift Container Platform web console or by editing the HyperConverged custom resource (CR) file as shown in the following example.
+8. Add the cluster-monitoring label to the wasp namespace by running the following command:
 
-Example:
-
-```yaml
-apiVersion: hco.kubevirt.io/v1beta1
-kind: HyperConverged
-metadata:
-  name: kubevirt-hyperconverged
-  namespace: openshift-cnv
-spec:
-  higherWorkloadDensity:
-    memoryOvercommitPercentage: 150
+```terminal
+$ oc label namespace wasp openshift.io/cluster-monitoring="true"
 ```
 
-7. Apply all the configurations to compute nodes in your cluster by entering the following command:
+9. Enable memory overcommitment in OpenShift Virtualization by using the web console or the CLI.
+1. In the Red Hat OpenShift Container Platform web console, go to Virtualization -> Overview -> Settings -> General settings -> Memory density.
+2. Set Enable memory density to on.
+* Run the following command:
 
 ```terminal
 $ oc patch --type=merge \
-  -f <../manifests/hco-set-memory-overcommit.yaml> \
-  --patch-file <../manifests/hco-set-memory-overcommit.yaml>
+  -f <../manifests/openshift/hco-set-memory-overcommit.yaml> \
+  --patch-file <../manifests/openshift/hco-set-memory-overcommit.yaml>
 ```
-
-
-[NOTE]
-----
-After applying all configurations, the swap feature is fully available only after all MachineConfigPool rollouts are complete.
-----
 
 1. To verify the deployment of wasp-agent, run the following command:
 
 ```terminal
-$  oc rollout status ds wasp-agent -n wasp
+$ oc rollout status ds wasp-agent -n wasp
 ```
 
 
 If the deployment is successful, the following message is displayed:
+Example output
 
 ```terminal
 daemon set "wasp-agent" successfully rolled out
 ```
 
-2. To verify that swap is correctly provisioned, do the following:
-1. Run the following command:
+2. To verify that swap is correctly provisioned, complete the following steps:
+1. View a list of worker nodes by running the following command:
 
 ```terminal
 $ oc get nodes -l node-role.kubernetes.io/worker
 ```
 
-2. Select a node from the provided list and run the following command:
+2. Select a node from the list and display its memory usage by running the following command:
 
 ```terminal
-$ oc debug node/<selected-node> -- free -m
+$ oc debug node/<selected_node> -- free -m 1
 ```
 
+Replace <selected_node> with the node name.
 
-If swap is provisioned correctly, an amount greater than zero is displayed, similar to the following:
+If swap is provisioned, an amount greater than zero is displayed in the Swap: row.
+Example output
 
 3. Verify the OpenShift Virtualization memory overcommitment configuration by running the following command:
 
 ```terminal
 $ oc get -n openshift-cnv HyperConverged kubevirt-hyperconverged -o jsonpath="{.spec.higherWorkloadDensity.memoryOvercommitPercentage}"
+```
+
+Example output
+
+```terminal
 150
 ```
 
 
-The returned value, for example 150, must match the value you had previously configured.
+The returned value must match the value you had previously configured.
+
+# Pod eviction conditions used by wasp-agent
+
+The wasp agent manages pod eviction when the system is heavily loaded and nodes are at risk. Eviction is triggered if one of the following conditions is met:
+
+High swap I/O traffic:: This condition is met when swap-related I/O traffic is excessively high.
+Condition
+
+```text
+averageSwapInPerSecond > maxAverageSwapInPagesPerSecond
+&&
+averageSwapOutPerSecond > maxAverageSwapOutPagesPerSecond
+```
+
+
+By default, maxAverageSwapInPagesPerSecond and maxAverageSwapOutPagesPerSecond are set to 1000 pages. The default time interval for calculating the average is 30 seconds.
+High swap utilization:: This condition is met when swap utilization is excessively high, causing the current virtual memory usage to exceed the factored threshold. The NODE_SWAP_SPACE setting in your MachineConfig object can impact this condition.
+Condition
+
+```text
+nodeWorkingSet + nodeSwapUsage < totalNodeMemory + totalSwapMemory × thresholdFactor
+```
+
+
+## Environment variables
+
+You can use the following environment variables to adjust the values used to calculate eviction conditions:
+
