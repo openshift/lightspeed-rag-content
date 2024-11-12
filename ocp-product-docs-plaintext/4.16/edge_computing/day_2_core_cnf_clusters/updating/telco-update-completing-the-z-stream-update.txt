@@ -1,0 +1,276 @@
+# Completing the z-stream cluster update
+
+
+Follow these steps to perform the z-stream cluster update and monitor the update through to completion.
+Completing a z-stream update is more straightforward than a Control Plane Only or y-stream update.
+
+# Starting the cluster update
+
+When updating from one y-stream release to the next, you must ensure that the intermediate z-stream releases are also compatible.
+
+
+[NOTE]
+----
+You can verify that you are updating to a viable release by running the oc adm upgrade command.
+The oc adm upgrade command lists the compatible update releases.
+----
+
+1. Start the update:
+
+```terminal
+$ oc adm upgrade --to=4.15.33
+```
+
+
+[IMPORTANT]
+----
+* Control Plane Only update: Make sure you point to the interim <y+1> release path
+* Y-stream update - Make sure you use the correct <y.z> release that follows the Kubernetes version skew policy.
+* Z-stream update - Verify that there are no problems moving to that specific release
+----
+
+```terminal
+Requested update to 4.15.33 1
+```
+
+The Requested update value changes depending on your particular update.
+
+* Selecting the target release
+
+# Updating the worker nodes
+
+You upgrade the worker nodes after you have updated the control plane by unpausing the relevant mcp groups you created.
+Unpausing the mcp group starts the upgrade process for the worker nodes in that group.
+Each of the worker nodes in the cluster reboot to upgrade to the new EUS, y-stream or z-stream version as required.
+
+In the case of Control Plane Only upgrades note that when a worker node is updated it will only require one reboot and will jump &lt;y+2&gt;-release versions. This is a feature that was added to decrease the amount of time that it takes to upgrade large bare-metal clusters.
+
+
+[IMPORTANT]
+----
+This is a potential holding point.
+You can have a cluster version that is fully supported to run in production with the control plane that is updated to a new EUS release while the worker nodes are at a <y-2>-release. This allows large clusters to upgrade in steps across several maintenance windows.
+----
+
+1. You can check how many nodes are managed in an mcp group.
+Run the following command to get the list of mcp groups:
+
+```terminal
+$ oc get mcp
+```
+
+Example output
+
+```terminal
+NAME     CONFIG                                             UPDATED   UPDATING   DEGRADED   MACHINECOUNT   READYMACHINECOUNT   UPDATEDMACHINECOUNT   DEGRADEDMACHINECOUNT   AGE
+master   rendered-master-c9a52144456dbff9c9af9c5a37d1b614   True      False      False      3              3                   3                     0                      36d
+mcp-1    rendered-mcp-1-07fe50b9ad51fae43ed212e84e1dcc8e    False     False      False      1              0                   0                     0                      47h
+mcp-2    rendered-mcp-2-07fe50b9ad51fae43ed212e84e1dcc8e    False     False      False      1              0                   0                     0                      47h
+worker   rendered-worker-f1ab7b9a768e1b0ac9290a18817f60f0   True      False      False      0              0                   0                     0                      36d
+```
+
+
+[NOTE]
+----
+You decide how many mcp groups to upgrade at a time.
+This depends on how many CNF pods can be taken down at a time and how your pod disruption budget and anti-affinity settings are configured.
+----
+2. Get the list of nodes in the cluster:
+
+```terminal
+$ oc get nodes
+```
+
+Example output
+
+```terminal
+NAME           STATUS   ROLES                  AGE    VERSION
+ctrl-plane-0   Ready    control-plane,master   5d8h   v1.29.8+f10c92d
+ctrl-plane-1   Ready    control-plane,master   5d8h   v1.29.8+f10c92d
+ctrl-plane-2   Ready    control-plane,master   5d8h   v1.29.8+f10c92d
+worker-0       Ready    mcp-1,worker           5d8h   v1.27.15+6147456
+worker-1       Ready    mcp-2,worker           5d8h   v1.27.15+6147456
+```
+
+3. Confirm the MachineConfigPool groups that are paused:
+
+```terminal
+$ oc get mcp -o json | jq -r '["MCP","Paused"], ["---","------"], (.items[] | [(.metadata.name), (.spec.paused)]) | @tsv' | grep -v worker
+```
+
+Example output
+
+```terminal
+MCP     Paused
+---     ------
+master  false
+mcp-1   true
+mcp-2   true
+```
+
+
+[NOTE]
+----
+Each MachineConfigPool can be unpaused independently. Therefore, if a maintenance window runs out of time other MCPs do not need to be unpaused immediately. The cluster is supported to run with some worker nodes still at <y-2>-release version.
+----
+4. Unpause the required mcp group to begin the upgrade:
+
+```terminal
+$ oc patch mcp/mcp-1 --type merge --patch '{"spec":{"paused":false}}'
+```
+
+Example output
+
+```terminal
+machineconfigpool.machineconfiguration.openshift.io/mcp-1 patched
+```
+
+5. Confirm that the required mcp group is unpaused:
+
+```terminal
+$ oc get mcp -o json | jq -r '["MCP","Paused"], ["---","------"], (.items[] | [(.metadata.name), (.spec.paused)]) | @tsv' | grep -v worker
+```
+
+Example output
+
+```terminal
+MCP     Paused
+---     ------
+master  false
+mcp-1   false
+mcp-2   true
+```
+
+6. As each mcp group is upgraded, continue to unpause and upgrade the remaining nodes.
+
+```terminal
+$ oc get nodes
+```
+
+Example output
+
+```terminal
+NAME           STATUS                        ROLES                  AGE    VERSION
+ctrl-plane-0   Ready                         control-plane,master   5d8h   v1.29.8+f10c92d
+ctrl-plane-1   Ready                         control-plane,master   5d8h   v1.29.8+f10c92d
+ctrl-plane-2   Ready                         control-plane,master   5d8h   v1.29.8+f10c92d
+worker-0       Ready                         mcp-1,worker           5d8h   v1.29.8+f10c92d
+worker-1       NotReady,SchedulingDisabled   mcp-2,worker           5d8h   v1.27.15+6147456
+```
+
+
+# Verifying the health of the newly updated cluster
+
+Run the following commands after updating the cluster to verify that the cluster is back up and running.
+
+1. Check the cluster version by running the following command:
+
+```terminal
+$ oc get clusterversion
+```
+
+Example output
+
+```terminal
+NAME      VERSION   AVAILABLE   PROGRESSING   SINCE   STATUS
+version   4.16.14   True        False         4h38m   Cluster version is 4.16.14
+```
+
+
+This should return the new cluster version and the PROGRESSING column should return False.
+2. Check that all nodes are ready:
+
+```terminal
+$ oc get nodes
+```
+
+Example output
+
+```terminal
+NAME           STATUS   ROLES                  AGE    VERSION
+ctrl-plane-0   Ready    control-plane,master   5d9h   v1.29.8+f10c92d
+ctrl-plane-1   Ready    control-plane,master   5d9h   v1.29.8+f10c92d
+ctrl-plane-2   Ready    control-plane,master   5d9h   v1.29.8+f10c92d
+worker-0       Ready    mcp-1,worker           5d9h   v1.29.8+f10c92d
+worker-1       Ready    mcp-2,worker           5d9h   v1.29.8+f10c92d
+```
+
+
+All nodes in the cluster should be in a Ready status and running the same version.
+3. Check that there are no paused mcp resources in the cluster:
+
+```terminal
+$ oc get mcp -o json | jq -r '["MCP","Paused"], ["---","------"], (.items[] | [(.metadata.name), (.spec.paused)]) | @tsv' | grep -v worker
+```
+
+Example output
+
+```terminal
+MCP     Paused
+---     ------
+master  false
+mcp-1   false
+mcp-2   false
+```
+
+4. Check that all cluster Operators are available:
+
+```terminal
+$ oc get co
+```
+
+Example output
+
+```terminal
+NAME                                       VERSION   AVAILABLE   PROGRESSING   DEGRADED   SINCE   MESSAGE
+authentication                             4.16.14   True        False         False      5d9h
+baremetal                                  4.16.14   True        False         False      5d9h
+cloud-controller-manager                   4.16.14   True        False         False      5d10h
+cloud-credential                           4.16.14   True        False         False      5d10h
+cluster-autoscaler                         4.16.14   True        False         False      5d9h
+config-operator                            4.16.14   True        False         False      5d9h
+console                                    4.16.14   True        False         False      5d9h
+control-plane-machine-set                  4.16.14   True        False         False      5d9h
+csi-snapshot-controller                    4.16.14   True        False         False      5d9h
+dns                                        4.16.14   True        False         False      5d9h
+etcd                                       4.16.14   True        False         False      5d9h
+image-registry                             4.16.14   True        False         False      85m
+ingress                                    4.16.14   True        False         False      5d9h
+insights                                   4.16.14   True        False         False      5d9h
+kube-apiserver                             4.16.14   True        False         False      5d9h
+kube-controller-manager                    4.16.14   True        False         False      5d9h
+kube-scheduler                             4.16.14   True        False         False      5d9h
+kube-storage-version-migrator              4.16.14   True        False         False      4h48m
+machine-api                                4.16.14   True        False         False      5d9h
+machine-approver                           4.16.14   True        False         False      5d9h
+machine-config                             4.16.14   True        False         False      5d9h
+marketplace                                4.16.14   True        False         False      5d9h
+monitoring                                 4.16.14   True        False         False      5d9h
+network                                    4.16.14   True        False         False      5d9h
+node-tuning                                4.16.14   True        False         False      5d7h
+openshift-apiserver                        4.16.14   True        False         False      5d9h
+openshift-controller-manager               4.16.14   True        False         False      5d9h
+openshift-samples                          4.16.14   True        False         False      5h24m
+operator-lifecycle-manager                 4.16.14   True        False         False      5d9h
+operator-lifecycle-manager-catalog         4.16.14   True        False         False      5d9h
+operator-lifecycle-manager-packageserver   4.16.14   True        False         False      5d9h
+service-ca                                 4.16.14   True        False         False      5d9h
+storage                                    4.16.14   True        False         False      5d9h
+```
+
+
+All cluster Operators should report True in the AVAILABLE column.
+5. Check that all pods are healthy:
+
+```terminal
+$ oc get po -A | grep -E -iv 'complete|running'
+```
+
+
+This should not return any pods.
+
+[NOTE]
+----
+You might see a few pods still moving after the update.
+Watch this for a while to make sure all pods are cleared.
+----
