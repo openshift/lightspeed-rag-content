@@ -46,8 +46,6 @@ update-docs: ## Update the plaintext OCP docs in ocp-product-docs-plaintext/
 update-model: ## Update the local copy of the embedding model
 	@rm -rf ./embeddings_model
 	@python scripts/download_embeddings_model.py -l ./embeddings_model -r sentence-transformers/all-mpnet-base-v2
-	@split -b 45M embeddings_model/model.safetensors embeddings_model/model.safetensors.part
-	@rm embeddings_model/model.safetensors
 
 build-image: ## Build a rag-content container image.
 	podman build -t rag-content .
