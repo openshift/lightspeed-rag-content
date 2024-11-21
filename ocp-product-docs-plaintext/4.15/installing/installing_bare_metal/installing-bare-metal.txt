@@ -2383,6 +2383,9 @@ The following procedure enables multipath at installation time and appends kerne
 Red Hat OpenShift Container Platform does not support enabling multipathing as a day-2 activity on nodes that have been upgraded from 4.6 or earlier.
 ----
 
+* You have created the Ignition config files for your cluster.
+* You have reviewed Installing RHCOS and starting the Red Hat OpenShift Container Platform bootstrap process.
+
 1. To enable multipath and start the multipathd daemon, run the following command on the installation host:
 
 ```terminal
@@ -2394,7 +2397,8 @@ $ mpathconf --enable && systemctl start multipathd.service
 * If there is only one multipath device connected to the machine, it should be available at path /dev/mapper/mpatha. For example:
 
 ```terminal
-$ coreos-installer install /dev/mapper/mpatha \ 1
+$ coreos-installer install /dev/mapper/mpatha \1
+--ignition-url=http://host/worker.ign \
 --append-karg rd.multipath=default \
 --append-karg root=/dev/disk/by-label/dm-mpath-root \
 --append-karg rw
@@ -2404,7 +2408,8 @@ Indicates the path of the single multipathed device.
 * If there are multiple multipath devices connected to the machine, or to be more explicit, instead of using /dev/mapper/mpatha, it is recommended to use the World Wide Name (WWN) symlink available in /dev/disk/by-id. For example:
 
 ```terminal
-$ coreos-installer install /dev/disk/by-id/wwn-<wwn_ID> \ 1
+$ coreos-installer install /dev/disk/by-id/wwn-<wwn_ID> \1
+--ignition-url=http://host/worker.ign \
 --append-karg rd.multipath=default \
 --append-karg root=/dev/disk/by-label/dm-mpath-root \
 --append-karg rw
@@ -2413,7 +2418,8 @@ $ coreos-installer install /dev/disk/by-id/wwn-<wwn_ID> \ 1
 Indicates the WWN ID of the target multipathed device. For example, 0xx194e957fcedb4841.
 
 This symlink can also be used as the coreos.inst.install_dev kernel argument when using special coreos.inst.* arguments to direct the live installer. For more information, see "Installing RHCOS and starting the Red Hat OpenShift Container Platform bootstrap process".
-3. Check that the kernel arguments worked by going to one of the worker nodes and listing the kernel command line arguments (in /proc/cmdline on the host):
+3. Reboot into the installed system.
+4. Check that the kernel arguments worked by going to one of the worker nodes and listing the kernel command line arguments (in /proc/cmdline on the host):
 
 ```terminal
 $ oc debug node/ip-10-0-141-105.ec2.internal
@@ -2435,6 +2441,93 @@ sh-4.2# exit
 
 
 You should see the added kernel arguments.
+
+### Enabling multipathing on secondary disks
+
+RHCOS also supports multipathing on a secondary disk. Instead of kernel arguments, you use Ignition to enable multipathing for the secondary disk at installation time.
+
+* You have read the section Disk partitioning.
+* You have read Enabling multipathing with kernel arguments on RHCOS.
+* You have installed the Butane utility.
+
+1. Create a Butane config with information similar to the following:
+Example multipath-config.bu
+
+```yaml
+variant: openshift
+version: {product-version}.0
+systemd:
+  units:
+    - name: mpath-configure.service
+      enabled: true
+      contents: |
+        [Unit]
+        Description=Configure Multipath on Secondary Disk
+        ConditionFirstBoot=true
+        ConditionPathExists=!/etc/multipath.conf
+        Before=multipathd.service 1
+        DefaultDependencies=no
+
+        [Service]
+        Type=oneshot
+        ExecStart=/usr/sbin/mpathconf --enable 2
+
+        [Install]
+        WantedBy=multi-user.target
+    - name: mpath-var-lib-container.service
+      enabled: true
+      contents: |
+        [Unit]
+        Description=Set Up Multipath On /var/lib/containers
+        ConditionFirstBoot=true 3
+        Requires=dev-mapper-mpatha.device
+        After=dev-mapper-mpatha.device
+        After=ostree-remount.service
+        Before=kubelet.service
+        DefaultDependencies=no
+
+        [Service] 4
+        Type=oneshot
+        ExecStart=/usr/sbin/mkfs.xfs -L containers -m reflink=1 /dev/mapper/mpatha
+        ExecStart=/usr/bin/mkdir -p /var/lib/containers
+
+        [Install]
+        WantedBy=multi-user.target
+    - name: var-lib-containers.mount
+      enabled: true
+      contents: |
+        [Unit]
+        Description=Mount /var/lib/containers
+        After=mpath-var-lib-containers.service
+        Before=kubelet.service 5
+
+        [Mount] 6
+        What=/dev/disk/by-label/dm-mpath-containers
+        Where=/var/lib/containers
+        Type=xfs
+
+        [Install]
+        WantedBy=multi-user.target
+```
+
+The configuration must be set before launching the multipath daemon.
+Starts the mpathconf utility.
+This field must be set to the value true.
+Creates the filesystem and directory /var/lib/containers.
+The device must be mounted before starting any nodes.
+Mounts the device to the /var/lib/containers mount point. This location cannot be a symlink.
+2. Create the Ignition configuration by running the following command:
+
+```terminal
+$ butane --pretty --strict multipath-config.bu > multipath-config.ign
+```
+
+3. Continue with the rest of the first boot RHCOS installation process.
+
+[IMPORTANT]
+----
+Do not add the rd.multipath or root kernel arguments on the command-line during installation unless the primary disk is also multipathed.
+----
 
 * See Installing RHCOS and starting the Red Hat OpenShift Container Platform bootstrap process for more information on using special coreos.inst.* arguments to direct the live installer.
 

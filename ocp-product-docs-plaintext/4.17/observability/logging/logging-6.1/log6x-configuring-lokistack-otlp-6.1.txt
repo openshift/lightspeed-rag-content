@@ -1,0 +1,181 @@
+# OTLP data ingestion in Loki
+
+
+Logging 6.1 enables an API endpoint using the OpenTelemetry Protocol (OTLP). As OTLP is a standardized format not specifically designed for Loki, it requires additional configuration on Loki's side to map OpenTelemetry's data format to Loki's data model. OTLP lacks concepts such as stream labels or structured metadata. Instead, OTLP provides metadata about log entries as attributes, grouped into three categories:
+* Resource
+* Scope
+* Log
+This allows metadata to be set for multiple entries simultaneously or individually as needed.
+
+# Configuring LokiStack for OTLP data ingestion
+
+
+[IMPORTANT]
+----
+{FeatureName} is a Technology Preview feature only. Technology Preview features are not supported with Red Hat production service level agreements (SLAs) and might not be functionally complete. Red Hat does not recommend using them in production. These features provide early access to upcoming product features, enabling customers to test functionality and provide feedback during the development process.
+For more information about the support scope of Red Hat Technology Preview features, see Technology Preview Features Support Scope.
+----
+
+To configure a LokiStack custom resource (CR) for OTLP ingestion, follow these steps:
+
+* Ensure that your Loki setup supports structured metadata, introduced in schema version 13 to enable OTLP log ingestion.
+
+1. Set the schema version:
+* When creating a new LokiStack CR, set version: v13 in the storage schema configuration.
+
+[NOTE]
+----
+For existing configurations, add a new schema entry with version: v13 and an effectiveDate in the future. For more information on updating schema versions, see Upgrading Schemas (Grafana documentation).
+----
+2. Configure the storage schema as follows:
+Example configure storage schema
+
+```yaml
+# ...
+spec:
+  storage:
+    schemas:
+    - version: v13
+      effectiveDate: 2024-10-25
+```
+
+
+Once the effectiveDate has passed, the v13 schema takes effect, enabling your LokiStack to store structured metadata.
+
+# Attribute mapping
+
+When the Loki Operator is set to openshift-logging mode, it automatically applies a default set of attribute mappings. These mappings align specific OTLP attributes with Loki&#8217;s stream labels and structured metadata.
+
+For typical setups, these default mappings should be sufficient. However, you might need to customize attribute mapping in the following cases:
+
+* Using a custom Collector: If your setup includes a custom collector that generates additional attributes, consider customizing the mapping to ensure these attributes are retained in Loki.
+* Adjusting attribute detail levels: If the default attribute set is more detailed than necessary, you can reduce it to essential attributes only. This can avoid excessive data storage and streamline the logging process.
+
+
+[IMPORTANT]
+----
+Attributes that are not mapped to either stream labels or structured metadata are not stored in Loki.
+----
+
+## Custom attribute mapping for OpenShift
+
+When using the Loki Operator in openshift-logging mode, attribute mapping follow OpenShift defaults, but custom mappings can be configured to adjust these. Custom mappings allow further configurations to meet specific needs.
+
+In openshift-logging mode, custom attribute mappings can be configured globally for all tenants or for individual tenants as needed. When custom mappings are defined, they are appended to the OpenShift defaults. If default recommended labels are not required, they can be disabled in the tenant configuration.
+
+
+[NOTE]
+----
+A major difference between the Loki Operator and Loki itself lies in inheritance handling. Loki only copies default_resource_attributes_as_index_labels to tenants by default, while the Loki Operator applies the entire global configuration to each tenant in openshift-logging mode.
+----
+
+Within LokiStack, attribute mapping configuration is managed through the limits setting:
+
+
+```yaml
+# ...
+spec:
+  limits:
+    global:
+      otlp: {} 1
+    tenants:
+      application:
+        otlp: {} 2
+```
+
+
+Global OTLP attribute configuration.
+OTLP attribute configuration for the application tenant within openshift-logging mode.
+
+
+[NOTE]
+----
+Both global and per-tenant OTLP configurations can map attributes to stream labels or structured metadata. At least one stream label is required to save a log entry to Loki storage, so ensure this configuration meets that requirement.
+----
+
+Stream labels derive only from resource-level attributes, which the LokiStack resource structure reflects:
+
+
+```yaml
+spec:
+  limits:
+    global:
+      otlp:
+        streamLabels:
+          resourceAttributes:
+          - name: "k8s.namespace.name"
+          - name: "k8s.pod.name"
+          - name: "k8s.container.name"
+```
+
+
+Structured metadata, in contrast, can be generated from resource, scope or log-level attributes:
+
+
+```yaml
+# ...
+spec:
+  limits:
+    global:
+      otlp:
+        streamLabels:
+          # ...
+        structuredMetadata:
+          resourceAttributes:
+          - name: "process.command_line"
+          - name: "k8s\\.pod\\.labels\\..+"
+            regex: true
+          scopeAttributes:
+          - name: "service.name"
+          logAttributes:
+          - name: "http.route"
+```
+
+
+
+[TIP]
+----
+Use regular expressions by setting regex: true for attributes names when mapping similar attributes in Loki.
+----
+
+
+[IMPORTANT]
+----
+Avoid using regular expressions for stream labels, as this can increase data volume.
+----
+
+## Customizing OpenShift defaults
+
+In openshift-logging mode, certain attributes are required and cannot be removed from the configuration due to their role in OpenShift functions. Other attributes, labeled recommended, might be disabled if performance is impacted.
+
+When using the openshift-logging mode without custom attributes, you can achieve immediate compatibility with OpenShift tools. If additional attributes are needed as stream labels or structured metadata, use custom configuration. Custom configurations can merge with default configurations.
+
+## Removing recommended attributes
+
+To reduce default attributes in openshift-logging mode, disable recommended attributes:
+
+
+```yaml
+# ...
+spec:
+  tenants:
+    mode: openshift-logging
+    openshift:
+      otlp:
+        disableRecommendedAttributes: true 1
+```
+
+
+Set disableRecommendedAttributes: true to remove recommended attributes, which limits default attributes to the required attributes.
+
+
+[NOTE]
+----
+This option is beneficial if the default attributes causes performance or storage issues. This setting might negatively impact query performance, as it removes default stream labels. You should pair this option with a custom attribute configuration to retain attributes essential for queries.
+----
+
+# Additional resources
+
+* Loki labels
+* Structured metadata
+* OpenTelemetry attribute
