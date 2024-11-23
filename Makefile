@@ -14,7 +14,8 @@ install-tools: ## Install required utilities/tools
 	@command -v pdm > /dev/null || { echo >&2 "pdm is not installed. Installing..."; pip3.11 install --upgrade pip pdm; }
 
 pdm-lock-check: ## Check that the pdm.lock file is in a good shape
-	pdm lock --check --group $(TORCH_GROUP) --lockfile pdm.lock.$(TORCH_GROUP)
+	pdm lock --check --group cpu --lockfile pdm.lock.cpu
+	pdm lock --check --group gpu --lockfile pdm.lock.gpu
 
 install-deps: install-tools pdm-lock-check ## Install all required dependencies, according to pdm.lock
 	pdm sync --group $(TORCH_GROUP) --lockfile pdm.lock.$(TORCH_GROUP)
