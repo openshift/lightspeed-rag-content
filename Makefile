@@ -11,7 +11,7 @@ $(error Unsupported FLAVOR $(FLAVOR), must be 'cpu' or 'gpu')
 endif
 
 install-tools: ## Install required utilities/tools
-	@command -v pdm > /dev/null || { echo >&2 "pdm is not installed. Installing..."; pip3.11 install --upgrade pip pdm; }
+	@command -v pdm > /dev/null || { echo >&2 "pdm is not installed. Installing..."; pip3.11 install --no-cache-dir --upgrade pip pdm; }
 
 pdm-lock-check: ## Check that the pdm.lock file is in a good shape
 	pdm lock --check --group cpu --lockfile pdm.lock.cpu
@@ -43,6 +43,10 @@ update-docs: ## Update the plaintext OCP docs in ocp-product-docs-plaintext/
 		scripts/get_ocp_plaintext_docs.sh $$OCP_VERSION; \
 	done
 	scripts/get_runbooks.sh
+
+update-model: ## Update the local copy of the embedding model
+	@rm -rf ./embeddings_model
+	@python scripts/download_embeddings_model.py -l ./embeddings_model -r sentence-transformers/all-mpnet-base-v2
 
 build-image: ## Build a rag-content container image.
 	podman build -t rag-content .

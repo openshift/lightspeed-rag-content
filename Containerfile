@@ -1,5 +1,6 @@
 ARG EMBEDDING_MODEL=sentence-transformers/all-mpnet-base-v2
 ARG FLAVOR=cpu
+ARG HERMETIC=false
 
 FROM registry.access.redhat.com/ubi9/python-311 as cpu-base
 ARG EMBEDDING_MODEL
@@ -8,33 +9,41 @@ ARG FLAVOR
 FROM nvcr.io/nvidia/cuda:12.6.2-devel-ubi9 as gpu-base
 ARG EMBEDDING_MODEL
 ARG FLAVOR
-RUN dnf install -y python3.11 python3.11-pip libcudnn8 libnccl
+RUN dnf install -y python3.11 python3.11-pip libcudnn9 libnccl
 
 FROM ${FLAVOR}-base as lightspeed-rag-builder
 ARG EMBEDDING_MODEL
 ARG FLAVOR
+ARG HERMETIC
 
 USER 0
 WORKDIR /workdir
 
-COPY pyproject.toml pdm.lock* Makefile .
-RUN make install-tools && pdm config python.use_venv false && make pdm-lock-check install-deps
+COPY requirements.txt .
+RUN pip3.11 install --no-cache-dir -r requirements.txt
 
 COPY ocp-product-docs-plaintext ./ocp-product-docs-plaintext
 COPY runbooks ./runbooks
 
-COPY scripts/download_embeddings_model.py .
-RUN pdm run python download_embeddings_model.py -l ./embeddings_model -r ${EMBEDDING_MODEL}
+COPY embeddings_model ./embeddings_model
+#RUN cat embeddings_model/model.safetensors.part* > embeddings_model/model.safetensors && rm embeddings_model/model.safetensors.part*
+RUN cd embeddings_model; if [ "$HERMETIC" == "true" ]; then \
+        ln -s /cachi2/output/deps/generic/model.safetensors model.safetensors; \
+    else \
+        wget -q https://huggingface.co/sentence-transformers/all-mpnet-base-v2/resolve/9a3225965996d404b775526de6dbfe85d3368642/model.safetensors; \
+    fi
 
-RUN export LD_LIBRARY_PATH=/usr/local/cuda-12.6/compat:$LD_LIBRARY_PATH; \
-    pdm run python -c "import torch; print(torch.version.cuda); print(torch.cuda.is_available());"
+RUN if [ "$FLAVOR" == "gpu" ]; then \
+        export LD_LIBRARY_PATH=/usr/local/cuda-12.6/compat:$LD_LIBRARY_PATH; \
+        python3.11 -c "import torch; print(torch.version.cuda); print(torch.cuda.is_available());"; \
+    fi
 
 COPY scripts/generate_embeddings.py .
 RUN export LD_LIBRARY_PATH=/usr/local/cuda-12.6/compat:$LD_LIBRARY_PATH; \
     set -e && for OCP_VERSION in $(ls -1 ocp-product-docs-plaintext); do \
-        pdm run python generate_embeddings.py -f ocp-product-docs-plaintext/${OCP_VERSION} -r runbooks/alerts -md embeddings_model \
+        python3.11 generate_embeddings.py -f ocp-product-docs-plaintext/${OCP_VERSION} -r runbooks/alerts -md embeddings_model \
             -mn ${EMBEDDING_MODEL} -o vector_db/ocp_product_docs/${OCP_VERSION} \
-            -i ocp-product-docs-$(echo $OCP_VERSION | sed 's/\./_/g') -v ${OCP_VERSION}; \
+            -i ocp-product-docs-$(echo $OCP_VERSION | sed 's/\./_/g') -v ${OCP_VERSION} -hb $HERMETIC; \
     done
 
 FROM registry.access.redhat.com/ubi9/ubi-minimal@sha256:d85040b6e3ed3628a89683f51a38c709185efc3fb552db2ad1b9180f2a6c38be
