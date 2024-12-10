@@ -19,14 +19,13 @@ ARG HERMETIC
 USER 0
 WORKDIR /workdir
 
-COPY requirements.txt .
-RUN pip3.11 install --no-cache-dir -r requirements.txt
+COPY requirements.gpu.txt .
+RUN pip3.11 install --no-cache-dir -r requirements.gpu.txt
 
 COPY ocp-product-docs-plaintext ./ocp-product-docs-plaintext
 COPY runbooks ./runbooks
 
 COPY embeddings_model ./embeddings_model
-#RUN cat embeddings_model/model.safetensors.part* > embeddings_model/model.safetensors && rm embeddings_model/model.safetensors.part*
 RUN cd embeddings_model; if [ "$HERMETIC" == "true" ]; then \
         ln -s /cachi2/output/deps/generic/model.safetensors model.safetensors; \
     else \
