@@ -30,7 +30,7 @@ COPY embeddings_model ./embeddings_model
 RUN cd embeddings_model; if [ "$HERMETIC" == "true" ]; then \
         ln -s /cachi2/output/deps/generic/model.safetensors model.safetensors; \
     else \
-        wget -q https://huggingface.co/sentence-transformers/all-mpnet-base-v2/resolve/9a3225965996d404b775526de6dbfe85d3368642/model.safetensors; \
+        curl -L https://huggingface.co/sentence-transformers/all-mpnet-base-v2/resolve/9a3225965996d404b775526de6dbfe85d3368642/model.safetensors --output model.safetensors; \
     fi
 
 RUN if [ "$FLAVOR" == "gpu" ]; then \
