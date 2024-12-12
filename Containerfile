@@ -9,7 +9,7 @@ ARG FLAVOR
 FROM nvcr.io/nvidia/cuda:12.6.2-devel-ubi9 as gpu-base
 ARG EMBEDDING_MODEL
 ARG FLAVOR
-RUN dnf install -y python3.11 python3.11-pip libcudnn9 libnccl
+RUN dnf install -y python3.11 python3.11-pip libcudnn9 libnccl wget
 
 FROM ${FLAVOR}-base as lightspeed-rag-builder
 ARG EMBEDDING_MODEL
