@@ -28,9 +28,9 @@ COPY runbooks ./runbooks
 COPY embeddings_model ./embeddings_model
 #RUN cat embeddings_model/model.safetensors.part* > embeddings_model/model.safetensors && rm embeddings_model/model.safetensors.part*
 RUN cd embeddings_model; if [ "$HERMETIC" == "true" ]; then \
-        ln -s /cachi2/output/deps/generic/model.safetensors model.safetensors; \
+        cp /cachi2/output/deps/generic/model.safetensors model.safetensors; \
     else \
-        wget -q https://huggingface.co/sentence-transformers/all-mpnet-base-v2/resolve/9a3225965996d404b775526de6dbfe85d3368642/model.safetensors; \
+        curl -L -O https://huggingface.co/sentence-transformers/all-mpnet-base-v2/resolve/9a3225965996d404b775526de6dbfe85d3368642/model.safetensors; \
     fi
 
 RUN if [ "$FLAVOR" == "gpu" ]; then \
