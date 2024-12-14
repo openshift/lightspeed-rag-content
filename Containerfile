@@ -6,7 +6,7 @@ FROM registry.access.redhat.com/ubi9/python-311 as cpu-base
 ARG EMBEDDING_MODEL
 ARG FLAVOR
 
-FROM nvcr.io/nvidia/cuda:12.6.2-devel-ubi9 as gpu-base
+FROM nvcr.io/nvidia/cuda:12.6.3-devel-ubi9 as gpu-base
 ARG EMBEDDING_MODEL
 ARG FLAVOR
 RUN dnf install -y python3.11 python3.11-pip libcudnn9 libnccl
