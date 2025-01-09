@@ -26,6 +26,7 @@ install-deps-test: install-tools pdm-lock-check ## Install all required dev depe
 update-deps: ## Check pyproject.toml for changes, update the lock file if needed, then sync.
 	pdm install --group $(TORCH_GROUP) --lockfile pdm.lock.$(TORCH_GROUP)
 	pdm install --dev --group $(TORCH_GROUP) --lockfile pdm.lock.$(TORCH_GROUP)
+	pdm export --group $(TORCH_GROUP) --lockfile pdm.lock.$(TORCH_GROUP) -o requirements.$(TORCH_GROUP).txt
 
 check-types: ## Checks type hints in sources
 	mypy --explicit-package-bases --disallow-untyped-calls --disallow-untyped-defs --disallow-incomplete-defs scripts
