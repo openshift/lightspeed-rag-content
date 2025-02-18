@@ -96,10 +96,7 @@ def runbook_file_metadata_func(file_path: str) -> Dict:
 
 def got_whitespace(text: str) -> bool:
     """Indicate if the parameter string contains whitespace."""
-    for c in text:
-        if c.isspace():
-            return True
-    return False
+    return any(c.isspace() for c in str(text))
 
 
 if __name__ == "__main__":
