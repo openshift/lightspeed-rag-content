@@ -99,6 +99,147 @@ def got_whitespace(text: str) -> bool:
     return any(c.isspace() for c in str(text))
 
 
+def get_chunk_text(chunk: Union[str, Document]) -> str:
+    """Return the text content of the input chunk; extract from page_content if input is a Document."""
+    if isinstance(chunk, str):
+        return chunk
+    return getattr(chunk, "page_content", getattr(chunk, "text", str(chunk)))
+
+
+def token_count(text: Union[str, Document]) -> int:
+    """Approximate token count by splitting on whitespace."""
+    return len(get_chunk_text(text).split())
+
+
+def split_by_headers(text: str) -> List[str]:
+    """
+    Split text into sections based on markdown headers.
+    A header is defined as a line starting with one or more '#' followed by a space.
+    (Each section includes its header.)
+    """
+    pattern = re.compile(r'^(#+\s.*)$', re.MULTILINE)
+    headers = list(pattern.finditer(text))
+    if not headers:
+        return [text]
+    sections = []
+    for i, header in enumerate(headers):
+        start = header.start()
+        end = headers[i+1].start() if i+1 < len(headers) else len(text)
+        sections.append(text[start:end].strip())
+    return sections
+
+
+def split_by_paragraphs(text: str, token_limit: int) -> List[str]:
+    """
+    Split text into chunks by grouping whole paragraphs (delimited by "\n\n")
+    so that each chunk does not exceed token_limit.
+    """
+    paragraphs = text.split("\n\n")
+    chunks = []
+    current_chunk = ""
+    for para in paragraphs:
+        candidate = current_chunk + "\n\n" + para if current_chunk else para
+        if token_count(candidate) <= token_limit:
+            current_chunk = candidate
+        else:
+            if current_chunk:
+                chunks.append(current_chunk)
+                current_chunk = para
+            else:
+                # If a single paragraph exceeds token_limit, return it as its own chunk.
+                chunks.append(para)
+                current_chunk = ""
+    if current_chunk:
+        chunks.append(current_chunk)
+    return chunks
+
+
+def is_procedure_block(text: str) -> bool:
+    """
+    Return whether a block of text is a procedure (based on lines starting with number and a dot).
+    """
+    lines = text.splitlines()
+    step_count = sum(1 for line in lines if re.match(r"^\s*\d+\.\s+", line))
+    return step_count >= 2
+
+
+def split_procedure_block(text: str, token_limit: int) -> List[str]:
+    """
+    Split procedure that are too long into chunks, without breaking individual steps.
+    """
+    lines = text.splitlines()
+    steps = []
+    current_step = []
+    for line in lines:
+        if re.match(r"^\s*\d+\.\s+", line) and current_step:
+            steps.append("\n".join(current_step))
+            current_step = [line]
+        else:
+            current_step.append(line)
+    if current_step:
+        steps.append("\n".join(current_step))
+
+    chunks = []
+    current_chunk = ""
+    for step in steps:
+        candidate = current_chunk + "\n\n" + step if current_chunk else step
+        if token_count(candidate) <= token_limit:
+            current_chunk = candidate
+        else:
+            if current_chunk:
+                chunks.append(current_chunk)
+                current_chunk = step
+            else:
+                # If a single step exceeds token_limit, return it as a chunk.
+                chunks.append(step)
+                current_chunk = ""
+    if current_chunk:
+        chunks.append(current_chunk)
+    return chunks
+
+
+def layered_split_text(text: str, token_limit: int) -> List[str]:
+    """
+    Layered splitting:
+      1. If text is within token_limit, return [text].
+      2. Otherwise, split text into sections using markdown headers.
+      3. For each section:
+           - If its token count is within token_limit, keep it as one chunk.
+           - Else if it appears to be a procedure block, split it using split_procedure_block.
+           - Otherwise, split it by grouping paragraphs using split_by_paragraphs.
+    """
+    text = str(text)
+    if token_count(text) <= token_limit:
+        return [text]
+
+    sections = split_by_headers(text)
+    final_chunks = []
+    for section in sections:
+        if token_count(section) <= token_limit:
+            final_chunks.append(section)
+        else:
+            if is_procedure_block(section):
+                proc_chunks = split_procedure_block(section, token_limit)
+                final_chunks.extend(proc_chunks)
+            else:
+                para_chunks = split_by_paragraphs(section, token_limit)
+                final_chunks.extend(para_chunks)
+    return final_chunks
+
+
+def split_documents(documents, token_limit: int) -> List[TextNode]:
+    """
+    Split all documents using layered splitting.
+    """
+    nodes = []
+    for doc in documents:
+        chunks = layered_split_text(doc.text, token_limit)
+        for chunk in chunks:
+            node = TextNode(text=chunk, metadata=doc.metadata)
+            nodes.append(node)
+    return nodes
+
+
 if __name__ == "__main__":
 
     start_time = time.time()
@@ -175,8 +316,8 @@ if __name__ == "__main__":
     # md_parser = MarkdownNodeParser()
     # documents = md_parser.get_nodes_from_documents(documents)
 
-    # Create chunks/nodes
-    nodes = Settings.text_splitter.get_nodes_from_documents(documents)
+    # Create chunks/nodes using the layered splitter.
+    nodes = split_documents(documents, Settings.chunk)
 
     # Filter out invalid nodes
     good_nodes = []
@@ -196,7 +337,7 @@ if __name__ == "__main__":
         file_extractor={".md": FlatReader()},
         file_metadata=runbook_file_metadata_func,
     ).load_data()
-    runbook_nodes = Settings.text_splitter.get_nodes_from_documents(runbook_documents)
+    runbook_nodes = split_documents(runbook_documents, Settings.chunk)
 
     good_nodes.extend(runbook_nodes)
 
