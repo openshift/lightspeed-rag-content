@@ -19,6 +19,7 @@ The wasp-agent component facilitates memory overcommitment by assigning swap res
 ----
 Swap resources can be only assigned to virtual machine workloads (VM pods) of the Burstable Quality of Service (QoS) class. VM pods of the Guaranteed QoS class and pods of any QoS class that do not belong to VMs cannot swap resources.
 For descriptions of QoS classes, see Configure Quality of Service for Pods (Kubernetes documentation).
+Using spec.domain.resources.requests.memory in the VM manifest disables the memory overcommit configuration. Use spec.domain.memory.guest instead.
 ----
 
 * You have installed the OpenShift CLI (oc).
@@ -76,6 +77,7 @@ spec:
             [Unit]
             Description=Provision and enable swap
             ConditionFirstBoot=no
+            ConditionPathExists=!/var/tmp/swapfile
 
             [Service]
             Type=oneshot
@@ -84,13 +86,25 @@ spec:
             sudo chmod 600 /var/tmp/swapfile && \
             sudo mkswap /var/tmp/swapfile && \
             sudo swapon /var/tmp/swapfile && \
-            free -h && \
-            sudo systemctl set-property --runtime system.slice MemorySwapMax=0 IODeviceLatencyTargetSec=\"/ 50ms\""
+            free -h"
 
             [Install]
             RequiredBy=kubelet-dependencies.target
           enabled: true
           name: swap-provision.service
+        - contents: |
+            [Unit]
+            Description=Restrict swap for system slice
+            ConditionFirstBoot=no
+
+            [Service]
+            Type=oneshot
+            ExecStart=/bin/sh -c "sudo systemctl set-property --runtime system.slice MemorySwapMax=0 IODeviceLatencyTargetSec=\"/ 50ms\""
+
+            [Install]
+            RequiredBy=kubelet-dependencies.target
+          enabled: true
+          name: cgroup-system-slice-config.service
 ```
 
 
@@ -170,9 +184,9 @@ spec:
             - name: SWAP_UTILIZATION_THRESHOLD_FACTOR
               value: "0.8"
             - name: MAX_AVERAGE_SWAP_IN_PAGES_PER_SECOND
-              value: "1000"
+              value: "1000000000"
             - name: MAX_AVERAGE_SWAP_OUT_PAGES_PER_SECOND
-              value: "1000"
+              value: "1000000000"
             - name: AVERAGE_WINDOW_SIZE_SECONDS
               value: "30"
             - name: VERBOSITY
@@ -257,14 +271,26 @@ $ oc label namespace wasp openshift.io/cluster-monitoring="true"
 ```
 
 9. Enable memory overcommitment in OpenShift Virtualization by using the web console or the CLI.
+* Web console
 1. In the Red Hat OpenShift Container Platform web console, go to Virtualization -> Overview -> Settings -> General settings -> Memory density.
 2. Set Enable memory density to on.
-* Run the following command:
+* CLI
+* Configure your OpenShift Virtualization to enable higher memory density and set the overcommit rate:
 
 ```terminal
-$ oc patch --type=merge \
-  -f <../manifests/openshift/hco-set-memory-overcommit.yaml> \
-  --patch-file <../manifests/openshift/hco-set-memory-overcommit.yaml>
+$ oc -n openshift-cnv patch HyperConverged/kubevirt-hyperconverged --type='json' -p='[ \
+  { \
+  "op": "replace", \
+  "path": "/spec/higherWorkloadDensity/memoryOvercommitPercentage", \
+  "value": 150 \
+  } \
+]'
+```
+
+Successful output
+
+```terminal
+hyperconverged.hco.kubevirt.io/kubevirt-hyperconverged patched
 ```
 
 1. To verify the deployment of wasp-agent, run the following command:
@@ -302,13 +328,13 @@ Example output
 3. Verify the OpenShift Virtualization memory overcommitment configuration by running the following command:
 
 ```terminal
-$ oc get -n openshift-cnv HyperConverged kubevirt-hyperconverged -o jsonpath="{.spec.higherWorkloadDensity.memoryOvercommitPercentage}"
+$ oc -n openshift-cnv get HyperConverged/kubevirt-hyperconverged -o jsonpath='{.spec.higherWorkloadDensity}{"\n"}'
 ```
 
 Example output
 
 ```terminal
-150
+{"memoryOvercommitPercentage":150}
 ```
 
 

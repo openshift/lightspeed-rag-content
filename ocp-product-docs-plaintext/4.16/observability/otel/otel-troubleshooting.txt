@@ -101,9 +101,9 @@ Not all processors expose the required metrics.
 You can filter the visualized data such as spans or metrics by the Collector instance, namespace, or OpenTelemetry components such as processors, receivers, or exporters.
 ----
 
-# Debug exporter
+# Debug Exporter
 
-You can configure the debug exporter to export the collected data to the standard output.
+You can configure the Debug Exporter to export the collected data to the standard output.
 
 1. Configure the OpenTelemetryCollector custom resource as follows:
 
@@ -123,3 +123,123 @@ You can configure the debug exporter to export the collected data to the standar
 ```
 
 2. Use the oc logs command or the web console to export the logs to the standard output.
+
+# Using the Network Observability Operator for troubleshooting
+
+You can debug the traffic between your observability components by visualizing it with the Network Observability Operator.
+
+* You have installed the Network Observability Operator as explained in "Installing the Network Observability Operator".
+
+1. In the Red Hat OpenShift Container Platform web console, go to Observe -> Network Traffic -> Topology.
+2. Select Namespace to filter the workloads by the namespace in which your OpenTelemetry Collector is deployed.
+3. Use the network traffic visuals to troubleshoot possible issues. See "Observing the network traffic from the Topology view" for more details.
+
+* Installing the Network Observability Operator
+* Observing the network traffic from the Topology view
+
+# Troubleshooting the instrumentation
+
+To troubleshoot the instrumentation, look for any of the following issues:
+
+* Issues with instrumentation injection into your workload
+* Issues with data generation by the instrumentation libraries
+
+## Troubleshooting instrumentation injection into your workload
+
+To troubleshoot instrumentation injection, you can perform the following activities:
+
+* Checking if the Instrumentation object was created
+* Checking if the init-container started
+* Checking if the resources were deployed in the correct order
+* Searching for errors in the Operator logs
+* Double-checking the pod annotations
+
+1. Run the following command to verify that the Instrumentation object was successfully created:
+
+```terminal
+$ oc get instrumentation -n <workload_project> 1
+```
+
+The namespace where the instrumentation was created.
+2. Run the following command to verify that the opentelemetry-auto-instrumentation init-container successfully started, which is a prerequisite for instrumentation injection into workloads:
+
+```terminal
+$ oc get events -n <workload_project> 1
+```
+
+The namespace where the instrumentation is injected for workloads.
+Example output
+
+```terminal
+... Created container opentelemetry-auto-instrumentation
+... Started container opentelemetry-auto-instrumentation
+```
+
+3. Verify that the resources were deployed in the correct order for the auto-instrumentation to work correctly. The correct order is to deploy the Instrumentation custom resource (CR) before the application. For information about the Instrumentation CR, see the section "Configuring the instrumentation".
+
+[NOTE]
+----
+When the pod starts, the Red Hat build of OpenTelemetry Operator checks the Instrumentation CR for annotations containing instructions for injecting auto-instrumentation. Generally, the Operator then adds an init-container to the application’s pod that injects the auto-instrumentation and environment variables into the application's container. If the Instrumentation CR is not available to the Operator when the application is deployed, the Operator is unable to inject the auto-instrumentation.
+----
+
+Fixing the order of deployment requires the following steps:
+1. Update the instrumentation settings.
+2. Delete the instrumentation object.
+3. Redeploy the application.
+4. Run the following command to inspect the Operator logs for instrumentation errors:
+
+```terminal
+$ oc logs -l app.kubernetes.io/name=opentelemetry-operator --container manager -n openshift-opentelemetry-operator --follow
+```
+
+5. Troubleshoot pod annotations for the instrumentations for a specific programming language. See the required annotation fields and values in "Configuring the instrumentation".
+1. Verify that the application pods that you are instrumenting are labeled with correct annotations and the appropriate auto-instrumentation settings have been applied.
+Example
+
+```
+instrumentation.opentelemetry.io/inject-python="true"
+```
+
+Example command to get pod annotations for an instrumented Python application
+
+```terminal
+$ oc get pods -n <workload_project> -o jsonpath='{range .items[?(@.metadata.annotations["instrumentation.opentelemetry.io/inject-python"]=="true")]}{.metadata.name}{"\n"}{end}'
+```
+
+2. Verify that the annotation applied to the instrumentation object is correct for the programming language that you are instrumenting.
+3. If there are multiple instrumentations in the same namespace, specify the name of the Instrumentation object in their annotations.
+Example
+
+```
+instrumentation.opentelemetry.io/inject-nodejs: "<instrumentation_object>"
+```
+
+4. If the Instrumentation object is in a different namespace, specify the namespace in the annotation.
+Example
+
+```
+instrumentation.opentelemetry.io/inject-nodejs: "<other_namespace>/<instrumentation_object>"
+```
+
+5. Verify that the OpenTelemetryCollector custom resource specifies the auto-instrumentation annotations under spec.template.metadata.annotations. If the auto-instrumentation annotations are in spec.metadata.annotations instead, move them into spec.template.metadata.annotations.
+
+## Troubleshooting telemetry data generation by the instrumentation libraries
+
+You can troubleshoot telemetry data generation by the instrumentation libraries by checking the endpoint, looking for errors in your application logs, and verifying that the Collector is receiving the telemetry data.
+
+1. Verify that the instrumentation is transmitting data to the correct endpoint:
+
+```terminal
+$ oc get instrumentation <instrumentation_name> -n <workload_project> -o jsonpath='{.spec.endpoint}'
+```
+
+
+The default endpoint http://localhost:4317 for the Instrumentation object is only applicable to a Collector instance that is deployed as a sidecar in your application pod. If you are using an incorrect endpoint, correct it by editing the Instrumentation object and redeploying your application.
+2. Inspect your application logs for error messages that might indicate that the instrumentation is malfunctioning:
+
+```terminal
+$ oc logs <application_pod> -n <workload_project>
+```
+
+3. If the application logs contain error messages that indicate that the instrumentation might be malfunctioning, install the OpenTelemetry SDK and libraries locally. Then run your application locally and troubleshoot for issues between the instrumentation libraries and your application without Red Hat OpenShift Container Platform.
+4. Use the Debug Exporter to verify that the telemetry data is reaching the destination OpenTelemetry Collector instance. For more information, see "Debug Exporter".

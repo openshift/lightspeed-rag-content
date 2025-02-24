@@ -43,7 +43,48 @@ The List endpoint of the PodResources API exposes exclusive CPUs allocated to a 
 The GetAllocatableResources endpoint exposes allocatable resources available on a node.
 ----
 
-* For more information about running secondary pod schedulers in your cluster and how to deploy pods with a secondary pod scheduler, see Scheduling pods using a secondary scheduler.
+# NUMA resource scheduling strategies
+
+When scheduling high-performance workloads, the secondary scheduler can employ different strategies to determine which NUMA node within a chosen worker node will handle the workload. The supported strategies in Red Hat OpenShift Container Platform include LeastAllocated, MostAllocated, and BalancedAllocation. Understanding these strategies helps optimize workload placement for performance and resource utilization.
+
+When a high-performance workload is scheduled in a NUMA-aware cluster, the following steps occur:
+
+1. The scheduler first selects a suitable worker node based on cluster-wide criteria. For example taints, labels, or resource availability.
+2. After a worker node is selected, the scheduler evaluates its NUMA nodes and applies a scoring strategy to decide which NUMA node will handle the workload.
+3. After a workload is scheduled, the selected NUMA node’s resources are updated to reflect the allocation.
+
+The default strategy applied is the LeastAllocated strategy. This assigns workloads to the NUMA node with the most available resources that is the least utilized NUMA node. The goal of this strategy is to spread workloads across NUMA nodes to reduce contention and avoid hotspots.
+
+The following table summarizes the different strategies and their outcomes:
+
+## Scoring strategy summary
+
+
+
+## LeastAllocated strategy example
+
+The LeastAllocated is the default strategy. This strategy assigns workloads to the NUMA node with the most available resources, minimizing resource contention and spreading workloads across NUMA nodes. This reduces hotspots and ensures sufficient headroom for high-priority tasks. Assume a worker node has two NUMA nodes, and the workload requires 4 vCPUs and 8 GB of memory:
+
+
+
+Because NUMA 2 has more available resources compared to NUMA 1, the workload is assigned to NUMA 2.
+
+## MostAllocated strategy example
+
+The MostAllocated strategy consolidates workloads by assigning them to the NUMA node with the least available resources, which is the most utilized NUMA node. This approach helps free other NUMA nodes for energy efficiency or critical workloads requiring full isolation. This example uses the "Example initial NUMA nodes state" values listed in the LeastAllocated section.
+
+The workload again requires 4 vCPUs and 8 GB memory. NUMA 1 has fewer available resources compared to NUMA 2, so the scheduler assigns the workload to NUMA 1, further utilizing its resources while leaving NUMA 2 idle or minimally loaded.
+
+## BalancedAllocation strategy example
+
+The BalancedAllocation strategy assigns workloads to the NUMA node with the most balanced resource utilization across CPU and memory. The goal is to prevent imbalanced usage, such as high CPU utilization with underutilized memory. Assume a worker node has the following NUMA node states:
+
+
+
+NUMA 1 has a more balanced CPU and memory utilization compared to NUMA 2 and therefore, with the BalancedAllocation strategy in place, the workload is assigned to NUMA 1.
+
+* Scheduling pods using a secondary scheduler
+* Changing where high-performance workloads run
 
 # Installing the NUMA Resources Operator
 
@@ -182,7 +223,7 @@ spec:
         pools.operator.machineconfiguration.openshift.io/worker: "" 1
 ```
 
-This should match the MachineConfigPool that you want to configure the NUMA Resources Operator on. For example, you might have created a MachineConfigPool named worker-cnf that designates a set of nodes expected to run telecommunications workloads.
+This must match the MachineConfigPool resource that you want to configure the NUMA Resources Operator on. For example, you might have created a MachineConfigPool resource named worker-cnf that designates a set of nodes expected to run telecommunications workloads. Each NodeGroup must match exactly one MachineConfigPool. Configurations where NodeGroup matches more than one MachineConfigPool are not supported.
 2. Create the NUMAResourcesOperator CR by running the following command:
 
 ```terminal
@@ -931,6 +972,109 @@ I0223 11:05:22.626818       1 reflector.go:535] k8s.io/client-go/informers/facto
 I0223 11:05:31.610356       1 reflector.go:535] k8s.io/client-go/informers/factory.go:134: Watch close - *v1.PodDisruptionBudget total 7 items received
 I0223 11:05:31.713032       1 eventhandlers.go:186] "Add event for scheduled pod" pod="openshift-marketplace/certified-operators-thtvq"
 I0223 11:05:53.461016       1 eventhandlers.go:244] "Delete event for scheduled pod" pod="openshift-marketplace/certified-operators-thtvq"
+```
+
+
+## Changing where high-performance workloads run
+
+The NUMA-aware secondary scheduler is responsible for scheduling high-performance workloads on a worker node and within a NUMA node where the workloads can be optimally processed. By default, the secondary scheduler assigns workloads to the NUMA node within the chosen worker node that has the most available resources.
+
+If you want to change where the workloads run, you can add the scoringStrategy setting to the NUMAResourcesScheduler custom resource and set its value to either MostAllocated  or BalancedAllocation.
+
+* Install the OpenShift CLI (oc).
+* Log in as a user with cluster-admin privileges.
+
+1. Delete the currently running NUMAResourcesScheduler resource by using the following steps:
+1. Get the active NUMAResourcesScheduler by running the following command:
+
+```terminal
+$ oc get NUMAResourcesScheduler
+```
+
+Example output
+
+```terminal
+NAME                     AGE
+numaresourcesscheduler   92m
+```
+
+2. Delete the secondary scheduler resource by running the following command:
+
+```terminal
+$ oc delete NUMAResourcesScheduler numaresourcesscheduler
+```
+
+Example output
+
+```terminal
+numaresourcesscheduler.nodetopology.openshift.io "numaresourcesscheduler" deleted
+```
+
+2. Save the following YAML in the file nro-scheduler-mostallocated.yaml. This example changes the scoringStrategy to MostAllocated:
+
+```yaml
+apiVersion: nodetopology.openshift.io/v1
+kind: NUMAResourcesScheduler
+metadata:
+  name: numaresourcesscheduler
+spec:
+  imageSpec: "registry.redhat.io/openshift4/noderesourcetopology-scheduler-container-rhel8:v{product-version}"
+  scoringStrategy:
+        type: "MostAllocated" 1
+```
+
+If the scoringStrategy configuration is omitted, the default of LeastAllocated applies.
+3. Create the updated NUMAResourcesScheduler resource by running the following command:
+
+```terminal
+$ oc create -f nro-scheduler-mostallocated.yaml
+```
+
+Example output
+
+```terminal
+numaresourcesscheduler.nodetopology.openshift.io/numaresourcesscheduler created
+```
+
+
+1. Check that the NUMA-aware scheduler was successfully deployed by using the following steps:
+1. Run the following command to check that the custom resource definition (CRD) is created successfully:
+
+```terminal
+$ oc get crd | grep numaresourcesschedulers
+```
+
+Example output
+
+```terminal
+NAME                                                              CREATED AT
+numaresourcesschedulers.nodetopology.openshift.io                 2022-02-25T11:57:03Z
+```
+
+2. Check that the new custom scheduler is available by running the following command:
+
+```terminal
+$ oc get numaresourcesschedulers.nodetopology.openshift.io
+```
+
+Example output
+
+```terminal
+NAME                     AGE
+numaresourcesscheduler   3h26m
+```
+
+2. Verify that the ScoringStrategy has been applied correctly by running the following command to check the relevant ConfigMap resource for the scheduler:
+
+```terminal
+$ oc get -n openshift-numaresources cm topo-aware-scheduler-config -o yaml | grep scoring -A 1
+```
+
+Example output
+
+```terminal
+scoringStrategy:
+  type: MostAllocated
 ```
 
 
