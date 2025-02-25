@@ -10,12 +10,12 @@ import faiss
 import requests
 from llama_index.core import Settings, SimpleDirectoryReader, VectorStoreIndex
 from llama_index.core.llms.utils import resolve_llm
-from llama_index.readers.file.flat.base import FlatReader
 
 # from llama_index.core.node_parser import MarkdownNodeParser
 from llama_index.core.schema import TextNode
 from llama_index.core.storage.storage_context import StorageContext
 from llama_index.embeddings.huggingface import HuggingFaceEmbedding
+from llama_index.readers.file.flat.base import FlatReader
 from llama_index.vector_stores.faiss import FaissVectorStore
 
 OCP_DOCS_ROOT_URL = "https://docs.openshift.com/container-platform/"
@@ -133,7 +133,9 @@ if __name__ == "__main__":
     parser.add_argument("-o", "--output", help="Vector DB output folder")
     parser.add_argument("-i", "--index", help="Product index")
     parser.add_argument("-v", "--ocp-version", help="OCP version")
-    parser.add_argument("-hb", "--hermetic-build", type=bool, default=False, help="Hermetic build")
+    parser.add_argument(
+        "-hb", "--hermetic-build", type=bool, default=False, help="Hermetic build"
+    )
     args = parser.parse_args()
     print(f"Arguments used: {args}")
 
@@ -221,7 +223,8 @@ if __name__ == "__main__":
         file.write(json.dumps(metadata))
 
     if UNREACHABLE_DOCS > 0:
-        print("WARNING:\n"
+        print(
+            "WARNING:\n"
             f"There were documents with {UNREACHABLE_DOCS} unreachable URLs, "
             "grep the log for UNREACHABLE.\n"
             "Please update the plain text."
