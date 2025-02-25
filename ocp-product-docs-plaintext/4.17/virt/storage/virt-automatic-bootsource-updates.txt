@@ -55,14 +55,75 @@ Custom boot sources that are not provided by OpenShift Virtualization are not co
 You must configure a storage class. Otherwise, the cluster cannot receive automated updates for custom boot sources. See Defining a storage class for details.
 ----
 
-## Configuring a storage class for custom boot source updates
+## Configuring the default and virt-default storage classes
 
-You can override the default storage class by editing the HyperConverged custom resource (CR).
+A storage class determines how persistent storage is provisioned for workloads. In OpenShift Virtualization, the virt-default storage class takes precedence over the cluster default storage class and is used specifically for virtualization workloads. Only one storage class should be set as virt-default or cluster default at a time. If multiple storage classes are marked as default, the virt-default storage class overrides the cluster default. To ensure consistent behavior, configure only one storage class as the default for virtualization workloads.
 
 
 [IMPORTANT]
 ----
-Boot sources are created from storage using the default storage class. If your cluster does not have a default storage class, you must define one before configuring automatic updates for custom boot sources.
+Boot sources are created using the default storage class. If your cluster does not have a default storage class, you must define one.
+----
+
+1. Patch the current virt-default or a cluster default storage class to false:
+1. Identify all storage classes currently marked as virt-default by running the following command:
+
+```terminal
+$ oc get sc -o json| jq '.items[].metadata|select(.annotations."storageclass.kubevirt.io/is-default-virt-class"=="true")|.name'
+```
+
+2. For each storage class returned, remove the virt-default annotation by running the following command:
+
+```terminal
+$ oc patch storageclass <storage_class_name> -p '{"metadata": {"annotations": {"storageclass.kubevirt.io/is-default-virt-class": "false"}}}'
+```
+
+3. Identify all storage classes currently marked as cluster default by running the following command:
+
+```terminal
+$ oc get sc -o json| jq '.items[].metadata|select(.annotations."storageclass.kubernetes.io/is-default-class"=="true")|.name'
+```
+
+4. For each storage class returned, remove the cluster default annotation by running the following command:
+
+```terminal
+$ oc patch storageclass <storage_class_name> -p '{"metadata": {"annotations": {"storageclass.kubernetes.io/is-default-class": "false"}}}'
+```
+
+2. Set a new default storage class:
+1. Assign the virt-default role to a storage class by running the following command:
+
+```terminal
+$ oc patch storageclass <storage_class_name> -p '{"metadata": {"annotations": {"storageclass.kubevirt.io/is-default-virt-class": "true"}}}'
+```
+
+2. Alternatively, assign the cluster default role to a storage class by running the following command:
+
+```terminal
+$ oc patch storageclass <storage_class_name> -p '{"metadata": {"annotations": {"storageclass.kubernetes.io/is-default-class": "true"}}}'
+```
+
+3. Delete any outdated DataVolume and VolumeSnapshot objects from the openshift-virtualization-os-images namespace by running the following command.
+
+```terminal
+$ oc delete DataVolume,VolumeSnapshot -n openshift-virtualization-os-images --selector=cdi.kubevirt.io/dataImportCron
+```
+
+4. Wait for all DataSource objects to reach a "Ready - True" status. Data sources can reference either a PersistentVolumeClaim (PVC) or a VolumeSnapshot. To check the expected source format, run the following command:
+
+```terminal
+$ oc get storageprofile <storage_class_name> -o json | jq .status.dataImportCronSourceFormat
+```
+
+
+## Configuring a storage class for boot source images
+
+You can configure a specific storage class in the HyperConverged resource.
+
+
+[IMPORTANT]
+----
+To ensure stable behavior and avoid unnecessary re-importing, you can specify the storageClassName in the dataImportCronTemplates section of the HyperConverged resource.
 ----
 
 1. Open the HyperConverged CR in your default editor by running the following command:
@@ -71,7 +132,7 @@ Boot sources are created from storage using the default storage class. If your c
 $ oc edit hyperconverged kubevirt-hyperconverged -n openshift-cnv
 ```
 
-2. Define a new storage class by entering a value in the storageClassName field:
+2. Add the dataImportCronTemplate to the spec section of the HyperConverged resource and set the storageClassName:
 
 ```yaml
 apiVersion: hco.kubevirt.io/v1beta1
@@ -81,11 +142,12 @@ metadata:
 spec:
   dataImportCronTemplates:
   - metadata:
-      name: rhel8-image-cron
+      name: rhel9-image-cron
     spec:
       template:
         spec:
-          storageClassName: <new_storage_class> 1
+          storage:
+            storageClassName: <storage_class> 1
       schedule: "0 */12 * * *" 2
       managedDataSource: <data_source> 3
 # ...
@@ -95,39 +157,23 @@ Define the storage class.
 Required: Schedule for the job specified in cron format.
 Required: The data source to use.
 
-```
-For the custom image to be detected as an available boot source, the value of the `spec.dataVolumeTemplates.spec.sourceRef.name` parameter in the VM template must match this value.
-```
-3. Remove the storageclass.kubernetes.io/is-default-class annotation from the current default storage class.
-1. Retrieve the name of the current default storage class by running the following command:
+[NOTE]
+----
+For the custom image to be detected as an available boot source, the value of the spec.dataVolumeTemplates.spec.sourceRef.name parameter in the VM template must match this value.
+----
+3. Wait for the HyperConverged Operator (HCO) and Scheduling, Scale, and Performance (SSP) resources to complete reconciliation.
+4. Delete any outdated DataVolume and VolumeSnapshot objects from the openshift-virtualization-os-images namespace.
 
 ```terminal
-$ oc get storageclass
+$ oc delete DataVolume,VolumeSnapshot -n openshift-virtualization-os-images --selector=cdi.kubevirt.io/dataImportCron
 ```
 
-Example output
-
-```text
-NAME                          PROVISIONER                      RECLAIMPOLICY  VOLUMEBINDINGMODE    ALLOWVOLUMEEXPANSION  AGE
-csi-manila-ceph               manila.csi.openstack.org         Delete         Immediate            false                 11d
-hostpath-csi-basic (default)  kubevirt.io.hostpath-provisioner Delete         WaitForFirstConsumer false                 11d 1
-```
-
-In this example, the current default storage class is named hostpath-csi-basic.
-2. Remove the annotation from the current default storage class by running the following command:
+5. Wait for all DataSource objects to reach a "Ready - True" status. Data sources can reference either a PersistentVolumeClaim (PVC) or a VolumeSnapshot. To check the expected source format, run the following command:
 
 ```terminal
-$ oc patch storageclass <current_default_storage_class> -p '{"metadata": {"annotations":{"storageclass.kubernetes.io/is-default-class":"false"}}}' 1
+$ oc get storageprofile <storage_class_name> -o json | jq .status.dataImportCronSourceFormat
 ```
 
-Replace <current_default_storage_class> with the storageClassName value of the default storage class.
-4. Set the new storage class as the default by running the following command:
-
-```terminal
-$ oc patch storageclass <new_storage_class> -p '{"metadata":{"annotations":{"storageclass.kubernetes.io/is-default-class":"true"}}}' 1
-```
-
-Replace <new_storage_class> with the storageClassName value that you added to the HyperConverged CR.
 
 ## Enabling automatic updates for custom boot sources
 

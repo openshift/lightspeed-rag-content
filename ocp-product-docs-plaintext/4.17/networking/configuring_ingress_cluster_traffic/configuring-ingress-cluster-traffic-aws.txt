@@ -351,6 +351,228 @@ spec:
 4. Save the cluster-ingress-default-ingresscontroller.yaml file and quit the text editor.
 5. Optional: Back up the manifests/cluster-ingress-default-ingresscontroller.yaml file. The installation program deletes the manifests/ directory when creating the cluster.
 
+## Choosing subnets while creating a LoadBalancerService Ingress Controller
+
+You can manually specify load balancer subnets for Ingress Controllers in an existing cluster. By default, the load balancer subnets are automatically discovered by AWS, but specifying them in the Ingress Controller overrides this, allowing for manual control.
+
+* You must have an installed AWS cluster.
+* You must know the names or IDs of the subnets to which you intend to map your IngressController.
+
+1. Create a custom resource (CR) file.
+
+Create a YAML file (e.g., sample-ingress.yaml) with the following content:
+
+```yaml
+apiVersion: operator.openshift.io/v1
+kind: IngressController
+metadata:
+  namespace: openshift-ingress-operator
+  name: <name>
+spec:
+  domain: <domain>
+  endpointPublishingStrategy:
+    type: LoadBalancerService
+    loadBalancer:
+      scope: External
+  dnsManagementPolicy: Managed
+```
+
+2. Create a custom resource (CR) file.
+
+Add subnets to your YAML file:
+
+```yaml
+apiVersion: operator.openshift.io/v1
+kind: IngressController
+metadata:
+  name:  <name> 1
+  namespace: openshift-ingress-operator
+spec:
+  domain: <domain> 2
+  endpointPublishingStrategy:
+    type: LoadBalancerService
+    loadBalancer:
+      scope: External
+      providerParameters:
+        type: AWS
+        aws:
+          type: Classic
+          classicLoadBalancer: 3
+            subnets:
+              ids: 4
+              - <subnet> 5
+              - <subnet>
+              - <subnet>
+dnsManagementPolicy: Managed
+```
+
+Replace <name> with a name for the IngressController.
+Replace <domain> with the DNS name serviced by the IngressController.
+You can also use the networkLoadBalancer field if using an NLB.
+You can optionally specify a subnet by name using the names field instead of specifying the subnet by ID.
+Specify subnet IDs (or names if you using names).
+
+[IMPORTANT]
+----
+You can specify a maximum of one subnet per availability zone. Only provide public subnets for external Ingress Controllers and private subnets for internal Ingress Controllers.
+----
+3. Apply the CR file.
+1. Save the file and apply it using the OpenShift CLI (`oc`).
+
+```terminal
+$  oc apply -f sample-ingress.yaml
+```
+
+2. Confirm the load balancer was provisioned successfully by checking the IngressController conditions.
+
+```terminal
+$ oc get ingresscontroller -n openshift-ingress-operator <name> -o jsonpath="{.status.conditions}" | yq -PC
+```
+
+
+## Updating the subnets on an existing Ingress Controller
+
+You can update an IngressController with manually specified load balancer subnets in Red Hat OpenShift Container Platform to avoid any disruptions, to maintain the stability of your services, and to ensure that your network configuration aligns with your specific requirements. The following procedures show you how to select and apply new subnets, verify the configuration changes, and confirm successful load balancer provisioning.
+
+
+[WARNING]
+----
+This procedure may cause an outage that can last several minutes due to new DNS records propagation, new load balancers provisioning, and other factors. IP addresses and canonical names of the Ingress Controller load balancer might change after applying this procedure.
+----
+
+To update an IngressController with manually specified load balancer subnets, you can follow these steps:
+
+1. Modify the existing IngressController to update to the new subnets.
+
+```yaml
+apiVersion: operator.openshift.io/v1
+kind: IngressController
+metadata:
+  name:  <name> 1
+  namespace: openshift-ingress-operator
+spec:
+  domain: <domain> 2
+  endpointPublishingStrategy:
+    type: LoadBalancerService
+    loadBalancer:
+      scope: External
+      providerParameters:
+        type: AWS
+        aws:
+          type: Classic 3
+          classicLoadBalancer: 4
+            subnets:
+              ids: 5
+              - <updated_subnet> 6
+              - <updated_subnet>
+              - <updated_subnet>
+```
+
+Replace <name> with a name for the IngressController.
+Replace <domain> with the DNS name serviced by the IngressController.
+Specify updated subnet IDs (or names if you using names).
+You can also use the networkLoadBalancer field if using an NLB.
+You can optionally specify a subnet by name using the names field instead of specifying the subnet by ID.
+Update subnet IDs (or names if you are using names).
+
+[IMPORTANT]
+----
+You can specify a maximum of one subnet per availability zone. Only provide public subnets for external Ingress Controllers and private subnets for internal Ingress Controllers.
+----
+2. Examine the Progressing condition on the IngressController for instructions on how to apply the subnet updates by running the following command:
+
+```terminal
+$ oc get ingresscontroller -n openshift-ingress-operator subnets -o jsonpath="{.status.conditions[?(@.type==\"Progressing\")]}" | yq -PC
+```
+
+Example output
+
+```terminal
+lastTransitionTime: "2024-11-25T20:19:31Z"
+message: 'One or more status conditions indicate progressing: LoadBalancerProgressing=True (OperandsProgressing: One or more managed resources are progressing: The IngressController subnets were changed from [...] to [...].  To effectuate this change, you must delete the service: `oc -n openshift-ingress delete svc/router-<name>`; the service load-balancer will then be deprovisioned and a new one created. This will most likely cause the new load-balancer to have a different host name and IP address and cause disruption. To return to the previous state, you can revert the change to the IngressController: [...]'
+reason: IngressControllerProgressing
+status: "True"
+type: Progressing
+```
+
+3. To apply the update, delete the service associated with the Ingress controller by running the following command:
+
+
+```terminal
+$ oc -n openshift-ingress delete svc/router-<name>
+```
+
+
+* To confirm that the load balancer was provisioned successfully, check the IngressController conditions by running the following command:
+
+```terminal
+$ oc get ingresscontroller -n openshift-ingress-operator <name> -o jsonpath="{.status.conditions}" | yq -PC
+```
+
+
+## Configuring AWS Elastic IP (EIP) addresses for a Network Load Balancer (NLB)
+
+You can specify static IPs, otherwise known as elastic IPs, for your network load balancer (NLB) in the Ingress Controller. This is useful in situations where you want to configure appropriate firewall rules for your cluster network.
+
+* You must have an installed AWS cluster.
+* You must know the names or IDs of the subnets to which you intend to map your IngressController.
+
+1. Create a YAML file that contains the following content:
+sample-ingress.yaml
+
+```yaml
+apiVersion: operator.openshift.io/v1
+kind: IngressController
+metadata:
+  namespace: openshift-ingress-operator
+  name: <name> 1
+spec:
+  domain: <domain> 2
+  endpointPublishingStrategy:
+    loadBalancer:
+      scope: External 3
+      type: LoadBalancerService
+      providerParameters:
+        type: AWS
+        aws:
+          type: NLB
+          networkLoadBalancer:
+            subnets: 4
+              ids:
+              - <subnet_ID>
+              names:
+              - <subnet_A>
+              - <subnet_B>
+            eipAllocations: 5
+            - <eipalloc_A>
+            - <eipalloc_B>
+            - <eipalloc_C>
+```
+
+Replace the <name> placeholder with a name for the Ingress Controller.
+Replace the <domain> placeholder with the DNS name serviced by the Ingress Controller.
+The scope must be set to the value External and be Internet-facing in order to allocate EIPs.
+Specify the IDs and names for your subnets. The total number of IDs and names must be equal to your allocated EIPs.
+Specify the EIP addresses.
+
+[IMPORTANT]
+----
+You can specify a maximum of one subnet per availability zone. Only provide public subnets for external Ingress Controllers. You can associate one EIP address per subnet.
+----
+2. Save and apply the CR file by entering the following command:
+
+```terminal
+$  oc apply -f sample-ingress.yaml
+```
+
+
+1. Confirm the load balancer was provisioned successfully by checking the IngressController conditions by running the following command:
+
+```terminal
+$ oc get ingresscontroller -n openshift-ingress-operator <name> -o jsonpath="{.status.conditions}" | yq -PC
+```
+
+
 # Additional resources
 
 * Installing a cluster on AWS with network customizations.

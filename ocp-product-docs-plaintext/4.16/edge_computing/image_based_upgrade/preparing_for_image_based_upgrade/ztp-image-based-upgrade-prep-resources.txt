@@ -14,6 +14,7 @@ Prepare your OADP resources to restore your application after an upgrade.
 * Deploy a version of Lifecycle Agent that is compatible with the version used with the seed image.
 * Install the OADP Operator, the DataProtectionApplication CR, and its secret on the target cluster.
 * Create an S3-compatible storage solution and a ready-to-use bucket with proper credentials configured. For more information, see "Installing and configuring the OADP Operator with GitOps ZTP".
+* The openshift-adp namespace for the OADP ConfigMap object must exist on all managed clusters and the hub cluster for the OADP ConfigMap to be generated and copied to the clusters.
 
 1. Ensure that your Git repository that you use with the ArgoCD policies application contains the following directory structure:
 
@@ -23,17 +24,12 @@ Prepare your OADP resources to restore your application after an upgrade.
 │   │    ├── ImageBasedUpgrade.yaml
 │   │    ├── PlatformBackupRestore.yaml
 │   │    ├── PlatformBackupRestoreLvms.yaml
+│   │    ├── PlatformBackupRestoreWithIBGU.yaml
 ├── ...
-├── ibu-upgrade-ranGen.yaml
 ├── kustomization.yaml
 ```
 
-
-[IMPORTANT]
-----
-The kustomization.yaml file must be located in the same directory structure as previously shown to reference the ibu-upgrade-ranGen.yaml manifest.
-----
-The source-crs/ibu/PlatformBackupRestore.yaml file is provided in the ZTP container image.
+The source-crs/ibu/PlatformBackupRestoreWithIBGU.yaml file is provided in the ZTP container image.
 
 ```yaml
 apiVersion: velero.io/v1
@@ -41,7 +37,7 @@ kind: Backup
 metadata:
   name: acm-klusterlet
   annotations:
-    lca.openshift.io/apply-label: "apps/v1/deployments/open-cluster-management-agent/klusterlet,v1/secrets/open-cluster-management-agent/bootstrap-hub-kubeconfig,rbac.authorization.k8s.io/v1/clusterroles/klusterlet,v1/serviceaccounts/open-cluster-management-agent/klusterlet,scheduling.k8s.io/v1/priorityclasses/klusterlet-critical,rbac.authorization.k8s.io/v1/clusterroles/open-cluster-management:klusterlet-admin-aggregate-clusterrole,rbac.authorization.k8s.io/v1/clusterrolebindings/klusterlet,operator.open-cluster-management.io/v1/klusterlets/klusterlet,apiextensions.k8s.io/v1/customresourcedefinitions/klusterlets.operator.open-cluster-management.io,v1/secrets/open-cluster-management-agent/open-cluster-management-image-pull-credentials" 1
+    lca.openshift.io/apply-label: "apps/v1/deployments/open-cluster-management-agent/klusterlet,v1/secrets/open-cluster-management-agent/bootstrap-hub-kubeconfig,rbac.authorization.k8s.io/v1/clusterroles/klusterlet,v1/serviceaccounts/open-cluster-management-agent/klusterlet,scheduling.k8s.io/v1/priorityclasses/klusterlet-critical,rbac.authorization.k8s.io/v1/clusterroles/open-cluster-management:klusterlet-work:ibu-role,rbac.authorization.k8s.io/v1/clusterroles/open-cluster-management:klusterlet-admin-aggregate-clusterrole,rbac.authorization.k8s.io/v1/clusterrolebindings/klusterlet,operator.open-cluster-management.io/v1/klusterlets/klusterlet,apiextensions.k8s.io/v1/customresourcedefinitions/klusterlets.operator.open-cluster-management.io,v1/secrets/open-cluster-management-agent/open-cluster-management-image-pull-credentials" 1
   labels:
     velero.io/storage-location: default
   namespace: openshift-adp
@@ -74,6 +70,11 @@ spec:
 ```
 
 If your multiclusterHub CR does not have .spec.imagePullSecret defined and the secret does not exist on the open-cluster-management-agent namespace in your hub cluster, remove v1/secrets/open-cluster-management-agent/open-cluster-management-image-pull-credentials.
+
+[NOTE]
+----
+If you perform the image-based upgrade directly on managed clusters, use the PlatformBackupRestore.yaml file.
+----
 If you use LVM Storage to create persistent volumes, you can use the source-crs/ibu/PlatformBackupRestoreLvms.yaml provided in the ZTP container image to back up your LVM Storage resources.
 
 ```yaml
@@ -244,66 +245,26 @@ Required field.
 ----
 The same version of the applications must function on both the current and the target release of Red Hat OpenShift Container Platform.
 ----
-3. Create the oadp-cm ConfigMap object through the oadp-cm-policy in a new PolicyGenTemplate called ibu-upgrade-ranGen.yaml:
-
-```yaml
-apiVersion: ran.openshift.io/v1
-kind: PolicyGenTemplate
-metadata:
-  name: example-group-ibu
-  namespace: "ztp-group"
-spec:
-  bindingRules:
-    group-du-sno: ""
-  mcp: "master"
-  evaluationInterval:
-    compliant: 10s
-    noncompliant: 10s
-  sourceFiles:
-  - fileName: ConfigMapGeneric.yaml
-    complianceType: mustonlyhave
-    policyName: "oadp-cm-policy"
-    metadata:
-      name: oadp-cm
-      namespace: openshift-adp
-```
-
-4. Create a kustomization.yaml with the following content:
+3. Create a kustomization.yaml with the following content:
 
 ```yaml
 apiVersion: kustomize.config.k8s.io/v1beta1
 kind: Kustomization
 
-generators: 1
-- ibu-upgrade-ranGen.yaml
-
-configMapGenerator: 2
+configMapGenerator: 1
 - files:
-  - source-crs/ibu/PlatformBackupRestore.yaml
+  - source-crs/ibu/PlatformBackupRestoreWithIBGU.yaml
   #- source-crs/custom-crs/ApplicationClusterScopedBackupRestore.yaml
   #- source-crs/custom-crs/ApplicationApplicationBackupRestoreLso.yaml
   name: oadp-cm
-  namespace: ztp-group
+  namespace: openshift-adp 2
 generatorOptions:
   disableNameSuffixHash: true
-
-
-patches: 3
-- target:
-    group: policy.open-cluster-management.io
-    version: v1
-    kind: Policy
-    name: example-group-ibu-oadp-cm-policy
-  patch: |-
-    - op: replace
-      path: /spec/policy-templates/0/objectDefinition/spec/object-templates/0/objectDefinition/data
-      value: '{{hub copyConfigMapData "ztp-group" "oadp-cm" hub}}'
 ```
 
-Generates the oadp-cm-policy.
 Creates the oadp-cm ConfigMap object on the hub cluster with Backup and Restore CRs.
-Overrides the data field of ConfigMap added in oadp-cm-policy. A hub template is used to propagate the oadp-cm ConfigMap to all target clusters.
-5. Push the changes to your Git repository.
+The namespace must exist on all managed clusters and the hub cluster for the OADP ConfigMap to be generated and copied to the clusters.
+4. Push the changes to your Git repository.
 
 * Configuring a shared container partition between ostree stateroots when using GitOps ZTP
 * Installing and configuring the OADP Operator with GitOps ZTP
@@ -318,7 +279,7 @@ Label your extra manifests so that the Lifecycle Agent can extract resources tha
 * Create a separate partition on the target cluster for the container images that is shared between stateroots. For more information, see "Configuring a shared container directory between ostree stateroots when using GitOps ZTP".
 * Deploy a version of Lifecycle Agent that is compatible with the version used with the seed image.
 
-1. Label your required extra manifests with the lca.openshift.io/target-ocp-version: <target_version> label in your existing PolicyGenTemplate CR:
+1. Label your required extra manifests with the lca.openshift.io/target-ocp-version: <target_version> label in your existing site PolicyGenTemplate CR:
 
 ```yaml
 apiVersion: ran.openshift.io/v1

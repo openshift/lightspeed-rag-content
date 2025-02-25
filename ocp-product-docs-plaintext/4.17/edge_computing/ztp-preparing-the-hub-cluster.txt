@@ -156,7 +156,7 @@ $ oc edit AgentServiceConfig
 - cpuArchitecture: x86_64
     openshiftVersion: "4.17"
     rootFSUrl: https://<host>/<path>/rhcos-live-rootfs.x86_64.img
-    url: https://<mirror-registry>/<path>/rhcos-live.x86_64.iso
+    url: https://<host>/<path>/rhcos-live.x86_64.iso
 ```
 
 
@@ -240,13 +240,14 @@ spec:
   mirrorRegistryRef:
     name: assisted-installer-mirror-config 2
   osImages:
-    - openshiftVersion: <ocp_version>
-      url: <iso_url> 3
+    - openshiftVersion: <ocp_version> 3
+      url: <iso_url> 4
 ```
 
-Set the AgentServiceConfig namespace to multicluster-engine to match the ConfigMap namespace
-Set mirrorRegistryRef.name to match the definition specified in the related ConfigMap CR
-Set the URL for the ISO hosted on the httpd server
+Set the AgentServiceConfig namespace to multicluster-engine to match the ConfigMap namespace.
+Set mirrorRegistryRef.name to match the definition specified in the related ConfigMap CR.
+Set the Red Hat OpenShift Container Platform version to either the x.y or x.y.z format.
+Set the URL for the ISO hosted on the httpd server.
 
 
 [IMPORTANT]
@@ -356,7 +357,7 @@ Customize the patch file that you previously extracted into the out/argocd/deplo
 The version of the multicluster-operators-subscription image should match the RHACM version.
 Beginning with the MCE 2.10 release, RHEL 9 is the base image for multicluster-operators-subscription images.
 ----
-2. Add the following configuration to the out/argocd/deployment/argocd-openshift-gitops-patch.json file:
+2. Modify the out/argocd/deployment/argocd-openshift-gitops-patch.json file with the multicluster-operators-subscription image that matches your RHACM version:
 
 ```json
 {
@@ -405,6 +406,33 @@ $ oc patch multiclusterengines.multicluster.openshift.io multiclusterengine --ty
 $ oc apply -k out/argocd/deployment
 ```
 
+4. Optional: If you have existing ArgoCD applications, verify that the PrunePropagationPolicy=background policy is set in the Application resource by running the following command:
+
+```terminal
+$ oc -n openshift-gitops get applications.argoproj.io  \
+clusters -o jsonpath='{.spec.syncPolicy.syncOptions}' |jq
+```
+
+
+```terminal
+[
+  "CreateNamespace=true",
+  "PrunePropagationPolicy=background",
+  "RespectIgnoreDifferences=true"
+]
+```
+1. If the spec.syncPolicy.syncOption field does not contain a PrunePropagationPolicy parameter or PrunePropagationPolicy is set to the foreground value, set the policy to background in the Application resource. See the following example:
+
+```yaml
+kind: Application
+spec:
+  syncPolicy:
+    syncOptions:
+    - PrunePropagationPolicy=background
+```
+
+
+Setting the background deletion policy ensures that the ManagedCluster CR and all its associated resources are deleted.
 
 # Preparing the GitOps ZTP site configuration repository
 
@@ -614,3 +642,173 @@ resources:
 
 Activate version 4.13.
 Use comments to deactivate a version.
+
+# Configuring the hub cluster for backup and restore
+
+You can use GitOps ZTP to configure a set of policies to back up BareMetalHost resources.
+This allows you to recover data from a failed hub cluster and deploy a replacement cluster using Red Hat Advanced Cluster Management (RHACM).
+
+* You have installed the OpenShift CLI (oc).
+* You have logged in as a user with cluster-admin privileges.
+
+1. Create a policy to add the cluster.open-cluster-management.io/backup=cluster-activation label to all BareMetalHost resources that have the infraenvs.agent-install.openshift.io label.
+Save the policy as BareMetalHostBackupPolicy.yaml.
+
+The following example adds the cluster.open-cluster-management.io/backup label to all BareMetalHost resources that have the infraenvs.agent-install.openshift.io label:
+Example Policy
+
+```yaml
+apiVersion: policy.open-cluster-management.io/v1
+kind: Policy
+metadata:
+  name: bmh-cluster-activation-label
+  annotations:
+    policy.open-cluster-management.io/description: Policy used to add the cluster.open-cluster-management.io/backup=cluster-activation label to all BareMetalHost resources
+spec:
+  disabled: false
+  policy-templates:
+    - objectDefinition:
+        apiVersion: policy.open-cluster-management.io/v1
+        kind: ConfigurationPolicy
+        metadata:
+          name: set-bmh-backup-label
+        spec:
+          object-templates-raw: |
+            {{- /* Set cluster-activation label on all BMH resources */ -}}
+            {{- $infra_label := "infraenvs.agent-install.openshift.io" }}
+            {{- range $bmh := (lookup "metal3.io/v1alpha1" "BareMetalHost" "" "" $infra_label).items }}
+                - complianceType: musthave
+                  objectDefinition:
+                    kind: BareMetalHost
+                    apiVersion: metal3.io/v1alpha1
+                    metadata:
+                      name: {{ $bmh.metadata.name }}
+                      namespace: {{ $bmh.metadata.namespace }}
+                      labels:
+                        cluster.open-cluster-management.io/backup: cluster-activation 1
+            {{- end }}
+          remediationAction: enforce
+          severity: high
+---
+apiVersion: cluster.open-cluster-management.io/v1beta1
+kind: Placement
+metadata:
+  name: bmh-cluster-activation-label-pr
+spec:
+  predicates:
+    - requiredClusterSelector:
+        labelSelector:
+          matchExpressions:
+            - key: name
+              operator: In
+              values:
+                - local-cluster
+---
+apiVersion: policy.open-cluster-management.io/v1
+kind: PlacementBinding
+metadata:
+  name: bmh-cluster-activation-label-binding
+placementRef:
+  name: bmh-cluster-activation-label-pr
+  apiGroup: cluster.open-cluster-management.io
+  kind: Placement
+subjects:
+  - name: bmh-cluster-activation-label
+    apiGroup: policy.open-cluster-management.io
+    kind: Policy
+---
+apiVersion: cluster.open-cluster-management.io/v1beta2
+kind: ManagedClusterSetBinding
+metadata:
+  name: default
+  namespace: default
+spec:
+  clusterSet: default
+```
+
+If you apply the cluster.open-cluster-management.io/backup: cluster-activation label to BareMetalHost resources, the RHACM cluster backs up those resources.
+You can restore the BareMetalHost resources if the active cluster becomes unavailable, when restoring the hub activation resources.
+2. Apply the policy by running the following command:
+
+```terminal
+$ oc apply -f BareMetalHostBackupPolicy.yaml
+```
+
+
+1. Find all BareMetalHost resources with the label infraenvs.agent-install.openshift.io  by running the following command:
+
+```terminal
+$ oc get BareMetalHost -A -l infraenvs.agent-install.openshift.io
+```
+
+Example output
+
+```yaml
+NAMESPACE      NAME             STATE   CONSUMER   ONLINE   ERROR   AGE
+baremetal-ns   baremetal-name                      false            50s
+```
+
+2. Verify that the policy has applied the label cluster.open-cluster-management.io/backup=cluster-activation to all these resources, by running the following command:
+
+```terminal
+$ oc get BareMetalHost -A -l infraenvs.agent-install.openshift.io,cluster.open-cluster-management.io/backup=cluster-activation
+```
+
+Example output
+
+```yaml
+NAMESPACE      NAME             STATE   CONSUMER   ONLINE   ERROR   AGE
+baremetal-ns   baremetal-name                      false            50s
+```
+
+
+The output must show the same list as in the previous step, which listed all BareMetalHost resources with the label infraenvs.agent-install.openshift.io.
+This confirms that that all the BareMetalHost resources with the infraenvs.agent-install.openshift.io label also have the cluster.open-cluster-management.io/backup: cluster-activation label.
+
+The following example shows a BareMetalHost resource with the infraenvs.agent-install.openshift.io label.
+The resource must also have the cluster.open-cluster-management.io/backup: cluster-activation label, which was added by the policy that you created.
+
+```yaml
+apiVersion: metal3.io/v1alpha1
+kind: BareMetalHost
+metadata:
+  labels:
+    cluster.open-cluster-management.io/backup: cluster-activation
+    infraenvs.agent-install.openshift.io: value
+  name: baremetal-name
+  namespace: baremetal-ns
+```
+
+
+You can now use Red Hat Advanced Cluster Management to restore a managed cluster.
+
+
+[IMPORTANT]
+----
+When you restore BareMetalHosts resources as part of restoring the cluster activation data, you must restore the BareMetalHosts status.
+The following RHACM Restore resource example restores activation resources, including BareMetalHosts, and also restores the status for the BareMetalHosts resources:
+
+```yaml
+apiVersion: cluster.open-cluster-management.io/v1beta1
+kind: Restore
+metadata:
+  name: restore-acm-bmh
+  namespace: open-cluster-management-backup
+spec:
+  cleanupBeforeRestore: CleanupRestored
+  veleroManagedClustersBackupName: latest 1
+  veleroCredentialsBackupName: latest
+  veleroResourcesBackupName: latest
+  restoreStatus:
+    includedResources:
+      - BareMetalHosts2
+```
+
+----
+
+Set veleroManagedClustersBackupName: latest to restore activation resources.
+Restores the status for BareMetalHosts resources.
+
+* Restoring managed cluster activation data
+* Active-passive configuration
+* Restoring activation resources

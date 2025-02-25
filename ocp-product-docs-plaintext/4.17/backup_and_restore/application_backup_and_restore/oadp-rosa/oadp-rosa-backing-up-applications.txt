@@ -76,9 +76,9 @@ $ if [[ -z "${POLICY_ARN}" ]]; then
         "s3:PutObject",
         "s3:DeleteObject",
         "s3:ListBucketMultipartUploads",
-        "s3:AbortMultipartUploads",
+        "s3:AbortMultipartUpload",
         "s3:ListMultipartUploadParts",
-        "s3:DescribeSnapshots",
+        "ec2:DescribeSnapshots",
         "ec2:DescribeVolumes",
         "ec2:DescribeVolumeAttribute",
         "ec2:DescribeVolumesModifications",
@@ -90,7 +90,7 @@ $ if [[ -z "${POLICY_ARN}" ]]; then
       ],
       "Resource": "*"
     }
-   ]}
+  ]}
 EOF
 
   POLICY_ARN=$(aws iam create-policy --policy-name "RosaOadpVer1" \
@@ -113,7 +113,7 @@ $ echo ${POLICY_ARN}
 ```terminal
 $ cat <<EOF > ${SCRATCH}/trust-policy.json
   {
-      "Version":2012-10-17",
+      "Version": "2012-10-17",
       "Statement": [{
         "Effect": "Allow",
         "Principal": {
@@ -138,8 +138,12 @@ EOF
 $ ROLE_ARN=$(aws iam create-role --role-name \
   "${ROLE_NAME}" \
   --assume-role-policy-document file://${SCRATCH}/trust-policy.json \
---tags Key=rosa_cluster_id,Value=${ROSA_CLUSTER_ID} Key=rosa_openshift_version,Value=${CLUSTER_VERSION} Key=rosa_role_prefix,Value=ManagedOpenShift Key=operator_namespace,Value=openshift-adp Key=operator_name,Value=openshift-oadp \
-   --query Role.Arn --output text)
+  --tags Key=rosa_cluster_id,Value=${ROSA_CLUSTER_ID} \
+         Key=rosa_openshift_version,Value=${CLUSTER_VERSION} \
+         Key=rosa_role_prefix,Value=ManagedOpenShift \
+         Key=operator_namespace,Value=openshift-adp \
+         Key=operator_name,Value=openshift-oadp \
+  --query Role.Arn --output text)
 ```
 
 3. View the role ARN by running the following command:
@@ -185,9 +189,11 @@ $ cat <<EOF > ${SCRATCH}/credentials
   [default]
   role_arn = ${ROLE_ARN}
   web_identity_token_file = /var/run/secrets/openshift/serviceaccount/token
+  region = <aws_region> 1
 EOF
 ```
 
+Replace <aws_region> with the AWS region to use for the STS endpoint.
 2. Create a namespace for OADP:
 
 ```terminal
@@ -306,12 +312,15 @@ $ cat << EOF | oc create -f -
         - openshift
         - aws
         - csi
-      restic:
+      nodeAgent:  2
         enable: false
+        uploaderType: kopia 3
 EOF
 ```
 
 ROSA supports internal image backup. Set this field to false if you do not want to use image backup.
+See the important note regarding the nodeAgent attribute.
+The type of uploader. The possible values are restic or kopia. The built-in Data Mover uses Kopia as the default uploader mechanism regardless of the value of the uploaderType field.
 
 1. If you are using CSI or non-CSI volumes, deploy a Data Protection Application by entering the following command:
 
@@ -324,9 +333,6 @@ $ cat << EOF | oc create -f -
     namespace: openshift-adp
   spec:
     backupImages: true 1
-    features:
-      dataMover:
-         enable: false
     backupLocations:
     - bucket:
         cloudStorageRef:
@@ -388,6 +394,140 @@ restic:
 ----
 
 If you want to use two different clusters for backing up and restoring, the two clusters must have the same AWS S3 storage names in both the cloud storage CR and the OADP DataProtectionApplication configuration.
+
+# Updating the IAM role ARN in the OADP Operator subscription
+
+While installing the OADP Operator on a ROSA Security Token Service (STS) cluster, if you provide an incorrect IAM role Amazon Resource Name (ARN), the openshift-adp-controller pod gives an error. The credential requests that are generated contain the wrong IAM role ARN. To update the credential requests object with the correct IAM role ARN, you can edit the OADP Operator subscription and patch the IAM role ARN with the correct value. By editing the OADP Operator subscription, you do not have to uninstall and reinstall OADP to update the IAM role ARN.
+
+* You have installed OADP on the ROSA STS cluster.
+
+1. To verify that the OADP subscription has the wrong IAM role ARN environment variable set, run the following command:
+
+```terminal
+$ oc get sub -o yaml redhat-oadp-operator
+```
+
+Example subscription
+
+```yaml
+apiVersion: operators.coreos.com/v1alpha1
+kind: Subscription
+metadata:
+  annotations:
+  creationTimestamp: "2025-01-15T07:18:31Z"
+  generation: 1
+  labels:
+    operators.coreos.com/redhat-oadp-operator.openshift-adp: ""
+  name: redhat-oadp-operator
+  namespace: openshift-adp
+  resourceVersion: "77363"
+  uid: 5ba00906-5ad2-4476-ae7b-ffa90986283d
+spec:
+  channel: stable-1.4
+  config:
+    env:
+    - name: ROLEARN
+      value: arn:aws:iam::11111111:role/wrong-role-arn 1
+  installPlanApproval: Manual
+  name: redhat-oadp-operator
+  source: prestage-operators
+  sourceNamespace: openshift-marketplace
+  startingCSV: oadp-operator.v1.4.2
+```
+
+Verify the value of ROLEARN you want to update.
+2. Update the ROLEARN field of the subscription with the correct role ARN by running the following command:
+
+```terminal
+$ oc patch subscription redhat-oadp-operator -p '{"spec": {"config": {"env": [{"name": "ROLEARN", "value": "<role_arn>"}]}}}' --type='merge'
+```
+
+
+where:
+<role_arn>:: Specifies the IAM role ARN to be updated. For example, arn:aws:iam::160&#8230;&#8203;..6956:role/oadprosa&#8230;&#8203;..8wlf.
+3. Verify that the secret object is updated with correct role ARN value by running the following command:
+
+```terminal
+$ oc get secret cloud-credentials -o jsonpath='{.data.credentials}' | base64 -d
+```
+
+Example output
+
+```terminal
+[default]
+sts_regional_endpoints = regional
+role_arn = arn:aws:iam::160.....6956:role/oadprosa.....8wlf
+web_identity_token_file = /var/run/secrets/openshift/serviceaccount/token
+```
+
+4. Configure the DataProtectionApplication custom resource (CR) manifest file as shown in the following example:
+
+```yaml
+apiVersion: oadp.openshift.io/v1alpha1
+kind: DataProtectionApplication
+metadata:
+  name: test-rosa-dpa
+  namespace: openshift-adp
+spec:
+  backupLocations:
+  - bucket:
+      config:
+        region: us-east-1
+      cloudStorageRef:
+        name: <cloud_storage> 1
+      credential:
+        name: cloud-credentials
+        key: credentials
+      prefix: velero
+      default: true
+  configuration:
+    velero:
+      defaultPlugins:
+      - aws
+      - openshift
+```
+
+Specify the CloudStorage CR.
+5. Create the DataProtectionApplication CR by running the following command:
+
+```terminal
+$ oc create -f <dpa_manifest_file>
+```
+
+6. Verify that the DataProtectionApplication CR is reconciled and the status is set to "True" by running the following command:
+
+```terminal
+$  oc get dpa -n openshift-adp -o yaml
+```
+
+Example DataProtectionApplication
+
+```yaml
+apiVersion: oadp.openshift.io/v1alpha1
+kind: DataProtectionApplication
+...
+status:
+    conditions:
+    - lastTransitionTime: "2023-07-31T04:48:12Z"
+      message: Reconcile complete
+      reason: Complete
+      status: "True"
+      type: Reconciled
+```
+
+7. Verify that the BackupStorageLocation CR is in an available state by running the following command:
+
+```terminal
+$ oc get backupstoragelocations.velero.io -n openshift-adp
+```
+
+Example BackupStorageLocation
+
+```terminal
+NAME       PHASE       LAST VALIDATED   AGE   DEFAULT
+ts-dpa-1   Available   3s               6s    true
+```
+
 
 * Installing from OperatorHub using the web console.
 * Backing up applications

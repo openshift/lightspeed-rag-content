@@ -173,6 +173,118 @@ dpa-sample-1   Available   1s               3d16h   true
 If you run a backup of a Microsoft Windows virtual machine (VM) immediately after the VM reboots, the backup might fail with a PartiallyFailed error. This is because, immediately after a VM boots, the Microsoft Windows Volume Shadow Copy Service (VSS) and Guest Agent (GA) service are not ready. The VSS and GA service being unready causes the backup to fail. In such a case, retry the backup a few minutes after the VM boots.
 ----
 
+# Backing up a single VM
+
+If you have a namespace with multiple virtual machines (VMs), and want to back up only one of them, you can use the label selector to filter the VM that needs to be included in the backup. You can filter the VM by using the app: vmname label.
+
+* You have installed the OADP Operator.
+* You have multiple VMs running in a namespace.
+* You have added the kubevirt plugin in the DataProtectionApplication (DPA) custom resource (CR).
+* You have configured the BackupStorageLocation CR in the DataProtectionApplication CR and BackupStorageLocation is available.
+
+1. Configure the Backup CR as shown in the following example:
+Example Backup CR
+
+```yaml
+apiVersion: velero.io/v1
+kind: Backup
+metadata:
+  name: vmbackupsingle
+  namespace: openshift-adp
+spec:
+  snapshotMoveData: true
+  includedNamespaces:
+  - <vm_namespace> 1
+  labelSelector:
+    matchLabels:
+      app: <vm_app_name> 2
+  storageLocation: <backup_storage_location_name> 3
+```
+
+Specify the name of the namespace where you have created the VMs.
+Specify the VM name that needs to be backed up.
+Specify the name of the BackupStorageLocation CR.
+2. To create a Backup CR, run the following command:
+
+```terminal
+$ oc apply -f <backup_cr_file_name> 1
+```
+
+Specify the name of the Backup CR file.
+
+# Restoring a single VM
+
+After you have backed up a single virtual machine (VM) by using the label selector in the Backup custom resource (CR), you can create a Restore CR and point it to the backup. This restore operation restores a single VM.
+
+* You have installed the OADP Operator.
+* You have backed up a single VM by using the label selector.
+
+1. Configure the Restore CR as shown in the following example:
+Example Restore CR
+
+```yaml
+apiVersion: velero.io/v1
+kind: Restore
+metadata:
+  name: vmrestoresingle
+  namespace: openshift-adp
+spec:
+  backupName: vmbackupsingle 1
+  restorePVs: true
+```
+
+Specifies the name of the backup of a single VM.
+2. To restore the single VM, run the following command:
+
+```terminal
+$ oc apply -f <restore_cr_file_name> 1
+```
+
+Specify the name of the Restore CR file.
+
+# Restoring a single VM from a backup of multiple VMs
+
+If you have a backup containing multiple virtual machines (VMs), and you want to restore only one VM, you can use the LabelSelectors section in the Restore CR to select the VM to restore. To ensure that the persistent volume claim (PVC) attached to the VM is correctly restored, and the restored VM is not stuck in a Provisioning status, use both the app: <vm_name> and the kubevirt.io/created-by labels. To match the kubevirt.io/created-by label, use the UID of DataVolume of the VM.
+
+* You have installed the OADP Operator.
+* You have labeled the VMs that need to be backed up.
+* You have a backup of multiple VMs.
+
+1. Before you take a backup of many VMs, ensure that the VMs are labeled by running the following command:
+
+```terminal
+$ oc label vm <vm_name> app=<vm_name> -n openshift-adp
+```
+
+2. Configure the label selectors in the Restore CR as shown in the following example:
+Example Restore CR
+
+```yaml
+apiVersion: velero.io/v1
+kind: Restore
+metadata:
+  name: singlevmrestore
+  namespace: openshift-adp
+spec:
+  backupName: multiplevmbackup
+  restorePVs: true
+  LabelSelectors:
+    - matchLabels:
+        kubevirt.io/created-by: <datavolume_uid> 1
+    - matchLabels:
+        app: <vm_name> 2
+```
+
+Specify the UID of DataVolume of the VM that you want to restore. For example, b6&#8230;&#8203;53a-ddd7-4d9d-9407-a0c&#8230;&#8203;e5.
+Specify the name of the VM that you want to restore. For example, test-vm.
+3. To restore a VM, run the following command:
+
+```terminal
+$ oc apply -f <restore_cr_file_name> 1
+```
+
+Specify the name of the Restore CR file.
+
 # Configuring the DPA with client burst and QPS settings
 
 The burst setting determines how many requests can be sent to the velero server before the limit is applied. After the burst limit is reached, the queries per second (QPS) setting determines how many additional requests can be sent per second.
@@ -223,6 +335,61 @@ spec:
 
 Specify the client-burst value. In this example, the client-burst field is set to 500.
 Specify the client-qps value. In this example, the client-qps field is set to 300.
+
+# Overriding the imagePullPolicy setting in the DPA
+
+In OADP 1.4.0 or earlier, the Operator sets the imagePullPolicy field of the Velero and node agent pods to Always for all images.
+
+In OADP 1.4.1 or later, the Operator first checks if each image has the sha256 or sha512 digest and sets the imagePullPolicy field accordingly:
+
+* If the image has the digest, the Operator sets imagePullPolicy to IfNotPresent.
+* If the image does not have the digest, the Operator sets imagePullPolicy to Always.
+
+You can also override the imagePullPolicy field by using the spec.imagePullPolicy field in the Data Protection Application (DPA).
+
+* You have installed the OADP Operator.
+
+* Configure the spec.imagePullPolicy field in the DPA as shown in the following example:
+Example Data Protection Application
+
+```yaml
+apiVersion: oadp.openshift.io/v1alpha1
+kind: DataProtectionApplication
+metadata:
+  name: test-dpa
+  namespace: openshift-adp
+spec:
+  backupLocations:
+    - name: default
+      velero:
+        config:
+          insecureSkipTLSVerify: "true"
+          profile: "default"
+          region: <bucket_region>
+          s3ForcePathStyle: "true"
+          s3Url: <bucket_url>
+        credential:
+          key: cloud
+          name: cloud-credentials
+        default: true
+        objectStorage:
+          bucket: <bucket_name>
+          prefix: velero
+        provider: aws
+  configuration:
+    nodeAgent:
+      enable: true
+      uploaderType: kopia
+    velero:
+      defaultPlugins:
+        - openshift
+        - aws
+        - kubevirt
+        - csi
+  imagePullPolicy: Never 1
+```
+
+Specify the value for imagePullPolicy. In this example, the imagePullPolicy field is set to Never.
 
 ## Configuring node agents and node labels
 

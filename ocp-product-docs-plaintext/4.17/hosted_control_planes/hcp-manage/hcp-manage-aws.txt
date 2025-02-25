@@ -693,3 +693,213 @@ After you run the command, the following resources are applied to your cluster:
 * A NodePool
 * Three AWS STS secrets for control plane components
 * One SSH key secret if you specified the --generate-ssh flag.
+
+# Transitioning a hosted cluster from single-architecture to multi-architecture
+
+You can transition your single-architecture 64-bit AMD hosted cluster to a multi-architecture hosted cluster on Amazon Web Services (AWS), to reduce the cost of running workloads on your cluster. For example, you can run existing workloads on 64-bit AMD while transitioning to 64-bit ARM and you can manage these workloads from a central Kubernetes cluster.
+
+A single-architecture hosted cluster can manage node pools of only one particular CPU architecture. However, a multi-architecture hosted cluster can manage node pools with different CPU architectures. On AWS, a multi-architecture hosted cluster can manage both 64-bit AMD and 64-bit ARM node pools.
+
+* You have installed an Red Hat OpenShift Container Platform management cluster for AWS on Red Hat Advanced Cluster Management (RHACM) with the multicluster engine for Kubernetes Operator.
+* You have an existing single-architecture hosted cluster that uses 64-bit AMD variant of the Red Hat OpenShift Container Platform release payload.
+* An existing node pool that uses the same 64-bit AMD variant of the Red Hat OpenShift Container Platform release payload and is managed by an existing hosted cluster.
+* Ensure that you installed the following command-line tools:
+* oc
+* kubectl
+* hcp
+* skopeo
+
+1. Review an existing Red Hat OpenShift Container Platform release image of the single-architecture hosted cluster by running the following command:
+
+```terminal
+$ oc get hostedcluster/<hosted_cluster_name> -o jsonpath='{.spec.release.image}' 1
+```
+
+Replace <hosted_cluster_name> with your hosted cluster name.
+Example output
+
+```terminal
+quay.io/openshift-release-dev/ocp-release:<4.y.z>-x86_64 1
+```
+
+Replace <4.y.z> with the supported Red Hat OpenShift Container Platform version that you use.
+2. In your Red Hat OpenShift Container Platform release image, if you use the digest instead of a tag, find the multi-architecture tag version of your release image:
+1. Set the OCP_VERSION environment variable for the Red Hat OpenShift Container Platform version by running the following command:
+
+```terminal
+$ OCP_VERSION=$(oc image info quay.io/openshift-release-dev/ocp-release@sha256:ac78ebf77f95ab8ff52847ecd22592b545415e1ff6c7ff7f66bf81f158ae4f5e -o jsonpath='{.config.config.Labels["io.openshift.release"]}')
+```
+
+2. Set the MULTI_ARCH_TAG environment variable for the multi-architecture tag version of your release image by running the following command:
+
+```terminal
+$ MULTI_ARCH_TAG=$(skopeo inspect docker://quay.io/openshift-release-dev/ocp-release@sha256:ac78ebf77f95ab8ff52847ecd22592b545415e1ff6c7ff7f66bf81f158ae4f5e | jq -r '.RepoTags' | sed 's/"//g' | sed 's/,//g' | grep -w "$OCP_VERSION-multi$" | xargs)
+```
+
+3. Set the IMAGE environment variable for the multi-architecture release image name by running the following command:
+
+```terminal
+$ IMAGE=quay.io/openshift-release-dev/ocp-release:$MULTI_ARCH_TAG
+```
+
+4. To see the list of multi-architecture image digests, run the following command:
+
+```terminal
+$ oc image info $IMAGE
+```
+
+Example output
+
+```terminal
+OS            DIGEST
+linux/amd64   sha256:b4c7a91802c09a5a748fe19ddd99a8ffab52d8a31db3a081a956a87f22a22ff8
+linux/ppc64le sha256:66fda2ff6bd7704f1ba72be8bfe3e399c323de92262f594f8e482d110ec37388
+linux/s390x   sha256:b1c1072dc639aaa2b50ec99b530012e3ceac19ddc28adcbcdc9643f2dfd14f34
+linux/arm64   sha256:7b046404572ac96202d82b6cb029b421dddd40e88c73bbf35f602ffc13017f21
+```
+
+3. Transition the hosted cluster from single-architecture to multi-architecture:
+1. Set the multiArch flag to true on your hosted cluster so that the hosted cluster can create both 64-bit AMD and 64-bit ARM node pools. Run the following command:
+
+```terminal
+$ oc patch -n clusters hostedclusters/<hosted_cluster_name> -p '{"spec":{"platform":{"aws":{"multiArch":true}}}}' --type=merge
+```
+
+2. Confirm that the multiArch flag is set to true on your hosted cluster by running the following command:
+
+```terminal
+$ oc get hostedcluster/<hosted_cluster_name> -o jsonpath='{.spec.platform.aws.multiArch}'
+```
+
+3. Set the multi-architecture Red Hat OpenShift Container Platform release image for the hosted cluster by ensuring that you use the same Red Hat OpenShift Container Platform version as the hosted cluster. Run the following command:
+
+```terminal
+$ oc patch -n clusters hostedclusters/<hosted_cluster_name> -p '{"spec":{"release":{"image":"quay.io/openshift-release-dev/ocp-release:<4.x.y>-multi"}}}' --type=merge 1
+```
+
+Replace <4.y.z> with the supported Red Hat OpenShift Container Platform version that you use.
+4. Confirm that the multi-architecture image is set in your hosted cluster by running the following command:
+
+```terminal
+$ oc get hostedcluster/<hosted_cluster_name> -o jsonpath='{.spec.release.image}'
+```
+
+4. Check that the status of the HostedControlPlane resource is Progressing by running the following command:
+
+```terminal
+$ oc get hostedcontrolplane -n <hosted_control_plane_namespace> -oyaml
+```
+
+Example output
+
+```yaml
+#...
+  - lastTransitionTime: "2024-07-28T13:07:18Z"
+    message: HostedCluster is deploying, upgrading, or reconfiguring
+    observedGeneration: 5
+    reason: Progressing
+    status: "True"
+    type: Progressing
+#...
+```
+
+5. Check that the status of the HostedCluster resource is Progressing by running the following command:
+
+```terminal
+$ oc get hostedcluster <hosted_cluster_name> -n <hosted_cluster_namespace> -oyaml
+```
+
+
+* Verify that a node pool is using the multi-architecture release image in your HostedControlPlane resource by running the following command:
+
+```terminal
+$ oc get hostedcontrolplane -n clusters-example -oyaml
+```
+
+Example output
+
+```yaml
+#...
+version:
+    availableUpdates: null
+    desired:
+      image: quay.io/openshift-release-dev/ocp-release:<4.x.y>-multi 1
+      url: https://access.redhat.com/errata/RHBA-2024:4855
+      version: 4.16.5
+    history:
+    - completionTime: "2024-07-28T13:10:58Z"
+      image: quay.io/openshift-release-dev/ocp-release:<4.x.y>-multi
+      startedTime: "2024-07-28T13:10:27Z"
+      state: Completed
+      verified: false
+      version: <4.x.y>
+```
+
+Replace <4.y.z> with the supported Red Hat OpenShift Container Platform version that you use.
+
+[NOTE]
+----
+The multi-architecture Red Hat OpenShift Container Platform release image is updated in your HostedCluster, HostedControlPlane resources, and hosted control plane pods. However, your existing node pools do not transition with the multi-architecture image automatically, because the release image transition is decoupled between the hosted cluster and node pools. You must create new node pools on your new multi-architecture hosted cluster.
+----
+
+* Creating node pools on the multi-architecture hosted cluster
+
+# Creating node pools on the multi-architecture hosted cluster
+
+After transitioning your hosted cluster from single-architecture to multi-architecture, create node pools on compute machines based on 64-bit AMD and 64-bit ARM architectures.
+
+1. Create node pools based on 64-bit ARM architecture by entering the following command:
+
+```terminal
+$ hcp create nodepool aws \
+--cluster-name <hosted_cluster_name> \1
+--name <nodepool_name> \2
+--node-count=<node_count> \3
+--arch arm64
+```
+
+Replace <hosted_cluster_name> with your hosted cluster name.
+Replace <nodepool_name> with your node pool name.
+Replace <node_count> with integer for your node count, for example, 2.
+2. Create node pools based on 64-bit AMD architecture by entering the following command:
+
+```terminal
+$ hcp create nodepool aws \
+--cluster-name <hosted_cluster_name> \1
+--name <nodepool_name> \2
+--node-count=<node_count> \3
+--arch amd64
+```
+
+Replace <hosted_cluster_name> with your hosted cluster name.
+Replace <nodepool_name> with your node pool name.
+Replace <node_count> with integer for your node count, for example, 2.
+
+* Verify that a node pool is using the multi-architecture release image by entering the following command:
+
+```terminal
+$ oc get nodepool/<nodepool_name> -oyaml
+```
+
+Example output for 64-bit AMD node pools
+
+```yaml
+#...
+spec:
+  arch: amd64
+#...
+  release:
+    image: quay.io/openshift-release-dev/ocp-release:<4.x.y>-multi 1
+```
+
+Replace <4.y.z> with the supported Red Hat OpenShift Container Platform version that you use.
+Example output for 64-bit ARM node pools
+
+```yaml
+#...
+spec:
+  arch: arm64
+#...
+  release:
+    image: quay.io/openshift-release-dev/ocp-release:<4.x.y>-multi
+```
