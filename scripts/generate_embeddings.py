@@ -11,7 +11,7 @@ import requests
 from llama_index.core import Settings, SimpleDirectoryReader, VectorStoreIndex
 from llama_index.core.llms.utils import resolve_llm
 
-# from llama_index.core.node_parser import MarkdownNodeParser
+from llama_index.core.node_parser import MarkdownNodeParser
 from llama_index.core.schema import TextNode
 from llama_index.core.storage.storage_context import StorageContext
 from llama_index.embeddings.huggingface import HuggingFaceEmbedding
@@ -118,7 +118,7 @@ if __name__ == "__main__":
         help="HF repo id of the embedding model",
     )
     parser.add_argument(
-        "-c", "--chunk", type=int, default=380, help="Chunk size for embedding"
+        "-c", "--chunk", type=int, default=485, help="Chunk size for embedding"
     )
     parser.add_argument(
         "-l", "--overlap", type=int, default=0, help="Chunk overlap for embedding"
@@ -172,8 +172,8 @@ if __name__ == "__main__":
     ).load_data()
 
     # Split based on header/section
-    # md_parser = MarkdownNodeParser()
-    # documents = md_parser.get_nodes_from_documents(documents)
+    md_parser = MarkdownNodeParser()
+    documents = md_parser.get_nodes_from_documents(documents)
 
     # Create chunks/nodes
     nodes = Settings.text_splitter.get_nodes_from_documents(documents)
@@ -193,7 +193,7 @@ if __name__ == "__main__":
         args.runbooks,
         recursive=True,
         required_exts=[".md"],
-        file_extractor={".md": FlatReader()},
+        # file_extractor={".md": FlatReader()},
         file_metadata=runbook_file_metadata_func,
     ).load_data()
     runbook_nodes = Settings.text_splitter.get_nodes_from_documents(runbook_documents)
