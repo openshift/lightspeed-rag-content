@@ -9,7 +9,7 @@ ARG FLAVOR
 FROM nvcr.io/nvidia/cuda:12.6.3-devel-ubi9 as gpu-base
 ARG EMBEDDING_MODEL
 ARG FLAVOR
-RUN dnf install -y python3.11 python3.11-pip libcudnn9 libnccl
+RUN dnf install -y python3.11 python3.11-pip libcudnn9 libnccl libcusparselt0
 
 FROM ${FLAVOR}-base as lightspeed-rag-builder
 ARG EMBEDDING_MODEL
@@ -19,8 +19,8 @@ ARG HERMETIC
 USER 0
 WORKDIR /workdir
 
-COPY requirements.txt .
-RUN pip3.11 install --no-cache-dir -r requirements.txt
+COPY requirements.gpu.txt .
+RUN pip3.11 install --no-cache-dir -r requirements.gpu.txt
 
 COPY ocp-product-docs-plaintext ./ocp-product-docs-plaintext
 COPY runbooks ./runbooks
