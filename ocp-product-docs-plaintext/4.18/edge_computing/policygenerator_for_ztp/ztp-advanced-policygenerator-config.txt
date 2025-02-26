@@ -1,0 +1,1210 @@
+# Advanced managed cluster configuration with PolicyGenerator resources
+
+
+You can use PolicyGenerator CRs to deploy custom functionality in your managed clusters.
+
+[IMPORTANT]
+----
+Using PolicyGenerator resources with GitOps ZTP is a Technology Preview feature only. Technology Preview features are not supported with Red Hat production service level agreements (SLAs) and might not be functionally complete. Red Hat does not recommend using them in production. These features provide early access to upcoming product features, enabling customers to test functionality and provide feedback during the development process.
+For more information about the support scope of Red Hat Technology Preview features, see Technology Preview Features Support Scope.
+----
+
+[NOTE]
+----
+For more information about PolicyGenerator resources, see the RHACM Policy Generator documentation.
+----
+
+# Deploying additional changes to clusters
+
+If you require cluster configuration changes outside of the base GitOps Zero Touch Provisioning (ZTP) pipeline configuration, there are three options:
+
+Apply the additional configuration after the GitOps ZTP pipeline is complete:: When the GitOps ZTP pipeline deployment is complete, the deployed cluster is ready for application workloads. At this point, you can install additional Operators and apply configurations specific to your requirements. Ensure that additional configurations do not negatively affect the performance of the platform or allocated CPU budget.
+Add content to the GitOps ZTP library:: The base source custom resources (CRs) that you deploy with the GitOps ZTP pipeline can be augmented with custom content as required.
+Create extra manifests for the cluster installation:: Extra manifests are applied during installation and make the installation process more efficient.
+
+
+[IMPORTANT]
+----
+Providing additional source CRs or modifying existing source CRs can significantly impact the performance or CPU profile of Red Hat OpenShift Container Platform.
+----
+
+* Customizing extra installation manifests in the GitOps ZTP pipeline
+
+# Using PolicyGenerator CRs to override source CRs content
+
+PolicyGenerator custom resources (CRs) allow you to overlay additional configuration details on top of the base source CRs provided with the GitOps plugin in the ztp-site-generate container. You can think of PolicyGenerator CRs as a logical merge or patch to the base CR. Use PolicyGenerator CRs to update a single field of the base CR, or overlay the entire contents of the base CR. You can update values and insert fields that are not in the base CR.
+
+The following example procedure describes how to update fields in the generated PerformanceProfile CR for the reference configuration based on the PolicyGenerator CR in the acm-group-du-sno-ranGen.yaml file. Use the procedure as a basis for modifying other parts of the PolicyGenerator based on your requirements.
+
+* Create a Git repository where you manage your custom site configuration data. The repository must be accessible from the hub cluster and be defined as a source repository for Argo CD.
+
+1. Review the baseline source CR for existing content. You can review the source CRs listed in the reference PolicyGenerator CRs by extracting them from the GitOps Zero Touch Provisioning (ZTP) container.
+1. Create an /out folder:
+
+```terminal
+$ mkdir -p ./out
+```
+
+2. Extract the source CRs:
+
+```terminal
+$ podman run --log-driver=none --rm registry.redhat.io/openshift4/ztp-site-generate-rhel8:v4.18.1 extract /home/ztp --tar | tar x -C ./out
+```
+
+2. Review the baseline PerformanceProfile CR in ./out/source-crs/PerformanceProfile.yaml:
+
+```yaml
+apiVersion: performance.openshift.io/v2
+kind: PerformanceProfile
+metadata:
+  name: $name
+  annotations:
+    ran.openshift.io/ztp-deploy-wave: "10"
+spec:
+  additionalKernelArgs:
+  - "idle=poll"
+  - "rcupdate.rcu_normal_after_boot=0"
+  cpu:
+    isolated: $isolated
+    reserved: $reserved
+  hugepages:
+    defaultHugepagesSize: $defaultHugepagesSize
+    pages:
+      - size: $size
+        count: $count
+        node: $node
+  machineConfigPoolSelector:
+    pools.operator.machineconfiguration.openshift.io/$mcp: ""
+  net:
+    userLevelNetworking: true
+  nodeSelector:
+    node-role.kubernetes.io/$mcp: ''
+  numa:
+    topologyPolicy: "restricted"
+  realTimeKernel:
+    enabled: true
+```
+
+
+[NOTE]
+----
+Any fields in the source CR which contain $&#8230;&#8203; are removed from the generated CR if they are not provided in the PolicyGenerator CR.
+----
+3. Update the PolicyGenerator entry for PerformanceProfile in the acm-group-du-sno-ranGen.yaml reference file. The following example PolicyGenerator CR stanza supplies appropriate CPU specifications, sets the hugepages configuration, and adds a new field that sets globallyDisableIrqLoadBalancing to false.
+
+```yaml
+- path: source-crs/PerformanceProfile.yaml
+  patches:
+    - spec:
+        # These must be tailored for the specific hardware platform
+        cpu:
+          isolated: "2-19,22-39"
+          reserved: "0-1,20-21"
+        hugepages:
+          defaultHugepagesSize: 1G
+          pages:
+          - size: 1G
+            count: 10
+        globallyDisableIrqLoadBalancing: false
+```
+
+4. Commit the PolicyGenerator change in Git, and then push to the Git repository being monitored by the GitOps ZTP argo CD application.
+Example output
+
+The GitOps ZTP application generates an RHACM policy that contains the generated PerformanceProfile CR. The contents of that CR are derived by merging the metadata and spec contents from the PerformanceProfile entry in the PolicyGenerator onto the source CR. The resulting CR has the following content:
+
+```yaml
+---
+apiVersion: performance.openshift.io/v2
+kind: PerformanceProfile
+metadata:
+    name: openshift-node-performance-profile
+spec:
+    additionalKernelArgs:
+        - idle=poll
+        - rcupdate.rcu_normal_after_boot=0
+    cpu:
+        isolated: 2-19,22-39
+        reserved: 0-1,20-21
+    globallyDisableIrqLoadBalancing: false
+    hugepages:
+        defaultHugepagesSize: 1G
+        pages:
+            - count: 10
+              size: 1G
+    machineConfigPoolSelector:
+        pools.operator.machineconfiguration.openshift.io/master: ""
+    net:
+        userLevelNetworking: true
+    nodeSelector:
+        node-role.kubernetes.io/master: ""
+    numa:
+        topologyPolicy: restricted
+    realTimeKernel:
+        enabled: true
+```
+
+
+
+[NOTE]
+----
+In the /source-crs folder that you extract from the ztp-site-generate container,  the $ syntax is not used for template substitution as implied by the syntax. Rather, if the policyGen tool sees the $ prefix for a string and you do not specify a value for that field in the related PolicyGenerator CR, the field is omitted from the output CR entirely.
+An exception to this is the $mcp variable in /source-crs YAML files that is substituted with the specified value for mcp from the PolicyGenerator CR. For example, in example/policygentemplates/acm-group-du-standard-ranGen.yaml, the value for mcp is worker:
+
+```yaml
+spec:
+  bindingRules:
+    group-du-standard: ""
+  mcp: "worker"
+```
+
+The policyGen tool replace instances of $mcp with worker in the output CRs.
+----
+
+# Adding custom content to the GitOps ZTP pipeline
+
+Perform the following procedure to add new content to the GitOps ZTP pipeline.
+
+1. Create a subdirectory named source-crs in the directory that contains the kustomization.yaml file for the PolicyGenerator custom resource (CR).
+2. Add your user-provided CRs to the source-crs subdirectory, as shown in the following example:
+
+```terminal
+example
+└── acmpolicygenerator
+    ├── dev.yaml
+    ├── kustomization.yaml
+    ├── mec-edge-sno1.yaml
+    ├── sno.yaml
+    └── source-crs 1
+        ├── PaoCatalogSource.yaml
+        ├── PaoSubscription.yaml
+        ├── custom-crs
+        |   ├── apiserver-config.yaml
+        |   └── disable-nic-lldp.yaml
+        └── elasticsearch
+            ├── ElasticsearchNS.yaml
+            └── ElasticsearchOperatorGroup.yaml
+```
+
+The source-crs subdirectory must be in the same directory as the kustomization.yaml file.
+3. Update the required PolicyGenerator CRs to include references to the content you added in the source-crs/custom-crs and source-crs/elasticsearch directories. For example:
+
+```yaml
+apiVersion: policy.open-cluster-management.io/v1
+kind: PolicyGenerator
+metadata:
+    name: group-dev
+placementBindingDefaults:
+    name: group-dev-placement-binding
+policyDefaults:
+    namespace: ztp-clusters
+    placement:
+        labelSelector:
+            matchExpressions:
+                - key: dev
+                  operator: In
+                  values:
+                    - "true"
+    remediationAction: inform
+    severity: low
+    namespaceSelector:
+        exclude:
+            - kube-*
+        include:
+            - '*'
+    evaluationInterval:
+        compliant: 10m
+        noncompliant: 10s
+policies:
+    - name: group-dev-group-dev-cluster-log-ns
+      policyAnnotations:
+        ran.openshift.io/ztp-deploy-wave: "2"
+      manifests:
+        - path: source-crs/ClusterLogNS.yaml
+    - name: group-dev-group-dev-cluster-log-operator-group
+      policyAnnotations:
+        ran.openshift.io/ztp-deploy-wave: "2"
+      manifests:
+        - path: source-crs/ClusterLogOperGroup.yaml
+    - name: group-dev-group-dev-cluster-log-sub
+      policyAnnotations:
+        ran.openshift.io/ztp-deploy-wave: "2"
+      manifests:
+        - path: source-crs/ClusterLogSubscription.yaml
+    - name: group-dev-group-dev-lso-ns
+      policyAnnotations:
+        ran.openshift.io/ztp-deploy-wave: "2"
+      manifests:
+        - path: source-crs/StorageNS.yaml
+    - name: group-dev-group-dev-lso-operator-group
+      policyAnnotations:
+        ran.openshift.io/ztp-deploy-wave: "2"
+      manifests:
+        - path: source-crs/StorageOperGroup.yaml
+    - name: group-dev-group-dev-lso-sub
+      policyAnnotations:
+        ran.openshift.io/ztp-deploy-wave: "2"
+      manifests:
+        - path: source-crs/StorageSubscription.yaml
+    - name: group-dev-group-dev-pao-cat-source
+      policyAnnotations:
+        ran.openshift.io/ztp-deploy-wave: "1"
+      manifests:
+        - path: source-crs/PaoSubscriptionCatalogSource.yaml
+          patches:
+            - spec:
+                image: <container_image_url>
+    - name: group-dev-group-dev-pao-ns
+      policyAnnotations:
+        ran.openshift.io/ztp-deploy-wave: "2"
+      manifests:
+        - path: source-crs/PaoSubscriptionNS.yaml
+    - name: group-dev-group-dev-pao-sub
+      policyAnnotations:
+        ran.openshift.io/ztp-deploy-wave: "2"
+      manifests:
+        - path: source-crs/PaoSubscription.yaml
+    - name: group-dev-group-dev-elasticsearch-ns
+      policyAnnotations:
+        ran.openshift.io/ztp-deploy-wave: "2"
+      manifests:
+        - path: elasticsearch/ElasticsearchNS.yaml 1
+    - name: group-dev-group-dev-elasticsearch-operator-group
+      policyAnnotations:
+        ran.openshift.io/ztp-deploy-wave: "2"
+      manifests:
+        - path: elasticsearch/ElasticsearchOperatorGroup.yaml
+    - name: group-dev-group-dev-apiserver-config
+      policyAnnotations:
+        ran.openshift.io/ztp-deploy-wave: "2"
+      manifests:
+        - path: custom-crs/apiserver-config.yaml 1
+    - name: group-dev-group-dev-disable-nic-lldp
+      policyAnnotations:
+        ran.openshift.io/ztp-deploy-wave: "2"
+      manifests:
+        - path: custom-crs/disable-nic-lldp.yaml
+```
+
+Set policies.manifests.path to include the relative path to the file from the /source-crs parent directory.
+4. Commit the PolicyGenerator change in Git, and then push to the Git repository that is monitored by the GitOps ZTP Argo CD policies application.
+5. Update the ClusterGroupUpgrade CR to include the changed PolicyGenerator and save it as cgu-test.yaml. The following example shows a generated cgu-test.yaml file.
+
+```yaml
+apiVersion: ran.openshift.io/v1alpha1
+kind: ClusterGroupUpgrade
+metadata:
+  name: custom-source-cr
+  namespace: ztp-clusters
+spec:
+  managedPolicies:
+    - group-dev-config-policy
+  enable: true
+  clusters:
+  - cluster1
+  remediationStrategy:
+    maxConcurrency: 2
+    timeout: 240
+```
+
+6. Apply the updated ClusterGroupUpgrade CR by running the following command:
+
+```terminal
+$ oc apply -f cgu-test.yaml
+```
+
+
+* Check that the updates have succeeded by running the following command:
+
+```terminal
+$ oc get cgu -A
+```
+
+Example output
+
+```terminal
+NAMESPACE     NAME               AGE   STATE        DETAILS
+ztp-clusters  custom-source-cr   6s    InProgress   Remediating non-compliant policies
+ztp-install   cluster1           19h   Completed    All clusters are compliant with all the managed policies
+```
+
+
+# Configuring policy compliance evaluation timeouts for PolicyGenerator CRs
+
+Use Red Hat Advanced Cluster Management (RHACM) installed on a hub cluster to monitor and report on whether your managed clusters are compliant with applied policies. RHACM uses policy templates to apply predefined policy controllers and policies. Policy controllers are Kubernetes custom resource definition (CRD) instances.
+
+You can override the default policy evaluation intervals with PolicyGenerator custom resources (CRs). You configure duration settings that define how long a ConfigurationPolicy CR can be in a state of policy compliance or non-compliance before RHACM re-evaluates the applied cluster policies.
+
+The GitOps Zero Touch Provisioning (ZTP) policy generator generates ConfigurationPolicy CR policies with pre-defined policy evaluation intervals. The default value for the noncompliant state is 10 seconds. The default value for the compliant state is 10 minutes. To disable the evaluation interval, set the value to never.
+
+* You have installed the OpenShift CLI (oc).
+* You have logged in to the hub cluster as a user with cluster-admin privileges.
+* You have created a Git repository where you manage your custom site configuration data.
+
+1. To configure the evaluation interval for all policies in a PolicyGenerator CR, set appropriate compliant and noncompliant values for the evaluationInterval field.
+For example:
+
+```yaml
+policyDefaults:
+  evaluationInterval:
+    compliant: 30m
+    noncompliant: 45s
+```
+
+
+[NOTE]
+----
+You can also set compliant and noncompliant fields to never to stop evaluating the policy after it reaches particular compliance state.
+----
+2. To configure the evaluation interval for an individual policy object in a PolicyGenerator CR, add the evaluationInterval field and set appropriate values.
+For example:
+
+```yaml
+policies:
+  - name: "sriov-sub-policy"
+    manifests:
+      - path: "SriovSubscription.yaml"
+        evaluationInterval:
+          compliant: never
+          noncompliant: 10s
+```
+
+3. Commit the PolicyGenerator CRs files in the Git repository and push your changes.
+
+Check that the managed spoke cluster policies are monitored at the expected intervals.
+
+1. Log in as a user with cluster-admin privileges on the managed cluster.
+2. Get the pods that are running in the open-cluster-management-agent-addon namespace. Run the following command:
+
+```terminal
+$ oc get pods -n open-cluster-management-agent-addon
+```
+
+Example output
+
+```terminal
+NAME                                         READY   STATUS    RESTARTS        AGE
+config-policy-controller-858b894c68-v4xdb    1/1     Running   22 (5d8h ago)   10d
+```
+
+3. Check the applied policies are being evaluated at the expected interval in the logs for the config-policy-controller pod:
+
+```terminal
+$ oc logs -n open-cluster-management-agent-addon config-policy-controller-858b894c68-v4xdb
+```
+
+Example output
+
+```terminal
+2022-05-10T15:10:25.280Z       info   configuration-policy-controller controllers/configurationpolicy_controller.go:166      Skipping the policy evaluation due to the policy not reaching the evaluation interval  {"policy": "compute-1-config-policy-config"}
+2022-05-10T15:10:25.280Z       info   configuration-policy-controller controllers/configurationpolicy_controller.go:166      Skipping the policy evaluation due to the policy not reaching the evaluation interval  {"policy": "compute-1-common-compute-1-catalog-policy-config"}
+```
+
+
+# Signalling GitOps ZTP cluster deployment completion with validator inform policies
+
+Create a validator inform policy that signals when the GitOps Zero Touch Provisioning (ZTP) installation and configuration of the deployed cluster is complete. This policy can be used for deployments of single-node OpenShift clusters, three-node clusters, and standard clusters.
+
+1. Create a standalone PolicyGenerator custom resource (CR) that contains the source file
+validatorCRs/informDuValidator.yaml. You only need one standalone PolicyGenerator CR for each cluster type. For example, this CR applies a validator inform policy for single-node OpenShift clusters:
+Example single-node cluster validator inform policy CR (acm-group-du-sno-validator-ranGen.yaml)
+
+```yaml
+apiVersion: policy.open-cluster-management.io/v1
+kind: PolicyGenerator
+metadata:
+    name: group-du-sno-validator-latest
+placementBindingDefaults:
+    name: group-du-sno-validator-latest-placement-binding
+policyDefaults:
+    namespace: ztp-group
+    placement:
+        labelSelector:
+            matchExpressions:
+                - key: du-profile
+                  operator: In
+                  values:
+                    - latest
+                - key: group-du-sno
+                  operator: Exists
+                - key: ztp-done
+                  operator: DoesNotExist
+    remediationAction: inform
+    severity: low
+    namespaceSelector:
+        exclude:
+            - kube-*
+        include:
+            - '*'
+    evaluationInterval:
+        compliant: 10m
+        noncompliant: 10s
+policies:
+    - name: group-du-sno-validator-latest-du-policy
+      policyAnnotations:
+        ran.openshift.io/ztp-deploy-wave: "10000"
+      evaluationInterval:
+        compliant: 5s
+      manifests:
+        - path: source-crs/validatorCRs/informDuValidator-MCP-master.yaml
+```
+
+2. Commit the PolicyGenerator CR file in your Git repository and push the changes.
+
+* Upgrading GitOps ZTP
+
+# Configuring power states using PolicyGenerator CRs
+
+For low latency and high-performance edge deployments, it is necessary to disable or limit C-states and P-states.
+With this configuration, the CPU runs at a constant frequency, which is typically the maximum turbo frequency. This ensures that the CPU is always running at its maximum speed, which results in high performance and low latency.
+This leads to the best latency for workloads.
+However, this also leads to the highest power consumption, which might not be necessary for all workloads.
+
+Workloads can be classified as critical or non-critical, with critical workloads requiring disabled C-state and P-state settings for high performance and low latency, while non-critical workloads use C-state and P-state settings for power savings at the expense of some latency and performance. You can configure the following three power states using GitOps Zero Touch Provisioning (ZTP):
+
+* High-performance mode provides ultra low latency at the highest power consumption.
+* Performance mode provides low latency at a relatively high power consumption.
+* Power saving balances reduced power consumption with increased latency.
+
+The default configuration is for a low latency, performance mode.
+
+PolicyGenerator custom resources (CRs) allow you to overlay additional configuration details onto the base source CRs provided with the GitOps plugin in the ztp-site-generate container.
+
+Configure the power states by updating the workloadHints fields in the generated PerformanceProfile CR for the reference configuration, based on the PolicyGenerator CR in the acm-group-du-sno-ranGen.yaml.
+
+The following common prerequisites apply to configuring all three power states.
+
+* You have created a Git repository where you manage your custom site configuration data. The repository must be accessible from the hub cluster and be defined as a source repository for Argo CD.
+* You have followed the procedure described in "Preparing the GitOps ZTP site configuration repository".
+
+* Configuring node power consumption and realtime processing with workload hints
+
+## Configuring performance mode using PolicyGenerator CRs
+
+Follow this example to set performance mode by updating the workloadHints fields in the generated PerformanceProfile CR for the reference configuration, based on the PolicyGenerator CR in the acm-group-du-sno-ranGen.yaml.
+
+Performance mode provides low latency at a relatively high power consumption.
+
+* You have configured the BIOS with performance related settings by following the guidance in "Configuring host firmware for low latency and high performance".
+
+1. Update the PolicyGenerator entry for PerformanceProfile in the acm-group-du-sno-ranGen.yaml reference file in out/argocd/example/acmpolicygenerator// as follows to set performance mode.
+
+```yaml
+- path: source-crs/PerformanceProfile.yaml
+  patches:
+    - spec:
+        workloadHints:
+             realTime: true
+             highPowerConsumption: false
+             perPodPowerManagement: false
+```
+
+2. Commit the PolicyGenerator change in Git, and then push to the Git repository being monitored by the GitOps ZTP Argo CD application.
+
+## Configuring high-performance mode using PolicyGenerator CRs
+
+Follow this example to set high performance mode by updating the workloadHints fields in the generated PerformanceProfile CR for the reference configuration, based on the PolicyGenerator CR in the acm-group-du-sno-ranGen.yaml.
+
+High performance mode provides ultra low latency at the highest power consumption.
+
+* You have configured the BIOS with performance related settings by following the guidance in "Configuring host firmware for low latency and high performance".
+
+1. Update the PolicyGenerator entry for PerformanceProfile in the acm-group-du-sno-ranGen.yaml reference file in out/argocd/example/acmpolicygenerator/ as follows to set high-performance mode.
+
+```yaml
+- path: source-crs/PerformanceProfile.yaml
+  patches:
+    - spec:
+        workloadHints:
+             realTime: true
+             highPowerConsumption: true
+             perPodPowerManagement: false
+```
+
+2. Commit the PolicyGenerator change in Git, and then push to the Git repository being monitored by the GitOps ZTP Argo CD application.
+
+## Configuring power saving mode using PolicyGenerator CRs
+
+Follow this example to set power saving mode by updating the workloadHints fields in the generated PerformanceProfile CR for the reference configuration, based on the PolicyGenerator CR in the acm-group-du-sno-ranGen.yaml.
+
+The power saving mode balances reduced power consumption with increased latency.
+
+* You enabled C-states and OS-controlled P-states in the BIOS.
+
+1. Update the PolicyGenerator entry for PerformanceProfile in the acm-group-du-sno-ranGen.yaml reference file in out/argocd/example/acmpolicygenerator/ as follows to configure power saving mode. It is recommended to configure the CPU governor for the power saving mode through the additional kernel arguments object.
+
+```yaml
+- path: source-crs/PerformanceProfile.yaml
+  patches:
+    - spec:
+        # ...
+        workloadHints:
+          realTime: true
+          highPowerConsumption: false
+          perPodPowerManagement: true
+        # ...
+        additionalKernelArgs:
+          - # ...
+          - "cpufreq.default_governor=schedutil" 1
+```
+
+The schedutil governor is recommended, however, you can also use other governors, including ondemand and powersave.
+2. Commit the PolicyGenerator change in Git, and then push to the Git repository being monitored by the GitOps ZTP Argo CD application.
+
+1. Select a worker node in your deployed cluster from the list of nodes identified by using the following command:
+
+```terminal
+$ oc get nodes
+```
+
+2. Log in to the node by using the following command:
+
+```terminal
+$ oc debug node/<node-name>
+```
+
+
+Replace <node-name> with the name of the node you want to verify the power state on.
+3. Set /host as the root directory within the debug shell. The debug pod mounts the host’s root file system in /host within the pod. By changing the root directory to /host, you can run binaries contained in the host’s executable paths as shown in the following example:
+
+```terminal
+# chroot /host
+```
+
+4. Run the following command to verify the applied power state:
+
+```terminal
+# cat /proc/cmdline
+```
+
+
+* For power saving mode the intel_pstate=passive.
+
+* Configuring power saving for nodes that run colocated high and low priority workloads
+* Configuring host firmware for low latency and high performance
+* Preparing the GitOps ZTP site configuration repository
+
+## Maximizing power savings
+
+Limiting the maximum CPU frequency is recommended to achieve maximum power savings.
+Enabling C-states on the non-critical workload CPUs without restricting the maximum CPU frequency negates much of the power savings by boosting the frequency of the critical CPUs.
+
+Maximize power savings by updating the sysfs plugin fields, setting an appropriate value for max_perf_pct in the TunedPerformancePatch CR for the reference configuration. This example based on the acm-group-du-sno-ranGen.yaml describes the procedure to follow to restrict the maximum CPU frequency.
+
+* You have configured power savings mode as described in "Using PolicyGenerator CRs to configure power savings mode".
+
+1. Update the PolicyGenerator entry for TunedPerformancePatch in the acm-group-du-sno-ranGen.yaml reference file in out/argocd/example/acmpolicygenerator/. To maximize power savings, add max_perf_pct as shown in the following example:
+
+```yaml
+- path: source-crs/TunedPerformancePatch.yaml
+  patches:
+    - spec:
+      profile:
+        - name: performance-patch
+          data: |
+            # ...
+            [sysfs]
+            /sys/devices/system/cpu/intel_pstate/max_perf_pct=<x> 1
+```
+
+The max_perf_pct controls the maximum frequency the cpufreq driver is allowed to set as a percentage of the maximum supported CPU frequency. This value applies to all CPUs. You can check the maximum supported frequency in /sys/devices/system/cpu/cpu0/cpufreq/cpuinfo_max_freq. As a starting point, you can use a percentage that caps all CPUs at the All Cores Turbo frequency. The All Cores Turbo frequency is the frequency that all cores run at when the cores are all fully occupied.
+
+[NOTE]
+----
+To maximize power savings, set a lower value. Setting a lower value for max_perf_pct limits the maximum CPU frequency, thereby reducing power consumption, but also potentially impacting performance. Experiment with different values and monitor the system's performance and power consumption to find the optimal setting for your use-case.
+----
+2. Commit the PolicyGenerator change in Git, and then push to the Git repository being monitored by the GitOps ZTP Argo CD application.
+
+# Configuring LVM Storage using PolicyGenerator CRs
+
+You can configure Logical Volume Manager (LVM) Storage for managed clusters that you deploy with GitOps Zero Touch Provisioning (ZTP).
+
+
+[NOTE]
+----
+You use LVM Storage to persist event subscriptions when you use PTP events or bare-metal hardware events with HTTP transport.
+Use the Local Storage Operator for persistent storage that uses local volumes in distributed units.
+----
+
+* Install the OpenShift CLI (oc).
+* Log in as a user with cluster-admin privileges.
+* Create a Git repository where you manage your custom site configuration data.
+
+1. To configure LVM Storage for new managed clusters, add the following YAML to policies.manifests in the acm-common-ranGen.yaml file:
+
+```yaml
+- name: subscription-policies
+  policyAnnotations:
+    ran.openshift.io/ztp-deploy-wave: "2"
+  manifests:
+    - path: source-crs/StorageLVMOSubscriptionNS.yaml
+    - path: source-crs/StorageLVMOSubscriptionOperGroup.yaml
+    - path: source-crs/StorageLVMOSubscription.yaml
+      spec:
+        name: lvms-operator
+        channel: stable-4.18
+```
+
+
+[NOTE]
+----
+The Storage LVMO subscription is deprecated. In future releases of Red Hat OpenShift Container Platform, the storage LVMO subscription will not be available. Instead, you must use the Storage LVMS subscription.
+In Red Hat OpenShift Container Platform 4.18, you can use the Storage LVMS subscription instead of the LVMO subscription. The LVMS subscription does not require manual overrides in the acm-common-ranGen.yaml file. Add the following YAML to policies.manifests in the acm-common-ranGen.yaml file to use the Storage LVMS subscription:
+
+```yaml
+- path: source-crs/StorageLVMSubscriptionNS.yaml
+- path: source-crs/StorageLVMSubscriptionOperGroup.yaml
+- path: source-crs/StorageLVMSubscription.yaml
+```
+
+----
+2. Add the LVMCluster CR to policies.manifests in your specific group or individual site configuration file. For example, in the acm-group-du-sno-ranGen.yaml file, add the following:
+
+```yaml
+- fileName: StorageLVMCluster.yaml
+  policyName: "lvms-config"
+    metadata:
+      name: "lvms-storage-cluster-config"
+        spec:
+          storage:
+            deviceClasses:
+            - name: vg1
+              thinPoolConfig:
+                name: thin-pool-1
+                sizePercent: 90
+                overprovisionRatio: 10
+```
+
+This example configuration creates a volume group (vg1) with all the available devices, except the disk where Red Hat OpenShift Container Platform is installed.
+A thin-pool logical volume is also created.
+3. Merge any other required changes and files with your custom site repository.
+4. Commit the PolicyGenerator changes in Git, and then push the changes to your site configuration repository to deploy LVM Storage to new sites using GitOps ZTP.
+
+# Configuring PTP events with PolicyGenerator CRs
+
+You can use the GitOps ZTP pipeline to configure PTP events that use HTTP transport.
+
+## Configuring PTP events that use HTTP transport
+
+You can configure PTP events that use HTTP transport on managed clusters that you deploy with the GitOps Zero Touch Provisioning (ZTP) pipeline.
+
+* You have installed the OpenShift CLI (oc).
+* You have logged in as a user with cluster-admin privileges.
+* You have created a Git repository where you manage your custom site configuration data.
+
+1. Apply the following PolicyGenerator changes to acm-group-du-3node-ranGen.yaml, acm-group-du-sno-ranGen.yaml, or acm-group-du-standard-ranGen.yaml files according to your requirements:
+1. In policies.manifests, add the PtpOperatorConfig CR file that configures the transport host:
+
+```yaml
+- path: source-crs/PtpOperatorConfigForEvent.yaml
+  patches:
+  - metadata:
+      name: default
+      namespace: openshift-ptp
+      annotations:
+        ran.openshift.io/ztp-deploy-wave: "10"
+    spec:
+      daemonNodeSelector:
+        node-role.kubernetes.io/$mcp: ""
+      ptpEventConfig:
+        enableEventPublisher: true
+        transportHost: "http://ptp-event-publisher-service-NODE_NAME.openshift-ptp.svc.cluster.local:9043"
+```
+
+
+[NOTE]
+----
+In Red Hat OpenShift Container Platform 4.13 or later, you do not need to set the transportHost field in the PtpOperatorConfig resource when you use HTTP transport with PTP events.
+----
+2. Configure the linuxptp and phc2sys for the PTP clock type and interface. For example, add the following YAML into policies.manifests:
+
+```yaml
+- path: source-crs/PtpConfigSlave.yaml 1
+  patches:
+  - metadata:
+      name: "du-ptp-slave"
+    spec:
+      recommend:
+      - match:
+        - nodeLabel: node-role.kubernetes.io/master
+        priority: 4
+        profile: slave
+      profile:
+      - name: "slave"
+        # This interface must match the hardware in this group
+        interface: "ens5f0" 2
+        ptp4lOpts: "-2 -s --summary_interval -4" 3
+        phc2sysOpts: "-a -r -n 24" 4
+        ptpSchedulingPolicy: SCHED_FIFO
+        ptpSchedulingPriority: 10
+        ptpSettings:
+          logReduce: "true"
+        ptp4lConf: |
+          [global]
+          #
+          # Default Data Set
+          #
+          twoStepFlag 1
+          slaveOnly 1
+          priority1 128
+          priority2 128
+          domainNumber 24
+          #utc_offset 37
+          clockClass 255
+          clockAccuracy 0xFE
+          offsetScaledLogVariance 0xFFFF
+          free_running 0
+          freq_est_interval 1
+          dscp_event 0
+          dscp_general 0
+          dataset_comparison G.8275.x
+          G.8275.defaultDS.localPriority 128
+          #
+          # Port Data Set
+          #
+          logAnnounceInterval -3
+          logSyncInterval -4
+          logMinDelayReqInterval -4
+          logMinPdelayReqInterval -4
+          announceReceiptTimeout 3
+          syncReceiptTimeout 0
+          delayAsymmetry 0
+          fault_reset_interval -4
+          neighborPropDelayThresh 20000000
+          masterOnly 0
+          G.8275.portDS.localPriority 128
+          #
+          # Run time options
+          #
+          assume_two_step 0
+          logging_level 6
+          path_trace_enabled 0
+          follow_up_info 0
+          hybrid_e2e 0
+          inhibit_multicast_service 0
+          net_sync_monitor 0
+          tc_spanning_tree 0
+          tx_timestamp_timeout 50
+          unicast_listen 0
+          unicast_master_table 0
+          unicast_req_duration 3600
+          use_syslog 1
+          verbose 0
+          summary_interval 0
+          kernel_leap 1
+          check_fup_sync 0
+          clock_class_threshold 7
+          #
+          # Servo Options
+          #
+          pi_proportional_const 0.0
+          pi_integral_const 0.0
+          pi_proportional_scale 0.0
+          pi_proportional_exponent -0.3
+          pi_proportional_norm_max 0.7
+          pi_integral_scale 0.0
+          pi_integral_exponent 0.4
+          pi_integral_norm_max 0.3
+          step_threshold 2.0
+          first_step_threshold 0.00002
+          max_frequency 900000000
+          clock_servo pi
+          sanity_freq_limit 200000000
+          ntpshm_segment 0
+          #
+          # Transport options
+          #
+          transportSpecific 0x0
+          ptp_dst_mac 01:1B:19:00:00:00
+          p2p_dst_mac 01:80:C2:00:00:0E
+          udp_ttl 1
+          udp6_scope 0x0E
+          uds_address /var/run/ptp4l
+          #
+          # Default interface options
+          #
+          clock_type OC
+          network_transport L2
+          delay_mechanism E2E
+          time_stamping hardware
+          tsproc_mode filter
+          delay_filter moving_median
+          delay_filter_length 10
+          egressLatency 0
+          ingressLatency 0
+          boundary_clock_jbod 0
+          #
+          # Clock description
+          #
+          productDescription ;;
+          revisionData ;;
+          manufacturerIdentity 00:00:00
+          userDescription ;
+          timeSource 0xA0
+      ptpClockThreshold: 5
+        holdOverTimeout: 30 # seconds
+        maxOffsetThreshold: 100  # nano seconds
+        minOffsetThreshold: -100
+```
+
+Can be PtpConfigMaster.yaml or PtpConfigSlave.yaml depending on your requirements. For configurations based on acm-group-du-sno-ranGen.yaml or acm-group-du-3node-ranGen.yaml, use PtpConfigSlave.yaml.
+Device specific interface name.
+You must append the --summary_interval -4 value to ptp4lOpts in .spec.sourceFiles.spec.profile to enable PTP fast events.
+Required phc2sysOpts values. -m prints messages to stdout. The linuxptp-daemon DaemonSet parses the logs and generates Prometheus metrics.
+Optional. If the ptpClockThreshold stanza is not present, default values are used for the ptpClockThreshold fields. The stanza shows default ptpClockThreshold values. The ptpClockThreshold values configure how long after the PTP master clock is disconnected before PTP events are triggered. holdOverTimeout is the time value in seconds before the PTP clock event state changes to FREERUN when the PTP master clock is disconnected. The maxOffsetThreshold and minOffsetThreshold settings configure offset values in nanoseconds that compare against the values for CLOCK_REALTIME (phc2sys) or master offset (ptp4l). When the ptp4l or phc2sys offset value is outside this range, the PTP clock state is set to FREERUN. When the offset value is within this range, the PTP clock state is set to LOCKED.
+2. Merge any other required changes and files with your custom site repository.
+3. Push the changes to your site configuration repository to deploy PTP fast events to new sites using GitOps ZTP.
+
+* Using PolicyGenerator CRs to override source CRs content
+
+* OpenShift image registry overview
+
+# Configuring the Image Registry Operator for local caching of images
+
+Red Hat OpenShift Container Platform manages image caching using a local registry. In edge computing use cases, clusters are often subject to bandwidth restrictions when communicating with centralized image registries, which might result in long image download times.
+
+Long download times are unavoidable during initial deployment. Over time, there is a risk that CRI-O will erase the /var/lib/containers/storage directory in the case of an unexpected shutdown.
+To address long image download times, you can create a local image registry on remote managed clusters using GitOps Zero Touch Provisioning (ZTP). This is useful in Edge computing scenarios where clusters are deployed at the far edge of the network.
+
+Before you can set up the local image registry with GitOps ZTP, you need to configure disk partitioning in the SiteConfig CR that you use to install the remote managed cluster. After installation, you configure the local image registry using a PolicyGenerator CR. Then, the GitOps ZTP pipeline creates Persistent Volume (PV) and Persistent Volume Claim (PVC) CRs and patches the imageregistry configuration.
+
+
+[NOTE]
+----
+The local image registry can only be used for user application images and cannot be used for the Red Hat OpenShift Container Platform or Operator Lifecycle Manager operator images.
+----
+
+* Red Hat OpenShift Container Platform registry overview
+
+## Configuring disk partitioning with SiteConfig
+
+Configure disk partitioning for a managed cluster using a SiteConfig CR and GitOps Zero Touch Provisioning (ZTP). The  disk partition details in the SiteConfig CR must match the underlying disk.
+
+
+[IMPORTANT]
+----
+You must complete this procedure at installation time.
+----
+
+* Install Butane.
+
+1. Create the storage.bu file.
+
+```yaml
+variant: fcos
+version: 1.3.0
+storage:
+  disks:
+  - device: /dev/disk/by-path/pci-0000:01:00.0-scsi-0:2:0:0 1
+    wipe_table: false
+    partitions:
+    - label: var-lib-containers
+      start_mib: <start_of_partition> 2
+      size_mib: <partition_size> 3
+  filesystems:
+    - path: /var/lib/containers
+      device: /dev/disk/by-partlabel/var-lib-containers
+      format: xfs
+      wipe_filesystem: true
+      with_mount_unit: true
+      mount_options:
+        - defaults
+        - prjquota
+```
+
+Specify the root disk.
+Specify the start of the partition in MiB. If the value is too small, the installation fails.
+Specify the size of the partition. If the value is too small, the deployments fails.
+2. Convert the storage.bu to an Ignition file by running the following command:
+
+```terminal
+$ butane storage.bu
+```
+
+
+```terminal
+{"ignition":{"version":"3.2.0"},"storage":{"disks":[{"device":"/dev/disk/by-path/pci-0000:01:00.0-scsi-0:2:0:0","partitions":[{"label":"var-lib-containers","sizeMiB":0,"startMiB":250000}],"wipeTable":false}],"filesystems":[{"device":"/dev/disk/by-partlabel/var-lib-containers","format":"xfs","mountOptions":["defaults","prjquota"],"path":"/var/lib/containers","wipeFilesystem":true}]},"systemd":{"units":[{"contents":"# # Generated by Butane\n[Unit]\nRequires=systemd-fsck@dev-disk-by\\x2dpartlabel-var\\x2dlib\\x2dcontainers.service\nAfter=systemd-fsck@dev-disk-by\\x2dpartlabel-var\\x2dlib\\x2dcontainers.service\n\n[Mount]\nWhere=/var/lib/containers\nWhat=/dev/disk/by-partlabel/var-lib-containers\nType=xfs\nOptions=defaults,prjquota\n\n[Install]\nRequiredBy=local-fs.target","enabled":true,"name":"var-lib-containers.mount"}]}}
+```
+3. Use a tool such as JSON Pretty Print to convert the output into JSON format.
+4. Copy the output into the .spec.clusters.nodes.ignitionConfigOverride field in the SiteConfig CR.
+Example
+
+```yaml
+[...]
+spec:
+  clusters:
+    - nodes:
+        - ignitionConfigOverride: |
+          {
+            "ignition": {
+              "version": "3.2.0"
+            },
+            "storage": {
+              "disks": [
+                {
+                  "device": "/dev/disk/by-path/pci-0000:01:00.0-scsi-0:2:0:0",
+                  "partitions": [
+                    {
+                      "label": "var-lib-containers",
+                      "sizeMiB": 0,
+                      "startMiB": 250000
+                    }
+                  ],
+                  "wipeTable": false
+                }
+              ],
+              "filesystems": [
+                {
+                  "device": "/dev/disk/by-partlabel/var-lib-containers",
+                  "format": "xfs",
+                  "mountOptions": [
+                    "defaults",
+                    "prjquota"
+                  ],
+                  "path": "/var/lib/containers",
+                  "wipeFilesystem": true
+                }
+              ]
+            },
+            "systemd": {
+              "units": [
+                {
+                  "contents": "# # Generated by Butane\n[Unit]\nRequires=systemd-fsck@dev-disk-by\\x2dpartlabel-var\\x2dlib\\x2dcontainers.service\nAfter=systemd-fsck@dev-disk-by\\x2dpartlabel-var\\x2dlib\\x2dcontainers.service\n\n[Mount]\nWhere=/var/lib/containers\nWhat=/dev/disk/by-partlabel/var-lib-containers\nType=xfs\nOptions=defaults,prjquota\n\n[Install]\nRequiredBy=local-fs.target",
+                  "enabled": true,
+                  "name": "var-lib-containers.mount"
+                }
+              ]
+            }
+          }
+[...]
+```
+
+
+[NOTE]
+----
+If the .spec.clusters.nodes.ignitionConfigOverride field does not exist, create it.
+----
+
+1. During or after installation, verify on the hub cluster that the BareMetalHost object shows the annotation by running the following command:
+
+```terminal
+$ oc get bmh -n my-sno-ns my-sno -ojson | jq '.metadata.annotations["bmac.agent-install.openshift.io/ignition-config-overrides"]
+```
+
+
+```terminal
+"{\"ignition\":{\"version\":\"3.2.0\"},\"storage\":{\"disks\":[{\"device\":\"/dev/disk/by-id/wwn-0x6b07b250ebb9d0002a33509f24af1f62\",\"partitions\":[{\"label\":\"var-lib-containers\",\"sizeMiB\":0,\"startMiB\":250000}],\"wipeTable\":false}],\"filesystems\":[{\"device\":\"/dev/disk/by-partlabel/var-lib-containers\",\"format\":\"xfs\",\"mountOptions\":[\"defaults\",\"prjquota\"],\"path\":\"/var/lib/containers\",\"wipeFilesystem\":true}]},\"systemd\":{\"units\":[{\"contents\":\"# Generated by Butane\\n[Unit]\\nRequires=systemd-fsck@dev-disk-by\\\\x2dpartlabel-var\\\\x2dlib\\\\x2dcontainers.service\\nAfter=systemd-fsck@dev-disk-by\\\\x2dpartlabel-var\\\\x2dlib\\\\x2dcontainers.service\\n\\n[Mount]\\nWhere=/var/lib/containers\\nWhat=/dev/disk/by-partlabel/var-lib-containers\\nType=xfs\\nOptions=defaults,prjquota\\n\\n[Install]\\nRequiredBy=local-fs.target\",\"enabled\":true,\"name\":\"var-lib-containers.mount\"}]}}"
+```
+2. After installation, check the single-node OpenShift disk status.
+1. Enter into a debug session on the single-node OpenShift node by running the following command. This step instantiates a debug pod called <node_name>-debug:
+
+```terminal
+$ oc debug node/my-sno-node
+```
+
+2. Set /host as the root directory within the debug shell by running the following command. The debug pod mounts the host’s root file system in /host within the pod. By changing the root directory to /host, you can run binaries contained in the host’s executable paths:
+
+```terminal
+# chroot /host
+```
+
+3. List information about all available block devices by running the following command:
+
+```terminal
+# lsblk
+```
+
+Example output
+
+```terminal
+NAME   MAJ:MIN RM   SIZE RO TYPE MOUNTPOINTS
+sda      8:0    0 446.6G  0 disk
+├─sda1   8:1    0     1M  0 part
+├─sda2   8:2    0   127M  0 part
+├─sda3   8:3    0   384M  0 part /boot
+├─sda4   8:4    0 243.6G  0 part /var
+│                                /sysroot/ostree/deploy/rhcos/var
+│                                /usr
+│                                /etc
+│                                /
+│                                /sysroot
+└─sda5   8:5    0 202.5G  0 part /var/lib/containers
+```
+
+4. Display information about the file system disk space usage by running the following command:
+
+```terminal
+# df -h
+```
+
+Example output
+
+```terminal
+Filesystem      Size  Used Avail Use% Mounted on
+devtmpfs        4.0M     0  4.0M   0% /dev
+tmpfs           126G   84K  126G   1% /dev/shm
+tmpfs            51G   93M   51G   1% /run
+/dev/sda4       244G  5.2G  239G   3% /sysroot
+tmpfs           126G  4.0K  126G   1% /tmp
+/dev/sda5       203G  119G   85G  59% /var/lib/containers
+/dev/sda3       350M  110M  218M  34% /boot
+tmpfs            26G     0   26G   0% /run/user/1000
+```
+
+
+## Configuring the image registry using PolicyGenerator CRs
+
+Use PolicyGenerator (PGT) CRs to apply the CRs required to configure the image registry and patch the imageregistry configuration.
+
+* You have configured a disk partition in the managed cluster.
+* You have installed the OpenShift CLI (oc).
+* You have logged in to the hub cluster as a user with cluster-admin privileges.
+* You have created a Git repository where you manage your custom site configuration data for use with GitOps Zero Touch Provisioning (ZTP).
+
+1. Configure the storage class, persistent volume claim, persistent volume, and image registry configuration in the appropriate PolicyGenerator CR. For example, to configure an individual site, add the following YAML to the file acm-example-sno-site.yaml:
+
+```yaml
+sourceFiles:
+  # storage class
+  - fileName: StorageClass.yaml
+    policyName: "sc-for-image-registry"
+    metadata:
+      name: image-registry-sc
+      annotations:
+        ran.openshift.io/ztp-deploy-wave: "100" 1
+  # persistent volume claim
+  - fileName: StoragePVC.yaml
+    policyName: "pvc-for-image-registry"
+    metadata:
+      name: image-registry-pvc
+      namespace: openshift-image-registry
+      annotations:
+        ran.openshift.io/ztp-deploy-wave: "100"
+    spec:
+      accessModes:
+        - ReadWriteMany
+      resources:
+        requests:
+          storage: 100Gi
+      storageClassName: image-registry-sc
+      volumeMode: Filesystem
+  # persistent volume
+  - fileName: ImageRegistryPV.yaml 2
+    policyName: "pv-for-image-registry"
+    metadata:
+      annotations:
+        ran.openshift.io/ztp-deploy-wave: "100"
+  - fileName: ImageRegistryConfig.yaml
+    policyName: "config-for-image-registry"
+    complianceType: musthave
+    metadata:
+      annotations:
+        ran.openshift.io/ztp-deploy-wave: "100"
+    spec:
+      storage:
+        pvc:
+          claim: "image-registry-pvc"
+```
+
+Set the appropriate value for ztp-deploy-wave depending on whether you are configuring image registries at the site, common, or group level. ztp-deploy-wave: "100" is suitable for development or testing because it allows you to group the referenced source files together.
+In ImageRegistryPV.yaml, ensure that the spec.local.path field is set to /var/imageregistry to match the value set for the mount_point field in the SiteConfig CR.
+
+[IMPORTANT]
+----
+Do not set complianceType: mustonlyhave for the - fileName: ImageRegistryConfig.yaml configuration. This can cause the registry pod deployment to fail.
+----
+2. Commit the PolicyGenerator change in Git, and then push to the Git repository being monitored by the GitOps ZTP ArgoCD application.
+
+Use the following steps to troubleshoot errors with the local image registry on the managed clusters:
+
+* Verify successful login to the registry while logged in to the managed cluster. Run the following commands:
+1. Export the managed cluster name:
+
+```terminal
+$ cluster=<managed_cluster_name>
+```
+
+2. Get the managed cluster kubeconfig details:
+
+```terminal
+$ oc get secret -n $cluster $cluster-admin-password -o jsonpath='{.data.password}' | base64 -d > kubeadmin-password-$cluster
+```
+
+3. Download and export the cluster kubeconfig:
+
+```terminal
+$ oc get secret -n $cluster $cluster-admin-kubeconfig -o jsonpath='{.data.kubeconfig}' | base64 -d > kubeconfig-$cluster && export KUBECONFIG=./kubeconfig-$cluster
+```
+
+4. Verify access to the image registry from the managed cluster. See "Accessing the registry".
+* Check that the Config CRD in the imageregistry.operator.openshift.io group instance is not reporting errors. Run the following command while logged in to the managed cluster:
+
+```terminal
+$ oc get image.config.openshift.io cluster -o yaml
+```
+
+Example output
+
+```yaml
+apiVersion: config.openshift.io/v1
+kind: Image
+metadata:
+  annotations:
+    include.release.openshift.io/ibm-cloud-managed: "true"
+    include.release.openshift.io/self-managed-high-availability: "true"
+    include.release.openshift.io/single-node-developer: "true"
+    release.openshift.io/create-only: "true"
+  creationTimestamp: "2021-10-08T19:02:39Z"
+  generation: 5
+  name: cluster
+  resourceVersion: "688678648"
+  uid: 0406521b-39c0-4cda-ba75-873697da75a4
+spec:
+  additionalTrustedCA:
+    name: acm-ice
+```
+
+* Check that the PersistentVolumeClaim on the managed cluster is populated with data. Run the following command while logged in to the managed cluster:
+
+```terminal
+$ oc get pv image-registry-sc
+```
+
+* Check that the registry* pod is running and is located under the openshift-image-registry namespace.
+
+```terminal
+$ oc get pods -n openshift-image-registry | grep registry*
+```
+
+Example output
+
+```terminal
+cluster-image-registry-operator-68f5c9c589-42cfg   1/1     Running     0          8d
+image-registry-5f8987879-6nx6h                     1/1     Running     0          8d
+```
+
+* Check that the disk partition on the managed cluster is correct:
+1. Open a debug shell to the managed cluster:
+
+```terminal
+$ oc debug node/sno-1.example.com
+```
+
+2. Run lsblk to check the host disk partitions:
+
+```terminal
+sh-4.4# lsblk
+NAME   MAJ:MIN RM   SIZE RO TYPE MOUNTPOINT
+sda      8:0    0 446.6G  0 disk
+  |-sda1   8:1    0     1M  0 part
+  |-sda2   8:2    0   127M  0 part
+  |-sda3   8:3    0   384M  0 part /boot
+  |-sda4   8:4    0 336.3G  0 part /sysroot
+  `-sda5   8:5    0 100.1G  0 part /var/imageregistry 1
+sdb      8:16   0 446.6G  0 disk
+sr0     11:0    1   104M  0 rom
+```
+
+/var/imageregistry indicates that the disk is correctly partitioned.
+
+* Accessing the registry

@@ -1,0 +1,540 @@
+# Managing hosted control planes on bare metal
+
+
+After you deploy hosted control planes on bare metal, you can manage a hosted cluster by completing the following tasks.
+
+# Accessing the hosted cluster
+
+You can access the hosted cluster by either getting the kubeconfig file and kubeadmin credential directly from resources, or by using the hcp command line interface to generate a kubeconfig file.
+
+To access the hosted cluster by getting the kubeconfig file and credentials directly from resources, you must be familiar with the access secrets for hosted clusters. The hosted cluster (hosting) namespace contains hosted cluster resources and the access secrets. The hosted control plane namespace is where the hosted control plane runs.
+
+The secret name formats are as follows:
+
+* kubeconfig secret: <hosted_cluster_namespace>-<name>-admin-kubeconfig. For example, clusters-hypershift-demo-admin-kubeconfig.
+* kubeadmin password secret: <hosted_cluster_namespace>-<name>-kubeadmin-password. For example, clusters-hypershift-demo-kubeadmin-password.
+
+The kubeconfig secret contains a Base64-encoded kubeconfig field, which you can decode and save into a file to use with the following command:
+
+
+```terminal
+$ oc --kubeconfig <hosted_cluster_name>.kubeconfig get nodes
+```
+
+
+The kubeadmin password secret is also Base64-encoded. You can decode it and use the password to log in to the API server or console of the hosted cluster.
+
+* To access the hosted cluster by using the hcp CLI to generate the kubeconfig file, take the following steps:
+1. Generate the kubeconfig file by entering the following command:
+
+```terminal
+$ hcp create kubeconfig --namespace <hosted_cluster_namespace> --name <hosted_cluster_name> > <hosted_cluster_name>.kubeconfig
+```
+
+2. After you save the kubeconfig file, you can access the hosted cluster by entering the following example command:
+
+```terminal
+$ oc --kubeconfig <hosted_cluster_name>.kubeconfig get nodes
+```
+
+
+# Scaling the NodePool object for a hosted cluster
+
+You can scale up the NodePool object by adding nodes to your hosted cluster. When you scale a node pool, consider the following information:
+
+* When you scale a replica by the node pool, a machine is created. For every machine, the Cluster API provider finds and installs an Agent that meets the requirements that are specified in the node pool specification. You can monitor the installation of an Agent by checking its status and conditions.
+* When you scale down a node pool, Agents are unbound from the corresponding cluster. Before you can reuse the Agents, you must restart them by using the Discovery image.
+
+1. Scale the NodePool object to two nodes:
+
+```terminal
+$ oc -n <hosted_cluster_namespace> scale nodepool <nodepool_name> --replicas 2
+```
+
+
+The Cluster API agent provider randomly picks two agents that are then assigned to the hosted cluster. Those agents go through different states and finally join the hosted cluster as Red Hat OpenShift Container Platform nodes. The agents pass through states in the following order:
+* binding
+* discovering
+* insufficient
+* installing
+* installing-in-progress
+* added-to-existing-cluster
+2. Enter the following command:
+
+```terminal
+$ oc -n <hosted_control_plane_namespace> get agent
+```
+
+Example output
+
+```terminal
+NAME                                   CLUSTER         APPROVED   ROLE          STAGE
+4dac1ab2-7dd5-4894-a220-6a3473b67ee6   hypercluster1   true       auto-assign
+d9198891-39f4-4930-a679-65fb142b108b                   true       auto-assign
+da503cf1-a347-44f2-875c-4960ddb04091   hypercluster1   true       auto-assign
+```
+
+3. Enter the following command:
+
+```terminal
+$ oc -n <hosted_control_plane_namespace> get agent -o jsonpath='{range .items[*]}BMH: {@.metadata.labels.agent-install\.openshift\.io/bmh} Agent: {@.metadata.name} State: {@.status.debugInfo.state}{"\n"}{end}'
+```
+
+Example output
+
+```terminal
+BMH: ocp-worker-2 Agent: 4dac1ab2-7dd5-4894-a220-6a3473b67ee6 State: binding
+BMH: ocp-worker-0 Agent: d9198891-39f4-4930-a679-65fb142b108b State: known-unbound
+BMH: ocp-worker-1 Agent: da503cf1-a347-44f2-875c-4960ddb04091 State: insufficient
+```
+
+4. Obtain the kubeconfig for your new hosted cluster by entering the extract command:
+
+```terminal
+$ oc extract -n <hosted_cluster_namespace> secret/<hosted_cluster_name>-admin-kubeconfig --to=- > kubeconfig-<hosted_cluster_name>
+```
+
+5. After the agents reach the added-to-existing-cluster state, verify that you can see the Red Hat OpenShift Container Platform nodes in the hosted cluster by entering the following command:
+
+```terminal
+$ oc --kubeconfig kubeconfig-<hosted_cluster_name> get nodes
+```
+
+Example output
+
+```terminal
+NAME           STATUS   ROLES    AGE     VERSION
+ocp-worker-1   Ready    worker   5m41s   v1.24.0+3882f8f
+ocp-worker-2   Ready    worker   6m3s    v1.24.0+3882f8f
+```
+
+
+Cluster Operators start to reconcile by adding workloads to the nodes.
+6. Enter the following command to verify that two machines were created when you scaled up the NodePool object:
+
+```terminal
+$ oc -n <hosted_control_plane_namespace> get machines
+```
+
+Example output
+
+```terminal
+NAME                            CLUSTER               NODENAME       PROVIDERID                                     PHASE     AGE   VERSION
+hypercluster1-c96b6f675-m5vch   hypercluster1-b2qhl   ocp-worker-1   agent://da503cf1-a347-44f2-875c-4960ddb04091   Running   15m   4.x.z
+hypercluster1-c96b6f675-tl42p   hypercluster1-b2qhl   ocp-worker-2   agent://4dac1ab2-7dd5-4894-a220-6a3473b67ee6   Running   15m   4.x.z
+```
+
+
+The clusterversion reconcile process eventually reaches a point where only Ingress and Console cluster operators are missing.
+7. Enter the following command:
+
+```terminal
+$ oc --kubeconfig kubeconfig-<hosted_cluster_name> get clusterversion,co
+```
+
+Example output
+
+```terminal
+NAME                                         VERSION   AVAILABLE   PROGRESSING   SINCE   STATUS
+clusterversion.config.openshift.io/version             False       True          40m     Unable to apply 4.x.z: the cluster operator console has not yet successfully rolled out
+
+NAME                                                                             VERSION   AVAILABLE   PROGRESSING   DEGRADED   SINCE   MESSAGE
+clusteroperator.config.openshift.io/console                                      4.12z     False       False         False      11m     RouteHealthAvailable: failed to GET route (https://console-openshift-console.apps.hypercluster1.domain.com): Get "https://console-openshift-console.apps.hypercluster1.domain.com": dial tcp 10.19.3.29:443: connect: connection refused
+clusteroperator.config.openshift.io/csi-snapshot-controller                      4.12z     True        False         False      10m
+clusteroperator.config.openshift.io/dns                                          4.12z     True        False         False      9m16s
+```
+
+
+## Adding node pools
+
+You can create node pools for a hosted cluster by specifying a name, number of replicas, and any additional information, such as an agent label selector.
+
+1. To create a node pool, enter the following information:
+
+```terminal
+$ hcp create nodepool agent \
+  --cluster-name <hosted_cluster_name> \1
+  --name <nodepool_name> \2
+  --node-count <worker_node_count> \3
+  --agentLabelSelector size=medium 4
+```
+
+Replace <hosted_cluster_name> with your hosted cluster name.
+Replace <nodepool_name> with the name of your node pool, for example, <hosted_cluster_name>-extra-cpu.
+Replace <worker_node_count> with the worker node count, for example, 2.
+The --agentLabelSelector flag is optional. The node pool uses agents with the size=medium label.
+2. Check the status of the node pool by listing nodepool resources in the clusters namespace:
+
+```terminal
+$ oc get nodepools --namespace clusters
+```
+
+3. Extract the admin-kubeconfig secret by entering the following command:
+
+```terminal
+$ oc extract -n <hosted_control_plane_namespace> secret/admin-kubeconfig --to=./hostedcluster-secrets --confirm
+```
+
+Example output
+
+```terminal
+hostedcluster-secrets/kubeconfig
+```
+
+4. After some time, you can check the status of the node pool by entering the following command:
+
+```terminal
+$ oc --kubeconfig ./hostedcluster-secrets get nodes
+```
+
+
+* Verify that the number of available node pools match the number of expected node pools by entering this command:
+
+```terminal
+$ oc get nodepools --namespace clusters
+```
+
+
+## Enabling node auto-scaling for the hosted cluster
+
+When you need more capacity in your hosted cluster and spare agents are available, you can enable auto-scaling to install new worker nodes.
+
+1. To enable auto-scaling, enter the following command:
+
+```terminal
+$ oc -n <hosted_cluster_namespace> patch nodepool <hosted_cluster_name> --type=json -p '[{"op": "remove", "path": "/spec/replicas"},{"op":"add", "path": "/spec/autoScaling", "value": { "max": 5, "min": 2 }}]'
+```
+
+
+[NOTE]
+----
+In the example, the minimum number of nodes is 2, and the maximum is 5. The maximum number of nodes that you can add might be bound by your platform. For example, if you use the Agent platform, the maximum number of nodes is bound by the number of available agents.
+----
+2. Create a workload that requires a new node.
+1. Create a YAML file that contains the workload configuration, by using the following example:
+
+```yaml
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  creationTimestamp: null
+  labels:
+    app: reversewords
+  name: reversewords
+  namespace: default
+spec:
+  replicas: 40
+  selector:
+    matchLabels:
+      app: reversewords
+  strategy: {}
+  template:
+    metadata:
+      creationTimestamp: null
+      labels:
+        app: reversewords
+    spec:
+      containers:
+      - image: quay.io/mavazque/reversewords:latest
+        name: reversewords
+        resources:
+          requests:
+            memory: 2Gi
+status: {}
+```
+
+2. Save the file as workload-config.yaml.
+3. Apply the YAML by entering the following command:
+
+```terminal
+$ oc apply -f workload-config.yaml
+```
+
+3. Extract the admin-kubeconfig secret by entering the following command:
+
+```terminal
+$ oc extract -n <hosted_cluster_namespace> secret/<hosted_cluster_name>-admin-kubeconfig --to=./hostedcluster-secrets --confirm
+```
+
+Example output
+
+```
+hostedcluster-secrets/kubeconfig
+```
+
+4. You can check if new nodes are in the Ready status by entering the following command:
+
+```terminal
+$ oc --kubeconfig ./hostedcluster-secrets get nodes
+```
+
+5. To remove the node, delete the workload by entering the following command:
+
+```terminal
+$ oc --kubeconfig ./hostedcluster-secrets -n <namespace> delete deployment <deployment_name>
+```
+
+6. Wait for several minutes to pass without requiring the additional capacity. On the Agent platform, the agent is decommissioned and can be reused. You can confirm that the node was removed by entering the following command:
+
+```terminal
+$ oc --kubeconfig ./hostedcluster-secrets get nodes
+```
+
+
+
+[NOTE]
+----
+For IBM Z agents, compute nodes are detached from the cluster only for IBM Z with KVM agents. For z/VM and LPAR, you must delete the compute nodes manually.
+Agents can be reused only for IBM Z with KVM. For z/VM and LPAR, re-create the agents to use them as compute nodes.
+----
+
+## Disabling node auto-scaling for the hosted cluster
+
+To disable node auto-scaling, complete the following procedure.
+
+* Enter the following command to disable node auto-scaling for the hosted cluster:
+
+```terminal
+$ oc -n <hosted_cluster_namespace> patch nodepool <hosted_cluster_name> --type=json -p '[\{"op":"remove", "path": "/spec/autoScaling"}, \{"op": "add", "path": "/spec/replicas", "value": <specify_value_to_scale_replicas>]'
+```
+
+
+The command removes "spec.autoScaling" from the YAML file, adds "spec.replicas", and sets "spec.replicas" to the integer value that you specify.
+
+* Scaling down the data plane to zero
+
+# Handling ingress in a hosted cluster on bare metal
+
+Every Red Hat OpenShift Container Platform cluster has a default application Ingress Controller that typically has an external DNS record associated with it. For example, if you create a hosted cluster named example with the base domain krnl.es, you can expect the wildcard domain *.apps.example.krnl.es to be routable.
+
+To set up a load balancer and wildcard DNS record for the *.apps domain, perform the following actions on your guest cluster:
+
+1. Deploy MetalLB by creating a YAML file that contains the configuration for the MetalLB Operator:
+
+```yaml
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: metallb
+  labels:
+    openshift.io/cluster-monitoring: "true"
+  annotations:
+    workload.openshift.io/allowed: management
+---
+apiVersion: operators.coreos.com/v1
+kind: OperatorGroup
+metadata:
+  name: metallb-operator-operatorgroup
+  namespace: metallb
+---
+apiVersion: operators.coreos.com/v1alpha1
+kind: Subscription
+metadata:
+  name: metallb-operator
+  namespace: metallb
+spec:
+  channel: "stable"
+  name: metallb-operator
+  source: redhat-operators
+  sourceNamespace: openshift-marketplace
+```
+
+2. Save the file as metallb-operator-config.yaml.
+3. Enter the following command to apply the configuration:
+
+```terminal
+$ oc apply -f metallb-operator-config.yaml
+```
+
+4. After the Operator is running, create the MetalLB instance:
+1. Create a YAML file that contains the configuration for the MetalLB instance:
+
+```yaml
+apiVersion: metallb.io/v1beta1
+kind: MetalLB
+metadata:
+  name: metallb
+  namespace: metallb
+```
+
+2. Save the file as metallb-instance-config.yaml.
+3. Create the MetalLB instance by entering this command:
+
+```terminal
+$ oc apply -f metallb-instance-config.yaml
+```
+
+5. Create an IPAddressPool resource with a single IP address. This IP address must be on the same subnet as the network that the cluster nodes use.
+1. Create a file, such as ipaddresspool.yaml, with content like the following example:
+
+```yaml
+apiVersion: metallb.io/v1beta1
+kind: IPAddressPool
+metadata:
+  namespace: metallb
+  name: <ip_address_pool_name> 1
+spec:
+  addresses:
+    - <ingress_ip>-<ingress_ip> 2
+  autoAssign: false
+```
+
+Specify the IPAddressPool resource name.
+Specify the IP address for your environment. For example, 192.168.122.23.
+2. Apply the configuration for the IP address pool by entering the following command:
+
+```terminal
+$ oc apply -f ipaddresspool.yaml
+```
+
+6. Create a L2 advertisement.
+1. Create a file, such as l2advertisement.yaml, with content like the following example:
+
+```yaml
+apiVersion: metallb.io/v1beta1
+kind: L2Advertisement
+metadata:
+  name: <l2_advertisement_name> 1
+  namespace: metallb
+spec:
+  ipAddressPools:
+   - <ip_address_pool_name> 2
+```
+
+Specify the L2Advertisement resource name.
+Specify the IPAddressPool resource name.
+2. Apply the configuration by entering the following command:
+
+```terminal
+$ oc apply -f l2advertisement.yaml
+```
+
+7. After creating a service of the LoadBalancer type, MetalLB adds an external IP address for the service.
+1. Configure a new load balancer service that routes ingress traffic to the ingress deployment by creating a YAML file named metallb-loadbalancer-service.yaml:
+
+```yaml
+kind: Service
+apiVersion: v1
+metadata:
+  annotations:
+   metallb.io/address-pool: ingress-public-ip
+  name: metallb-ingress
+  namespace: openshift-ingress
+spec:
+  ports:
+    - name: http
+      protocol: TCP
+      port: 80
+      targetPort: 80
+    - name: https
+      protocol: TCP
+      port: 443
+      targetPort: 443
+  selector:
+    ingresscontroller.operator.openshift.io/deployment-ingresscontroller: default
+  type: LoadBalancer
+```
+
+2. Save the metallb-loadbalancer-service.yaml file.
+3. Enter the following command to apply the YAML configuration:
+
+```terminal
+$ oc apply -f metallb-loadbalancer-service.yaml
+```
+
+4. Enter the following command to reach the Red Hat OpenShift Container Platform console:
+
+```bash
+$ curl -kI https://console-openshift-console.apps.example.krnl.es
+```
+
+Example output
+
+```terminal
+HTTP/1.1 200 OK
+```
+
+5. Check the clusterversion and clusteroperator values to verify that everything is running. Enter the following command:
+
+```terminal
+$ oc --kubeconfig <hosted_cluster_name>.kubeconfig get clusterversion,co
+```
+
+Example output
+
+```terminal
+NAME                                         VERSION   AVAILABLE   PROGRESSING   SINCE   STATUS
+clusterversion.config.openshift.io/version   4.x.y      True        False        3m32s   Cluster version is 4.x.y
+
+NAME                                                                             VERSION   AVAILABLE   PROGRESSING   DEGRADED   SINCE   MESSAGE
+clusteroperator.config.openshift.io/console                                      4.x.y     True        False         False      3m50s
+clusteroperator.config.openshift.io/ingress                                      4.x.y     True        False         False      53m
+```
+
+
+Replace <4.x.y> with the supported Red Hat OpenShift Container Platform version that you want to use, for example, 4.18.0-multi.
+
+* About MetalLB and the MetalLB Operator
+
+# Enabling machine health checks on bare metal
+
+You can enable machine health checks on bare metal to repair and replace unhealthy managed cluster nodes automatically. You must have additional agent machines that are ready to install in the managed cluster.
+
+Consider the following limitations before enabling machine health checks:
+
+* You cannot modify the MachineHealthCheck object.
+* Machine health checks replace nodes only when at least two nodes stay in the False or Unknown status for more than 8 minutes.
+
+After you enable machine health checks for the managed cluster nodes, the MachineHealthCheck object is created in your hosted cluster.
+
+To enable machine health checks in your hosted cluster, modify the NodePool resource. Complete the following steps:
+
+1. Verify that the spec.nodeDrainTimeout value in your NodePool resource is greater than 0s. Replace <hosted_cluster_namespace> with the name of your hosted cluster namespace and <nodepool_name> with the node pool name. Run the following command:
+
+```terminal
+$ oc get nodepool -n <hosted_cluster_namespace> <nodepool_name> -o yaml | grep nodeDrainTimeout
+```
+
+Example output
+
+```terminal
+nodeDrainTimeout: 30s
+```
+
+2. If the spec.nodeDrainTimeout value is not greater than 0s, modify the value by running the following command:
+
+```terminal
+$ oc patch nodepool -n <hosted_cluster_namespace> <nodepool_name> -p '{"spec":{"nodeDrainTimeout": "30m"}}' --type=merge
+```
+
+3. Enable machine health checks by setting the spec.management.autoRepair field to true in the NodePool resource. Run the following command:
+
+```terminal
+$ oc patch nodepool -n <hosted_cluster_namespace> <nodepool_name> -p '{"spec": {"management": {"autoRepair":true}}}' --type=merge
+```
+
+4. Verify that the NodePool resource is updated with the autoRepair: true value by running the following command:
+
+```terminal
+$ oc get nodepool -n <hosted_cluster_namespace> <nodepool_name> -o yaml | grep autoRepair
+```
+
+
+# Disabling machine health checks on bare metal
+
+To disable machine health checks for the managed cluster nodes, modify the NodePool resource.
+
+1. Disable machine health checks by setting the spec.management.autoRepair field to false in the NodePool resource. Run the following command:
+
+```terminal
+$ oc patch nodepool -n <hosted_cluster_namespace> <nodepool_name> -p '{"spec": {"management": {"autoRepair":false}}}' --type=merge
+```
+
+2. Verify that the NodePool resource is updated with the autoRepair: false value by running the following command:
+
+```terminal
+$ oc get nodepool -n <hosted_cluster_namespace> <nodepool_name> -o yaml | grep autoRepair
+```
+
+
+* Deploying machine health checks
