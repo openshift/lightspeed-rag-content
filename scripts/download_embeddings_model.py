@@ -36,5 +36,5 @@ if __name__ == "__main__":
     # remove pytorch_model.bin, load the model from model.safetensors
     os.remove(os.path.join(args.local_dir, "pytorch_model.bin"))
 
-    shutil.rmtree(os.path.join(args.local_dir, "onnx"))
-    shutil.rmtree(os.path.join(args.local_dir, "openvino"))
+    # shutil.rmtree(os.path.join(args.local_dir, "onnx"))
+    # shutil.rmtree(os.path.join(args.local_dir, "openvino"))
