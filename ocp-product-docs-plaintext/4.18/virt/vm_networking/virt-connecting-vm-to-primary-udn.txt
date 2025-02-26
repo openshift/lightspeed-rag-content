@@ -1,0 +1,230 @@
+# Connecting a virtual machine to a primary user-defined network
+
+
+You can connect a virtual machine (VM) to a user-defined network (UDN) on the VM's primary interface by using the Red Hat OpenShift Container Platform web console or the CLI. The primary user-defined network replaces the default pod network in your specified namespace. Unlike the pod network, you can define the primary UDN per project, where each project can use its specific subnet and topology.
+OpenShift Virtualization supports the namespace-scoped UserDefinedNetwork and the cluster-scoped ClusterUserDefinedNetwork custom resource definitions (CRD).
+Tenant owners can configure a primary UserDefinedNetwork CRD to create a network that isolates their namespace from other namespaces without requiring network policies. Cluster administrators can use the ClusterUserDefinedNetwork CRD to create a shared OVN network across multiple namespaces.
+
+[NOTE]
+----
+You must add the k8s.ovn.org/primary-user-defined-network label when you create a namespace that is to be used with user-defined networks.
+----
+With the layer 2 topology, OVN-Kubernetes creates an overlay network between nodes. You can use this overlay network to connect VMs on different nodes without having to configure any additional physical networking infrastructure.
+The layer 2 topology enables seamless migration of VMs without the need for Network Address Translation (NAT) because persistent IP addresses are preserved across cluster nodes during live migration.
+You must consider the following limitations before implementing a primary UDN:
+* You cannot use the virtctl ssh command to configure SSH access to a VM.
+* You cannot use the oc port-forward command to forward ports to a VM.
+* You cannot use headless services to access a VM.
+* You cannot define readiness and liveness probes to configure VM health checks.
+
+[NOTE]
+----
+OpenShift Virtualization currently does not support secondary user-defined networks.
+----
+
+# Creating a primary user-defined network by using the web console
+
+You can use the Red Hat OpenShift Container Platform web console to create a primary namespace-scoped UserDefinedNetwork or a cluster-scoped ClusterUserDefinedNetwork CRD. The UDN serves as the default primary network for pods and VMs that you create in namespaces associated with the network.
+
+## Creating a namespace for user-defined networks by using the web console
+
+You can create a namespace to be used with primary user-defined networks (UDNs) by using the Red Hat OpenShift Container Platform web console.
+
+* Log in to the Red Hat OpenShift Container Platform web console as a user with cluster-admin permissions.
+
+1. From the Administrator perspective, click Administration -> Namespaces.
+2. Click Create Namespace.
+3. In the Name field, specify a name for the namespace. The name must consist of lower case alphanumeric characters or '-', and must start and end with an alphanumeric character.
+4. In the Labels field, add the k8s.ovn.org/primary-user-defined-network label.
+5. Optional: If the namespace is to be used with an existing cluster-scoped UDN, add the appropriate labels as defined in the spec.namespaceSelector field in the ClusterUserDefinedNetwork custom resource.
+6. Optional: Specify a default network policy.
+7. Click Create to create the namespace.
+
+## Creating a primary namespace-scoped user-defined network by using the web console
+
+You can create an isolated primary network in your project namespace by creating a UserDefinedNetwork custom resource in the Red Hat OpenShift Container Platform web console.
+
+* You have access to the Red Hat OpenShift Container Platform web console as a user with cluster-admin permissions.
+* You have created a namespace and applied the k8s.ovn.org/primary-user-defined-network label. For more information, see "Creating a namespace for user-defined networks by using the web console".
+
+1. From the Administrator perspective, click Networking -> UserDefinedNetworks.
+2. Click Create UserDefinedNetwork.
+3. From the Project name list, select the namespace that you previously created.
+4. Specify a value in the Subnet field.
+5. Click Create. The user-defined network serves as the default primary network for pods and virtual machines that you create in this namespace.
+
+## Creating a primary cluster-scoped user-defined network by using the web console
+
+You can connect multiple namespaces to the same primary user-defined network (UDN) by creating a ClusterUserDefinedNetwork custom resource in the Red Hat OpenShift Container Platform web console.
+
+* You have access to the Red Hat OpenShift Container Platform web console as a user with cluster-admin permissions.
+
+1. From the Administrator perspective, click Networking -> UserDefinedNetworks.
+2. From the Create list, select ClusterUserDefinedNetwork.
+3. In the Name field, specify a name for the cluster-scoped UDN.
+4. Specify a value in the Subnet field.
+5. In the Project(s) Match Labels field, add the appropriate labels to select namespaces that the cluster UDN applies to.
+6. Click Create. The cluster-scoped UDN serves as the default primary network for pods and virtual machines located in namespaces that contain the labels that you specified in step 5.
+
+* Create namespaces that are associated with the cluster-scoped UDN
+
+# Creating a primary user-defined network by using the CLI
+
+You can create a primary UserDefinedNetwork or ClusterUserDefinedNetwork CRD by using the CLI.
+
+## Creating a namespace for user-defined networks by using the CLI
+
+You can create a namespace to be used with primary user-defined networks (UDNs) by using the CLI.
+
+* You have access to the cluster as a user with cluster-admin permissions.
+* You have installed the OpenShift CLI (oc).
+
+1. Create a Namespace object as a YAML file similar to the following example:
+
+```yaml
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: udn_namespace
+  labels:
+    k8s.ovn.org/primary-user-defined-network: "" 1
+# ...
+```
+
+This label is required for the namespace to be associated with a UDN. If the namespace is to be used with an existing cluster UDN, you must also add the appropriate labels that are defined in the spec.namespaceSelector field of the ClusterUserDefinedNetwork custom resource.
+2. Apply the Namespace manifest by running the following command:
+
+```terminal
+oc apply -f <filename>.yaml
+```
+
+
+## Creating a primary namespace-scoped user-defined network by using the CLI
+
+You can create an isolated primary network in your project namespace by using the CLI. You must use the OVN-Kubernetes layer 2 topology and enable persistent IP address allocation in the user-defined network (UDN) configuration to ensure VM live migration support.
+
+1. You have installed the OpenShift CLI (oc).
+2. You have created a namespace and applied the k8s.ovn.org/primary-user-defined-network label.
+
+1. Create a UserDefinedNetwork object to specify the custom network configuration:
+Example UserDefinedNetwork manifest
+
+```yaml
+apiVersion: k8s.ovn.org/v1
+kind: UserDefinedNetwork
+metadata:
+  name: udn-l2-net 1
+  namespace: my-namespace 2
+spec:
+  topology: Layer2 3
+  layer2:
+    role: Primary 4
+    subnets:
+      - "10.0.0.0/24"
+      - "2001:db8::/60"
+  ipam:
+    lifecycle: Persistent 5
+```
+
+Specifies the name of the UserDefinedNetwork custom resource.
+Specifies the namespace in which the VM is located. The namespace must have the k8s.ovn.org/primary-user-defined-network label. The namespace must not be default, an openshift-* namespace, or match any global namespaces that are defined by the Cluster Network Operator (CNO).
+Specifies the topological configuration of the network. The required value is Layer2. A Layer2 topology creates a logical switch that is shared by all nodes.
+Specifies if the UDN is primary or secondary. OpenShift Virtualization only supports the Primary role. This means that the UDN acts as the primary network for the VM and all default traffic passes through this network.
+Specifies that virtual workloads have consistent IP addresses across reboots and migration. The spec.layer2.subnets field is required when ipam.lifecycle: Persistent is specified.
+2. Apply the UserDefinedNetwork manifest by running the following command:
+
+```terminal
+$ oc apply -f --validate=true <filename>.yaml
+```
+
+
+## Creating a primary cluster-scoped user-defined network by using the CLI
+
+You can connect multiple namespaces to the same primary user-defined network (UDN) to achieve native tenant isolation by using the CLI.
+
+1. You have access to the cluster as a user with cluster-admin privileges.
+2. You have installed the OpenShift CLI (oc).
+
+1. Create a ClusterUserDefinedNetwork object to specify the custom network configuration:
+Example ClusterUserDefinedNetwork manifest
+
+```yaml
+kind: ClusterUserDefinedNetwork
+metadata:
+  name: cudn-l2-net 1
+spec:
+  namespaceSelector: 2
+    matchExpressions: 3
+    - key: kubernetes.io/metadata.name
+      operator: In 4
+      values: ["red-namespace", "blue-namespace"]
+  network:
+    topology: Layer2 5
+    layer2:
+      role: Primary 6
+      ipam:
+        lifecycle: Persistent
+      subnets:
+        - 203.203.0.0/16
+```
+
+Specifies the name of the ClusterUserDefinedNetwork custom resource.
+Specifies the set of namespaces that the cluster UDN applies to. The namespace selector must not point to default, an openshift-* namespace, or any global namespaces that are defined by the Cluster Network Operator (CNO).
+Specifies the type of selector. In this example, the matchExpressions selector selects objects that have the label kubernetes.io/metadata.name with the value red-namespace or blue-namespace.
+Specifies the type of operator. Possible values are In, NotIn, and Exists.
+Specifies the topological configuration of the network. The required value is Layer2. A Layer2 topology creates a logical switch that is shared by all nodes.
+Specifies if the UDN is primary or secondary. OpenShift Virtualization only supports the Primary role. This means that the UDN acts as the primary network for the VM and all default traffic passes through this network.
+2. Apply the ClusterUserDefinedNetwork manifest by running the following command:
+
+```terminal
+$ oc apply -f --validate=true <filename>.yaml
+```
+
+
+* Create namespaces that are associated with the cluster-scoped UDN
+
+# Attaching a virtual machine to the primary user-defined network by using the CLI
+
+You can connect a virtual machine (VM) to the primary user-defined network (UDN) by requesting the pod network attachment, and configuring the interface binding.
+
+* You have installed the OpenShift CLI (oc).
+
+1. Edit the VirtualMachine manifest to add the UDN interface details, as in the following example:
+Example VirtualMachine manifest
+
+```yaml
+apiVersion: kubevirt.io/v1
+kind: VirtualMachine
+metadata:
+  name: example-vm
+  namespace: my-namespace 1
+spec:
+  template:
+    spec:
+      domain:
+        devices:
+          interfaces:
+            - name: udn-l2-net 2
+              binding:
+                name: l2bridge 3
+# ...
+      networks:
+      - name: udn-l2-net 4
+        pod: {}
+# ...
+```
+
+The namespace in which the VM is located. This value must match the namespace in which the UDN is defined.
+The name of the user-defined network interface.
+The name of the binding plugin that is used to connect the interface to the VM. The required value is l2bridge.
+The name of the network. This must match the value of the spec.template.spec.domain.devices.interfaces.name field.
+2. Apply the VirtualMachine manifest by running the following command:
+
+```terminal
+$ oc apply -f <filename>.yaml
+```
+
+
+# Additional resources
+
+* About user-defined networks

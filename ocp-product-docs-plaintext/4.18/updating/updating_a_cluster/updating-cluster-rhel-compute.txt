@@ -1,0 +1,285 @@
+# Updating a cluster that includes RHEL compute machines
+
+
+You can perform minor version and patch updates on an Red Hat OpenShift Container Platform cluster. If your cluster contains Red Hat Enterprise Linux (RHEL) machines, you must take additional steps to update those machines.
+
+[IMPORTANT]
+----
+The use of RHEL compute machines on Red Hat OpenShift Container Platform clusters has been deprecated and will be removed in a future release.
+----
+
+# Prerequisites
+
+* Have access to the cluster as a user with admin privileges.
+See Using RBAC to define and apply permissions.
+* Have a recent etcd backup in case your update fails and you must restore your cluster to a previous state.
+* Your RHEL7 workers are replaced with RHEL8 or RHCOS workers. Red Hat does not support in-place RHEL7 to RHEL8 updates for RHEL workers; those hosts must be replaced with a clean operating system install.
+* If your cluster uses manually maintained credentials, update the cloud provider resources for the new release. For more information, including how to determine if this is a requirement for your cluster, see Preparing to update a cluster with manually maintained credentials.
+* If you run an Operator or you have configured any application with the pod disruption budget, you might experience an interruption during the update process. If minAvailable is set to 1 in PodDisruptionBudget, the nodes are drained to apply pending machine configs which might block the eviction process. If several nodes are rebooted, all the pods might run on only one node, and the PodDisruptionBudget field can prevent the node drain.
+
+* Support policy for unmanaged Operators
+
+# Updating a cluster by using the web console
+
+If updates are available, you can update your cluster from the web console.
+
+You can find information about available Red Hat OpenShift Container Platform advisories and updates
+in the errata section of the Customer Portal.
+
+* Have access to the web console as a user with cluster-admin privileges.
+* You have access to the Red Hat OpenShift Container Platform web console.
+* Pause all MachineHealthCheck resources.
+* You have updated all Operators previously installed through Operator Lifecycle Manager (OLM) to a version that is compatible with your target release. Updating the Operators ensures they have a valid update path when the default OperatorHub catalogs switch from the current minor version to the next during a cluster update. See "Updating installed Operators" in the "Additional resources" section for more information on how to check compatibility and, if necessary, update the installed Operators.
+* Your machine config pools (MCPs) are running and not paused. Nodes associated with a paused MCP are skipped during the update process. You can pause the MCPs if you are performing a canary rollout update strategy.
+* Your RHEL7 workers are replaced with RHEL8 or RHCOS workers. Red Hat does not support in-place RHEL7 to RHEL8 updates for RHEL workers; those hosts must be replaced with a clean operating system install.
+
+1. From the web console, click Administration -> Cluster Settings and review the contents of the Details tab.
+2. For production clusters, ensure that the Channel is set to the correct channel for the version that you want to update to, such as stable-4.18.
+
+[IMPORTANT]
+----
+For production clusters, you must subscribe to a stable-*, eus-* or fast-* channel.
+----
+
+[NOTE]
+----
+When you are ready to move to the next minor version, choose the channel that corresponds to that minor version.
+The sooner the update channel is declared, the more effectively the cluster can recommend update paths to your target version.
+The cluster might take some time to evaluate all the possible updates that are available and offer the best update recommendations to choose from.
+Update recommendations can change over time, as they are based on what update options are available at the time.
+If you cannot see an update path to your target minor version, keep updating your cluster to the latest patch release for your current version until the next minor version is available in the path.
+----
+* If the Update status is not Updates available, you cannot update your cluster.
+* Select channel indicates the cluster version that your cluster is running or is updating to.
+3. Select a version to update to, and click Save.
+
+The Input channel
+Update status changes to Update to <product-version> in progress, and you can review the progress of the cluster update by watching the progress bars for the Operators and nodes.
+
+[NOTE]
+----
+If you are updating your cluster to the next minor version, for example from version 4.10 to 4.11, confirm that your nodes are updated before deploying workloads that rely on a new feature. Any pools with worker nodes that are not yet updated are displayed on the Cluster Settings page.
+----
+4. After the update completes and the Cluster Version Operator refreshes the available updates, check if more updates are available in your current channel.
+* If updates are available, continue to perform updates in the current channel until you can no longer update.
+* If no updates are available, change the Channel to the stable-*, eus-* or fast-* channel for the next minor version, and update to the version that you want in that channel.
+
+You might need to perform several intermediate updates until you reach the version that you want.
+
+[IMPORTANT]
+----
+When you update a cluster that contains Red Hat Enterprise Linux (RHEL) worker machines, those workers temporarily become unavailable during the update process. You must run the update playbook against each RHEL machine as it enters the NotReady state for the cluster to finish updating.
+----
+
+* Updating installed Operators
+
+# Optional: Adding hooks to perform Ansible tasks on RHEL machines
+
+You can use hooks to run Ansible tasks on the RHEL compute machines during
+the Red Hat OpenShift Container Platform update.
+
+## About Ansible hooks for updates
+
+When you update Red Hat OpenShift Container Platform, you can run custom tasks on your Red Hat
+Enterprise Linux (RHEL) nodes during specific operations by using hooks. Hooks
+allow you to provide files that define tasks to run before or after specific
+update tasks. You can use hooks to validate or modify custom
+infrastructure when you update the RHEL compute nodes in you Red Hat OpenShift Container Platform
+cluster.
+
+Because when a hook fails, the operation fails, you must design hooks that are
+idempotent, or can run multiple times and provide the same results.
+
+Hooks have the following important limitations:
+- Hooks do not have a defined or versioned interface. They can use internal
+openshift-ansible variables, but it is possible that the variables will be
+modified or removed in future Red Hat OpenShift Container Platform releases.
+- Hooks do not have error handling, so an error in a hook halts the update
+process. If you get an error, you must address the problem and then start the
+update again.
+
+## Configuring the Ansible inventory file to use hooks
+
+You define the hooks to use when you update the Red Hat Enterprise Linux (RHEL)
+compute machines, which are also known as worker machines, in the hosts inventory file under the all:vars
+section.
+
+* You have access to the machine that you used to add the RHEL compute machines
+cluster. You must have access to the hosts Ansible inventory file that defines
+your RHEL machines.
+
+1. After you design the hook, create a YAML file that defines the Ansible tasks
+for it. This file must be a set of tasks and cannot be a playbook, as shown in
+the following example:
+
+```
+---
+# Trivial example forcing an operator to acknowledge the start of an upgrade
+# file=/home/user/openshift-ansible/hooks/pre_compute.yml
+
+- name: note the start of a compute machine update
+  debug:
+      msg: "Compute machine upgrade of {{ inventory_hostname }} is about to start"
+
+- name: require the user agree to start an upgrade
+  pause:
+      prompt: "Press Enter to start the compute machine update"
+```
+
+2. Modify the hosts Ansible inventory file to specify the hook files. The
+hook files are specified as parameter values in the [all:vars] section,
+as shown:
+Example hook definitions in an inventory file
+
+```
+[all:vars]
+openshift_node_pre_upgrade_hook=/home/user/openshift-ansible/hooks/pre_node.yml
+openshift_node_post_upgrade_hook=/home/user/openshift-ansible/hooks/post_node.yml
+```
+
+
+To avoid ambiguity in the paths to the hook, use absolute paths instead of a
+relative paths in their definitions.
+
+## Available hooks for RHEL compute machines
+
+You can use the following hooks when you update the Red Hat Enterprise Linux (RHEL)
+compute machines in your Red Hat OpenShift Container Platform cluster.
+
+
+
+# Updating RHEL compute machines in your cluster
+
+After you update your cluster, you must update the Red Hat Enterprise Linux (RHEL) compute machines in your cluster.
+
+
+[IMPORTANT]
+----
+Red Hat Enterprise Linux (RHEL) versions 8.6 and later are supported for RHEL compute machines.
+----
+
+You can also update your compute machines to another minor version of Red Hat OpenShift Container Platform if you are using RHEL as the operating system. You do not need to exclude any RPM packages from RHEL when performing a minor version update.
+
+
+[IMPORTANT]
+----
+You cannot update RHEL 7 compute machines to RHEL 8. You must deploy new RHEL 8 hosts, and the old RHEL 7 hosts should be removed.
+----
+
+* You updated your cluster.
+
+[IMPORTANT]
+----
+Because the RHEL machines require assets that are generated by the cluster to complete the update process, you must update the cluster before you update the RHEL worker machines in it.
+----
+* You have access to the local machine that you used to add the RHEL compute machines to your cluster. You must have access to the hosts Ansible inventory file that defines your RHEL machines and the upgrade playbook.
+* For updates to a minor version, the RPM repository is using the same version of Red Hat OpenShift Container Platform that is running on your cluster.
+
+1. Stop and disable firewalld on the host:
+
+```terminal
+# systemctl disable --now firewalld.service
+```
+
+
+[NOTE]
+----
+By default, the base OS RHEL with "Minimal" installation option enables firewalld service.  Having the firewalld service enabled on your host prevents you from accessing Red Hat OpenShift Container Platform logs on the worker. Do not enable firewalld later if you wish to continue accessing Red Hat OpenShift Container Platform logs on the worker.
+----
+2. Enable the repositories that are required for Red Hat OpenShift Container Platform 4.18:
+1. On the machine that you run the Ansible playbooks, update the required repositories:
+
+```terminal
+# subscription-manager repos --disable=rhocp-4.17-for-rhel-8-x86_64-rpms \
+                             --enable=rhocp-4.18-for-rhel-8-x86_64-rpms
+```
+
+
+[IMPORTANT]
+----
+As of Red Hat OpenShift Container Platform 4.11, the Ansible playbooks are provided only for RHEL 8.  If a RHEL 7 system was used as a host for the Red Hat OpenShift Container Platform 4.10 Ansible playbooks, you must either update the Ansible host to RHEL 8, or create a new Ansible host on a RHEL 8 system and copy over the inventories from the old Ansible host.
+----
+2. On the machine that you run the Ansible playbooks, update the Ansible package:
+
+```terminal
+# yum swap ansible ansible-core
+```
+
+3. On the machine that you run the Ansible playbooks, update the required packages, including openshift-ansible:
+
+```terminal
+# yum update openshift-ansible openshift-clients
+```
+
+4. On each RHEL compute node, update the required repositories:
+
+```terminal
+# subscription-manager repos --disable=rhocp-4.17-for-rhel-8-x86_64-rpms \
+                             --enable=rhocp-4.18-for-rhel-8-x86_64-rpms
+```
+
+3. Update a RHEL worker machine:
+1. Review your Ansible inventory file at /<path>/inventory/hosts and update its contents so that the RHEL 8 machines are listed in the [workers] section, as shown in the following example:
+
+```
+[all:vars]
+ansible_user=root
+#ansible_become=True
+
+openshift_kubeconfig_path="~/.kube/config"
+
+[workers]
+mycluster-rhel8-0.example.com
+mycluster-rhel8-1.example.com
+mycluster-rhel8-2.example.com
+mycluster-rhel8-3.example.com
+```
+
+2. Change to the openshift-ansible directory:
+
+```terminal
+$ cd /usr/share/ansible/openshift-ansible
+```
+
+3. Run the upgrade playbook:
+
+```terminal
+$ ansible-playbook -i /<path>/inventory/hosts playbooks/upgrade.yml 1
+```
+
+For <path>, specify the path to the Ansible inventory file that you created.
+
+[NOTE]
+----
+The upgrade playbook only updates the Red Hat OpenShift Container Platform packages. It does not update the operating system packages.
+----
+4. After you update all of the workers, confirm that all of your cluster nodes have updated to the new version:
+
+```terminal
+# oc get node
+```
+
+Example output
+
+```terminal
+NAME                        STATUS                        ROLES    AGE    VERSION
+mycluster-control-plane-0   Ready                         master   145m   v1.31.3
+mycluster-control-plane-1   Ready                         master   145m   v1.31.3
+mycluster-control-plane-2   Ready                         master   145m   v1.31.3
+mycluster-rhel8-0           Ready                         worker   98m    v1.31.3
+mycluster-rhel8-1           Ready                         worker   98m    v1.31.3
+mycluster-rhel8-2           Ready                         worker   98m    v1.31.3
+mycluster-rhel8-3           Ready                         worker   98m    v1.31.3
+```
+
+5. Optional: Update the operating system packages that were not updated by the upgrade playbook. To update packages that are not on 4.18, use the following command:
+
+```terminal
+# yum update
+```
+
+
+[NOTE]
+----
+You do not need to exclude RPM packages if you are using the same RPM repository that you used when you installed 4.18.
+----

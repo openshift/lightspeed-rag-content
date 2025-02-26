@@ -1,0 +1,4217 @@
+# Postinstallation node tasks
+
+
+After installing Red Hat OpenShift Container Platform, you can further expand and customize your
+cluster to your requirements through certain node tasks.
+
+# Adding RHEL compute machines to an Red Hat OpenShift Container Platform cluster
+
+Understand and work with RHEL compute nodes.
+
+## About adding RHEL compute nodes to a cluster
+
+In Red Hat OpenShift Container Platform 4.18, you have the option of using Red Hat Enterprise Linux (RHEL) machines as compute machines in your cluster if you use a user-provisioned or installer-provisioned infrastructure installation on the x86_64 architecture. You must use Red Hat Enterprise Linux CoreOS (RHCOS) machines for the control plane machines in your cluster.
+
+If you choose to use RHEL compute machines in your cluster, you are responsible for all operating system life cycle management and maintenance. You must perform system updates, apply patches, and complete all other required tasks.
+
+For installer-provisioned infrastructure clusters, you must manually add RHEL compute machines because automatic scaling in installer-provisioned infrastructure clusters adds Red Hat Enterprise Linux CoreOS (RHCOS) compute machines by default.
+
+
+[IMPORTANT]
+----
+* Because removing Red Hat OpenShift Container Platform from a machine in the cluster requires destroying the operating system, you must use dedicated hardware for any RHEL machines that you add to the cluster.
+* Swap memory is disabled on all RHEL machines that you add to your Red Hat OpenShift Container Platform cluster. You cannot enable swap memory on these machines.
+----
+
+## System requirements for RHEL compute nodes
+
+The Red Hat Enterprise Linux (RHEL) compute machine hosts in your Red Hat OpenShift Container Platform environment must meet the following minimum hardware specifications and system-level requirements:
+
+* You must have an active Red Hat OpenShift Container Platform subscription on your Red Hat account. If you do not, contact your sales representative for more information.
+* Production environments must provide compute machines to support your expected workloads. As a cluster administrator, you must calculate the expected workload and add about 10% for overhead. For production environments, allocate enough resources so that a node host failure does not affect your maximum capacity.
+* Each system must meet the following hardware requirements:
+* Physical or virtual system, or an instance running on a public or private IaaS.
+* NetworkManager 1.0 or later.
+* 1 vCPU.
+* Minimum 8 GB RAM.
+* Minimum 15 GB hard disk space for the file system containing /var/.
+* Minimum 1 GB hard disk space for the file system containing /usr/local/bin/.
+* Minimum 1 GB hard disk space for the file system containing its temporary directory. The temporary system directory is determined according to the rules defined in the tempfile module in the Python standard library.
+* Each system must meet any additional requirements for your system provider. For example, if you installed your cluster on VMware vSphere, your disks must be configured according to its storage guidelines and the disk.enableUUID=true attribute must be set.
+* Each system must be able to access the cluster's API endpoints by using DNS-resolvable hostnames. Any network security access control that is in place must allow system access to the cluster's API service endpoints.
+* For clusters installed on Microsoft Azure:
+* Ensure the system includes the hardware requirement of a Standard_D8s_v3 virtual machine.
+* Enable Accelerated Networking. Accelerated Networking uses single root I/O virtualization (SR-IOV) to provide Microsoft Azure VMs with a more direct path to the switch.
+
+* Deleting nodes
+* Accelerated Networking for Microsoft Azure VMs
+
+### Certificate signing requests management
+
+Because your cluster has limited access to automatic machine management when you use infrastructure that you provision, you must provide a mechanism for approving cluster certificate signing requests (CSRs) after installation. The kube-controller-manager only approves the kubelet client CSRs. The machine-approver cannot guarantee the validity of a serving certificate that is requested by using kubelet credentials because it cannot confirm that the correct machine issued the request. You must determine and implement a method of verifying the validity of the kubelet serving certificate requests and approving them.
+
+## Preparing the machine to run the playbook
+
+Before you can add compute machines that use Red Hat Enterprise Linux (RHEL) as the operating system to an Red Hat OpenShift Container Platform 4.18 cluster, you must prepare a RHEL 8 machine to run an Ansible playbook that adds the new node to the cluster. This machine is not part of the cluster but must be able to access it.
+
+* Install the OpenShift CLI (oc) on the machine that you run the playbook on.
+* Log in as a user with cluster-admin permission.
+
+1. Ensure that the kubeconfig file for the cluster and the installation program that you used to install the cluster are on the RHEL 8 machine. One way to accomplish this is to use the same machine that you used to install the cluster.
+2. Configure the machine to access all of the RHEL hosts that you plan to use as compute machines. You can use any method that your company allows, including a bastion with an SSH proxy or a VPN.
+3. Configure a user on the machine that you run the playbook on that has SSH access to all of the RHEL hosts.
+
+[IMPORTANT]
+----
+If you use SSH key-based authentication, you must manage the key with an SSH agent.
+----
+4. If you have not already done so, register the machine with RHSM and attach a pool with an OpenShift subscription to it:
+1. Register the machine with RHSM:
+
+```terminal
+# subscription-manager register --username=<user_name> --password=<password>
+```
+
+2. Pull the latest subscription data from RHSM:
+
+```terminal
+# subscription-manager refresh
+```
+
+3. List the available subscriptions:
+
+```terminal
+# subscription-manager list --available --matches '*OpenShift*'
+```
+
+4. In the output for the previous command, find the pool ID for an Red Hat OpenShift Container Platform subscription and attach it:
+
+```terminal
+# subscription-manager attach --pool=<pool_id>
+```
+
+5. Enable the repositories required by Red Hat OpenShift Container Platform 4.18:
+
+```terminal
+# subscription-manager repos \
+    --enable="rhel-8-for-x86_64-baseos-rpms" \
+    --enable="rhel-8-for-x86_64-appstream-rpms" \
+    --enable="rhocp-4.18-for-rhel-8-x86_64-rpms"
+```
+
+6. Install the required packages, including openshift-ansible:
+
+```terminal
+# yum install openshift-ansible openshift-clients jq
+```
+
+
+The openshift-ansible package provides installation program utilities and pulls in other packages that you require to add a RHEL compute node to your cluster, such as Ansible, playbooks, and related configuration files. The openshift-clients provides the oc CLI, and the jq package improves the display of JSON output on your command line.
+
+## Preparing a RHEL compute node
+
+Before you add a Red Hat Enterprise Linux (RHEL) machine to your Red Hat OpenShift Container Platform cluster, you must register each host with Red Hat Subscription Manager (RHSM), attach an active Red Hat OpenShift Container Platform subscription, and enable the required repositories.
+
+1. On each host, register with RHSM:
+
+```terminal
+# subscription-manager register --username=<user_name> --password=<password>
+```
+
+2. Pull the latest subscription data from RHSM:
+
+```terminal
+# subscription-manager refresh
+```
+
+3. List the available subscriptions:
+
+```terminal
+# subscription-manager list --available --matches '*OpenShift*'
+```
+
+4. In the output for the previous command, find the pool ID for an Red Hat OpenShift Container Platform subscription and attach it:
+
+```terminal
+# subscription-manager attach --pool=<pool_id>
+```
+
+5. Disable all yum repositories:
+1. Disable all the enabled RHSM repositories:
+
+```terminal
+# subscription-manager repos --disable="*"
+```
+
+2. List the remaining yum repositories and note their names under repo id, if any:
+
+```terminal
+# yum repolist
+```
+
+3. Use yum-config-manager to disable the remaining yum repositories:
+
+```terminal
+# yum-config-manager --disable <repo_id>
+```
+
+
+Alternatively, disable all repositories:
+
+```terminal
+# yum-config-manager --disable \*
+```
+
+
+Note that this might take a few minutes if you have a large number of available repositories
+6. Enable only the repositories required by Red Hat OpenShift Container Platform 4.18:
+
+```terminal
+# subscription-manager repos \
+    --enable="rhel-8-for-x86_64-baseos-rpms" \
+    --enable="rhel-8-for-x86_64-appstream-rpms" \
+    --enable="rhocp-4.18-for-rhel-8-x86_64-rpms" \
+    --enable="fast-datapath-for-rhel-8-x86_64-rpms"
+```
+
+7. Stop and disable firewalld on the host:
+
+```terminal
+# systemctl disable --now firewalld.service
+```
+
+
+[NOTE]
+----
+You must not enable firewalld later. If you do, you cannot access Red Hat OpenShift Container Platform logs on the worker.
+----
+
+## Adding a RHEL compute machine to your cluster
+
+You can add compute machines that use Red Hat Enterprise Linux as the operating system to an Red Hat OpenShift Container Platform 4.18 cluster.
+
+* You installed the required packages and performed the necessary configuration on the machine that you run the playbook on.
+* You prepared the RHEL hosts for installation.
+
+Perform the following steps on the machine that you prepared to run the playbook:
+
+1. Create an Ansible inventory file that is named /<path>/inventory/hosts that defines your compute machine hosts and required variables:
+
+```
+[all:vars]
+ansible_user=root 1
+#ansible_become=True 2
+
+openshift_kubeconfig_path="~/.kube/config" 3
+
+[new_workers] 4
+mycluster-rhel8-0.example.com
+mycluster-rhel8-1.example.com
+```
+
+Specify the user name that runs the Ansible tasks on the remote compute machines.
+If you do not specify root for the ansible_user, you must set ansible_become to True and assign the user sudo permissions.
+Specify the path and file name of the kubeconfig file for your cluster.
+List each RHEL machine to add to your cluster. You must provide the fully-qualified domain name for each host. This name is the hostname that the cluster uses to access the machine, so set the correct public or private name to access the machine.
+2. Navigate to the Ansible playbook directory:
+
+```terminal
+$ cd /usr/share/ansible/openshift-ansible
+```
+
+3. Run the playbook:
+
+```terminal
+$ ansible-playbook -i /<path>/inventory/hosts playbooks/scaleup.yml 1
+```
+
+For <path>, specify the path to the Ansible inventory file that you created.
+
+## Required parameters for the Ansible hosts file
+
+You must define the following parameters in the Ansible hosts file before you add Red Hat Enterprise Linux (RHEL) compute machines to your cluster.
+
+
+
+## Optional: Removing RHCOS compute machines from a cluster
+
+After you add the Red Hat Enterprise Linux (RHEL) compute machines to your cluster, you can optionally remove the Red Hat Enterprise Linux CoreOS (RHCOS) compute machines to free up resources.
+
+* You have added RHEL compute machines to your cluster.
+
+1. View the list of machines and record the node names of the RHCOS compute machines:
+
+```terminal
+$ oc get nodes -o wide
+```
+
+2. For each RHCOS compute machine, delete the node:
+1. Mark the node as unschedulable by running the oc adm cordon command:
+
+```terminal
+$ oc adm cordon <node_name> 1
+```
+
+Specify the node name of one of the RHCOS compute machines.
+2. Drain all the pods from the node:
+
+```terminal
+$ oc adm drain <node_name> --force --delete-emptydir-data --ignore-daemonsets 1
+```
+
+Specify the node name of the RHCOS compute machine that you isolated.
+3. Delete the node:
+
+```terminal
+$ oc delete nodes <node_name> 1
+```
+
+Specify the node name of the RHCOS compute machine that you drained.
+3. Review the list of compute machines to ensure that only the RHEL nodes remain:
+
+```terminal
+$ oc get nodes -o wide
+```
+
+4. Remove the RHCOS machines from the load balancer for your cluster's compute machines. You can delete the virtual machines or reimage the physical hardware for the RHCOS compute machines.
+
+# Adding RHCOS compute machines to an Red Hat OpenShift Container Platform cluster
+
+You can add more Red Hat Enterprise Linux CoreOS (RHCOS) compute machines to your Red Hat OpenShift Container Platform cluster on bare metal.
+
+Before you add more compute machines to a cluster that you installed on bare metal infrastructure, you must create RHCOS machines for it to use. You can either use an ISO image or network PXE booting to create the machines.
+
+## Prerequisites
+
+* You installed a cluster on bare metal.
+* You have installation media and Red Hat Enterprise Linux CoreOS (RHCOS) images that you used to create your cluster. If you do not have these files, you must obtain them by following the instructions in the installation procedure.
+
+## Creating RHCOS machines using an ISO image
+
+You can create more Red Hat Enterprise Linux CoreOS (RHCOS) compute machines for your bare metal cluster by using an ISO image to create the machines.
+
+* Obtain the URL of the Ignition config file for the compute machines for your cluster. You uploaded this file to your HTTP server during installation.
+* You must have the OpenShift CLI (oc)  installed.
+
+1. Extract the Ignition config file from the cluster by running the following command:
+
+```terminal
+$ oc extract -n openshift-machine-api secret/worker-user-data-managed --keys=userData --to=- > worker.ign
+```
+
+2. Upload the worker.ign Ignition config file you exported from your cluster to your HTTP server. Note the URLs of these files.
+3. You can validate that the ignition files are available on the URLs. The following example gets the Ignition config files for the compute node:
+
+```terminal
+$ curl -k http://<HTTP_server>/worker.ign
+```
+
+4. You can access the ISO image for booting your new machine by running to following command:
+
+```terminal
+RHCOS_VHD_ORIGIN_URL=$(oc -n openshift-machine-config-operator get configmap/coreos-bootimages -o jsonpath='{.data.stream}' | jq -r '.architectures.<architecture>.artifacts.metal.formats.iso.disk.location')
+```
+
+5. Use the ISO file to install RHCOS on more compute machines. Use the same method that you used when you created machines before you installed the cluster:
+* Burn the ISO image to a disk and boot it directly.
+* Use ISO redirection with a LOM interface.
+6. Boot the RHCOS ISO image without specifying any options, or interrupting the live boot sequence. Wait for the installer to boot into a shell prompt in the RHCOS live environment.
+
+[NOTE]
+----
+You can interrupt the RHCOS installation boot process to add kernel arguments. However, for this ISO procedure you must use the coreos-installer command as outlined in the following steps, instead of adding kernel arguments.
+----
+7. Run the coreos-installer command and specify the options that meet your installation requirements. At a minimum, you must specify the URL that points to the Ignition config file for the node type, and the device that you are installing to:
+
+```terminal
+$ sudo coreos-installer install --ignition-url=http://<HTTP_server>/<node_type>.ign <device> --ignition-hash=sha512-<digest> 12
+```
+
+You must run the coreos-installer command by using sudo, because the core user does not have the required root privileges to perform the installation.
+The --ignition-hash option is required when the Ignition config file is obtained through an HTTP URL to validate the authenticity of the Ignition config file on the cluster node. <digest> is the Ignition config file SHA512 digest obtained in a preceding step.
+
+[NOTE]
+----
+If you want to provide your Ignition config files through an HTTPS server that uses TLS, you can add the internal certificate authority (CA) to the system trust store before running coreos-installer.
+----
+
+The following example initializes a bootstrap node installation to the /dev/sda device. The Ignition config file for the bootstrap node is obtained from an HTTP web server with the IP address 192.168.1.2:
+
+```terminal
+$ sudo coreos-installer install --ignition-url=http://192.168.1.2:80/installation_directory/bootstrap.ign /dev/sda --ignition-hash=sha512-a5a2d43879223273c9b60af66b44202a1d1248fc01cf156c46d4a79f552b6bad47bc8cc78ddf0116e80c59d2ea9e32ba53bc807afbca581aa059311def2c3e3b
+```
+
+8. Monitor the progress of the RHCOS installation on the console of the machine.
+
+[IMPORTANT]
+----
+Ensure that the installation is successful on each node before commencing with the Red Hat OpenShift Container Platform installation. Observing the installation process can also help to determine the cause of RHCOS installation issues that might arise.
+----
+9. Continue to create more compute machines for your cluster.
+
+## Creating RHCOS machines by PXE or iPXE booting
+
+You can create more Red Hat Enterprise Linux CoreOS (RHCOS) compute machines for your bare metal cluster by using PXE or iPXE booting.
+
+* Obtain the URL of the Ignition config file for the compute machines for your cluster. You uploaded this file to your HTTP server during installation.
+* Obtain the URLs of the RHCOS ISO image, compressed metal BIOS, kernel, and initramfs files that you uploaded to your HTTP server during cluster installation.
+* You have access to the PXE booting infrastructure that you used to create the machines for your Red Hat OpenShift Container Platform cluster during installation. The machines must boot from their local disks after RHCOS is installed on them.
+* If you use UEFI, you have access to the grub.conf file that you modified during Red Hat OpenShift Container Platform installation.
+
+1. Confirm that your PXE or iPXE installation for the RHCOS images is correct.
+* For PXE:
+
+```
+DEFAULT pxeboot
+TIMEOUT 20
+PROMPT 0
+LABEL pxeboot
+    KERNEL http://<HTTP_server>/rhcos-<version>-live-kernel-<architecture> 1
+    APPEND initrd=http://<HTTP_server>/rhcos-<version>-live-initramfs.<architecture>.img coreos.inst.install_dev=/dev/sda coreos.inst.ignition_url=http://<HTTP_server>/worker.ign coreos.live.rootfs_url=http://<HTTP_server>/rhcos-<version>-live-rootfs.<architecture>.img 2
+```
+
+Specify the location of the live kernel file that you uploaded to your HTTP server.
+Specify locations of the RHCOS files that you uploaded to your HTTP server. The initrd parameter value is the location of the live initramfs file, the coreos.inst.ignition_url parameter value is the location of the worker Ignition config file, and the coreos.live.rootfs_url parameter value is the location of the live rootfs file. The coreos.inst.ignition_url and coreos.live.rootfs_url parameters only support HTTP and HTTPS.
+
+[NOTE]
+----
+This configuration does not enable serial console access on machines with a graphical console. To configure a different console, add one or more console= arguments to the APPEND line. For example, add console=tty0 console=ttyS0 to set the first PC serial port as the primary console and the graphical console as a secondary console. For more information, see How does one set up a serial terminal and/or console in Red Hat Enterprise Linux?.
+----
+* For iPXE (x86_64 + aarch64):
+
+```
+kernel http://<HTTP_server>/rhcos-<version>-live-kernel-<architecture> initrd=main coreos.live.rootfs_url=http://<HTTP_server>/rhcos-<version>-live-rootfs.<architecture>.img coreos.inst.install_dev=/dev/sda coreos.inst.ignition_url=http://<HTTP_server>/worker.ign 1 2
+initrd --name main http://<HTTP_server>/rhcos-<version>-live-initramfs.<architecture>.img 3
+boot
+```
+
+Specify the locations of the RHCOS files that you uploaded to your
+HTTP server. The kernel parameter value is the location of the kernel file,
+the initrd=main argument is needed for booting on UEFI systems,
+the coreos.live.rootfs_url parameter value is the location of the rootfs file,
+and the coreos.inst.ignition_url parameter value is the
+location of the worker Ignition config file.
+If you use multiple NICs, specify a single interface in the ip option.
+For example, to use DHCP on a NIC that is named eno1, set ip=eno1:dhcp.
+Specify the location of the initramfs file that you uploaded to your HTTP server.
+
+[NOTE]
+----
+This configuration does not enable serial console access on machines with a graphical console To configure a different console, add one or more console= arguments to the kernel line. For example, add console=tty0 console=ttyS0 to set the first PC serial port as the primary console and the graphical console as a secondary console. For more information, see How does one set up a serial terminal and/or console in Red Hat Enterprise Linux? and "Enabling the serial console for PXE and ISO installation" in the "Advanced RHCOS installation configuration" section.
+----
+
+[NOTE]
+----
+To network boot the CoreOS kernel on aarch64 architecture, you need to use a version of iPXE build with the IMAGE_GZIP option enabled. See IMAGE_GZIP option in iPXE.
+----
+* For PXE (with UEFI and GRUB as second stage) on aarch64:
+
+```
+menuentry 'Install CoreOS' {
+    linux rhcos-<version>-live-kernel-<architecture>  coreos.live.rootfs_url=http://<HTTP_server>/rhcos-<version>-live-rootfs.<architecture>.img coreos.inst.install_dev=/dev/sda coreos.inst.ignition_url=http://<HTTP_server>/worker.ign 1 2
+    initrd rhcos-<version>-live-initramfs.<architecture>.img 3
+}
+```
+
+Specify the locations of the RHCOS files that you uploaded to your
+HTTP/TFTP server. The kernel parameter value is the location of the kernel file on your TFTP server.
+The coreos.live.rootfs_url parameter value is the location of the rootfs file, and the coreos.inst.ignition_url parameter value is the location of the worker Ignition config file on your HTTP Server.
+If you use multiple NICs, specify a single interface in the ip option.
+For example, to use DHCP on a NIC that is named eno1, set ip=eno1:dhcp.
+Specify the location of the initramfs file that you uploaded to your TFTP server.
+2. Use the PXE or iPXE infrastructure to create the required compute machines for your cluster.
+
+## Approving the certificate signing requests for your machines
+
+When you add machines to a cluster, two pending certificate signing requests (CSRs) are generated for each machine that you added. You must confirm that these CSRs are approved or, if necessary, approve them yourself. The client requests must be approved first, followed by the server requests.
+
+* You added machines to your cluster.
+
+1. Confirm that the cluster recognizes the machines:
+
+```terminal
+$ oc get nodes
+```
+
+Example output
+
+```terminal
+NAME      STATUS    ROLES   AGE  VERSION
+master-0  Ready     master  63m  v1.31.3
+master-1  Ready     master  63m  v1.31.3
+master-2  Ready     master  64m  v1.31.3
+```
+
+
+The output lists all of the machines that you created.
+
+[NOTE]
+----
+The preceding output might not include the compute nodes, also known as worker nodes, until some CSRs are approved.
+----
+2. Review the pending CSRs and ensure that you see the client requests with the Pending or Approved status for each machine that you added to the cluster:
+
+```terminal
+$ oc get csr
+```
+
+Example output
+
+```terminal
+NAME        AGE     REQUESTOR                                                                   CONDITION
+csr-8b2br   15m     system:serviceaccount:openshift-machine-config-operator:node-bootstrapper   Pending
+csr-8vnps   15m     system:serviceaccount:openshift-machine-config-operator:node-bootstrapper   Pending
+...
+```
+
+
+In this example, two machines are joining the cluster. You might see more approved CSRs in the list.
+3. If the CSRs were not approved, after all of the pending CSRs for the machines you added are in Pending status, approve the CSRs for your cluster machines:
+
+[NOTE]
+----
+Because the CSRs rotate automatically, approve your CSRs within an hour of adding the machines to the cluster. If you do not approve them within an hour, the certificates will rotate, and more than two certificates will be present for each node. You must approve all of these certificates. After the client CSR is approved, the Kubelet creates a secondary CSR for the serving certificate, which requires manual approval. Then, subsequent serving certificate renewal requests are automatically approved by the machine-approver if the Kubelet requests a new certificate with identical parameters.
+----
+
+[NOTE]
+----
+For clusters running on platforms that are not machine API enabled, such as bare metal and other user-provisioned infrastructure, you must implement a method of automatically approving the kubelet serving certificate requests (CSRs). If a request is not approved, then the oc exec, oc rsh, and oc logs commands cannot succeed, because a serving certificate is required when the API server connects to the kubelet. Any operation that contacts the Kubelet endpoint requires this certificate approval to be in place. The method must watch for new CSRs, confirm that the CSR was submitted by the node-bootstrapper service account in the system:node or system:admin groups, and confirm the identity of the node.
+----
+* To approve them individually, run the following command for each valid CSR:
+
+```terminal
+$ oc adm certificate approve <csr_name> 1
+```
+
+<csr_name> is the name of a CSR from the list of current CSRs.
+* To approve all pending CSRs, run the following command:
+
+```terminal
+$ oc get csr -o go-template='{{range .items}}{{if not .status}}{{.metadata.name}}{{"\n"}}{{end}}{{end}}' | xargs --no-run-if-empty oc adm certificate approve
+```
+
+
+[NOTE]
+----
+Some Operators might not become available until some CSRs are approved.
+----
+4. Now that your client requests are approved, you must review the server requests for each machine that you added to the cluster:
+
+```terminal
+$ oc get csr
+```
+
+Example output
+
+```terminal
+NAME        AGE     REQUESTOR                                                                   CONDITION
+csr-bfd72   5m26s   system:node:ip-10-0-50-126.us-east-2.compute.internal                       Pending
+csr-c57lv   5m26s   system:node:ip-10-0-95-157.us-east-2.compute.internal                       Pending
+...
+```
+
+5. If the remaining CSRs are not approved, and are in the Pending status, approve the CSRs for your cluster machines:
+* To approve them individually, run the following command for each valid CSR:
+
+```terminal
+$ oc adm certificate approve <csr_name> 1
+```
+
+<csr_name> is the name of a CSR from the list of current CSRs.
+* To approve all pending CSRs, run the following command:
+
+```terminal
+$ oc get csr -o go-template='{{range .items}}{{if not .status}}{{.metadata.name}}{{"\n"}}{{end}}{{end}}' | xargs oc adm certificate approve
+```
+
+6. After all client and server CSRs have been approved, the machines have the Ready status. Verify this by running the following command:
+
+```terminal
+$ oc get nodes
+```
+
+Example output
+
+```terminal
+NAME      STATUS    ROLES   AGE  VERSION
+master-0  Ready     master  73m  v1.31.3
+master-1  Ready     master  73m  v1.31.3
+master-2  Ready     master  74m  v1.31.3
+worker-0  Ready     worker  11m  v1.31.3
+worker-1  Ready     worker  11m  v1.31.3
+```
+
+
+[NOTE]
+----
+It can take a few minutes after approval of the server CSRs for the machines to transition to the Ready status.
+----
+
+* Certificate Signing Requests
+
+## Adding a new RHCOS worker node with a custom /var partition in AWS
+
+Red Hat OpenShift Container Platform supports partitioning devices during installation by using machine configs that are processed during the bootstrap. However, if you use /var partitioning, the device name must be determined at installation and cannot be changed. You cannot add different instance types as nodes if they have a different device naming schema. For example, if you configured the /var partition with the default AWS device name for m4.large instances, dev/xvdb, you cannot directly add an AWS m5.large instance, as m5.large instances use a /dev/nvme1n1 device by default. The device might fail to partition due to the different naming schema.
+
+The procedure in this section shows how to add a new Red Hat Enterprise Linux CoreOS (RHCOS) compute node with an instance that uses a different device name from what was configured at installation. You create a custom user data secret and configure a new compute machine set. These steps are specific to an AWS cluster. The principles apply to other cloud deployments also. However, the device naming schema is different for other deployments and should be determined on a per-case basis.
+
+1. On a command line, change to the openshift-machine-api namespace:
+
+```terminal
+$ oc project openshift-machine-api
+```
+
+2. Create a new secret from the worker-user-data secret:
+1. Export the userData section of the secret to a text file:
+
+```terminal
+$ oc get secret worker-user-data --template='{{index .data.userData | base64decode}}' | jq > userData.txt
+```
+
+2. Edit the text file to add the storage, filesystems, and systemd stanzas for the partitions you want to use for the new node. You can specify any Ignition configuration parameters as needed.
+
+[NOTE]
+----
+Do not change the values in the ignition stanza.
+----
+
+```terminal
+{
+  "ignition": {
+    "config": {
+      "merge": [
+        {
+          "source": "https:...."
+        }
+      ]
+    },
+    "security": {
+      "tls": {
+        "certificateAuthorities": [
+          {
+            "source": "data:text/plain;charset=utf-8;base64,.....=="
+          }
+        ]
+      }
+    },
+    "version": "3.2.0"
+  },
+  "storage": {
+    "disks": [
+      {
+        "device": "/dev/nvme1n1", 1
+        "partitions": [
+          {
+            "label": "var",
+            "sizeMiB": 50000, 2
+            "startMiB": 0 3
+          }
+        ]
+      }
+    ],
+    "filesystems": [
+      {
+        "device": "/dev/disk/by-partlabel/var", 4
+        "format": "xfs", 5
+        "path": "/var" 6
+      }
+    ]
+  },
+  "systemd": {
+    "units": [ 7
+      {
+        "contents": "[Unit]\nBefore=local-fs.target\n[Mount]\nWhere=/var\nWhat=/dev/disk/by-partlabel/var\nOptions=defaults,pquota\n[Install]\nWantedBy=local-fs.target\n",
+        "enabled": true,
+        "name": "var.mount"
+      }
+    ]
+  }
+}
+```
+
+Specifies an absolute path to the AWS block device.
+Specifies the size of the data partition in Mebibytes.
+Specifies the start of the partition in Mebibytes. When adding a data partition to the boot disk, a minimum value of 25000 MB (Mebibytes) is recommended. The root file system is automatically resized to fill all available space up to the specified offset. If no value is specified, or if the specified value is smaller than the recommended minimum, the resulting root file system will be too small, and future reinstalls of RHCOS might overwrite the beginning of the data partition.
+Specifies an absolute path to the /var partition.
+Specifies the filesystem format.
+Specifies the mount-point of the filesystem while Ignition is running relative to where the root filesystem will be mounted. This is not necessarily the same as where it should be mounted in the real root, but it is encouraged to make it the same.
+Defines a systemd mount unit that mounts the /dev/disk/by-partlabel/var device to the /var partition.
+3. Extract the disableTemplating section from the work-user-data secret to a text file:
+
+```terminal
+$ oc get secret worker-user-data --template='{{index .data.disableTemplating | base64decode}}' | jq > disableTemplating.txt
+```
+
+4. Create the new user data secret file from the two text files. This user data secret passes the additional node partition information in the userData.txt file to the newly created node.
+
+```terminal
+$ oc create secret generic worker-user-data-x5 --from-file=userData=userData.txt --from-file=disableTemplating=disableTemplating.txt
+```
+
+3. Create a new compute machine set for the new node:
+1. Create a new compute machine set YAML file, similar to the following, which is configured for AWS. Add the required partitions and the newly-created user data secret:
+
+[TIP]
+----
+Use an existing compute machine set as a template and change the parameters as needed for the new node.
+----
+
+```terminal
+apiVersion: machine.openshift.io/v1beta1
+kind: MachineSet
+metadata:
+  labels:
+    machine.openshift.io/cluster-api-cluster: auto-52-92tf4
+  name: worker-us-east-2-nvme1n1 1
+  namespace: openshift-machine-api
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      machine.openshift.io/cluster-api-cluster: auto-52-92tf4
+      machine.openshift.io/cluster-api-machineset: auto-52-92tf4-worker-us-east-2b
+  template:
+    metadata:
+      labels:
+        machine.openshift.io/cluster-api-cluster: auto-52-92tf4
+        machine.openshift.io/cluster-api-machine-role: worker
+        machine.openshift.io/cluster-api-machine-type: worker
+        machine.openshift.io/cluster-api-machineset: auto-52-92tf4-worker-us-east-2b
+    spec:
+      metadata: {}
+      providerSpec:
+        value:
+          ami:
+            id: ami-0c2dbd95931a
+          apiVersion: awsproviderconfig.openshift.io/v1beta1
+          blockDevices:
+          - DeviceName: /dev/nvme1n1 2
+            ebs:
+              encrypted: true
+              iops: 0
+              volumeSize: 120
+              volumeType: gp2
+          - DeviceName: /dev/nvme1n2 3
+            ebs:
+              encrypted: true
+              iops: 0
+              volumeSize: 50
+              volumeType: gp2
+          credentialsSecret:
+            name: aws-cloud-credentials
+          deviceIndex: 0
+          iamInstanceProfile:
+            id: auto-52-92tf4-worker-profile
+          instanceType: m6i.large
+          kind: AWSMachineProviderConfig
+          metadata:
+            creationTimestamp: null
+          placement:
+            availabilityZone: us-east-2b
+            region: us-east-2
+          securityGroups:
+          - filters:
+            - name: tag:Name
+              values:
+              - auto-52-92tf4-worker-sg
+          subnet:
+            id: subnet-07a90e5db1
+          tags:
+          - name: kubernetes.io/cluster/auto-52-92tf4
+            value: owned
+          userDataSecret:
+            name: worker-user-data-x5 4
+```
+
+Specifies a name for the new node.
+Specifies an absolute path to the AWS block device, here an encrypted EBS volume.
+Optional. Specifies an additional EBS volume.
+Specifies the user data secret file.
+2. Create the compute machine set:
+
+```yaml
+$ oc create -f <file-name>.yaml
+```
+
+
+The machines might take a few moments to become available.
+4. Verify that the new partition and nodes are created:
+1. Verify that the compute machine set is created:
+
+```terminal
+$ oc get machineset
+```
+
+Example output
+
+```terminal
+NAME                                               DESIRED   CURRENT   READY   AVAILABLE   AGE
+ci-ln-2675bt2-76ef8-bdgsc-worker-us-east-1a        1         1         1       1           124m
+ci-ln-2675bt2-76ef8-bdgsc-worker-us-east-1b        2         2         2       2           124m
+worker-us-east-2-nvme1n1                           1         1         1       1           2m35s 1
+```
+
+This is the new compute machine set.
+2. Verify that the new node is created:
+
+```terminal
+$ oc get nodes
+```
+
+Example output
+
+```terminal
+NAME                           STATUS   ROLES    AGE     VERSION
+ip-10-0-128-78.ec2.internal    Ready    worker   117m    v1.31.3
+ip-10-0-146-113.ec2.internal   Ready    master   127m    v1.31.3
+ip-10-0-153-35.ec2.internal    Ready    worker   118m    v1.31.3
+ip-10-0-176-58.ec2.internal    Ready    master   126m    v1.31.3
+ip-10-0-217-135.ec2.internal   Ready    worker   2m57s   v1.31.3 1
+ip-10-0-225-248.ec2.internal   Ready    master   127m    v1.31.3
+ip-10-0-245-59.ec2.internal    Ready    worker   116m    v1.31.3
+```
+
+This is new new node.
+3. Verify that the custom /var partition is created on the new node:
+
+```terminal
+$ oc debug node/<node-name> -- chroot /host lsblk
+```
+
+
+For example:
+
+```terminal
+$ oc debug node/ip-10-0-217-135.ec2.internal -- chroot /host lsblk
+```
+
+Example output
+
+```terminal
+NAME        MAJ:MIN  RM  SIZE RO TYPE MOUNTPOINT
+nvme0n1     202:0    0   120G  0 disk
+|-nvme0n1p1 202:1    0     1M  0 part
+|-nvme0n1p2 202:2    0   127M  0 part
+|-nvme0n1p3 202:3    0   384M  0 part /boot
+`-nvme0n1p4 202:4    0 119.5G  0 part /sysroot
+nvme1n1     202:16   0    50G  0 disk
+`-nvme1n1p1 202:17   0  48.8G  0 part /var 1
+```
+
+The nvme1n1 device is mounted to the /var partition.
+
+* For more information on how Red Hat OpenShift Container Platform uses disk partitioning, see Disk partitioning.
+
+# Deploying machine health checks
+
+Understand and deploy machine health checks.
+
+
+[IMPORTANT]
+----
+You can use the advanced machine management and scaling capabilities only in clusters where the Machine API is operational. Clusters with user-provisioned infrastructure require additional validation and configuration to use the Machine API.
+Clusters with the infrastructure platform type none cannot use the Machine API. This limitation applies even if the compute machines that are attached to the cluster are installed on a platform that supports the feature. This parameter cannot be changed after installation.
+To view the platform type for your cluster, run the following command:
+
+```terminal
+$ oc get infrastructure cluster -o jsonpath='{.status.platform}'
+```
+
+----
+
+## About machine health checks
+
+
+[NOTE]
+----
+You can only apply a machine health check to machines that are managed by compute machine sets or control plane machine sets.
+----
+
+To monitor machine health, create a resource to define the configuration for a controller. Set a condition to check, such as staying in the NotReady status for five minutes or displaying a permanent condition in the node-problem-detector, and a label for the set of machines to monitor.
+
+The controller that observes a MachineHealthCheck resource checks for the defined condition. If a machine fails the health check, the machine is automatically deleted and one is created to take its place. When a machine is deleted, you see a machine deleted event.
+
+To limit disruptive impact of the machine deletion, the controller drains and deletes only one node at a time. If there are more unhealthy machines than the maxUnhealthy threshold allows for in the targeted pool of machines, remediation stops and therefore enables manual intervention.
+
+
+[NOTE]
+----
+Consider the timeouts carefully, accounting for workloads and requirements.
+* Long timeouts can result in long periods of downtime for the workload on the unhealthy machine.
+* Too short timeouts can result in a remediation loop. For example, the timeout for checking the NotReady status must be long enough to allow the machine to complete the startup process.
+----
+
+To stop the check, remove the resource.
+
+### Limitations when deploying machine health checks
+
+There are limitations to consider before deploying a machine health check:
+
+* Only machines owned by a machine set are remediated by a machine health check.
+* If the node for a machine is removed from the cluster, a machine health check considers the machine to be unhealthy and remediates it immediately.
+* If the corresponding node for a machine does not join the cluster after the nodeStartupTimeout, the machine is remediated.
+* A machine is remediated immediately if the Machine resource phase is Failed.
+
+* About control plane machine sets
+
+## Sample MachineHealthCheck resource
+
+The MachineHealthCheck resource for all cloud-based installation types, and other than bare metal, resembles the following YAML file:
+
+
+```yaml
+apiVersion: machine.openshift.io/v1beta1
+kind: MachineHealthCheck
+metadata:
+  name: example 1
+  namespace: openshift-machine-api
+spec:
+  selector:
+    matchLabels:
+      machine.openshift.io/cluster-api-machine-role: <role> 2
+      machine.openshift.io/cluster-api-machine-type: <role> 2
+      machine.openshift.io/cluster-api-machineset: <cluster_name>-<label>-<zone> 3
+  unhealthyConditions:
+  - type:    "Ready"
+    timeout: "300s" 4
+    status: "False"
+  - type:    "Ready"
+    timeout: "300s" 4
+    status: "Unknown"
+  maxUnhealthy: "40%" 5
+  nodeStartupTimeout: "10m" 6
+```
+
+
+Specify the name of the machine health check to deploy.
+Specify a label for the machine pool that you want to check.
+Specify the machine set to track in <cluster_name>-<label>-<zone> format. For example, prod-node-us-east-1a.
+Specify the timeout duration for a node condition. If a condition is met for the duration of the timeout, the machine will be remediated. Long timeouts can result in long periods of downtime for a workload on an unhealthy machine.
+Specify the amount of machines allowed to be concurrently remediated in the targeted pool. This can be set as a percentage or an integer. If the number of unhealthy machines exceeds the limit set by maxUnhealthy, remediation is not performed.
+Specify the timeout duration that a machine health check must wait for a node to join the cluster before a machine is determined to be unhealthy.
+
+
+[NOTE]
+----
+The matchLabels are examples only; you must map your machine groups based on your specific needs.
+----
+
+### Short-circuiting machine health check remediation
+
+Short-circuiting ensures that machine health checks remediate machines only when the cluster is healthy.
+Short-circuiting is configured through the maxUnhealthy field in the MachineHealthCheck resource.
+
+If the user defines a value for the maxUnhealthy field, before remediating any machines, the MachineHealthCheck compares the value of maxUnhealthy with the number of machines within its target pool that it has determined to be unhealthy. Remediation is not performed if the number of unhealthy machines exceeds the maxUnhealthy limit.
+
+
+[IMPORTANT]
+----
+If maxUnhealthy is not set, the value defaults to 100% and the machines are remediated regardless of the state of the cluster.
+----
+
+The appropriate maxUnhealthy value depends on the scale of the cluster you deploy and how many machines the MachineHealthCheck covers. For example, you can use the maxUnhealthy value to cover multiple compute machine sets across multiple availability zones so that if you lose an entire zone, your maxUnhealthy setting prevents further remediation within the cluster. In global Azure regions that do not have multiple availability zones, you can use availability sets to ensure high availability.
+
+
+[IMPORTANT]
+----
+If you configure a MachineHealthCheck resource for the control plane, set the value of maxUnhealthy to 1.
+This configuration ensures that the machine health check takes no action when multiple control plane machines appear to be unhealthy. Multiple unhealthy control plane machines can indicate that the etcd cluster is degraded or that a scaling operation to replace a failed machine is in progress.
+If the etcd cluster is degraded, manual intervention might be required. If a scaling operation is in progress, the machine health check should allow it to finish.
+----
+
+The maxUnhealthy field can be set as either an integer or percentage.
+There are different remediation implementations depending on the maxUnhealthy value.
+
+#### Setting maxUnhealthy by using an absolute value
+
+If maxUnhealthy is set to 2:
+
+* Remediation will be performed if 2 or fewer nodes are unhealthy
+* Remediation will not be performed if 3 or more nodes are unhealthy
+
+These values are independent of how many machines are being checked by the machine health check.
+
+#### Setting maxUnhealthy by using percentages
+
+If maxUnhealthy is set to 40% and there are 25 machines being checked:
+
+* Remediation will be performed if 10 or fewer nodes are unhealthy
+* Remediation will not be performed if 11 or more nodes are unhealthy
+
+If maxUnhealthy is set to 40% and there are 6 machines being checked:
+
+* Remediation will be performed if 2 or fewer nodes are unhealthy
+* Remediation will not be performed if 3 or more nodes are unhealthy
+
+
+[NOTE]
+----
+The allowed number of machines is rounded down when the percentage of maxUnhealthy machines that are checked is not a whole number.
+----
+
+## Creating a machine health check resource
+
+You can create a MachineHealthCheck resource for machine sets in your cluster.
+
+
+[NOTE]
+----
+You can only apply a machine health check to machines that are managed by compute machine sets or control plane machine sets.
+----
+
+* Install the oc command line interface.
+
+1. Create a healthcheck.yml file that contains the definition of your machine health check.
+2. Apply the healthcheck.yml file to your cluster:
+
+```terminal
+$ oc apply -f healthcheck.yml
+```
+
+
+## Scaling a compute machine set manually
+
+To add or remove an instance of a machine in a compute machine set, you can manually scale the compute machine set.
+
+This guidance is relevant to fully automated, installer-provisioned infrastructure installations. Customized, user-provisioned infrastructure installations do not have compute machine sets.
+
+* Install an Red Hat OpenShift Container Platform cluster and the oc command line.
+* Log in to  oc as a user with cluster-admin permission.
+
+1. View the compute machine sets that are in the cluster by running the following command:
+
+```terminal
+$ oc get machinesets.machine.openshift.io -n openshift-machine-api
+```
+
+
+The compute machine sets are listed in the form of <clusterid>-worker-<aws-region-az>.
+2. View the compute machines that are in the cluster by running the following command:
+
+```terminal
+$ oc get machines.machine.openshift.io -n openshift-machine-api
+```
+
+3. Set the annotation on the compute machine that you want to delete by running the following command:
+
+```terminal
+$ oc annotate machines.machine.openshift.io/<machine_name> -n openshift-machine-api machine.openshift.io/delete-machine="true"
+```
+
+4. Scale the compute machine set by running one of the following commands:
+
+```terminal
+$ oc scale --replicas=2 machinesets.machine.openshift.io <machineset> -n openshift-machine-api
+```
+
+
+Or:
+
+```terminal
+$ oc edit machinesets.machine.openshift.io <machineset> -n openshift-machine-api
+```
+
+
+[TIP]
+----
+You can alternatively apply the following YAML to scale the compute machine set:
+
+```yaml
+apiVersion: machine.openshift.io/v1beta1
+kind: MachineSet
+metadata:
+  name: <machineset>
+  namespace: openshift-machine-api
+spec:
+  replicas: 2
+```
+
+----
+
+You can scale the compute machine set up or down. It takes several minutes for the new machines to be available.
+
+[IMPORTANT]
+----
+By default, the machine controller tries to drain the node that is backed by the machine until it succeeds. In some situations, such as with a misconfigured pod disruption budget, the drain operation might not be able to succeed. If the drain operation fails, the machine controller cannot proceed removing the machine.
+You can skip draining the node by annotating machine.openshift.io/exclude-node-draining in a specific machine.
+----
+
+* Verify the deletion of the intended machine by running the following command:
+
+```terminal
+$ oc get machines.machine.openshift.io
+```
+
+
+## Understanding the difference between compute machine sets and the machine config pool
+
+MachineSet objects describe Red Hat OpenShift Container Platform nodes with respect to the cloud or machine provider.
+
+The MachineConfigPool object allows MachineConfigController components to define and provide the status of machines in the context of upgrades.
+
+The MachineConfigPool object allows users to configure how upgrades are rolled out to the Red Hat OpenShift Container Platform nodes in the machine config pool.
+
+The NodeSelector object can be replaced with a reference to the MachineSet object.
+
+# Recommended node host practices
+
+The Red Hat OpenShift Container Platform node configuration file contains important options. For
+example, two parameters control the maximum number of pods that can be scheduled
+to a node: podsPerCore and maxPods.
+
+When both options are in use, the lower of the two values limits the number of
+pods on a node. Exceeding these values can result in:
+
+* Increased CPU utilization.
+* Slow pod scheduling.
+* Potential out-of-memory scenarios, depending on the amount of memory in the node.
+* Exhausting the pool of IP addresses.
+* Resource overcommitting, leading to poor user application performance.
+
+
+[IMPORTANT]
+----
+In Kubernetes, a pod that is holding a single container actually uses two
+containers. The second container is used to set up networking prior to the
+actual container starting. Therefore, a system running 10 pods will actually
+have 20 containers running.
+----
+
+
+[NOTE]
+----
+Disk IOPS throttling from the cloud provider might have an impact on CRI-O and kubelet.
+They might get overloaded when there are large number of I/O intensive pods running on
+the nodes. It is recommended that you monitor the disk I/O on the nodes and use volumes
+with sufficient throughput for the workload.
+----
+
+The podsPerCore parameter sets the number of pods the node can run based on the number of
+processor cores on the node. For example, if podsPerCore is set to 10 on a
+node with 4 processor cores, the maximum number of pods allowed on the node will
+be 40.
+
+
+```yaml
+kubeletConfig:
+  podsPerCore: 10
+```
+
+
+Setting podsPerCore to 0 disables this limit. The default is 0.
+The value of the podsPerCore parameter cannot exceed the value of the maxPods parameter.
+
+The maxPods parameter sets the number of pods the node can run to a fixed value, regardless
+of the properties of the node.
+
+
+```yaml
+ kubeletConfig:
+    maxPods: 250
+```
+
+
+## Creating a KubeletConfig CRD to edit kubelet parameters
+
+The kubelet configuration is currently serialized as an Ignition configuration, so it can be directly edited. However, there is also a new kubelet-config-controller added to the Machine Config Controller (MCC). This lets you use a KubeletConfig custom resource (CR) to edit the kubelet parameters.
+
+
+[NOTE]
+----
+As the fields in the kubeletConfig object are passed directly to the kubelet from upstream Kubernetes, the kubelet validates those values directly. Invalid values in the kubeletConfig object might cause cluster nodes to become unavailable. For valid values, see the Kubernetes documentation.
+----
+
+Consider the following guidance:
+
+* Edit an existing KubeletConfig CR to modify existing settings or add new settings, instead of creating a CR for each change. It is recommended that you create a CR only to modify a different machine config pool, or for changes that are intended to be temporary, so that you can revert the changes.
+* Create one KubeletConfig CR for each machine config pool with all the config changes you want for that pool.
+* As needed, create multiple KubeletConfig CRs with a limit of 10 per cluster. For the first KubeletConfig CR, the Machine Config Operator (MCO) creates a machine config appended with kubelet. With each subsequent CR, the controller creates another kubelet machine config with a numeric suffix. For example, if you have a kubelet machine config with a -2 suffix, the next kubelet machine config is appended with -3.
+
+
+[NOTE]
+----
+If you are applying a kubelet or container runtime config to a custom machine config pool, the custom role in the machineConfigSelector must match the name of the custom machine config pool.
+For example, because the following custom machine config pool is named infra, the custom role must also be infra:
+
+```yaml
+apiVersion: machineconfiguration.openshift.io/v1
+kind: MachineConfigPool
+metadata:
+  name: infra
+spec:
+  machineConfigSelector:
+    matchExpressions:
+      - {key: machineconfiguration.openshift.io/role, operator: In, values: [worker,infra]}
+# ...
+```
+
+----
+
+If you want to delete the machine configs, delete them in reverse order to avoid exceeding the limit. For example, you delete the kubelet-3 machine config before deleting the kubelet-2 machine config.
+
+
+[NOTE]
+----
+If you have a machine config with a kubelet-9 suffix, and you create another KubeletConfig CR, a new machine config is not created, even if there are fewer than 10 kubelet machine configs.
+----
+
+
+```terminal
+$ oc get kubeletconfig
+```
+
+
+
+```terminal
+NAME                AGE
+set-max-pods        15m
+```
+
+
+
+```terminal
+$ oc get mc | grep kubelet
+```
+
+
+
+```terminal
+...
+99-worker-generated-kubelet-1                  b5c5119de007945b6fe6fb215db3b8e2ceb12511   3.2.0             26m
+...
+```
+
+
+The following procedure is an example to show how to configure the maximum number of pods per node on the worker nodes.
+
+1. Obtain the label associated with the static MachineConfigPool CR for the type of node you want to configure.
+Perform one of the following steps:
+1. View the machine config pool:
+
+```terminal
+$ oc describe machineconfigpool <name>
+```
+
+
+For example:
+
+```terminal
+$ oc describe machineconfigpool worker
+```
+
+Example output
+
+```yaml
+apiVersion: machineconfiguration.openshift.io/v1
+kind: MachineConfigPool
+metadata:
+  creationTimestamp: 2019-02-08T14:52:39Z
+  generation: 1
+  labels:
+    custom-kubelet: set-max-pods 1
+```
+
+If a label has been added it appears under labels.
+2. If the label is not present, add a key/value pair:
+
+```terminal
+$ oc label machineconfigpool worker custom-kubelet=set-max-pods
+```
+
+
+1. View the available machine configuration objects that you can select:
+
+```terminal
+$ oc get machineconfig
+```
+
+
+By default, the two kubelet-related configs are 01-master-kubelet and 01-worker-kubelet.
+2. Check the current value for the maximum pods per node:
+
+```terminal
+$ oc describe node <node_name>
+```
+
+
+For example:
+
+```terminal
+$ oc describe node ci-ln-5grqprb-f76d1-ncnqq-worker-a-mdv94
+```
+
+
+Look for value: pods: <value> in the Allocatable stanza:
+Example output
+
+```terminal
+Allocatable:
+ attachable-volumes-aws-ebs:  25
+ cpu:                         3500m
+ hugepages-1Gi:               0
+ hugepages-2Mi:               0
+ memory:                      15341844Ki
+ pods:                        250
+```
+
+3. Set the maximum pods per node on the worker nodes by creating a custom resource file that contains the kubelet configuration:
+
+[IMPORTANT]
+----
+Kubelet configurations that target a specific machine config pool also affect any dependent pools. For example, creating a kubelet configuration for the pool containing worker nodes will also apply to any subset pools, including the pool containing infrastructure nodes. To avoid this, you must create a new machine config pool with a selection expression that only includes worker nodes, and have your kubelet configuration target this new pool.
+----
+
+```yaml
+apiVersion: machineconfiguration.openshift.io/v1
+kind: KubeletConfig
+metadata:
+  name: set-max-pods
+spec:
+  machineConfigPoolSelector:
+    matchLabels:
+      custom-kubelet: set-max-pods 1
+  kubeletConfig:
+    maxPods: 500 2
+```
+
+Enter the label from the machine config pool.
+Add the kubelet configuration. In this example, use maxPods to set the maximum pods per node.
+
+[NOTE]
+----
+The rate at which the kubelet talks to the API server depends on queries per second (QPS) and burst values. The default values, 50 for kubeAPIQPS and 100 for kubeAPIBurst, are sufficient if there are limited pods running on each node. It is recommended to update the kubelet QPS and burst rates if there are enough CPU and memory resources on the node.
+
+```yaml
+apiVersion: machineconfiguration.openshift.io/v1
+kind: KubeletConfig
+metadata:
+  name: set-max-pods
+spec:
+  machineConfigPoolSelector:
+    matchLabels:
+      custom-kubelet: set-max-pods
+  kubeletConfig:
+    maxPods: <pod_count>
+    kubeAPIBurst: <burst_rate>
+    kubeAPIQPS: <QPS>
+```
+
+----
+1. Update the machine config pool for workers with the label:
+
+```terminal
+$ oc label machineconfigpool worker custom-kubelet=set-max-pods
+```
+
+2. Create the KubeletConfig object:
+
+```terminal
+$ oc create -f change-maxPods-cr.yaml
+```
+
+3. Verify that the KubeletConfig object is created:
+
+```terminal
+$ oc get kubeletconfig
+```
+
+Example output
+
+```terminal
+NAME                AGE
+set-max-pods        15m
+```
+
+
+Depending on the number of worker nodes in the cluster, wait for the worker nodes to be rebooted one by one. For a cluster with 3 worker nodes, this could take about 10 to 15 minutes.
+4. Verify that the changes are applied to the node:
+1. Check on a worker node that the maxPods value changed:
+
+```terminal
+$ oc describe node <node_name>
+```
+
+2. Locate the Allocatable stanza:
+
+```terminal
+ ...
+Allocatable:
+  attachable-volumes-gce-pd:  127
+  cpu:                        3500m
+  ephemeral-storage:          123201474766
+  hugepages-1Gi:              0
+  hugepages-2Mi:              0
+  memory:                     14225400Ki
+  pods:                       500 1
+ ...
+```
+
+In this example, the pods parameter should report the value you set in the KubeletConfig object.
+5. Verify the change in the KubeletConfig object:
+
+```terminal
+$ oc get kubeletconfigs set-max-pods -o yaml
+```
+
+
+This should show a status of True and type:Success, as shown in the following example:
+
+```yaml
+spec:
+  kubeletConfig:
+    maxPods: 500
+  machineConfigPoolSelector:
+    matchLabels:
+      custom-kubelet: set-max-pods
+status:
+  conditions:
+  - lastTransitionTime: "2021-06-30T17:04:07Z"
+    message: Success
+    status: "True"
+    type: Success
+```
+
+
+## Modifying the number of unavailable worker nodes
+
+By default, only one machine is allowed to be unavailable when applying the kubelet-related configuration to the available worker nodes. For a large cluster, it can take a long time for the configuration change to be reflected. At any time, you can adjust the number of machines that are updating to speed up the process.
+
+1. Edit the worker machine config pool:
+
+```terminal
+$ oc edit machineconfigpool worker
+```
+
+2. Add the maxUnavailable field and set the value:
+
+```yaml
+spec:
+  maxUnavailable: <node_count>
+```
+
+
+[IMPORTANT]
+----
+When setting the value, consider the number of worker nodes that can be
+unavailable without affecting the applications running on the cluster.
+----
+
+## Control plane node sizing
+
+The control plane node resource requirements depend on the number and type of nodes and objects in the cluster. The following control plane node size recommendations are based on the results of a control plane density focused testing, or Cluster-density. This test creates the following objects across a given number of namespaces:
+
+* 1 image stream
+* 1 build
+* 5 deployments, with 2 pod replicas in a sleep state, mounting 4 secrets, 4 config maps, and 1 downward API volume each
+* 5 services, each one pointing to the TCP/8080 and TCP/8443 ports of one of the previous deployments
+* 1 route pointing to the first of the previous services
+* 10 secrets containing 2048 random string characters
+* 10 config maps containing 2048 random string characters
+
+
+
+The data from the table above is based on an Red Hat OpenShift Container Platform running on top of AWS, using r5.4xlarge instances as control-plane nodes and m5.2xlarge instances as worker nodes.
+
+On a large and dense cluster with three control plane nodes, the CPU and memory usage will spike up when one of the nodes is stopped, rebooted, or fails. The failures can be due to unexpected issues with power, network, underlying infrastructure, or intentional cases where the cluster is restarted after shutting it down to save costs. The remaining two control plane nodes must handle the load in order to be highly available, which leads to increase in the resource usage. This is also expected during upgrades because the control plane nodes are cordoned, drained, and rebooted serially to apply the operating system updates, as well as the control plane Operators update. To avoid cascading failures, keep the overall CPU and memory resource usage on the control plane nodes to at most 60% of all available capacity to handle the resource usage spikes. Increase the CPU and memory on the control plane nodes accordingly to avoid potential downtime due to lack of resources.
+
+
+[IMPORTANT]
+----
+The node sizing varies depending on the number of nodes and object counts in the cluster. It also depends on whether the objects are actively being created on the cluster. During object creation, the control plane is more active in terms of resource usage compared to when the objects are in the running phase.
+----
+
+Operator Lifecycle Manager (OLM ) runs on the control plane nodes and its memory footprint depends on the number of namespaces and user installed operators that OLM needs to manage on the cluster. Control plane nodes need to be sized accordingly to avoid OOM kills. Following data points are based on the results from cluster maximums testing.
+
+
+
+
+[IMPORTANT]
+----
+You can modify the control plane node size in a running Red Hat OpenShift Container Platform 4.18 cluster for the following configurations only:
+* Clusters installed with a user-provisioned installation method.
+* AWS clusters installed with an installer-provisioned infrastructure installation method.
+* Clusters that use a control plane machine set to manage control plane machines.
+For all other configurations, you must estimate your total node count and use the suggested control plane node size during installation.
+----
+
+
+[NOTE]
+----
+In Red Hat OpenShift Container Platform 4.18, half of a CPU core (500 millicore) is now reserved by the system by default compared to Red Hat OpenShift Container Platform 3.11 and previous versions. The sizes are determined taking that into consideration.
+----
+
+## Setting up CPU Manager
+
+To configure CPU manager, create a KubeletConfig custom resource (CR) and apply it to the desired set of nodes.
+
+1. Label a node by running the following command:
+
+```terminal
+# oc label node perf-node.example.com cpumanager=true
+```
+
+2. To enable CPU Manager for all compute nodes, edit the CR by running the following command:
+
+```terminal
+# oc edit machineconfigpool worker
+```
+
+3. Add the custom-kubelet: cpumanager-enabled label to metadata.labels section.
+
+```yaml
+metadata:
+  creationTimestamp: 2020-xx-xxx
+  generation: 3
+  labels:
+    custom-kubelet: cpumanager-enabled
+```
+
+4. Create a KubeletConfig, cpumanager-kubeletconfig.yaml, custom resource (CR). Refer to the label created in the previous step to have the correct nodes updated with the new kubelet config. See the machineConfigPoolSelector section:
+
+```yaml
+apiVersion: machineconfiguration.openshift.io/v1
+kind: KubeletConfig
+metadata:
+  name: cpumanager-enabled
+spec:
+  machineConfigPoolSelector:
+    matchLabels:
+      custom-kubelet: cpumanager-enabled
+  kubeletConfig:
+     cpuManagerPolicy: static 1
+     cpuManagerReconcilePeriod: 5s 2
+```
+
+Specify a policy:
+* none. This policy explicitly enables the existing default CPU affinity scheme, providing no affinity beyond what the scheduler does automatically. This is the default policy.
+* static. This policy allows containers in guaranteed pods with integer CPU requests. It also limits access to exclusive CPUs on the node. If static, you must use a lowercase s.
+Optional. Specify the CPU Manager reconcile frequency. The default is 5s.
+5. Create the dynamic kubelet config by running the following command:
+
+```terminal
+# oc create -f cpumanager-kubeletconfig.yaml
+```
+
+
+This adds the CPU Manager feature to the kubelet config and, if needed, the Machine Config Operator (MCO) reboots the node. To enable CPU Manager, a reboot is not needed.
+6. Check for the merged kubelet config by running the following command:
+
+```terminal
+# oc get machineconfig 99-worker-XXXXXX-XXXXX-XXXX-XXXXX-kubelet -o json | grep ownerReference -A7
+```
+
+Example output
+
+```json
+       "ownerReferences": [
+            {
+                "apiVersion": "machineconfiguration.openshift.io/v1",
+                "kind": "KubeletConfig",
+                "name": "cpumanager-enabled",
+                "uid": "7ed5616d-6b72-11e9-aae1-021e1ce18878"
+            }
+        ]
+```
+
+7. Check the compute node for the updated kubelet.conf file by running the following command:
+
+```terminal
+# oc debug node/perf-node.example.com
+sh-4.2# cat /host/etc/kubernetes/kubelet.conf | grep cpuManager
+```
+
+Example output
+
+```terminal
+cpuManagerPolicy: static        1
+cpuManagerReconcilePeriod: 5s   2
+```
+
+cpuManagerPolicy is defined when you create the KubeletConfig CR.
+cpuManagerReconcilePeriod is defined when you create the KubeletConfig CR.
+8. Create a project by running the following command:
+
+```terminal
+$ oc new-project <project_name>
+```
+
+9. Create a pod that requests a core or multiple cores. Both limits and requests must have their CPU value set to a whole integer. That is the number of cores that will be dedicated to this pod:
+
+```terminal
+# cat cpumanager-pod.yaml
+```
+
+Example output
+
+```yaml
+apiVersion: v1
+kind: Pod
+metadata:
+  generateName: cpumanager-
+spec:
+  securityContext:
+    runAsNonRoot: true
+    seccompProfile:
+      type: RuntimeDefault
+  containers:
+  - name: cpumanager
+    image: gcr.io/google_containers/pause:3.2
+    resources:
+      requests:
+        cpu: 1
+        memory: "1G"
+      limits:
+        cpu: 1
+        memory: "1G"
+    securityContext:
+      allowPrivilegeEscalation: false
+      capabilities:
+        drop: [ALL]
+  nodeSelector:
+    cpumanager: "true"
+```
+
+10. Create the pod:
+
+```terminal
+# oc create -f cpumanager-pod.yaml
+```
+
+
+1. Verify that the pod is scheduled to the node that you labeled by running the following command:
+
+```terminal
+# oc describe pod cpumanager
+```
+
+Example output
+
+```terminal
+Name:               cpumanager-6cqz7
+Namespace:          default
+Priority:           0
+PriorityClassName:  <none>
+Node:  perf-node.example.com/xxx.xx.xx.xxx
+...
+ Limits:
+      cpu:     1
+      memory:  1G
+    Requests:
+      cpu:        1
+      memory:     1G
+...
+QoS Class:       Guaranteed
+Node-Selectors:  cpumanager=true
+```
+
+2. Verify that a CPU has been exclusively assigned to the pod by running the following command:
+
+```terminal
+# oc describe node --selector='cpumanager=true' | grep -i cpumanager- -B2
+```
+
+Example output
+
+```terminal
+NAMESPACE    NAME                CPU Requests  CPU Limits  Memory Requests  Memory Limits  Age
+cpuman       cpumanager-mlrrz    1 (28%)       1 (28%)     1G (13%)         1G (13%)       27m
+```
+
+3. Verify that the cgroups are set up correctly. Get the process ID (PID) of the pause process by running the following commands:
+
+```terminal
+# oc debug node/perf-node.example.com
+```
+
+
+```terminal
+sh-4.2# systemctl status | grep -B5 pause
+```
+
+
+[NOTE]
+----
+If the output returns multiple pause process entries, you must identify the correct pause process.
+----
+Example output
+
+```terminal
+# ├─init.scope
+│ └─1 /usr/lib/systemd/systemd --switched-root --system --deserialize 17
+└─kubepods.slice
+  ├─kubepods-pod69c01f8e_6b74_11e9_ac0f_0a2b62178a22.slice
+  │ ├─crio-b5437308f1a574c542bdf08563b865c0345c8f8c0b0a655612c.scope
+  │ └─32706 /pause
+```
+
+4. Verify that pods of quality of service (QoS) tier Guaranteed are placed within the kubepods.slice subdirectory by running the following commands:
+
+```terminal
+# cd /sys/fs/cgroup/kubepods.slice/kubepods-pod69c01f8e_6b74_11e9_ac0f_0a2b62178a22.slice/crio-b5437308f1ad1a7db0574c542bdf08563b865c0345c86e9585f8c0b0a655612c.scope
+```
+
+
+```terminal
+# for i in `ls cpuset.cpus cgroup.procs` ; do echo -n "$i "; cat $i ; done
+```
+
+
+[NOTE]
+----
+Pods of other QoS tiers end up in child cgroups of the parent kubepods.
+----
+Example output
+
+```terminal
+cpuset.cpus 1
+tasks 32706
+```
+
+5. Check the allowed CPU list for the task by running the following command:
+
+```terminal
+# grep ^Cpus_allowed_list /proc/32706/status
+```
+
+Example output
+
+```terminal
+ Cpus_allowed_list:    1
+```
+
+6. Verify that another pod on the system cannot run on the core allocated for the Guaranteed pod. For example, to verify the pod in the besteffort QoS tier, run the following commands:
+
+```terminal
+# cat /sys/fs/cgroup/kubepods.slice/kubepods-besteffort.slice/kubepods-besteffort-podc494a073_6b77_11e9_98c0_06bba5c387ea.slice/crio-c56982f57b75a2420947f0afc6cafe7534c5734efc34157525fa9abbf99e3849.scope/cpuset.cpus
+```
+
+
+```terminal
+# oc describe node perf-node.example.com
+```
+
+Example output
+
+```terminal
+...
+Capacity:
+ attachable-volumes-aws-ebs:  39
+ cpu:                         2
+ ephemeral-storage:           124768236Ki
+ hugepages-1Gi:               0
+ hugepages-2Mi:               0
+ memory:                      8162900Ki
+ pods:                        250
+Allocatable:
+ attachable-volumes-aws-ebs:  39
+ cpu:                         1500m
+ ephemeral-storage:           124768236Ki
+ hugepages-1Gi:               0
+ hugepages-2Mi:               0
+ memory:                      7548500Ki
+ pods:                        250
+-------                               ----                           ------------  ----------  ---------------  -------------  ---
+  default                                 cpumanager-6cqz7               1 (66%)       1 (66%)     1G (12%)         1G (12%)       29m
+
+Allocated resources:
+  (Total limits may be over 100 percent, i.e., overcommitted.)
+  Resource                    Requests          Limits
+  --------                    --------          ------
+  cpu                         1440m (96%)       1 (66%)
+```
+
+
+This VM has two CPU cores. The system-reserved setting reserves 500 millicores, meaning that half of one core is subtracted from the total capacity of the node to arrive at the Node Allocatable amount. You can see that Allocatable CPU is 1500 millicores. This means you can run one of the CPU Manager pods since each will take one whole core. A whole core is equivalent to 1000 millicores. If you try to schedule a second pod, the system will accept the pod, but it will never be scheduled:
+
+```terminal
+NAME                    READY   STATUS    RESTARTS   AGE
+cpumanager-6cqz7        1/1     Running   0          33m
+cpumanager-7qc2t        0/1     Pending   0          11s
+```
+
+
+# Huge pages
+
+Understand and configure huge pages.
+
+## What huge pages do
+
+Memory is managed in blocks known as pages. On most systems, a page is 4Ki. 1Mi
+of memory is equal to 256 pages; 1Gi of memory is 256,000 pages, and so on. CPUs
+have a built-in memory management unit that manages a list of these pages in
+hardware. The Translation Lookaside Buffer (TLB) is a small hardware cache of
+virtual-to-physical page mappings. If the virtual address passed in a hardware
+instruction can be found in the TLB, the mapping can be determined quickly. If
+not, a TLB miss occurs, and the system falls back to slower, software-based
+address translation, resulting in performance issues. Since the size of the TLB
+is fixed, the only way to reduce the chance of a TLB miss is to increase the
+page size.
+
+A huge page is a memory page that is larger than 4Ki. On x86_64 architectures,
+there are two common huge page sizes: 2Mi and 1Gi. Sizes vary on other
+architectures. To use huge pages, code must be written so that
+applications are aware of them. Transparent Huge Pages (THP) attempt to automate
+the management of huge pages without application knowledge, but they have
+limitations. In particular, they are limited to 2Mi page sizes. THP can lead to
+performance degradation on nodes with high memory utilization or fragmentation
+due to defragmenting efforts of THP, which can lock memory pages. For this
+reason, some applications may be designed to (or recommend) usage of
+pre-allocated huge pages instead of THP.
+
+## How huge pages are consumed by apps
+
+Nodes must pre-allocate huge pages in order for the node to report its huge page
+capacity. A node can only pre-allocate huge pages for a single size.
+
+Huge pages can be consumed through container-level resource requirements using the
+resource name hugepages-<size>, where size is the most compact binary
+notation using integer values supported on a particular node. For example, if a
+node supports 2048KiB page sizes, it exposes a schedulable resource
+hugepages-2Mi. Unlike CPU or memory, huge pages do not support over-commitment.
+
+
+```yaml
+apiVersion: v1
+kind: Pod
+metadata:
+  generateName: hugepages-volume-
+spec:
+  containers:
+  - securityContext:
+      privileged: true
+    image: rhel7:latest
+    command:
+    - sleep
+    - inf
+    name: example
+    volumeMounts:
+    - mountPath: /dev/hugepages
+      name: hugepage
+    resources:
+      limits:
+        hugepages-2Mi: 100Mi 1
+        memory: "1Gi"
+        cpu: "1"
+  volumes:
+  - name: hugepage
+    emptyDir:
+      medium: HugePages
+```
+
+
+Specify the amount of memory for hugepages as the exact amount to be
+allocated. Do not specify this value as the amount of memory for hugepages
+multiplied by the size of the page. For example, given a huge page size of 2MB,
+if you want to use 100MB of huge-page-backed RAM for your application, then you
+would allocate 50 huge pages. Red Hat OpenShift Container Platform handles the math for you. As in
+the above example, you can specify 100MB directly.
+
+Allocating huge pages of a specific size
+
+Some platforms support multiple huge page sizes. To allocate huge pages of a
+specific size, precede the huge pages boot command parameters with a huge page
+size selection parameter hugepagesz=<size>. The <size> value must be
+specified in bytes with an optional scale suffix [kKmMgG]. The default huge
+page size can be defined with the default_hugepagesz=<size> boot parameter.
+
+Huge page requirements
+
+* Huge page requests must equal the limits. This is the default if limits are
+specified, but requests are not.
+* Huge pages are isolated at a pod scope. Container isolation is planned in a
+future iteration.
+* EmptyDir volumes backed by huge pages must not consume more huge page memory
+than the pod request.
+* Applications that consume huge pages via shmget() with SHM_HUGETLB must run
+with a supplemental group that matches proc/sys/vm/hugetlb_shm_group.
+
+## Configuring huge pages at boot time
+
+Nodes must pre-allocate huge pages used in an Red Hat OpenShift Container Platform cluster. There are two ways of reserving huge pages: at boot time and at run time. Reserving at boot time increases the possibility of success because the memory has not yet been significantly fragmented. The Node Tuning Operator currently supports boot time allocation of huge pages on specific nodes.
+
+To minimize node reboots, the order of the steps below needs to be followed:
+
+1. Label all nodes that need the same huge pages setting by a label.
+
+```terminal
+$ oc label node <node_using_hugepages> node-role.kubernetes.io/worker-hp=
+```
+
+2. Create a file with the following content and name it hugepages-tuned-boottime.yaml:
+
+```yaml
+apiVersion: tuned.openshift.io/v1
+kind: Tuned
+metadata:
+  name: hugepages 1
+  namespace: openshift-cluster-node-tuning-operator
+spec:
+  profile: 2
+  - data: |
+      [main]
+      summary=Boot time configuration for hugepages
+      include=openshift-node
+      [bootloader]
+      cmdline_openshift_node_hugepages=hugepagesz=2M hugepages=50 3
+    name: openshift-node-hugepages
+
+  recommend:
+  - machineConfigLabels: 4
+      machineconfiguration.openshift.io/role: "worker-hp"
+    priority: 30
+    profile: openshift-node-hugepages
+```
+
+Set the name of the Tuned resource to hugepages.
+Set the profile section to allocate huge pages.
+Note the order of parameters is important as some platforms support huge pages of various sizes.
+Enable machine config pool based matching.
+3. Create the Tuned hugepages object
+
+```terminal
+$ oc create -f hugepages-tuned-boottime.yaml
+```
+
+4. Create a file with the following content and name it hugepages-mcp.yaml:
+
+```yaml
+apiVersion: machineconfiguration.openshift.io/v1
+kind: MachineConfigPool
+metadata:
+  name: worker-hp
+  labels:
+    worker-hp: ""
+spec:
+  machineConfigSelector:
+    matchExpressions:
+      - {key: machineconfiguration.openshift.io/role, operator: In, values: [worker,worker-hp]}
+  nodeSelector:
+    matchLabels:
+      node-role.kubernetes.io/worker-hp: ""
+```
+
+5. Create the machine config pool:
+
+```terminal
+$ oc create -f hugepages-mcp.yaml
+```
+
+
+Given enough non-fragmented memory, all the nodes in the worker-hp machine config pool should now have 50 2Mi huge pages allocated.
+
+
+```terminal
+$ oc get node <node_using_hugepages> -o jsonpath="{.status.allocatable.hugepages-2Mi}"
+100Mi
+```
+
+
+
+[NOTE]
+----
+The TuneD bootloader plugin only supports Red Hat Enterprise Linux CoreOS (RHCOS) worker nodes.
+----
+
+# Understanding device plugins
+
+The device plugin provides a consistent and portable solution to consume hardware
+devices across clusters. The device plugin provides support for these devices
+through an extension mechanism, which makes these devices available to
+Containers, provides health checks of these devices, and securely shares them.
+
+
+[IMPORTANT]
+----
+Red Hat OpenShift Container Platform supports the device plugin API, but the device plugin
+Containers are supported by individual vendors.
+----
+
+A device plugin is a gRPC service running on the nodes (external to
+the kubelet) that is responsible for managing specific
+hardware resources. Any device plugin must support following remote procedure
+calls (RPCs):
+
+
+```golang
+service DevicePlugin {
+      // GetDevicePluginOptions returns options to be communicated with Device
+      // Manager
+      rpc GetDevicePluginOptions(Empty) returns (DevicePluginOptions) {}
+
+      // ListAndWatch returns a stream of List of Devices
+      // Whenever a Device state change or a Device disappears, ListAndWatch
+      // returns the new list
+      rpc ListAndWatch(Empty) returns (stream ListAndWatchResponse) {}
+
+      // Allocate is called during container creation so that the Device
+      // Plug-in can run device specific operations and instruct Kubelet
+      // of the steps to make the Device available in the container
+      rpc Allocate(AllocateRequest) returns (AllocateResponse) {}
+
+      // PreStartcontainer is called, if indicated by Device Plug-in during
+      // registration phase, before each container start. Device plug-in
+      // can run device specific operations such as resetting the device
+      // before making devices available to the container
+      rpc PreStartcontainer(PreStartcontainerRequest) returns (PreStartcontainerResponse) {}
+}
+```
+
+
+## Example device plugins
+
+* Nvidia GPU device plugin for COS-based operating system
+* Nvidia official GPU device plugin
+* Solarflare device plugin
+* KubeVirt device plugins: vfio and kvm
+* Kubernetes device plugin for IBM(R) Crypto Express (CEX) cards
+
+
+[NOTE]
+----
+For easy device plugin reference implementation, there is a stub device plugin
+in the Device Manager code:
+vendor/k8s.io/kubernetes/pkg/kubelet/cm/deviceplugin/device_plugin_stub.go.
+----
+
+## Methods for deploying a device plugin
+
+* Daemon sets are the recommended approach for device plugin deployments.
+* Upon start, the device plugin will try to create a UNIX domain socket at
+/var/lib/kubelet/device-plugin/ on the node to serve RPCs from Device Manager.
+* Since device plugins must manage hardware resources, access to the host
+file system, as well as socket creation, they must be run in a privileged
+security context.
+* More specific details regarding deployment steps can be found with each device
+plugin implementation.
+
+## Understanding the Device Manager
+
+Device Manager provides a mechanism for advertising specialized node hardware resources
+with the help of plugins known as device plugins.
+
+You can advertise specialized hardware without requiring any upstream code changes.
+
+
+[IMPORTANT]
+----
+Red Hat OpenShift Container Platform supports the device plugin API, but the device plugin
+Containers are supported by individual vendors.
+----
+
+Device Manager advertises devices as Extended Resources. User pods can consume
+devices, advertised by Device Manager, using the same Limit/Request mechanism,
+which is used for requesting any other Extended Resource.
+
+Upon start, the device plugin registers itself with Device Manager invoking Register on the
+/var/lib/kubelet/device-plugins/kubelet.sock and starts a gRPC service at
+/var/lib/kubelet/device-plugins/<plugin>.sock for serving Device Manager
+requests.
+
+Device Manager, while processing a new registration request, invokes
+ListAndWatch remote procedure call (RPC) at the device plugin service. In
+response, Device Manager gets a list of Device objects from the plugin over a
+gRPC stream. Device Manager will keep watching on the stream for new updates
+from the plugin. On the plugin side, the plugin will also keep the stream
+open and whenever there is a change in the state of any of the devices, a new
+device list is sent to the Device Manager over the same streaming connection.
+
+While handling a new pod admission request, Kubelet passes requested Extended
+Resources to the Device Manager for device allocation. Device Manager checks in
+its database to verify if a corresponding plugin exists or not. If the plugin exists
+and there are free allocatable devices as well as per local cache, Allocate
+RPC is invoked at that particular device plugin.
+
+Additionally, device plugins can also perform several other device-specific
+operations, such as driver installation, device initialization, and device
+resets. These functionalities vary from implementation to implementation.
+
+## Enabling Device Manager
+
+Enable Device Manager to implement a device plugin to advertise specialized
+hardware without any upstream code changes.
+
+Device Manager provides a mechanism for advertising specialized node hardware resources
+with the help of plugins known as device plugins.
+
+1. Obtain the label associated with the static MachineConfigPool CRD for the type of node you want to configure by entering the following command.
+Perform one of the following steps:
+1. View the machine config:
+
+```terminal
+# oc describe machineconfig <name>
+```
+
+
+For example:
+
+```terminal
+# oc describe machineconfig 00-worker
+```
+
+Example output
+
+```terminal
+Name:         00-worker
+Namespace:
+Labels:       machineconfiguration.openshift.io/role=worker 1
+```
+
+Label required for the Device Manager.
+
+1. Create a custom resource (CR) for your configuration change.
+Sample configuration for a Device Manager CR
+
+```yaml
+apiVersion: machineconfiguration.openshift.io/v1
+kind: KubeletConfig
+metadata:
+  name: devicemgr 1
+spec:
+  machineConfigPoolSelector:
+    matchLabels:
+       machineconfiguration.openshift.io: devicemgr 2
+  kubeletConfig:
+    feature-gates:
+      - DevicePlugins=true 3
+```
+
+Assign a name to CR.
+Enter the label from the Machine Config Pool.
+Set DevicePlugins to 'true`.
+2. Create the Device Manager:
+
+```terminal
+$ oc create -f devicemgr.yaml
+```
+
+Example output
+
+```terminal
+kubeletconfig.machineconfiguration.openshift.io/devicemgr created
+```
+
+3. Ensure that Device Manager was actually enabled by confirming that
+/var/lib/kubelet/device-plugins/kubelet.sock is created on the node. This is
+the UNIX domain socket on which the Device Manager gRPC server listens for new
+plugin registrations. This sock file is created when the Kubelet is started
+only if Device Manager is enabled.
+
+# Taints and tolerations
+
+Understand and work with taints and tolerations.
+
+## Understanding taints and tolerations
+
+A taint allows a node to refuse a pod to be scheduled unless that pod has a matching toleration.
+
+You apply taints to a node through the Node specification (NodeSpec) and apply tolerations to a pod through the Pod specification (PodSpec). When you apply a taint a node, the scheduler cannot place a pod on that node unless the pod can tolerate the taint.
+
+
+```yaml
+apiVersion: v1
+kind: Node
+metadata:
+  name: my-node
+#...
+spec:
+  taints:
+  - effect: NoExecute
+    key: key1
+    value: value1
+#...
+```
+
+
+
+```yaml
+apiVersion: v1
+kind: Pod
+metadata:
+  name: my-pod
+#...
+spec:
+  tolerations:
+  - key: "key1"
+    operator: "Equal"
+    value: "value1"
+    effect: "NoExecute"
+    tolerationSeconds: 3600
+#...
+```
+
+
+Taints and tolerations consist of a key, value, and effect.
+
+
+
+1. If you add a NoSchedule taint to a control plane node, the node must have the node-role.kubernetes.io/master=:NoSchedule taint, which is added by default.
+
+For example:
+
+```yaml
+apiVersion: v1
+kind: Node
+metadata:
+  annotations:
+    machine.openshift.io/machine: openshift-machine-api/ci-ln-62s7gtb-f76d1-v8jxv-master-0
+    machineconfiguration.openshift.io/currentConfig: rendered-master-cdc1ab7da414629332cc4c3926e6e59c
+  name: my-node
+#...
+spec:
+  taints:
+  - effect: NoSchedule
+    key: node-role.kubernetes.io/master
+#...
+```
+
+A toleration matches a taint:
+
+* If the operator parameter is set to Equal:
+* the key parameters are the same;
+* the value parameters are the same;
+* the effect parameters are the same.
+* If the operator parameter is set to Exists:
+* the key parameters are the same;
+* the effect parameters are the same.
+
+The following taints are built into Red Hat OpenShift Container Platform:
+
+* node.kubernetes.io/not-ready: The node is not ready. This corresponds to the node condition Ready=False.
+* node.kubernetes.io/unreachable: The node is unreachable from the node controller. This corresponds to the node condition Ready=Unknown.
+* node.kubernetes.io/memory-pressure: The node has memory pressure issues. This corresponds to the node condition MemoryPressure=True.
+* node.kubernetes.io/disk-pressure: The node has disk pressure issues. This corresponds to the node condition DiskPressure=True.
+* node.kubernetes.io/network-unavailable: The node network is unavailable.
+* node.kubernetes.io/unschedulable: The node is unschedulable.
+* node.cloudprovider.kubernetes.io/uninitialized: When the node controller is started with an external cloud provider, this taint is set on a node to mark it as unusable. After a controller from the cloud-controller-manager initializes this node, the kubelet removes this taint.
+* node.kubernetes.io/pid-pressure: The node has pid pressure. This corresponds to the node condition PIDPressure=True.
+
+[IMPORTANT]
+----
+Red Hat OpenShift Container Platform does not set a default pid.available evictionHard.
+----
+
+## Adding taints and tolerations
+
+You add tolerations to pods and taints to nodes to allow the node to control which pods should or should not be scheduled on them. For existing pods and nodes, you should add the toleration to the pod first, then add the taint to the node to avoid pods being removed from the node before you can add the toleration.
+
+1. Add a toleration to a pod by editing the Pod spec to include a tolerations stanza:
+Sample pod configuration file with an Equal operator
+
+```yaml
+apiVersion: v1
+kind: Pod
+metadata:
+  name: my-pod
+#...
+spec:
+  tolerations:
+  - key: "key1" 1
+    value: "value1"
+    operator: "Equal"
+    effect: "NoExecute"
+    tolerationSeconds: 3600 2
+#...
+```
+
+The toleration parameters, as described in the Taint and toleration components table.
+The tolerationSeconds parameter specifies how long a pod can remain bound to a node before being evicted.
+
+For example:
+Sample pod configuration file with an Exists operator
+
+```yaml
+apiVersion: v1
+kind: Pod
+metadata:
+  name: my-pod
+#...
+spec:
+   tolerations:
+    - key: "key1"
+      operator: "Exists" 1
+      effect: "NoExecute"
+      tolerationSeconds: 3600
+#...
+```
+
+The Exists operator does not take a value.
+
+This example places a taint on node1 that has key key1, value value1, and taint effect NoExecute.
+2. Add a taint to a node by using the following command with the parameters described in the Taint and toleration components table:
+
+```terminal
+$ oc adm taint nodes <node_name> <key>=<value>:<effect>
+```
+
+
+For example:
+
+```terminal
+$ oc adm taint nodes node1 key1=value1:NoExecute
+```
+
+
+This command places a taint on node1 that has key key1, value value1, and effect NoExecute.
+
+[NOTE]
+----
+If you add a NoSchedule taint to a control plane node, the node must have the node-role.kubernetes.io/master=:NoSchedule taint, which is added by default.
+For example:
+
+```yaml
+apiVersion: v1
+kind: Node
+metadata:
+  annotations:
+    machine.openshift.io/machine: openshift-machine-api/ci-ln-62s7gtb-f76d1-v8jxv-master-0
+    machineconfiguration.openshift.io/currentConfig: rendered-master-cdc1ab7da414629332cc4c3926e6e59c
+  name: my-node
+#...
+spec:
+  taints:
+  - effect: NoSchedule
+    key: node-role.kubernetes.io/master
+#...
+```
+
+----
+
+The tolerations on the pod match the taint on the node. A pod with either toleration can be scheduled onto node1.
+
+## Adding taints and tolerations using a compute machine set
+
+You can add taints to nodes using a compute machine set. All nodes associated with the MachineSet object are updated with the taint. Tolerations respond to taints added by a compute machine set in the same manner as taints added directly to the nodes.
+
+1. Add a toleration to a pod by editing the Pod spec to include a tolerations stanza:
+Sample pod configuration file with Equal operator
+
+```yaml
+apiVersion: v1
+kind: Pod
+metadata:
+  name: my-pod
+#...
+spec:
+  tolerations:
+  - key: "key1" 1
+    value: "value1"
+    operator: "Equal"
+    effect: "NoExecute"
+    tolerationSeconds: 3600 2
+#...
+```
+
+The toleration parameters, as described in the Taint and toleration components table.
+The tolerationSeconds parameter specifies how long a pod is bound to a node before being evicted.
+
+For example:
+Sample pod configuration file with Exists operator
+
+```yaml
+apiVersion: v1
+kind: Pod
+metadata:
+  name: my-pod
+#...
+spec:
+  tolerations:
+  - key: "key1"
+    operator: "Exists"
+    effect: "NoExecute"
+    tolerationSeconds: 3600
+#...
+```
+
+2. Add the taint to the MachineSet object:
+1. Edit the MachineSet YAML for the nodes you want to taint or you can create a new MachineSet object:
+
+```terminal
+$ oc edit machineset <machineset>
+```
+
+2. Add the taint to the spec.template.spec section:
+Example taint in a compute machine set specification
+
+```yaml
+apiVersion: machine.openshift.io/v1beta1
+kind: MachineSet
+metadata:
+  name: my-machineset
+#...
+spec:
+#...
+  template:
+#...
+    spec:
+      taints:
+      - effect: NoExecute
+        key: key1
+        value: value1
+#...
+```
+
+
+This example places a taint that has the key key1, value value1, and taint effect NoExecute on the nodes.
+3. Scale down the compute machine set to 0:
+
+```terminal
+$ oc scale --replicas=0 machineset <machineset> -n openshift-machine-api
+```
+
+
+[TIP]
+----
+You can alternatively apply the following YAML to scale the compute machine set:
+
+```yaml
+apiVersion: machine.openshift.io/v1beta1
+kind: MachineSet
+metadata:
+  name: <machineset>
+  namespace: openshift-machine-api
+spec:
+  replicas: 0
+```
+
+----
+
+Wait for the machines to be removed.
+4. Scale up the compute machine set as needed:
+
+```terminal
+$ oc scale --replicas=2 machineset <machineset> -n openshift-machine-api
+```
+
+
+Or:
+
+```terminal
+$ oc edit machineset <machineset> -n openshift-machine-api
+```
+
+
+Wait for the machines to start. The taint is added to the nodes associated with the MachineSet object.
+
+## Binding a user to a node using taints and tolerations
+
+If you want to dedicate a set of nodes for exclusive use by a particular set of users, add a toleration to their pods. Then, add a corresponding taint to those nodes.  The pods with the tolerations are allowed to use the tainted nodes or any other nodes in the cluster.
+
+If you want ensure the pods are scheduled to only those tainted nodes, also add a label to the same set of nodes and add a node affinity to the pods so that the pods can only be scheduled onto nodes with that label.
+
+To configure a node so that users can use only that node:
+
+1. Add a corresponding taint to those nodes:
+
+For example:
+
+```terminal
+$ oc adm taint nodes node1 dedicated=groupName:NoSchedule
+```
+
+
+[TIP]
+----
+You can alternatively apply the following YAML to add the taint:
+
+```yaml
+kind: Node
+apiVersion: v1
+metadata:
+  name: my-node
+#...
+spec:
+  taints:
+    - key: dedicated
+      value: groupName
+      effect: NoSchedule
+#...
+```
+
+----
+2. Add a toleration to the pods by writing a custom admission controller.
+
+## Controlling nodes with special hardware using taints and tolerations
+
+In a cluster where a small subset of nodes have specialized hardware, you can use taints and tolerations to keep pods that do not need the specialized hardware off of those nodes, leaving the nodes for pods that do need the specialized hardware. You can also require pods that need specialized hardware to use specific nodes.
+
+You can achieve this by adding a toleration to pods that need the special hardware and tainting the nodes that have the specialized hardware.
+
+To ensure nodes with specialized hardware are reserved for specific pods:
+
+1. Add a toleration to pods that need the special hardware.
+
+For example:
+
+```yaml
+apiVersion: v1
+kind: Pod
+metadata:
+  name: my-pod
+#...
+spec:
+  tolerations:
+    - key: "disktype"
+      value: "ssd"
+      operator: "Equal"
+      effect: "NoSchedule"
+      tolerationSeconds: 3600
+#...
+```
+
+2. Taint the nodes that have the specialized hardware using one of the following commands:
+
+```terminal
+$ oc adm taint nodes <node-name> disktype=ssd:NoSchedule
+```
+
+
+Or:
+
+```terminal
+$ oc adm taint nodes <node-name> disktype=ssd:PreferNoSchedule
+```
+
+
+[TIP]
+----
+You can alternatively apply the following YAML to add the taint:
+
+```yaml
+kind: Node
+apiVersion: v1
+metadata:
+  name: my_node
+#...
+spec:
+  taints:
+    - key: disktype
+      value: ssd
+      effect: PreferNoSchedule
+#...
+```
+
+----
+
+## Removing taints and tolerations
+
+You can remove taints from nodes and tolerations from pods as needed. You should add the toleration to the pod first, then add the taint to the node to avoid pods being removed from the node before you can add the toleration.
+
+To remove taints and tolerations:
+
+1. To remove a taint from a node:
+
+```terminal
+$ oc adm taint nodes <node-name> <key>-
+```
+
+
+For example:
+
+```terminal
+$ oc adm taint nodes ip-10-0-132-248.ec2.internal key1-
+```
+
+Example output
+
+```terminal
+node/ip-10-0-132-248.ec2.internal untainted
+```
+
+2. To remove a toleration from a pod, edit the Pod spec to remove the toleration:
+
+```yaml
+apiVersion: v1
+kind: Pod
+metadata:
+  name: my-pod
+#...
+spec:
+  tolerations:
+  - key: "key2"
+    operator: "Exists"
+    effect: "NoExecute"
+    tolerationSeconds: 3600
+#...
+```
+
+
+# Topology Manager
+
+Understand and work with Topology Manager.
+
+## Topology Manager policies
+
+Topology Manager aligns Pod resources of all Quality of Service (QoS) classes by collecting topology hints from Hint Providers, such as CPU Manager and Device Manager, and using the collected hints to align the Pod resources.
+
+Topology Manager supports four allocation policies, which you assign in the KubeletConfig custom resource (CR) named cpumanager-enabled:
+
+none policy:: This is the default policy and does not perform any topology alignment.
+best-effort policy:: For each container in a pod with the best-effort topology management policy, kubelet calls each Hint Provider to discover their resource
+availability. Using this information, the Topology Manager stores the preferred NUMA Node affinity for that container. If the affinity is not preferred, Topology Manager stores this and admits the pod to the node.
+restricted policy:: For each container in a pod with the restricted topology management policy, kubelet calls each Hint Provider to discover their resource
+availability. Using this information, the Topology Manager stores the preferred NUMA Node affinity for that container. If the affinity is not
+preferred, Topology Manager rejects this pod from the node, resulting in a pod in a Terminated state with a pod admission failure.
+single-numa-node policy:: For each container in a pod with the single-numa-node topology management policy, kubelet calls each Hint Provider to discover their resource availability. Using this information, the Topology Manager determines if a single NUMA Node affinity is possible. If it is, the pod is admitted to the node. If a single NUMA Node affinity is not possible, the Topology Manager rejects the pod from the node. This results in a pod in a Terminated state with a pod admission failure.
+
+## Setting up Topology Manager
+
+To use Topology Manager, you must configure an allocation policy in the KubeletConfig custom resource (CR) named cpumanager-enabled. This file might exist if you have set up CPU Manager. If the file does not exist, you can create the file.
+
+* Configure the CPU Manager policy to be static.
+
+To activate Topology Manager:
+
+1. Configure the Topology Manager allocation policy in the custom resource.
+
+```terminal
+$ oc edit KubeletConfig cpumanager-enabled
+```
+
+
+```yaml
+apiVersion: machineconfiguration.openshift.io/v1
+kind: KubeletConfig
+metadata:
+  name: cpumanager-enabled
+spec:
+  machineConfigPoolSelector:
+    matchLabels:
+      custom-kubelet: cpumanager-enabled
+  kubeletConfig:
+     cpuManagerPolicy: static 1
+     cpuManagerReconcilePeriod: 5s
+     topologyManagerPolicy: single-numa-node 2
+```
+
+This parameter must be static with a lowercase s.
+Specify your selected Topology Manager allocation policy. Here, the policy is single-numa-node.
+Acceptable values are: default, best-effort, restricted, single-numa-node.
+
+## Pod interactions with Topology Manager policies
+
+The example Pod specs below help illustrate pod interactions with Topology Manager.
+
+The following pod runs in the BestEffort QoS class because no resource requests or limits are specified.
+
+
+```yaml
+spec:
+  containers:
+  - name: nginx
+    image: nginx
+```
+
+
+The next pod runs in the Burstable QoS class because requests are less than limits.
+
+
+```yaml
+spec:
+  containers:
+  - name: nginx
+    image: nginx
+    resources:
+      limits:
+        memory: "200Mi"
+      requests:
+        memory: "100Mi"
+```
+
+
+If the selected policy is anything other than none, Topology Manager would not consider either of these Pod specifications.
+
+The last example pod below runs in the Guaranteed QoS class because requests are equal to limits.
+
+
+```yaml
+spec:
+  containers:
+  - name: nginx
+    image: nginx
+    resources:
+      limits:
+        memory: "200Mi"
+        cpu: "2"
+        example.com/device: "1"
+      requests:
+        memory: "200Mi"
+        cpu: "2"
+        example.com/device: "1"
+```
+
+
+Topology Manager would consider this pod. The Topology Manager would consult the hint providers, which are CPU Manager and Device Manager, to get topology hints for the pod.
+
+Topology Manager will use this information to store the best topology for this container. In the case of this pod, CPU Manager and Device Manager will use this stored information at the resource allocation stage.
+
+# Resource requests and overcommitment
+
+For each compute resource, a container may specify a resource request and limit.
+Scheduling decisions are made based on the request to ensure that a node has
+enough capacity available to meet the requested value. If a container specifies
+limits, but omits requests, the requests are defaulted to the limits. A
+container is not able to exceed the specified limit on the node.
+
+The enforcement of limits is dependent upon the compute resource type. If a
+container makes no request or limit, the container is scheduled to a node with
+no resource guarantees. In practice, the container is able to consume as much of
+the specified resource as is available with the lowest local priority. In low
+resource situations, containers that specify no resource requests are given the
+lowest quality of service.
+
+Scheduling is based on resources requested, while quota and hard limits refer
+to resource limits, which can be set higher than requested resources. The
+difference between request and limit determines the level of overcommit;
+for instance, if a container is given a memory request of 1Gi and a memory limit
+of 2Gi, it is scheduled based on the 1Gi request being available on the node,
+but could use up to 2Gi; so it is 200% overcommitted.
+
+# Cluster-level overcommit using the Cluster Resource Override Operator
+
+The Cluster Resource Override Operator is an admission webhook that allows you to control the level of overcommit and manage
+container density across all the nodes in your cluster. The Operator controls how nodes in specific projects can exceed defined memory and CPU limits.
+
+You must install the Cluster Resource Override Operator using the Red Hat OpenShift Container Platform console or CLI as shown in the following sections.
+During the installation, you create a ClusterResourceOverride custom resource (CR), where you set the level of overcommit, as shown in the
+following example:
+
+
+```yaml
+apiVersion: operator.autoscaling.openshift.io/v1
+kind: ClusterResourceOverride
+metadata:
+    name: cluster 1
+spec:
+  podResourceOverride:
+    spec:
+      memoryRequestToLimitPercent: 50 2
+      cpuRequestToLimitPercent: 25 3
+      limitCPUToMemoryPercent: 200 4
+# ...
+```
+
+
+The name must be cluster.
+Optional. If a container memory limit has been specified or defaulted, the memory request is overridden to this percentage of the limit, between 1-100. The default is 50.
+Optional. If a container CPU limit has been specified or defaulted, the CPU request is overridden to this percentage of the limit, between 1-100. The default is 25.
+Optional. If a container memory limit has been specified or defaulted, the CPU limit is overridden to a percentage of the memory limit, if specified. Scaling 1Gi of RAM at 100 percent is equal to 1 CPU core. This is processed prior to overriding the CPU request (if configured). The default is 200.
+
+
+[NOTE]
+----
+The Cluster Resource Override Operator overrides have no effect if limits have not
+been set on containers. Create a LimitRange object with default limits per individual project
+or configure limits in Pod specs for the overrides to apply.
+----
+
+When configured, overrides can be enabled per-project by applying the following
+label to the Namespace object for each project:
+
+
+```yaml
+apiVersion: v1
+kind: Namespace
+metadata:
+
+# ...
+
+  labels:
+    clusterresourceoverrides.admission.autoscaling.openshift.io/enabled: "true"
+
+# ...
+```
+
+
+The Operator watches for the ClusterResourceOverride CR and ensures that the ClusterResourceOverride admission webhook is installed into the same namespace as the operator.
+
+## Installing the Cluster Resource Override Operator using the web console
+
+You can use the Red Hat OpenShift Container Platform CLI to install the Cluster Resource Override Operator to help control overcommit in your cluster.
+
+By default, the installation process creates a Cluster Resource Override Operator pod on a worker node in the clusterresourceoverride-operator namespace. You can move this pod to another node, such as an infrastructure node, as needed. Infrastructure nodes are not counted toward the total number of subscriptions that are required to run the environment. For more information, see "Moving the Cluster Resource Override Operator pods".
+
+* The Cluster Resource Override Operator has no effect if limits have not
+been set on containers. You must specify default limits for a project using a LimitRange object or configure limits in Pod specs for the overrides to apply.
+
+To install the Cluster Resource Override Operator using the Red Hat OpenShift Container Platform web console:
+
+1. In the Red Hat OpenShift Container Platform web console, navigate to Home -> Projects
+1. Click Create Project.
+2. Specify clusterresourceoverride-operator as the name of the project.
+3. Click Create.
+2. Navigate to Operators -> OperatorHub.
+1. Choose  ClusterResourceOverride Operator from the list of available Operators and click Install.
+2. On the Install Operator page, make sure A specific Namespace on the cluster is selected for Installation Mode.
+3. Make sure clusterresourceoverride-operator is selected for Installed Namespace.
+4. Select an Update Channel and Approval Strategy.
+5. Click Install.
+3. On the Installed Operators page, click ClusterResourceOverride.
+1. On the ClusterResourceOverride Operator details page, click Create ClusterResourceOverride.
+2. On the Create ClusterResourceOverride page, click YAML view and edit the YAML template to set the overcommit values as needed:
+
+```yaml
+apiVersion: operator.autoscaling.openshift.io/v1
+kind: ClusterResourceOverride
+metadata:
+  name: cluster 1
+spec:
+  podResourceOverride:
+    spec:
+      memoryRequestToLimitPercent: 50 2
+      cpuRequestToLimitPercent: 25 3
+      limitCPUToMemoryPercent: 200 4
+```
+
+The name must be cluster.
+Optional: Specify the percentage to override the container memory limit, if used, between 1-100. The default is 50.
+Optional: Specify the percentage to override the container CPU limit, if used, between 1-100. The default is 25.
+Optional: Specify the percentage to override the container memory limit, if used. Scaling 1 Gi of RAM at 100 percent is equal to 1 CPU core. This is processed before overriding the CPU request, if configured. The default is 200.
+3. Click Create.
+4. Check the current state of the admission webhook by checking the status of the cluster custom resource:
+1. On the ClusterResourceOverride Operator page, click cluster.
+2. On the ClusterResourceOverride Details page, click YAML. The mutatingWebhookConfigurationRef section appears when the webhook is called.
+
+```yaml
+apiVersion: operator.autoscaling.openshift.io/v1
+kind: ClusterResourceOverride
+metadata:
+  annotations:
+    kubectl.kubernetes.io/last-applied-configuration: |
+      {"apiVersion":"operator.autoscaling.openshift.io/v1","kind":"ClusterResourceOverride","metadata":{"annotations":{},"name":"cluster"},"spec":{"podResourceOverride":{"spec":{"cpuRequestToLimitPercent":25,"limitCPUToMemoryPercent":200,"memoryRequestToLimitPercent":50}}}}
+  creationTimestamp: "2019-12-18T22:35:02Z"
+  generation: 1
+  name: cluster
+  resourceVersion: "127622"
+  selfLink: /apis/operator.autoscaling.openshift.io/v1/clusterresourceoverrides/cluster
+  uid: 978fc959-1717-4bd1-97d0-ae00ee111e8d
+spec:
+  podResourceOverride:
+    spec:
+      cpuRequestToLimitPercent: 25
+      limitCPUToMemoryPercent: 200
+      memoryRequestToLimitPercent: 50
+status:
+
+# ...
+
+    mutatingWebhookConfigurationRef: 1
+      apiVersion: admissionregistration.k8s.io/v1
+      kind: MutatingWebhookConfiguration
+      name: clusterresourceoverrides.admission.autoscaling.openshift.io
+      resourceVersion: "127621"
+      uid: 98b3b8ae-d5ce-462b-8ab5-a729ea8f38f3
+
+# ...
+```
+
+Reference to the ClusterResourceOverride admission webhook.
+
+## Installing the Cluster Resource Override Operator using the CLI
+
+You can use the Red Hat OpenShift Container Platform CLI to install the Cluster Resource Override Operator to help control overcommit in your cluster.
+
+By default, the installation process creates a Cluster Resource Override Operator pod on a worker node in the clusterresourceoverride-operator namespace. You can move this pod to another node, such as an infrastructure node, as needed. Infrastructure nodes are not counted toward the total number of subscriptions that are required to run the environment. For more information, see "Moving the Cluster Resource Override Operator pods".
+
+* The Cluster Resource Override Operator has no effect if limits have not been set on containers. You must specify default limits for a project using a LimitRange object or configure limits in Pod specs for the overrides to apply.
+
+To install the Cluster Resource Override Operator using the CLI:
+
+1. Create a namespace for the Cluster Resource Override Operator:
+1. Create a Namespace object YAML file (for example, cro-namespace.yaml) for the Cluster Resource Override Operator:
+
+```yaml
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: clusterresourceoverride-operator
+```
+
+2. Create the namespace:
+
+```terminal
+$ oc create -f <file-name>.yaml
+```
+
+
+For example:
+
+```terminal
+$ oc create -f cro-namespace.yaml
+```
+
+2. Create an Operator group:
+1. Create an OperatorGroup object YAML file (for example, cro-og.yaml) for the Cluster Resource Override Operator:
+
+```yaml
+apiVersion: operators.coreos.com/v1
+kind: OperatorGroup
+metadata:
+  name: clusterresourceoverride-operator
+  namespace: clusterresourceoverride-operator
+spec:
+  targetNamespaces:
+    - clusterresourceoverride-operator
+```
+
+2. Create the Operator Group:
+
+```terminal
+$ oc create -f <file-name>.yaml
+```
+
+
+For example:
+
+```terminal
+$ oc create -f cro-og.yaml
+```
+
+3. Create a subscription:
+1. Create a Subscription object YAML file (for example, cro-sub.yaml) for the Cluster Resource Override Operator:
+
+```yaml
+apiVersion: operators.coreos.com/v1alpha1
+kind: Subscription
+metadata:
+  name: clusterresourceoverride
+  namespace: clusterresourceoverride-operator
+spec:
+  channel: "4.18"
+  name: clusterresourceoverride
+  source: redhat-operators
+  sourceNamespace: openshift-marketplace
+```
+
+2. Create the subscription:
+
+```terminal
+$ oc create -f <file-name>.yaml
+```
+
+
+For example:
+
+```terminal
+$ oc create -f cro-sub.yaml
+```
+
+4. Create a ClusterResourceOverride custom resource (CR) object in the clusterresourceoverride-operator namespace:
+1. Change to the clusterresourceoverride-operator namespace.
+
+```terminal
+$ oc project clusterresourceoverride-operator
+```
+
+2. Create a ClusterResourceOverride object YAML file (for example, cro-cr.yaml) for the Cluster Resource Override Operator:
+
+```yaml
+apiVersion: operator.autoscaling.openshift.io/v1
+kind: ClusterResourceOverride
+metadata:
+    name: cluster 1
+spec:
+  podResourceOverride:
+    spec:
+      memoryRequestToLimitPercent: 50 2
+      cpuRequestToLimitPercent: 25 3
+      limitCPUToMemoryPercent: 200 4
+```
+
+The name must be cluster.
+Optional: Specify the percentage to override the container memory limit, if used, between 1-100. The default is 50.
+Optional: Specify the percentage to override the container CPU limit, if used, between 1-100. The default is 25.
+Optional: Specify the percentage to override the container memory limit, if used. Scaling 1 Gi of RAM at 100 percent is equal to 1 CPU core. This is processed before overriding the CPU request, if configured. The default is 200.
+3. Create the ClusterResourceOverride object:
+
+```terminal
+$ oc create -f <file-name>.yaml
+```
+
+
+For example:
+
+```terminal
+$ oc create -f cro-cr.yaml
+```
+
+5. Verify the current state of the admission webhook by checking the status of the cluster custom resource.
+
+```terminal
+$ oc get clusterresourceoverride cluster -n clusterresourceoverride-operator -o yaml
+```
+
+
+The mutatingWebhookConfigurationRef section appears when the webhook is called.
+Example output
+
+```yaml
+apiVersion: operator.autoscaling.openshift.io/v1
+kind: ClusterResourceOverride
+metadata:
+  annotations:
+    kubectl.kubernetes.io/last-applied-configuration: |
+      {"apiVersion":"operator.autoscaling.openshift.io/v1","kind":"ClusterResourceOverride","metadata":{"annotations":{},"name":"cluster"},"spec":{"podResourceOverride":{"spec":{"cpuRequestToLimitPercent":25,"limitCPUToMemoryPercent":200,"memoryRequestToLimitPercent":50}}}}
+  creationTimestamp: "2019-12-18T22:35:02Z"
+  generation: 1
+  name: cluster
+  resourceVersion: "127622"
+  selfLink: /apis/operator.autoscaling.openshift.io/v1/clusterresourceoverrides/cluster
+  uid: 978fc959-1717-4bd1-97d0-ae00ee111e8d
+spec:
+  podResourceOverride:
+    spec:
+      cpuRequestToLimitPercent: 25
+      limitCPUToMemoryPercent: 200
+      memoryRequestToLimitPercent: 50
+status:
+
+# ...
+
+    mutatingWebhookConfigurationRef: 1
+      apiVersion: admissionregistration.k8s.io/v1
+      kind: MutatingWebhookConfiguration
+      name: clusterresourceoverrides.admission.autoscaling.openshift.io
+      resourceVersion: "127621"
+      uid: 98b3b8ae-d5ce-462b-8ab5-a729ea8f38f3
+
+# ...
+```
+
+Reference to the ClusterResourceOverride admission webhook.
+
+## Configuring cluster-level overcommit
+
+The Cluster Resource Override Operator requires a ClusterResourceOverride custom resource (CR)
+and a label for each project where you want the Operator to control overcommit.
+
+By default, the installation process creates two Cluster Resource Override pods on the control plane nodes in the clusterresourceoverride-operator namespace. You can move these pods to other nodes, such as infrastructure nodes, as needed. Infrastructure nodes are not counted toward the total number of subscriptions that are required to run the environment. For more information, see "Moving the Cluster Resource Override Operator pods".
+
+* The Cluster Resource Override Operator has no effect if limits have not
+been set on containers. You must specify default limits for a project using a LimitRange object or configure limits in Pod specs for the overrides to apply.
+
+To modify cluster-level overcommit:
+
+1. Edit the ClusterResourceOverride CR:
+
+```yaml
+apiVersion: operator.autoscaling.openshift.io/v1
+kind: ClusterResourceOverride
+metadata:
+    name: cluster
+spec:
+  podResourceOverride:
+    spec:
+      memoryRequestToLimitPercent: 50 1
+      cpuRequestToLimitPercent: 25 2
+      limitCPUToMemoryPercent: 200 3
+# ...
+```
+
+Optional: Specify the percentage to override the container memory limit, if used, between 1-100. The default is 50.
+Optional: Specify the percentage to override the container CPU limit, if used, between 1-100. The default is 25.
+Optional: Specify the percentage to override the container memory limit, if used. Scaling 1Gi of RAM at 100 percent is equal to 1 CPU core. This is processed before overriding the CPU request, if configured. The default is 200.
+2. Ensure the following label has been added to the Namespace object for each project where you want the Cluster Resource Override Operator to control overcommit:
+
+```yaml
+apiVersion: v1
+kind: Namespace
+metadata:
+
+# ...
+
+  labels:
+    clusterresourceoverrides.admission.autoscaling.openshift.io/enabled: "true" 1
+
+# ...
+```
+
+Add this label to each project.
+
+# Node-level overcommit
+
+You can use various ways to control overcommit on specific nodes, such as quality of service (QOS)
+guarantees, CPU limits, or reserve resources. You can also disable overcommit for specific nodes
+and specific projects.
+
+## Understanding compute resources and containers
+
+The node-enforced behavior for compute resources is specific to the resource
+type.
+
+### Understanding container CPU requests
+
+A container is guaranteed the amount of CPU it requests and is additionally able
+to consume excess CPU available on the node, up to any limit specified by the
+container. If multiple containers are attempting to use excess CPU, CPU time is
+distributed based on the amount of CPU requested by each container.
+
+For example, if one container requested 500m of CPU time and another container
+requested 250m of CPU time, then any extra CPU time available on the node is
+distributed among the containers in a 2:1 ratio. If a container specified a
+limit, it will be throttled not to use more CPU than the specified limit.
+CPU requests are enforced using the CFS shares support in the Linux kernel. By
+default, CPU limits are enforced using the CFS quota support in the Linux kernel
+over a 100ms measuring interval, though this can be disabled.
+
+### Understanding container memory requests
+
+A container is guaranteed the amount of memory it requests. A container can use
+more memory than requested, but once it exceeds its requested amount, it could
+be terminated in a low memory situation on the node.
+If a container uses less memory than requested, it will not be terminated unless
+system tasks or daemons need more memory than was accounted for in the node&#8217;s
+resource reservation. If a container specifies a limit on memory, it is
+immediately terminated if it exceeds the limit amount.
+
+## Understanding overcommitment and quality of service classes
+
+A node is overcommitted when it has a pod scheduled that makes no request, or
+when the sum of limits across all pods on that node exceeds available machine
+capacity.
+
+In an overcommitted environment, it is possible that the pods on the node will
+attempt to use more compute resource than is available at any given point in
+time. When this occurs, the node must give priority to one pod over another. The
+facility used to make this decision is referred to as a Quality of Service (QoS)
+Class.
+
+A pod is designated as one of three QoS classes with decreasing order of priority:
+
+
+
+Memory is an incompressible resource, so in low memory situations, containers
+that have the lowest priority are terminated first:
+
+* Guaranteed containers are considered top priority, and are guaranteed to
+only be terminated if they exceed their limits, or if the system is under memory
+pressure and there are no lower priority containers that can be evicted.
+* Burstable containers under system memory pressure are more likely to be
+terminated once they exceed their requests and no other BestEffort containers
+exist.
+* BestEffort containers are treated with the lowest priority. Processes in
+these containers are first to be terminated if the system runs out of memory.
+
+### Understanding how to reserve memory across quality of service tiers
+
+You can use the qos-reserved parameter to specify a percentage of memory to be reserved
+by a pod in a particular QoS level. This feature attempts to reserve requested resources to exclude pods
+from lower OoS classes from using resources requested by pods in higher QoS classes.
+
+Red Hat OpenShift Container Platform uses the qos-reserved parameter as follows:
+
+* A value of qos-reserved=memory=100% will prevent the Burstable and BestEffort QoS classes from consuming memory
+that was requested by a higher QoS class. This increases the risk of inducing OOM
+on BestEffort and Burstable workloads in favor of increasing memory resource guarantees
+for Guaranteed and Burstable workloads.
+* A value of qos-reserved=memory=50% will allow the Burstable and BestEffort QoS classes
+to consume half of the memory requested by a higher QoS class.
+* A value of qos-reserved=memory=0%
+will allow a Burstable and BestEffort QoS classes to consume up to the full node
+allocatable amount if available, but increases the risk that a Guaranteed workload
+will not have access to requested memory. This condition effectively disables this feature.
+
+## Understanding swap memory and QOS
+
+You can disable swap by default on your nodes to preserve quality of
+service (QOS) guarantees. Otherwise, physical resources on a node can oversubscribe,
+affecting the resource guarantees the Kubernetes scheduler makes during pod
+placement.
+
+For example, if two guaranteed pods have reached their memory limit, each
+container could start using swap memory. Eventually, if there is not enough swap
+space, processes in the pods can be terminated due to the system being
+oversubscribed.
+
+Failing to disable swap results in nodes not recognizing that they are
+experiencing MemoryPressure, resulting in pods not receiving the memory they
+made in their scheduling request. As a result, additional pods are placed on the
+node to further increase memory pressure, ultimately increasing your risk of
+experiencing a system out of memory (OOM) event.
+
+
+[IMPORTANT]
+----
+If swap is enabled, any out-of-resource handling eviction thresholds for available memory will not work as
+expected. Take advantage of out-of-resource handling to allow pods to be evicted
+from a node when it is under memory pressure, and rescheduled on an alternative
+node that has no such pressure.
+----
+
+## Understanding nodes overcommitment
+
+In an overcommitted environment, it is important to properly configure your node to provide best system behavior.
+
+When the node starts, it ensures that the kernel tunable flags for memory
+management are set properly. The kernel should never fail memory allocations
+unless it runs out of physical memory.
+
+To ensure this behavior, Red Hat OpenShift Container Platform configures the kernel to always overcommit
+memory by setting the vm.overcommit_memory parameter to 1, overriding the
+default operating system setting.
+
+Red Hat OpenShift Container Platform also configures the kernel not to panic when it runs out of memory
+by setting the vm.panic_on_oom parameter to 0. A setting of 0 instructs the
+kernel to call oom_killer in an Out of Memory (OOM) condition, which kills
+processes based on priority.
+
+You can view the current setting by running the following commands on your nodes:
+
+
+```terminal
+$ sysctl -a |grep commit
+```
+
+
+
+```terminal
+#...
+vm.overcommit_memory = 0
+#...
+```
+
+
+
+```terminal
+$ sysctl -a |grep panic
+```
+
+
+
+```terminal
+#...
+vm.panic_on_oom = 0
+#...
+```
+
+
+
+[NOTE]
+----
+The above flags should already be set on nodes, and no further action is
+required.
+----
+
+You can also perform the following configurations for each node:
+
+* Disable or enforce CPU limits using CPU CFS quotas
+* Reserve resources for system processes
+* Reserve memory across quality of service tiers
+
+## Disabling or enforcing CPU limits using CPU CFS quotas
+
+Nodes by default enforce specified CPU limits using the Completely Fair Scheduler (CFS) quota support in the Linux kernel.
+
+If you disable CPU limit enforcement, it is important to understand the impact on your node:
+
+* If a container has a CPU request, the request continues to be enforced by CFS shares in the Linux kernel.
+* If a container does not have a CPU request, but does have a CPU limit, the CPU request defaults to the specified CPU limit, and is enforced by CFS shares in the Linux kernel.
+* If a container has both a CPU request and limit, the CPU request is enforced by CFS shares in the Linux kernel, and the CPU limit has no impact on the node.
+
+* Obtain the label associated with the static MachineConfigPool CRD for the type of node you want to configure by entering the following command:
+
+```terminal
+$ oc edit machineconfigpool <name>
+```
+
+
+For example:
+
+```terminal
+$ oc edit machineconfigpool worker
+```
+
+Example output
+
+```yaml
+apiVersion: machineconfiguration.openshift.io/v1
+kind: MachineConfigPool
+metadata:
+  creationTimestamp: "2022-11-16T15:34:25Z"
+  generation: 4
+  labels:
+    pools.operator.machineconfiguration.openshift.io/worker: "" 1
+  name: worker
+```
+
+The label appears under Labels.
+
+[TIP]
+----
+If the label is not present, add a key/value pair such as:
+
+```terminal
+$ oc label machineconfigpool worker custom-kubelet=small-pods
+```
+
+----
+
+1. Create a custom resource (CR) for your configuration change.
+Sample configuration for a disabling CPU limits
+
+```yaml
+apiVersion: machineconfiguration.openshift.io/v1
+kind: KubeletConfig
+metadata:
+  name: disable-cpu-units 1
+spec:
+  machineConfigPoolSelector:
+    matchLabels:
+      pools.operator.machineconfiguration.openshift.io/worker: "" 2
+  kubeletConfig:
+    cpuCfsQuota: false 3
+```
+
+Assign a name to CR.
+Specify the label from the machine config pool.
+Set the cpuCfsQuota parameter to false.
+2. Run the following command to create the CR:
+
+```terminal
+$ oc create -f <file_name>.yaml
+```
+
+
+## Reserving resources for system processes
+
+To provide more reliable scheduling and minimize node resource overcommitment,
+each node can reserve a portion of its resources for use by system daemons
+that are required to run on your node for your cluster to function.
+In particular, it is recommended that you reserve resources for incompressible resources such as memory.
+
+To explicitly reserve resources for non-pod processes, allocate node resources by specifying resources
+available for scheduling.
+For more details, see Allocating Resources for Nodes.
+
+## Disabling overcommitment for a node
+
+When enabled, overcommitment can be disabled on each node.
+
+To disable overcommitment in a node run the following command on that node:
+
+
+```terminal
+$ sysctl -w vm.overcommit_memory=0
+```
+
+
+# Project-level limits
+
+To help control overcommit, you can set per-project resource limit ranges,
+specifying memory and CPU limits and defaults for a project that overcommit
+cannot exceed.
+
+For information on project-level resource limits, see Additional resources.
+
+Alternatively, you can disable overcommitment for specific projects.
+
+## Disabling overcommitment for a project
+
+When enabled, overcommitment can be disabled per-project. For example, you can allow infrastructure components to be configured independently of overcommitment.
+
+1. Create or edit the namespace object file.
+2. Add the following annotation:
+
+```yaml
+apiVersion: v1
+kind: Namespace
+metadata:
+  annotations:
+    quota.openshift.io/cluster-resource-override-enabled: "false" 1
+# ...
+```
+
+Setting this annotation to false disables overcommit for this namespace.
+
+# Freeing node resources using garbage collection
+
+Understand and use garbage collection.
+
+## Understanding how terminated containers are removed through garbage collection
+
+Container garbage collection removes terminated containers by using eviction thresholds.
+
+When eviction thresholds are set for garbage collection, the node tries to keep any container for any pod accessible from the API. If the pod has been deleted, the containers will be as well. Containers are preserved as long the pod is not deleted and the eviction threshold is not reached. If the node is under disk pressure, it will remove containers and their logs will no longer be accessible using oc logs.
+
+* eviction-soft - A soft eviction threshold pairs an eviction threshold with a required administrator-specified grace period.
+* eviction-hard - A hard eviction threshold has no grace period, and if observed, Red Hat OpenShift Container Platform takes immediate action.
+
+The following table lists the eviction thresholds:
+
+
+
+
+[NOTE]
+----
+For evictionHard you must specify all of these parameters.  If you do not specify all parameters, only the specified parameters are applied and the garbage collection will not function properly.
+----
+
+If a node is oscillating above and below a soft eviction threshold, but not exceeding its associated grace period, the corresponding node would constantly oscillate between true and false. As a consequence, the scheduler could make poor scheduling decisions.
+
+To protect against this oscillation, use the evictionpressure-transition-period flag to control how long Red Hat OpenShift Container Platform must wait before transitioning out of a pressure condition. Red Hat OpenShift Container Platform will not set an eviction threshold as being met for the specified pressure condition for the period specified before toggling the condition back to false.
+
+
+[NOTE]
+----
+Setting the evictionPressureTransitionPeriod parameter to 0 configures the default value of 5 minutes. You cannot set an eviction pressure transition period to zero seconds.
+----
+
+## Understanding how images are removed through garbage collection
+
+Image garbage collection removes images that are not referenced by any running pods.
+
+Red Hat OpenShift Container Platform determines which images to remove from a node based on the disk usage that is reported by cAdvisor.
+
+The policy for image garbage collection is based on two conditions:
+
+* The percent of disk usage (expressed as an integer) which triggers image
+garbage collection. The default is 85.
+* The percent of disk usage (expressed as an integer) to which image garbage
+collection attempts to free. Default is 80.
+
+For image garbage collection, you can modify any of the following variables using
+a custom resource.
+
+
+
+Two lists of images are retrieved in each garbage collector run:
+
+1. A list of images currently running in at least one pod.
+2. A list of images available on a host.
+
+As new containers are run, new images appear. All images are marked with a time
+stamp. If the image is running (the first list above) or is newly detected (the
+second list above), it is marked with the current time. The remaining images are
+already marked from the previous spins. All images are then sorted by the time
+stamp.
+
+Once the collection starts, the oldest images get deleted first until the
+stopping criterion is met.
+
+## Configuring garbage collection for containers and images
+
+As an administrator, you can configure how Red Hat OpenShift Container Platform performs garbage collection by creating a kubeletConfig object for each machine config pool.
+
+
+[NOTE]
+----
+Red Hat OpenShift Container Platform supports only one kubeletConfig object for each machine config pool.
+----
+
+You can configure any combination of the following:
+
+* Soft eviction for containers
+* Hard eviction for containers
+* Eviction for images
+
+Container garbage collection removes terminated containers. Image garbage collection removes images that are not referenced by any running pods.
+
+1. Obtain the label associated with the static MachineConfigPool CRD for the type of node you want to configure by entering the following command:
+
+```terminal
+$ oc edit machineconfigpool <name>
+```
+
+
+For example:
+
+```terminal
+$ oc edit machineconfigpool worker
+```
+
+Example output
+
+```yaml
+apiVersion: machineconfiguration.openshift.io/v1
+kind: MachineConfigPool
+metadata:
+  creationTimestamp: "2022-11-16T15:34:25Z"
+  generation: 4
+  labels:
+    pools.operator.machineconfiguration.openshift.io/worker: "" 1
+  name: worker
+#...
+```
+
+The label appears under Labels.
+
+[TIP]
+----
+If the label is not present, add a key/value pair such as:
+
+```
+$ oc label machineconfigpool worker custom-kubelet=small-pods
+```
+
+----
+
+1. Create a custom resource (CR) for your configuration change.
+
+[IMPORTANT]
+----
+If there is one file system, or if /var/lib/kubelet and /var/lib/containers/ are in the same file system, the settings with the highest values trigger evictions, as those are met first. The file system triggers the eviction.
+----
+Sample configuration for a container garbage collection CR
+
+```yaml
+apiVersion: machineconfiguration.openshift.io/v1
+kind: KubeletConfig
+metadata:
+  name: worker-kubeconfig 1
+spec:
+  machineConfigPoolSelector:
+    matchLabels:
+      pools.operator.machineconfiguration.openshift.io/worker: "" 2
+  kubeletConfig:
+    evictionSoft: 3
+      memory.available: "500Mi" 4
+      nodefs.available: "10%"
+      nodefs.inodesFree: "5%"
+      imagefs.available: "15%"
+      imagefs.inodesFree: "10%"
+    evictionSoftGracePeriod:  5
+      memory.available: "1m30s"
+      nodefs.available: "1m30s"
+      nodefs.inodesFree: "1m30s"
+      imagefs.available: "1m30s"
+      imagefs.inodesFree: "1m30s"
+    evictionHard: 6
+      memory.available: "200Mi"
+      nodefs.available: "5%"
+      nodefs.inodesFree: "4%"
+      imagefs.available: "10%"
+      imagefs.inodesFree: "5%"
+    evictionPressureTransitionPeriod: 3m 7
+    imageMinimumGCAge: 5m 8
+    imageGCHighThresholdPercent: 80 9
+    imageGCLowThresholdPercent: 75 10
+#...
+```
+
+Name for the object.
+Specify the label from the machine config pool.
+For container garbage collection: Type of eviction: evictionSoft or evictionHard.
+For container garbage collection: Eviction thresholds based on a specific eviction trigger signal.
+For container garbage collection: Grace periods for the soft eviction. This parameter does not apply to eviction-hard.
+For container garbage collection: Eviction thresholds based on a specific eviction trigger signal.
+For evictionHard you must specify all of these parameters.  If you do not specify all parameters, only the specified parameters are applied and the garbage collection will not function properly.
+For container garbage collection: The duration to wait before transitioning out of an eviction pressure condition. Setting the evictionPressureTransitionPeriod parameter to 0 configures the default value of 5 minutes.
+For image garbage collection: The minimum age for an unused image before the image is removed by garbage collection.
+For image garbage collection: The percent of disk usage (expressed as an integer) that triggers image garbage collection.
+For image garbage collection: The percent of disk usage (expressed as an integer) that image garbage collection attempts to free.
+2. Run the following command to create the CR:
+
+```terminal
+$ oc create -f <file_name>.yaml
+```
+
+
+For example:
+
+```terminal
+$ oc create -f gc-container.yaml
+```
+
+Example output
+
+```terminal
+kubeletconfig.machineconfiguration.openshift.io/gc-container created
+```
+
+
+1. Verify that garbage collection is active by entering the following command. The Machine Config Pool you specified in the custom resource appears with UPDATING as 'true` until the change is fully implemented:
+
+```terminal
+$ oc get machineconfigpool
+```
+
+Example output
+
+```terminal
+NAME     CONFIG                                   UPDATED   UPDATING
+master   rendered-master-546383f80705bd5aeaba93   True      False
+worker   rendered-worker-b4c51bb33ccaae6fc4a6a5   False     True
+```
+
+
+# Using the Node Tuning Operator
+
+Understand and use the Node Tuning Operator.
+
+## Purpose
+
+The Node Tuning Operator helps you manage node-level tuning by orchestrating the TuneD daemon and achieves low latency performance by using the Performance Profile controller. The majority of high-performance applications require some level of kernel tuning. The Node Tuning Operator provides a unified management interface to users of node-level sysctls and more flexibility to add custom tuning specified by user needs.
+
+The Operator manages the containerized TuneD daemon for Red Hat OpenShift Container Platform as a Kubernetes daemon set. It ensures the custom tuning specification is passed to all containerized TuneD daemons running in the cluster in the format that the daemons understand. The daemons run on all nodes in the cluster, one per node.
+
+Node-level settings applied by the containerized TuneD daemon are rolled back on an event that triggers a profile change or when the containerized TuneD daemon is terminated gracefully by receiving and handling a termination signal.
+
+The Node Tuning Operator uses the Performance Profile controller to implement automatic tuning to achieve low latency performance for Red Hat OpenShift Container Platform applications.
+
+The cluster administrator configures a performance profile to define node-level settings such as the following:
+
+* Updating the kernel to kernel-rt.
+* Choosing CPUs for housekeeping.
+* Choosing CPUs for running workloads.
+
+The Node Tuning Operator is part of a standard Red Hat OpenShift Container Platform installation in version 4.1 and later.
+
+
+[NOTE]
+----
+In earlier versions of Red Hat OpenShift Container Platform, the Performance Addon Operator was used to implement automatic tuning to achieve low latency performance for OpenShift applications. In Red Hat OpenShift Container Platform 4.11 and later, this functionality is part of the Node Tuning Operator.
+----
+
+## Accessing an example Node Tuning Operator specification
+
+Use this process to access an example Node Tuning Operator specification.
+
+* Run the following command to access an example Node Tuning Operator specification:
+
+```terminal
+oc get tuned.tuned.openshift.io/default -o yaml -n openshift-cluster-node-tuning-operator
+```
+
+
+The default CR is meant for delivering standard node-level tuning for the Red Hat OpenShift Container Platform platform and it can only be modified to set the Operator Management state. Any other custom changes to the default CR will be overwritten by the Operator. For custom tuning, create your own Tuned CRs. Newly created CRs will be combined with the default CR and custom tuning applied to Red Hat OpenShift Container Platform nodes based on node or pod labels and profile priorities.
+
+
+[WARNING]
+----
+While in certain situations the support for pod labels can be a convenient way of automatically delivering required tuning, this practice is discouraged and strongly advised against, especially in large-scale clusters. The default Tuned CR ships without pod label matching. If a custom profile is created with pod label matching, then the functionality will be enabled at that time. The pod label functionality will be deprecated in future versions of the Node Tuning Operator.
+----
+
+## Custom tuning specification
+
+The custom resource (CR) for the Operator has two major sections. The first section, profile:, is a list of TuneD profiles and their names. The second, recommend:, defines the profile selection logic.
+
+Multiple custom tuning specifications can co-exist as multiple CRs in the Operator&#8217;s namespace. The existence of new CRs or the deletion of old CRs is detected by the Operator. All existing custom tuning specifications are merged and appropriate objects for the containerized TuneD daemons are updated.
+
+Management state
+
+The Operator Management state is set by adjusting the default Tuned CR. By default, the Operator is in the Managed state and the spec.managementState field is not present in the default Tuned CR. Valid values for the Operator Management state are as follows:
+
+* Managed: the Operator will update its operands as configuration resources are updated
+* Unmanaged: the Operator will ignore changes to the configuration resources
+* Removed: the Operator will remove its operands and resources the Operator provisioned
+
+Profile data
+
+The profile: section lists TuneD profiles and their names.
+
+
+```yaml
+profile:
+- name: tuned_profile_1
+  data: |
+    # TuneD profile specification
+    [main]
+    summary=Description of tuned_profile_1 profile
+
+    [sysctl]
+    net.ipv4.ip_forward=1
+    # ... other sysctl's or other TuneD daemon plugins supported by the containerized TuneD
+
+# ...
+
+- name: tuned_profile_n
+  data: |
+    # TuneD profile specification
+    [main]
+    summary=Description of tuned_profile_n profile
+
+    # tuned_profile_n profile settings
+```
+
+
+Recommended profiles
+
+The profile: selection logic is defined by the recommend: section of the CR. The recommend: section is a list of items to recommend the profiles based on a selection criteria.
+
+
+```yaml
+recommend:
+<recommend-item-1>
+# ...
+<recommend-item-n>
+```
+
+
+The individual items of the list:
+
+
+```yaml
+- machineConfigLabels: 1
+    <mcLabels> 2
+  match: 3
+    <match> 4
+  priority: <priority> 5
+  profile: <tuned_profile_name> 6
+  operand: 7
+    debug: <bool> 8
+    tunedConfig:
+      reapply_sysctl: <bool> 9
+```
+
+
+Optional.
+A dictionary of key/value MachineConfig labels. The keys must be unique.
+If omitted, profile match is assumed unless a profile with a higher priority matches first or machineConfigLabels is set.
+An optional list.
+Profile ordering priority. Lower numbers mean higher priority (0 is the highest priority).
+A TuneD profile to apply on a match. For example tuned_profile_1.
+Optional operand configuration.
+Turn debugging on or off for the TuneD daemon. Options are true for on or false for off. The default is false.
+Turn reapply_sysctl functionality on or off for the TuneD daemon. Options are true for on and false for off.
+
+<match> is an optional list recursively defined as follows:
+
+
+```yaml
+- label: <label_name> 1
+  value: <label_value> 2
+  type: <label_type> 3
+    <match> 4
+```
+
+
+Node or pod label name.
+Optional node or pod label value. If omitted, the presence of <label_name> is enough to match.
+Optional object type (node or pod). If omitted, node is assumed.
+An optional <match> list.
+
+If <match> is not omitted, all nested <match> sections must also evaluate to true. Otherwise, false is assumed and the profile with the respective <match> section will not be applied or recommended. Therefore, the nesting (child <match> sections) works as logical AND operator. Conversely, if any item of the <match> list matches, the entire <match> list evaluates to true. Therefore, the list acts as logical OR operator.
+
+If machineConfigLabels is defined, machine config pool based matching is turned on for the given recommend: list item. <mcLabels> specifies the labels for a machine config. The machine config is created automatically to apply host settings, such as kernel boot parameters, for the profile <tuned_profile_name>. This involves finding all machine config pools with machine config selector matching <mcLabels> and setting the profile <tuned_profile_name> on all nodes that are assigned the found machine config pools. To target nodes that have both master and worker roles, you must use the master role.
+
+The list items match and machineConfigLabels are connected by the logical OR operator. The match item is evaluated first in a short-circuit manner. Therefore, if it evaluates to true, the machineConfigLabels item is not considered.
+
+
+[IMPORTANT]
+----
+When using machine config pool based matching, it is advised to group nodes with the same hardware configuration into the same machine config pool. Not following this practice might result in TuneD operands calculating conflicting kernel parameters for two or more nodes sharing the same machine config pool.
+----
+
+
+```yaml
+- match:
+  - label: tuned.openshift.io/elasticsearch
+    match:
+    - label: node-role.kubernetes.io/master
+    - label: node-role.kubernetes.io/infra
+    type: pod
+  priority: 10
+  profile: openshift-control-plane-es
+- match:
+  - label: node-role.kubernetes.io/master
+  - label: node-role.kubernetes.io/infra
+  priority: 20
+  profile: openshift-control-plane
+- priority: 30
+  profile: openshift-node
+```
+
+
+The CR above is translated for the containerized TuneD daemon into its recommend.conf file based on the profile priorities. The profile with the highest priority (10) is openshift-control-plane-es and, therefore, it is considered first. The containerized TuneD daemon running on a given node looks to see if there is a pod running on the same node with the tuned.openshift.io/elasticsearch label set. If not, the entire <match> section evaluates as false. If there is such a pod with the label, in order for the <match> section to evaluate to true, the node label also needs to be node-role.kubernetes.io/master or node-role.kubernetes.io/infra.
+
+If the labels for the profile with priority 10 matched, openshift-control-plane-es profile is applied and no other profile is considered. If the node/pod label combination did not match, the second highest priority profile (openshift-control-plane) is considered. This profile is applied if the containerized TuneD pod runs on a node with labels node-role.kubernetes.io/master or node-role.kubernetes.io/infra.
+
+Finally, the profile openshift-node has the lowest priority of 30. It lacks the <match> section and, therefore, will always match. It acts as a profile catch-all to set openshift-node profile, if no other profile with higher priority matches on a given node.
+
+![Decision workflow]
+
+
+```yaml
+apiVersion: tuned.openshift.io/v1
+kind: Tuned
+metadata:
+  name: openshift-node-custom
+  namespace: openshift-cluster-node-tuning-operator
+spec:
+  profile:
+  - data: |
+      [main]
+      summary=Custom OpenShift node profile with an additional kernel parameter
+      include=openshift-node
+      [bootloader]
+      cmdline_openshift_node_custom=+skew_tick=1
+    name: openshift-node-custom
+
+  recommend:
+  - machineConfigLabels:
+      machineconfiguration.openshift.io/role: "worker-custom"
+    priority: 20
+    profile: openshift-node-custom
+```
+
+
+To minimize node reboots, label the target nodes with a label the machine config pool&#8217;s node selector will match, then create the Tuned CR above and finally create the custom machine config pool itself.
+
+Cloud provider-specific TuneD profiles
+
+With this functionality, all Cloud provider-specific nodes can conveniently be assigned a TuneD profile specifically tailored to a given Cloud provider on a Red Hat OpenShift Container Platform cluster. This can be accomplished without adding additional node labels or grouping nodes into
+machine config pools.
+
+This functionality takes advantage of spec.providerID node object values in the form of <cloud-provider>://<cloud-provider-specific-id> and writes the file /var/lib/ocp-tuned/provider with the value <cloud-provider> in NTO operand containers. The content of this file is then used by TuneD to load provider-<cloud-provider> profile if such profile exists.
+
+The openshift profile that both openshift-control-plane and openshift-node profiles inherit settings from is now updated to use this functionality through the use of conditional profile loading. Neither NTO nor TuneD currently include any Cloud provider-specific profiles. However, it is possible to create a custom profile provider-<cloud-provider> that will be applied to all Cloud provider-specific cluster nodes.
+
+
+```yaml
+apiVersion: tuned.openshift.io/v1
+kind: Tuned
+metadata:
+  name: provider-gce
+  namespace: openshift-cluster-node-tuning-operator
+spec:
+  profile:
+  - data: |
+      [main]
+      summary=GCE Cloud provider-specific profile
+      # Your tuning for GCE Cloud provider goes here.
+    name: provider-gce
+```
+
+
+
+[NOTE]
+----
+Due to profile inheritance, any setting specified in the provider-<cloud-provider> profile will be overwritten by the openshift profile and its child profiles.
+----
+
+## Default profiles set on a cluster
+
+The following are the default profiles set on a cluster.
+
+
+```yaml
+apiVersion: tuned.openshift.io/v1
+kind: Tuned
+metadata:
+  name: default
+  namespace: openshift-cluster-node-tuning-operator
+spec:
+  profile:
+  - data: |
+      [main]
+      summary=Optimize systems running OpenShift (provider specific parent profile)
+      include=-provider-${f:exec:cat:/var/lib/ocp-tuned/provider},openshift
+    name: openshift
+  recommend:
+  - profile: openshift-control-plane
+    priority: 30
+    match:
+    - label: node-role.kubernetes.io/master
+    - label: node-role.kubernetes.io/infra
+  - profile: openshift-node
+    priority: 40
+```
+
+
+Starting with Red Hat OpenShift Container Platform 4.9, all OpenShift TuneD profiles are shipped with
+the TuneD package. You can use the oc exec command to view the contents of these profiles:
+
+
+```terminal
+$ oc exec $tuned_pod -n openshift-cluster-node-tuning-operator -- find /usr/lib/tuned/openshift{,-control-plane,-node} -name tuned.conf -exec grep -H ^ {} \;
+```
+
+
+## Supported TuneD daemon plugins
+
+Excluding the [main] section, the following TuneD plugins are supported when
+using custom profiles defined in the profile: section of the Tuned CR:
+
+* audio
+* cpu
+* disk
+* eeepc_she
+* modules
+* mounts
+* net
+* scheduler
+* scsi_host
+* selinux
+* sysctl
+* sysfs
+* usb
+* video
+* vm
+* bootloader
+
+There is some dynamic tuning functionality provided by some of these plugins
+that is not supported. The following TuneD plugins are currently not supported:
+
+* script
+* systemd
+
+
+[NOTE]
+----
+The TuneD bootloader plugin only supports Red Hat Enterprise Linux CoreOS (RHCOS) worker nodes.
+----
+
+* Available TuneD Plugins
+* Getting Started with TuneD
+
+# Configuring the maximum number of pods per node
+
+Two parameters control the maximum number of pods that can be scheduled to a node: podsPerCore and maxPods. If you use both options, the lower of the two limits the number of pods on a node.
+
+For example, if podsPerCore is set to 10 on a node with 4 processor cores, the maximum number of pods allowed on the node will be 40.
+
+1. Obtain the label associated with the static MachineConfigPool CRD for the type of node you want to configure by entering the following command:
+
+```terminal
+$ oc edit machineconfigpool <name>
+```
+
+
+For example:
+
+```terminal
+$ oc edit machineconfigpool worker
+```
+
+Example output
+
+```yaml
+apiVersion: machineconfiguration.openshift.io/v1
+kind: MachineConfigPool
+metadata:
+  creationTimestamp: "2022-11-16T15:34:25Z"
+  generation: 4
+  labels:
+    pools.operator.machineconfiguration.openshift.io/worker: "" 1
+  name: worker
+#...
+```
+
+The label appears under Labels.
+
+[TIP]
+----
+If the label is not present, add a key/value pair such as:
+
+```
+$ oc label machineconfigpool worker custom-kubelet=small-pods
+```
+
+----
+
+1. Create a custom resource (CR) for your configuration change.
+Sample configuration for a max-pods CR
+
+```yaml
+apiVersion: machineconfiguration.openshift.io/v1
+kind: KubeletConfig
+metadata:
+  name: set-max-pods 1
+spec:
+  machineConfigPoolSelector:
+    matchLabels:
+      pools.operator.machineconfiguration.openshift.io/worker: "" 2
+  kubeletConfig:
+    podsPerCore: 10 3
+    maxPods: 250 4
+#...
+```
+
+Assign a name to CR.
+Specify the label from the machine config pool.
+Specify the number of pods the node can run based on the number of processor cores on the node.
+Specify the number of pods the node can run to a fixed value, regardless of the properties of the node.
+
+[NOTE]
+----
+Setting podsPerCore to 0 disables this limit.
+----
+
+In the above example, the default value for podsPerCore is 10 and the default value for maxPods is 250. This means that unless the node has 25 cores or more, by default, podsPerCore will be the limiting factor.
+2. Run the following command to create the CR:
+
+```terminal
+$ oc create -f <file_name>.yaml
+```
+
+
+1. List the MachineConfigPool CRDs to see if the change is applied. The UPDATING column reports True if the change is picked up by the Machine Config Controller:
+
+```terminal
+$ oc get machineconfigpools
+```
+
+Example output
+
+```terminal
+NAME     CONFIG                        UPDATED   UPDATING   DEGRADED
+master   master-9cc2c72f205e103bb534   False     False      False
+worker   worker-8cecd1236b33ee3f8a5e   False     True       False
+```
+
+
+Once the change is complete, the UPDATED column reports True.
+
+```terminal
+$ oc get machineconfigpools
+```
+
+Example output
+
+```terminal
+NAME     CONFIG                        UPDATED   UPDATING   DEGRADED
+master   master-9cc2c72f205e103bb534   False     True       False
+worker   worker-8cecd1236b33ee3f8a5e   True      False      False
+```
+
+
+# Machine scaling with static IP addresses
+
+After you deployed your cluster to run nodes with static IP addresses, you can scale an instance of a machine or a machine set to use one of these static IP addresses.
+
+* Static IP addresses for vSphere nodes
+
+## Scaling machines to use static IP addresses
+
+You can scale additional machine sets to use pre-defined static IP addresses on your cluster. For this configuration, you need to create a machine resource YAML file and then define static IP addresses in this file.
+
+* You deployed a cluster that runs at least one node with a configured static IP address.
+
+1. Create a machine resource YAML file and define static IP address network information in the network parameter.
+Example of a machine resource YAML file with static IP address information defined in the network parameter.
+
+```yaml
+apiVersion: machine.openshift.io/v1beta1
+kind: Machine
+metadata:
+  creationTimestamp: null
+  labels:
+    machine.openshift.io/cluster-api-cluster: <infrastructure_id>
+    machine.openshift.io/cluster-api-machine-role: <role>
+    machine.openshift.io/cluster-api-machine-type: <role>
+    machine.openshift.io/cluster-api-machineset: <infrastructure_id>-<role>
+  name: <infrastructure_id>-<role>
+  namespace: openshift-machine-api
+spec:
+  lifecycleHooks: {}
+  metadata: {}
+  providerSpec:
+    value:
+      apiVersion: machine.openshift.io/v1beta1
+      credentialsSecret:
+        name: vsphere-cloud-credentials
+      diskGiB: 120
+      kind: VSphereMachineProviderSpec
+      memoryMiB: 8192
+      metadata:
+        creationTimestamp: null
+      network:
+        devices:
+        - gateway: 192.168.204.1 1
+          ipAddrs:
+          - 192.168.204.8/24 2
+          nameservers: 3
+          - 192.168.204.1
+          networkName: qe-segment-204
+      numCPUs: 4
+      numCoresPerSocket: 2
+      snapshot: ""
+      template: <vm_template_name>
+      userDataSecret:
+        name: worker-user-data
+      workspace:
+        datacenter: <vcenter_data_center_name>
+        datastore: <vcenter_datastore_name>
+        folder: <vcenter_vm_folder_path>
+        resourcepool: <vsphere_resource_pool>
+        server: <vcenter_server_ip>
+status: {}
+```
+
+The IP address for the default gateway for the network interface.
+Lists IPv4, IPv6, or both IP addresses that installation program passes to the network interface. Both IP families must use the same network interface for the default network.
+Lists a DNS nameserver. You can define up to 3 DNS nameservers. Consider defining more than one DNS nameserver to take advantage of DNS resolution if that one DNS nameserver becomes unreachable.
+* Create a machine custom resource (CR) by entering the following command in your terminal:
+
+```terminal
+$ oc create -f <file_name>.yaml
+```
+
+
+## Machine set scaling of machines with configured static IP addresses
+
+You can use a machine set to scale machines with configured static IP addresses.
+
+After you configure a machine set to request a static IP address for a machine, the machine controller creates an IPAddressClaim resource in the openshift-machine-api namespace. The external controller then creates an IPAddress resource and binds any static IP addresses to the IPAddressClaim resource.
+
+
+[IMPORTANT]
+----
+Your organization might use numerous types of IP address management (IPAM) services. If you want to enable a particular IPAM service on Red Hat OpenShift Container Platform, you might need to manually create the IPAddressClaim resource in a YAML definition and then bind a static IP address to this resource by entering the following command in your oc CLI:
+
+```terminal
+$ oc create -f <ipaddressclaim_filename>
+```
+
+----
+
+The following demonstrates an example of an IPAddressClaim resource:
+
+
+```yaml
+kind: IPAddressClaim
+metadata:
+  finalizers:
+  - machine.openshift.io/ip-claim-protection
+  name: cluster-dev-9n5wg-worker-0-m7529-claim-0-0
+  namespace: openshift-machine-api
+spec:
+  poolRef:
+    apiGroup: ipamcontroller.example.io
+    kind: IPPool
+    name: static-ci-pool
+status: {}
+```
+
+
+The machine controller updates the machine with a status of IPAddressClaimed to indicate that a static IP address has successfully bound to the IPAddressClaim resource. The machine controller applies the same status to a machine with multiple IPAddressClaim resources that each contain a bound static IP address.The machine controller then creates a virtual machine and applies static IP addresses to any nodes listed in the providerSpec of a machine&#8217;s configuration.
+
+## Using a machine set to scale machines with configured static IP addresses
+
+You can use a machine set to scale machines with configured static IP addresses.
+
+The example in the procedure demonstrates the use of controllers for scaling machines in a machine set.
+
+* You deployed a cluster that runs at least one node with a configured static IP address.
+
+1. Configure a machine set by specifying IP pool information in the network.devices.addressesFromPools schema of the machine set's YAML file:
+
+```yaml
+apiVersion: machine.openshift.io/v1beta1
+kind: MachineSet
+metadata:
+  annotations:
+    machine.openshift.io/memoryMb: "8192"
+    machine.openshift.io/vCPU: "4"
+  labels:
+    machine.openshift.io/cluster-api-cluster: <infrastructure_id>
+  name: <infrastructure_id>-<role>
+  namespace: openshift-machine-api
+spec:
+  replicas: 0
+  selector:
+    matchLabels:
+      machine.openshift.io/cluster-api-cluster: <infrastructure_id>
+      machine.openshift.io/cluster-api-machineset: <infrastructure_id>-<role>
+  template:
+    metadata:
+      labels:
+        ipam: "true"
+        machine.openshift.io/cluster-api-cluster: <infrastructure_id>
+        machine.openshift.io/cluster-api-machine-role: worker
+        machine.openshift.io/cluster-api-machine-type: worker
+        machine.openshift.io/cluster-api-machineset: <infrastructure_id>-<role>
+    spec:
+      lifecycleHooks: {}
+      metadata: {}
+      providerSpec:
+        value:
+          apiVersion: machine.openshift.io/v1beta1
+          credentialsSecret:
+            name: vsphere-cloud-credentials
+          diskGiB: 120
+          kind: VSphereMachineProviderSpec
+          memoryMiB: 8192
+          metadata: {}
+          network:
+            devices:
+            - addressesFromPools: 1
+              - group: ipamcontroller.example.io
+                name: static-ci-pool
+                resource: IPPool
+              nameservers:
+              - "192.168.204.1" 2
+              networkName: qe-segment-204
+          numCPUs: 4
+          numCoresPerSocket: 2
+          snapshot: ""
+          template: rvanderp4-dev-9n5wg-rhcos-generated-region-generated-zone
+          userDataSecret:
+            name: worker-user-data
+          workspace:
+            datacenter: IBMCdatacenter
+            datastore: /IBMCdatacenter/datastore/vsanDatastore
+            folder: /IBMCdatacenter/vm/rvanderp4-dev-9n5wg
+            resourcePool: /IBMCdatacenter/host/IBMCcluster//Resources
+            server: vcenter.ibmc.devcluster.openshift.com
+```
+
+Specifies an IP pool, which lists a static IP address or a range of static IP addresses. The IP Pool can either be a reference to a custom resource definition (CRD) or a resource supported by the IPAddressClaims resource handler. The machine controller accesses static IP addresses listed in the machine set's configuration and then allocates each address to each machine.
+Lists a nameserver. You must specify a nameserver for nodes that receive static IP address, because the Dynamic Host Configuration Protocol (DHCP) network configuration does not support static IP addresses.
+2. Scale the machine set by entering the following commands in your oc CLI:
+
+```terminal
+$ oc scale --replicas=2 machineset <machineset> -n openshift-machine-api
+```
+
+
+Or:
+
+```terminal
+$ oc edit machineset <machineset> -n openshift-machine-api
+```
+
+
+After each machine is scaled up, the machine controller creates an IPAddressClaim resource.
+3. Optional: Check that the IPAddressClaim resource exists in the openshift-machine-api namespace by entering the following command:
+
+```terminal
+$ oc get ipaddressclaims.ipam.cluster.x-k8s.io -n openshift-machine-api
+```
+
+Example oc CLI output that lists two IP pools listed in the openshift-machine-api namespace
+
+```terminal
+NAME                                         POOL NAME        POOL KIND
+cluster-dev-9n5wg-worker-0-m7529-claim-0-0   static-ci-pool   IPPool
+cluster-dev-9n5wg-worker-0-wdqkt-claim-0-0   static-ci-pool   IPPool
+```
+
+4. Create an IPAddress resource by entering the following command:
+
+```terminal
+$ oc create -f ipaddress.yaml
+```
+
+
+The following example shows an IPAddress resource with defined network configuration information and one defined static IP address:
+
+```yaml
+apiVersion: ipam.cluster.x-k8s.io/v1alpha1
+kind: IPAddress
+metadata:
+  name: cluster-dev-9n5wg-worker-0-m7529-ipaddress-0-0
+  namespace: openshift-machine-api
+spec:
+  address: 192.168.204.129
+  claimRef: 1
+    name: cluster-dev-9n5wg-worker-0-m7529-claim-0-0
+  gateway: 192.168.204.1
+  poolRef: 2
+    apiGroup: ipamcontroller.example.io
+    kind: IPPool
+    name: static-ci-pool
+  prefix: 23
+```
+
+The name of the target IPAddressClaim resource.
+Details information about the static IP address or addresses from your nodes.
+
+[NOTE]
+----
+By default, the external controller automatically scans any resources in the machine set for recognizable address pool types. When the external controller finds kind: IPPool defined in the IPAddress resource, the controller binds any static IP addresses to the IPAddressClaim resource.
+----
+5. Update the IPAddressClaim status with a reference to the IPAddress resource:
+
+```terminal
+$ oc --type=merge patch IPAddressClaim cluster-dev-9n5wg-worker-0-m7529-claim-0-0 -p='{"status":{"addressRef": {"name": "cluster-dev-9n5wg-worker-0-m7529-ipaddress-0-0"}}}' -n openshift-machine-api --subresource=status
+```

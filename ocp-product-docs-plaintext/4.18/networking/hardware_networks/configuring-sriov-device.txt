@@ -1,0 +1,863 @@
+# Configuring an SR-IOV network device
+
+
+You can configure a Single Root I/O Virtualization (SR-IOV) device in your cluster.
+Before you perform any tasks in the following documentation, ensure that you installed the SR-IOV Network Operator.
+
+# SR-IOV network node configuration object
+
+You specify the SR-IOV network device configuration for a node by creating an SR-IOV network node policy. The API object for the policy is part of the sriovnetwork.openshift.io API group.
+
+The following YAML describes an SR-IOV network node policy:
+
+
+```yaml
+apiVersion: sriovnetwork.openshift.io/v1
+kind: SriovNetworkNodePolicy
+metadata:
+  name: <name> 1
+  namespace: openshift-sriov-network-operator 2
+spec:
+  resourceName: <sriov_resource_name> 3
+  nodeSelector:
+    feature.node.kubernetes.io/network-sriov.capable: "true" 4
+  priority: <priority> 5
+  mtu: <mtu> 6
+  needVhostNet: false 7
+  numVfs: <num> 8
+  externallyManaged: false 9
+  nicSelector: 10
+    vendor: "<vendor_code>" 11
+    deviceID: "<device_id>" 12
+    pfNames: ["<pf_name>", ...] 13
+    rootDevices: ["<pci_bus_id>", ...] 14
+    netFilter: "<filter_string>" 15
+  deviceType: <device_type> 16
+  isRdma: false 17
+  linkType: <link_type> 18
+  eSwitchMode: "switchdev" 19
+  excludeTopology: false 20
+```
+
+
+The name for the custom resource object.
+The namespace where the SR-IOV Network Operator is installed.
+The resource name of the SR-IOV network device plugin. You can create multiple SR-IOV network node policies for a resource name.
+
+When specifying a name, be sure to use the accepted syntax expression ^[a-zA-Z0-9_]+$ in the resourceName.
+The node selector specifies the nodes to configure. Only SR-IOV network devices on the selected nodes are configured. The SR-IOV Container Network Interface (CNI) plugin and device plugin are deployed on selected nodes only.
+
+[IMPORTANT]
+----
+The SR-IOV Network Operator applies node network configuration policies to nodes in sequence. Before applying node network configuration policies, the SR-IOV Network Operator checks if the machine config pool (MCP) for a node is in an unhealthy state such as Degraded or Updating. If a node is in an unhealthy MCP, the process of applying node network configuration policies to all targeted nodes in the cluster pauses until the MCP returns to a healthy state.
+To avoid a node in an unhealthy MCP from blocking the application of node network configuration policies to other nodes, including nodes in other MCPs, you must create a separate node network configuration policy for each MCP.
+----
+Optional: The priority is an integer value between 0 and 99. A smaller value receives higher priority. For example, a priority of 10 is a higher priority than 99. The default value is 99.
+Optional: The maximum transmission unit (MTU) of the physical function and all its virtual functions. The maximum MTU value can vary for different network interface controller (NIC) models.
+
+[IMPORTANT]
+----
+If you want to create virtual function on the default network interface, ensure that the MTU is set to a value that matches the cluster MTU.
+If you want to modify the MTU of a single virtual function while the function is assigned to a pod, leave the MTU value blank in the SR-IOV network node policy.
+Otherwise, the SR-IOV Network Operator reverts the MTU of the virtual function to the MTU value defined in the SR-IOV network node policy, which might trigger a node drain.
+----
+Optional: Set needVhostNet to true to mount the /dev/vhost-net device in the pod. Use the mounted /dev/vhost-net device with Data Plane Development Kit (DPDK) to forward traffic to the kernel network stack.
+The number of the virtual functions (VF) to create for the SR-IOV physical network device. For an Intel network interface controller (NIC), the number of VFs cannot be larger than the total VFs supported by the device. For a Mellanox NIC, the number of VFs cannot be larger than 127.
+The externallyManaged field indicates whether the SR-IOV Network Operator manages all, or only a subset of virtual functions (VFs). With the value set to false the SR-IOV Network Operator manages and configures all VFs on the PF.
+
+[NOTE]
+----
+When externallyManaged is set to true, you must manually create the Virtual Functions (VFs) on the physical function (PF) before applying the SriovNetworkNodePolicy resource. If the VFs are not pre-created, the SR-IOV Network Operator's webhook will block the policy request.
+When externallyManaged is set to false, the SR-IOV Network Operator automatically creates and manages the VFs, including resetting them if necessary.
+To use VFs on the host system, you must create them through NMState, and set externallyManaged to true. In this mode, the SR-IOV Network Operator does not modify the PF or the manually managed VFs, except for those explicitly defined in the  nicSelector field of your policy. However, the SR-IOV Network Operator continues to manage VFs that are used as pod secondary interfaces.
+----
+The NIC selector identifies the device to which this resource applies. You do not have to specify values for all the parameters. It is recommended to identify the network device with enough precision to avoid selecting a device unintentionally.
+
+If you specify rootDevices, you must also specify a value for vendor, deviceID, or pfNames. If you specify both pfNames and rootDevices at the same time, ensure that they refer to the same device. If you specify a value for netFilter, then you do not need to specify any other parameter because a network ID is unique.
+Optional: The vendor hexadecimal vendor identifier of the SR-IOV network device. The only allowed values are 8086 (Intel) and 15b3 (Mellanox).
+Optional: The device hexadecimal device identifier of the SR-IOV network device. For example, 101b is the device ID for a Mellanox ConnectX-6 device.
+Optional: An array of one or more physical function (PF) names the resource must apply to.
+Optional: An array of one or more PCI bus addresses the resource must apply to. For example 0000:02:00.1.
+Optional: The platform-specific network filter. The only supported platform is Red Hat OpenStack Platform (RHOSP). Acceptable values use the following format: openstack/NetworkID:xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx. Replace xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx with the value from the /var/config/openstack/latest/network_data.json metadata file. This filter ensures that VFs are associated with a specific OpenStack network. The operator uses this filter to map the VFs to the appropriate network based on metadata provided by the OpenStack platform.
+Optional: The driver to configure for the VFs created from this resource. The only allowed values are netdevice and vfio-pci. The default value is netdevice.
+
+For a Mellanox NIC to work in DPDK mode on bare metal nodes, use the netdevice driver type and set isRdma to true.
+Optional: Configures whether to enable remote direct memory access (RDMA) mode. The default value is false.
+
+If the isRdma parameter is set to true, you can continue to use the RDMA-enabled VF as a normal network device. A device can be used in either mode.
+
+Set isRdma to true and additionally set needVhostNet to true to configure a Mellanox NIC for use with Fast Datapath DPDK applications.
+
+[NOTE]
+----
+You cannot set the isRdma parameter to true for intel NICs.
+----
+Optional: The link type for the VFs. The default value is eth for Ethernet. Change this value to 'ib' for InfiniBand.
+
+When linkType is set to ib, isRdma is automatically set to true by the SR-IOV Network Operator webhook. When linkType is set to ib, deviceType should not be set to vfio-pci.
+
+Do not set linkType to eth for SriovNetworkNodePolicy, because this can lead to an incorrect number of available devices reported by the device plugin.
+Optional: To enable hardware offloading, you must set the eSwitchMode field to "switchdev". For more information about hardware offloading, see "Configuring hardware offloading".
+Optional: To exclude advertising an SR-IOV network resource's NUMA node to the Topology Manager, set the value to true. The default value is false.
+
+## SR-IOV network node configuration examples
+
+The following example describes the configuration for an InfiniBand device:
+
+
+```yaml
+apiVersion: sriovnetwork.openshift.io/v1
+kind: SriovNetworkNodePolicy
+metadata:
+  name: policy-ib-net-1
+  namespace: openshift-sriov-network-operator
+spec:
+  resourceName: ibnic1
+  nodeSelector:
+    feature.node.kubernetes.io/network-sriov.capable: "true"
+  numVfs: 4
+  nicSelector:
+    vendor: "15b3"
+    deviceID: "101b"
+    rootDevices:
+      - "0000:19:00.0"
+  linkType: ib
+  isRdma: true
+```
+
+
+The following example describes the configuration for an SR-IOV network device in a RHOSP virtual machine:
+
+
+```yaml
+apiVersion: sriovnetwork.openshift.io/v1
+kind: SriovNetworkNodePolicy
+metadata:
+  name: policy-sriov-net-openstack-1
+  namespace: openshift-sriov-network-operator
+spec:
+  resourceName: sriovnic1
+  nodeSelector:
+    feature.node.kubernetes.io/network-sriov.capable: "true"
+  numVfs: 1 1
+  nicSelector:
+    vendor: "15b3"
+    deviceID: "101b"
+    netFilter: "openstack/NetworkID:ea24bd04-8674-4f69-b0ee-fa0b3bd20509" 2
+```
+
+
+The numVfs field is always set to 1 when configuring the node network policy for a virtual machine.
+The netFilter field must refer to a network ID when the virtual machine is deployed on RHOSP. Valid values for netFilter are available from an SriovNetworkNodeState object.
+
+## Configuring the SR-IOV Network Operator on Mellanox cards when Secure Boot is enabled
+
+The SR-IOV Network Operator supports an option to skip the firmware configuration for Mellanox devices. This option allows you to create virtual functions by using the SR-IOV Network Operator when the system has secure boot enabled. You must manually configure and allocate the number of virtual functions in the firmware before switching the system to secure boot.
+
+
+[NOTE]
+----
+The number of virtual functions in the firmware is the maximum number of virtual functions that you can request in the policy.
+----
+
+1. Configure the virtual functions (VFs) by running the following command when the system is without a secure boot when using the sriov-config daemon:
+
+```terminal
+$ mstconfig -d -0001:b1:00.1 set SRIOV_EN=1 NUM_OF_VFS=16 1 2
+```
+
+The SRIOV_EN environment variable enables the SR-IOV Network Operator support on the Mellanox card.
+The NUM_OF_VFS environment variable specifies the number of virtual functions to enable in the firmware.
+2. Configure the SR-IOV Network Operator by disabling the Mellanox plugin. See the following SriovOperatorConfig example configuration:
+
+```yaml
+apiVersion: sriovnetwork.openshift.io/v1
+kind: SriovOperatorConfig
+metadata:
+  name: default
+  namespace: openshift-sriov-network-operator
+spec:
+  configDaemonNodeSelector: {}
+  configurationMode: daemon
+  disableDrain: false
+  disablePlugins:
+  - mellanox
+  enableInjector: true
+  enableOperatorWebhook: true
+  logLevel: 2
+```
+
+3. Reboot the system to enable the virtual functions and the configuration settings.
+4. Check the virtual functions (VFs) after rebooting the system by running the following command:
+
+```terminal
+$ oc -n openshift-sriov-network-operator get sriovnetworknodestate.sriovnetwork.openshift.io worker-0 -oyaml
+```
+
+Example output
+
+```yaml
+- deviceID: 101d
+    driver: mlx5_core
+    eSwitchMode: legacy
+    linkSpeed: -1 Mb/s
+    linkType: ETH
+    mac: 08:c0:eb:96:31:25
+    mtu: 1500
+    name: ens3f1np1
+    pciAddress: 0000:b1:00.1 1
+    totalvfs: 16
+    vendor: 15b3
+```
+
+The totalvfs value is the same number used in the mstconfig command earlier in the procedure.
+5. Enable secure boot to prevent unauthorized operating systems and malicious software from loading during the device's boot process.
+1. Enable secure boot using the BIOS (Basic Input/Output System).
+
+```terminal
+Secure Boot: Enabled
+Secure Boot Policy: Standard
+Secure Boot Mode: Mode Deployed
+```
+
+2. Reboot the system.
+
+## Virtual function (VF) partitioning for SR-IOV devices
+
+In some cases, you might want to split virtual functions (VFs) from the same physical function (PF) into multiple resource pools.
+For example, you might want some of the VFs to load with the default driver and the remaining VFs load with the vfio-pci driver.
+In such a deployment, the pfNames selector in your SriovNetworkNodePolicy custom resource (CR) can be used to specify a range of VFs for a pool using the following format: <pfname>#<first_vf>-<last_vf>.
+
+For example, the following YAML shows the selector for an interface named netpf0 with VF 2 through 7:
+
+
+```yaml
+pfNames: ["netpf0#2-7"]
+```
+
+
+* netpf0 is the PF interface name.
+* 2 is the first VF index (0-based) that is included in the range.
+* 7 is the last VF index (0-based) that is included in the range.
+
+You can select VFs from the same PF by using different policy CRs if the following requirements are met:
+
+* The numVfs value must be identical for policies that select the same PF.
+* The VF index must be in the range of 0 to <numVfs>-1. For example, if you have a policy with numVfs set to 8, then the <first_vf> value must not be smaller than 0, and the <last_vf> must not be larger than 7.
+* The VFs ranges in different policies must not overlap.
+* The <first_vf> must not be larger than the <last_vf>.
+
+The following example illustrates NIC partitioning for an SR-IOV device.
+
+The policy policy-net-1 defines a resource pool net-1 that contains the VF 0 of PF netpf0 with the default VF driver.
+The policy policy-net-1-dpdk defines a resource pool net-1-dpdk that contains the VF 8 to 15 of PF netpf0 with the vfio VF driver.
+
+Policy policy-net-1:
+
+
+```yaml
+apiVersion: sriovnetwork.openshift.io/v1
+kind: SriovNetworkNodePolicy
+metadata:
+  name: policy-net-1
+  namespace: openshift-sriov-network-operator
+spec:
+  resourceName: net1
+  nodeSelector:
+    feature.node.kubernetes.io/network-sriov.capable: "true"
+  numVfs: 16
+  nicSelector:
+    pfNames: ["netpf0#0-0"]
+  deviceType: netdevice
+```
+
+
+Policy policy-net-1-dpdk:
+
+
+```yaml
+apiVersion: sriovnetwork.openshift.io/v1
+kind: SriovNetworkNodePolicy
+metadata:
+  name: policy-net-1-dpdk
+  namespace: openshift-sriov-network-operator
+spec:
+  resourceName: net1dpdk
+  nodeSelector:
+    feature.node.kubernetes.io/network-sriov.capable: "true"
+  numVfs: 16
+  nicSelector:
+    pfNames: ["netpf0#8-15"]
+  deviceType: vfio-pci
+```
+
+
+Confirm that the interface partitioned to virtual functions (VFs) for the SR-IOV device by running the following command.
+
+
+```terminal
+$ ip link show <interface> 1
+```
+
+
+Replace <interface> with the interface that you specified when partitioning to VFs for the SR-IOV device, for example, ens3f1.
+
+
+```terminal
+5: ens3f1: <BROADCAST,MULTICAST,UP,LOWER_UP> mtu 1500 qdisc mq state UP mode DEFAULT group default qlen 1000
+link/ether 3c:fd:fe:d1:bc:01 brd ff:ff:ff:ff:ff:ff
+
+vf 0     link/ether 5a:e7:88:25:ea:a0 brd ff:ff:ff:ff:ff:ff, spoof checking on, link-state auto, trust off
+vf 1     link/ether 3e:1d:36:d7:3d:49 brd ff:ff:ff:ff:ff:ff, spoof checking on, link-state auto, trust off
+vf 2     link/ether ce:09:56:97:df:f9 brd ff:ff:ff:ff:ff:ff, spoof checking on, link-state auto, trust off
+vf 3     link/ether 5e:91:cf:88:d1:38 brd ff:ff:ff:ff:ff:ff, spoof checking on, link-state auto, trust off
+vf 4     link/ether e6:06:a1:96:2f:de brd ff:ff:ff:ff:ff:ff, spoof checking on, link-state auto, trust off
+```
+
+
+# Configuring SR-IOV network devices
+
+The SR-IOV Network Operator adds the SriovNetworkNodePolicy.sriovnetwork.openshift.io CustomResourceDefinition to Red Hat OpenShift Container Platform.
+You can configure an SR-IOV network device by creating a SriovNetworkNodePolicy custom resource (CR).
+
+
+[NOTE]
+----
+When applying the configuration specified in a SriovNetworkNodePolicy object, the SR-IOV Operator might drain the nodes, and in some cases, reboot nodes.
+Reboot only happens in the following cases:
+* With Mellanox NICs (mlx5 driver) a node reboot happens every time the number of virtual functions (VFs) increase on a physical function (PF).
+* With Intel NICs, a reboot only happens if the kernel parameters do not include intel_iommu=on and iommu=pt.
+It might take several minutes for a configuration change to apply.
+----
+
+* You installed the OpenShift CLI (oc).
+* You have access to the cluster as a user with the cluster-admin role.
+* You have installed the SR-IOV Network Operator.
+* You have enough available nodes in your cluster to handle the evicted workload from drained nodes.
+* You have not selected any control plane nodes for SR-IOV network device configuration.
+
+1. Create an SriovNetworkNodePolicy object, and then save the YAML in the <name>-sriov-node-network.yaml file. Replace <name> with the name for this configuration.
+2. Optional: Label the SR-IOV capable cluster nodes with SriovNetworkNodePolicy.Spec.NodeSelector if they are not already labeled. For more information about labeling nodes, see "Understanding how to update labels on nodes".
+3. Create the SriovNetworkNodePolicy object:
+
+```terminal
+$ oc create -f <name>-sriov-node-network.yaml
+```
+
+
+where <name> specifies the name for this configuration.
+
+After applying the configuration update, all the pods in sriov-network-operator namespace transition to the Running status.
+4. To verify that the SR-IOV network device is configured, enter the following command. Replace <node_name> with the name of a node with the SR-IOV network device that you just configured.
+
+```terminal
+$ oc get sriovnetworknodestates -n openshift-sriov-network-operator <node_name> -o jsonpath='{.status.syncStatus}'
+```
+
+
+* Understanding how to update labels on nodes.
+
+## Configuring parallel node draining during SR-IOV network policy updates
+
+By default, the SR-IOV Network Operator drains workloads from a node before every policy change.
+The Operator performs this action, one node at a time, to ensure that no workloads are affected by the reconfiguration.
+
+In large clusters, draining nodes sequentially can be time-consuming, taking hours or even days. In time-sensitive environments, you can enable parallel node draining in an SriovNetworkPoolConfig custom resource (CR) for faster rollouts of SR-IOV network configurations.
+
+To configure parallel draining, use the SriovNetworkPoolConfig CR to create a node pool. You can then add nodes to the pool and define the maximum number of nodes in the pool that the Operator can drain in parallel. With this approach, you can enable parallel draining for faster reconfiguration while ensuring you still have enough nodes remaining in the pool to handle any running workloads.
+
+
+[NOTE]
+----
+A node can only belong to one SR-IOV network pool configuration. If a node is not part of a pool, it is added to a virtual, default, pool that is configured to drain one node at a time only.
+The node might restart during the draining process.
+----
+
+* Install the OpenShift CLI (oc).
+* Log in as a user with cluster-admin privileges.
+* Install the SR-IOV Network Operator.
+* Nodes have hardware that support SR-IOV.
+
+1. Create a SriovNetworkPoolConfig resource:
+1. Create a YAML file that defines the SriovNetworkPoolConfig resource:
+Example sriov-nw-pool.yaml file
+
+```yaml
+apiVersion: v1
+kind: SriovNetworkPoolConfig
+metadata:
+  name: pool-1 1
+  namespace: openshift-sriov-network-operator 2
+spec:
+  maxUnavailable: 2 3
+  nodeSelector: 4
+    matchLabels:
+      node-role.kubernetes.io/worker: ""
+```
+
+Specify the name of the SriovNetworkPoolConfig object.
+Specify namespace where the SR-IOV Network Operator is installed.
+Specify an integer number, or percentage value, for nodes that can be unavailable in the pool during an update. For example, if you have 10 nodes and you set the maximum unavailable to 2, then only 2 nodes can be drained in parallel at any time, leaving 8 nodes for handling workloads.
+Specify the nodes to add the pool by using the node selector. This example adds all nodes with the worker role to the pool.
+2. Create the SriovNetworkPoolConfig resource by running the following command:
+
+```terminal
+$ oc create -f sriov-nw-pool.yaml
+```
+
+2. Create the sriov-test namespace by running the following comand:
+
+```terminal
+$ oc create namespace sriov-test
+```
+
+3. Create a SriovNetworkNodePolicy resource:
+1. Create a YAML file that defines the SriovNetworkNodePolicy resource:
+Example sriov-node-policy.yaml file
+
+```yaml
+apiVersion: sriovnetwork.openshift.io/v1
+kind: SriovNetworkNodePolicy
+metadata:
+  name: sriov-nic-1
+  namespace: openshift-sriov-network-operator
+spec:
+  deviceType: netdevice
+  nicSelector:
+    pfNames: ["ens1"]
+  nodeSelector:
+    node-role.kubernetes.io/worker: ""
+  numVfs: 5
+  priority: 99
+  resourceName: sriov_nic_1
+```
+
+2. Create the SriovNetworkNodePolicy resource by running the following command:
+
+```terminal
+$ oc create -f sriov-node-policy.yaml
+```
+
+4. Create a SriovNetwork resource:
+1. Create a YAML file that defines the SriovNetwork resource:
+Example sriov-network.yaml file
+
+```yaml
+apiVersion: sriovnetwork.openshift.io/v1
+kind: SriovNetwork
+metadata:
+  name: sriov-nic-1
+  namespace: openshift-sriov-network-operator
+spec:
+  linkState: auto
+  networkNamespace: sriov-test
+  resourceName: sriov_nic_1
+  capabilities: '{ "mac": true, "ips": true }'
+  ipam: '{ "type": "static" }'
+```
+
+2. Create the SriovNetwork resource by running the following command:
+
+```terminal
+$ oc create -f sriov-network.yaml
+```
+
+
+* View the node pool you created by running the following command:
+
+```terminal
+$ oc get sriovNetworkpoolConfig -n openshift-sriov-network-operator
+```
+
+Example output
+
+```terminal
+NAME     AGE
+pool-1   67s 1
+```
+
+In this example, pool-1 contains all the nodes with the worker role.
+
+To demonstrate the node draining process using the example scenario from the above procedure, complete the following steps:
+
+1. Update the number of virtual functions in the SriovNetworkNodePolicy resource to trigger workload draining in the cluster:
+
+```terminal
+$ oc patch SriovNetworkNodePolicy sriov-nic-1 -n openshift-sriov-network-operator --type merge -p '{"spec": {"numVfs": 4}}'
+```
+
+2. Monitor the draining status on the target cluster by running the following command:
+
+```terminal
+$ oc get sriovNetworkNodeState -n openshift-sriov-network-operator
+```
+
+Example output
+
+```terminal
+NAMESPACE                          NAME       SYNC STATUS   DESIRED SYNC STATE   CURRENT SYNC STATE   AGE
+openshift-sriov-network-operator   worker-0   InProgress    Drain_Required       DrainComplete        3d10h
+openshift-sriov-network-operator   worker-1   InProgress    Drain_Required       DrainComplete        3d10h
+```
+
+
+When the draining process is complete, the SYNC STATUS changes to Succeeded, and the DESIRED SYNC STATE and CURRENT SYNC STATE values return to IDLE.
+Example output
+
+```terminal
+NAMESPACE                          NAME       SYNC STATUS   DESIRED SYNC STATE   CURRENT SYNC STATE   AGE
+openshift-sriov-network-operator   worker-0   Succeeded     Idle                 Idle                 3d10h
+openshift-sriov-network-operator   worker-1   Succeeded     Idle                 Idle                 3d10h
+```
+
+
+# Troubleshooting SR-IOV configuration
+
+After following the procedure to configure an SR-IOV network device, the following sections address some error conditions.
+
+To display the state of nodes, run the following command:
+
+
+```terminal
+$ oc get sriovnetworknodestates -n openshift-sriov-network-operator <node_name>
+```
+
+
+where: <node_name> specifies the name of a node with an SR-IOV network device.
+
+
+```terminal
+"lastSyncError": "write /sys/bus/pci/devices/0000:3b:00.1/sriov_numvfs: cannot allocate memory"
+```
+
+
+When a node indicates that it cannot allocate memory, check the following items:
+
+* Confirm that global SR-IOV settings are enabled in the BIOS for the node.
+* Confirm that VT-d is enabled in the BIOS for the node.
+
+# Assigning an SR-IOV network to a VRF
+
+As a cluster administrator, you can assign an SR-IOV network interface to your VRF domain by using the CNI VRF plugin.
+
+To do this, add the VRF configuration to the optional metaPlugins parameter of the SriovNetwork resource.
+
+
+[NOTE]
+----
+Applications that use VRFs need to bind to a specific device. The common usage is to use the SO_BINDTODEVICE option for a socket. SO_BINDTODEVICE binds the socket to a device that is specified in the passed interface name, for example, eth1. To use SO_BINDTODEVICE, the application must have CAP_NET_RAW capabilities.
+Using a VRF through the ip vrf exec command is not supported in Red Hat OpenShift Container Platform pods. To use VRF, bind applications directly to the VRF interface.
+----
+
+## Creating an additional SR-IOV network attachment with the CNI VRF plugin
+
+The SR-IOV Network Operator manages additional network definitions. When you specify an additional SR-IOV network to create, the SR-IOV Network Operator creates the NetworkAttachmentDefinition custom resource (CR) automatically.
+
+
+[NOTE]
+----
+Do not edit NetworkAttachmentDefinition custom resources that the SR-IOV Network Operator manages. Doing so might disrupt network traffic on your additional network.
+----
+
+To create an additional SR-IOV network attachment with the CNI VRF plugin, perform the following procedure.
+
+* Install the Red Hat OpenShift Container Platform CLI (oc).
+* Log in to the Red Hat OpenShift Container Platform cluster as a user with cluster-admin privileges.
+
+1. Create the SriovNetwork custom resource (CR) for the additional SR-IOV network attachment and insert the metaPlugins configuration, as in the following example CR. Save the YAML as the file sriov-network-attachment.yaml.
+
+```yaml
+apiVersion: sriovnetwork.openshift.io/v1
+kind: SriovNetwork
+metadata:
+  name: example-network
+  namespace: additional-sriov-network-1
+spec:
+  ipam: |
+    {
+      "type": "host-local",
+      "subnet": "10.56.217.0/24",
+      "rangeStart": "10.56.217.171",
+      "rangeEnd": "10.56.217.181",
+      "routes": [{
+        "dst": "0.0.0.0/0"
+      }],
+      "gateway": "10.56.217.1"
+    }
+  vlan: 0
+  resourceName: intelnics
+  metaPlugins : |
+    {
+      "type": "vrf", 1
+      "vrfname": "example-vrf-name" 2
+    }
+```
+
+type must be set to vrf.
+vrfname is the name of the VRF that the interface is assigned to. If it does not exist in the pod, it is created.
+2. Create the SriovNetwork resource:
+
+```terminal
+$ oc create -f sriov-network-attachment.yaml
+```
+
+
+* Confirm that the SR-IOV Network Operator created the NetworkAttachmentDefinition CR by running the following command.
+
+```terminal
+$ oc get network-attachment-definitions -n <namespace> 1
+```
+
+Replace <namespace> with the namespace that you specified when configuring the network attachment, for example, additional-sriov-network-1.
+Example output
+
+```terminal
+NAME                            AGE
+additional-sriov-network-1      14m
+```
+
+
+[NOTE]
+----
+There might be a delay before the SR-IOV Network Operator creates the CR.
+----
+
+To verify that the VRF CNI is correctly configured and the additional SR-IOV network attachment is attached, do the following:
+
+1. Create an SR-IOV network that uses the VRF CNI.
+2. Assign the network to a pod.
+3. Verify that the pod network attachment is connected to the SR-IOV additional network. Remote shell into the pod and run the following command:
+
+```terminal
+$ ip vrf show
+```
+
+Example output
+
+```terminal
+Name              Table
+-----------------------
+red                 10
+```
+
+4. Confirm the VRF interface is master of the secondary interface:
+
+```terminal
+$ ip link
+```
+
+Example output
+
+```terminal
+...
+5: net1: <BROADCAST,MULTICAST,UP,LOWER_UP> mtu 1500 qdisc noqueue master red state UP mode
+...
+```
+
+
+# Exclude the SR-IOV network topology for NUMA-aware scheduling
+
+You can exclude advertising the Non-Uniform Memory Access (NUMA) node for the SR-IOV network to the Topology Manager for more flexible SR-IOV network deployments during NUMA-aware pod scheduling.
+
+In some scenarios, it is a priority to maximize CPU and memory resources for a pod on a single NUMA node. By not providing a hint to the Topology Manager about the NUMA node for the pod&#8217;s SR-IOV network resource, the Topology Manager can deploy the SR-IOV network resource and the pod CPU and memory resources to different NUMA nodes. This can add to network latency because of the data transfer between NUMA nodes. However, it is acceptable in scenarios when workloads require optimal CPU and memory performance.
+
+For example, consider a compute node, compute-1, that features two NUMA nodes: numa0 and numa1. The SR-IOV-enabled NIC is present on numa0. The CPUs available for pod scheduling are present on numa1 only. By setting the excludeTopology specification to true, the Topology Manager can assign CPU and memory resources for the pod to numa1 and can assign the SR-IOV network resource for the same pod to numa0. This is only possible when you set the excludeTopology specification to true. Otherwise, the Topology Manager attempts to place all resources on the same NUMA node.
+
+## Excluding the SR-IOV network topology for NUMA-aware scheduling
+
+To exclude advertising the SR-IOV network resource&#8217;s Non-Uniform Memory Access (NUMA) node to the Topology Manager, you can configure the excludeTopology specification in the SriovNetworkNodePolicy custom resource. Use this configuration for more flexible SR-IOV network deployments during NUMA-aware pod scheduling.
+
+* You have installed the OpenShift CLI (oc).
+* You have configured the CPU Manager policy to static. For more information about CPU Manager, see the Additional resources section.
+* You have configured the Topology Manager policy to single-numa-node.
+* You have installed the SR-IOV Network Operator.
+
+1. Create the SriovNetworkNodePolicy CR:
+1. Save the following YAML in the sriov-network-node-policy.yaml file, replacing values in the YAML to match your environment:
+
+```yaml
+apiVersion: sriovnetwork.openshift.io/v1
+kind: SriovNetworkNodePolicy
+metadata:
+  name: <policy_name>
+  namespace: openshift-sriov-network-operator
+spec:
+  resourceName: sriovnuma0 1
+  nodeSelector:
+    kubernetes.io/hostname: <node_name>
+  numVfs: <number_of_Vfs>
+  nicSelector: 2
+    vendor: "<vendor_ID>"
+    deviceID: "<device_ID>"
+  deviceType: netdevice
+  excludeTopology: true 3
+```
+
+The resource name of the SR-IOV network device plugin. This YAML uses a sample resourceName value.
+Identify the device for the Operator to configure by using the NIC selector.
+To exclude advertising the NUMA node for the SR-IOV network resource to the Topology Manager, set the value to true. The default value is false.
+
+[NOTE]
+----
+If multiple SriovNetworkNodePolicy resources target the same SR-IOV network resource, the SriovNetworkNodePolicy resources must have the same value as the excludeTopology specification. Otherwise, the conflicting policy is rejected.
+----
+2. Create the SriovNetworkNodePolicy resource by running the following command:
+
+```terminal
+$ oc create -f sriov-network-node-policy.yaml
+```
+
+Example output
+
+```terminal
+sriovnetworknodepolicy.sriovnetwork.openshift.io/policy-for-numa-0 created
+```
+
+2. Create the SriovNetwork CR:
+1. Save the following YAML in the sriov-network.yaml file, replacing values in the YAML to match your environment:
+
+```yaml
+apiVersion: sriovnetwork.openshift.io/v1
+kind: SriovNetwork
+metadata:
+  name: sriov-numa-0-network 1
+  namespace: openshift-sriov-network-operator
+spec:
+  resourceName: sriovnuma0 2
+  networkNamespace: <namespace> 3
+  ipam: |- 4
+    {
+      "type": "<ipam_type>",
+    }
+```
+
+Replace sriov-numa-0-network with the name for the SR-IOV network resource.
+Specify the resource name for the SriovNetworkNodePolicy CR from the previous step. This YAML uses a sample resourceName value.
+Enter the namespace for your SR-IOV network resource.
+Enter the IP address management configuration for the SR-IOV network.
+2. Create the SriovNetwork resource by running the following command:
+
+```terminal
+$ oc create -f sriov-network.yaml
+```
+
+Example output
+
+```terminal
+sriovnetwork.sriovnetwork.openshift.io/sriov-numa-0-network created
+```
+
+3. Create a pod and assign the SR-IOV network resource from the previous step:
+1. Save the following YAML in the sriov-network-pod.yaml file, replacing values in the YAML to match your environment:
+
+```yaml
+apiVersion: v1
+kind: Pod
+metadata:
+  name: <pod_name>
+  annotations:
+    k8s.v1.cni.cncf.io/networks: |-
+      [
+        {
+          "name": "sriov-numa-0-network", 1
+        }
+      ]
+spec:
+  containers:
+  - name: <container_name>
+    image: <image>
+    imagePullPolicy: IfNotPresent
+    command: ["sleep", "infinity"]
+```
+
+This is the name of the SriovNetwork resource that uses the SriovNetworkNodePolicy resource.
+2. Create the Pod resource by running the following command:
+
+```terminal
+$ oc create -f sriov-network-pod.yaml
+```
+
+Example output
+
+```terminal
+pod/example-pod created
+```
+
+
+1. Verify the status of the pod by running the following command, replacing <pod_name> with the name of the pod:
+
+```terminal
+$ oc get pod <pod_name>
+```
+
+Example output
+
+```terminal
+NAME                                     READY   STATUS    RESTARTS   AGE
+test-deployment-sriov-76cbbf4756-k9v72   1/1     Running   0          45h
+```
+
+2. Open a debug session with the target pod to verify that the SR-IOV network resources are deployed to a different node than the memory and CPU resources.
+1. Open a debug session with the pod by running the following command, replacing <pod_name> with the target pod name.
+
+```terminal
+$ oc debug pod/<pod_name>
+```
+
+2. Set /host as the root directory within the debug shell. The debug pod mounts the root file system from the host in /host within the pod. By changing the root directory to /host, you can run binaries from the host file system:
+
+```terminal
+$ chroot /host
+```
+
+3. View information about the CPU allocation by running the following commands:
+
+```terminal
+$ lscpu | grep NUMA
+```
+
+Example output
+
+```terminal
+NUMA node(s):                    2
+NUMA node0 CPU(s):     0,2,4,6,8,10,12,14,16,18,...
+NUMA node1 CPU(s):     1,3,5,7,9,11,13,15,17,19,...
+```
+
+
+```terminal
+$ cat /proc/self/status | grep Cpus
+```
+
+Example output
+
+```terminal
+Cpus_allowed:	aa
+Cpus_allowed_list:	1,3,5,7
+```
+
+
+```terminal
+$ cat  /sys/class/net/net1/device/numa_node
+```
+
+Example output
+
+```terminal
+0
+```
+
+
+In this example, CPUs 1,3,5, and 7 are allocated to NUMA node1 but the SR-IOV network resource can use the NIC in NUMA node0.
+
+
+[NOTE]
+----
+If the excludeTopology specification is set to True, it is possible that the required resources exist in the same NUMA node.
+----
+
+* Using CPU Manager
+
+# Next steps
+
+* Configuring an SR-IOV network attachment

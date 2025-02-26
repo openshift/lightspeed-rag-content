@@ -1,0 +1,331 @@
+# Creating a cluster with multi-architecture compute machines on IBM Z and IBM LinuxONE with z/VM
+
+
+To create a cluster with multi-architecture compute machines on IBM Z(R) and IBM(R) LinuxONE (s390x) with z/VM, you must have an existing single-architecture x86_64 cluster. You can then add s390x compute machines to your Red Hat OpenShift Container Platform cluster.
+Before you can add s390x nodes to your cluster, you must upgrade your cluster to one that uses the multi-architecture payload. For more information on migrating to the multi-architecture payload, see Migrating to a cluster with multi-architecture compute machines.
+The following procedures explain how to create a RHCOS compute machine using a z/VM instance. This will allow you to add s390x nodes to your cluster and deploy a cluster with multi-architecture compute machines.
+To create an IBM Z(R) or IBM(R) LinuxONE (s390x) cluster with multi-architecture compute machines on x86_64, follow the instructions for
+Installing a cluster on IBM Z(R) and IBM(R) LinuxONE. You can then add x86_64 compute machines as described in Creating a cluster with multi-architecture compute machines on bare metal, IBM Power, or IBM Z.
+
+[NOTE]
+----
+Before adding a secondary architecture node to your cluster, it is recommended to install the Multiarch Tuning Operator, and deploy a ClusterPodPlacementConfig object. For more information, see Managing workloads on multi-architecture clusters by using the Multiarch Tuning Operator.
+----
+
+# Verifying cluster compatibility
+
+Before you can start adding compute nodes of different architectures to your cluster, you must verify that your cluster is multi-architecture compatible.
+
+* You installed the OpenShift CLI (`oc`).
+
+1. Log in to the OpenShift CLI (`oc`).
+2. You can check that your cluster uses the architecture payload by running the following command:
+
+```terminal
+$ oc adm release info -o jsonpath="{ .metadata.metadata}"
+```
+
+
+* If you see the following output, your cluster is using the multi-architecture payload:
+
+```terminal
+{
+ "release.openshift.io/architecture": "multi",
+ "url": "https://access.redhat.com/errata/<errata_version>"
+}
+```
+
+
+You can then begin adding multi-arch compute nodes to your cluster.
+* If you see the following output, your cluster is not using the multi-architecture payload:
+
+```terminal
+{
+ "url": "https://access.redhat.com/errata/<errata_version>"
+}
+```
+
+
+[IMPORTANT]
+----
+To migrate your cluster so the cluster supports multi-architecture compute machines, follow the procedure in Migrating to a cluster with multi-architecture compute machines.
+----
+
+# Creating RHCOS machines on IBM Z with z/VM
+
+You can create more Red Hat Enterprise Linux CoreOS (RHCOS) compute machines running on IBM Z&#174; with z/VM and attach them to your existing cluster.
+
+* You have a domain name server (DNS) that can perform hostname and reverse lookup for the nodes.
+* You have an HTTP or HTTPS server running on your provisioning machine that is accessible to the machines you create.
+
+1. Disable UDP aggregation.
+
+Currently, UDP aggregation is not supported on IBM Z&#174; and is not automatically deactivated on multi-architecture compute clusters with an x86_64 control plane and additional s390x compute machines. To ensure that the addtional compute nodes are added to the cluster correctly, you must manually disable UDP aggregation.
+1. Create a YAML file udp-aggregation-config.yaml with the following content:
+
+```yaml
+apiVersion: v1
+kind: ConfigMap
+data:
+  disable-udp-aggregation: "true"
+metadata:
+  name: udp-aggregation-config
+  namespace: openshift-network-operator
+```
+
+2. Create the ConfigMap resource by running the following command:
+
+```terminal
+$ oc create -f udp-aggregation-config.yaml
+```
+
+2. Extract the Ignition config file from the cluster by running the following command:
+
+```terminal
+$ oc extract -n openshift-machine-api secret/worker-user-data-managed --keys=userData --to=- > worker.ign
+```
+
+3. Upload the worker.ign Ignition config file you exported from your cluster to your HTTP server. Note the URL of this file.
+4. You can validate that the Ignition file is available on the URL. The following example gets the Ignition config file for the compute node:
+
+```terminal
+$ curl -k http://<http_server>/worker.ign
+```
+
+5. Download the RHEL live kernel, initramfs, and rootfs files by running the following commands:
+
+```terminal
+$ curl -LO $(oc -n openshift-machine-config-operator get configmap/coreos-bootimages -o jsonpath='{.data.stream}' \
+| jq -r '.architectures.s390x.artifacts.metal.formats.pxe.kernel.location')
+```
+
+
+```terminal
+$ curl -LO $(oc -n openshift-machine-config-operator get configmap/coreos-bootimages -o jsonpath='{.data.stream}' \
+| jq -r '.architectures.s390x.artifacts.metal.formats.pxe.initramfs.location')
+```
+
+
+```terminal
+$ curl -LO $(oc -n openshift-machine-config-operator get configmap/coreos-bootimages -o jsonpath='{.data.stream}' \
+| jq -r '.architectures.s390x.artifacts.metal.formats.pxe.rootfs.location')
+```
+
+6. Move the downloaded RHEL live kernel, initramfs, and rootfs files to an HTTP or HTTPS server that is accessible from the z/VM guest you want to add.
+7. Create a parameter file for the z/VM guest. The following parameters are specific for the virtual machine:
+* Optional: To specify a static IP address, add an ip= parameter with the following entries, with each separated by a colon:
+1. The IP address for the machine.
+2. An empty string.
+3. The gateway.
+4. The netmask.
+5. The machine host and domain name in the form hostname.domainname. Omit this value to let RHCOS decide.
+6. The network interface name. Omit this value to let RHCOS decide.
+7. The value none.
+* For coreos.inst.ignition_url=, specify the URL to the worker.ign file. Only HTTP and HTTPS protocols are supported.
+* For coreos.live.rootfs_url=, specify the matching rootfs artifact for the kernel and initramfs you are booting. Only HTTP and HTTPS protocols are supported.
+* For installations on DASD-type disks, complete the following tasks:
+1. For coreos.inst.install_dev=, specify /dev/dasda.
+2. Use rd.dasd= to specify the DASD where RHCOS is to be installed.
+3. You can adjust further parameters if required.
+
+The following is an example parameter file, additional-worker-dasd.parm:
+
+```terminal
+cio_ignore=all,!condev rd.neednet=1 \
+console=ttysclp0 \
+coreos.inst.install_dev=/dev/dasda \
+coreos.inst.ignition_url=http://<http_server>/worker.ign \
+coreos.live.rootfs_url=http://<http_server>/rhcos-<version>-live-rootfs.<architecture>.img \
+ip=<ip>::<gateway>:<netmask>:<hostname>::none nameserver=<dns> \
+rd.znet=qeth,0.0.bdf0,0.0.bdf1,0.0.bdf2,layer2=1,portno=0 \
+rd.dasd=0.0.3490 \
+zfcp.allow_lun_scan=0
+```
+
+
+Write all options in the parameter file as a single line and make sure that you have no newline characters.
+* For installations on FCP-type disks, complete the following tasks:
+1. Use rd.zfcp=<adapter>,<wwpn>,<lun> to specify the FCP disk where RHCOS is to be installed. For multipathing, repeat this step for each additional path.
+
+[NOTE]
+----
+When you install with multiple paths, you must enable multipathing directly after the installation, not at a later point in time, as this can cause problems.
+----
+2. Set the install device as: coreos.inst.install_dev=/dev/sda.
+
+[NOTE]
+----
+If additional LUNs are configured with NPIV, FCP requires zfcp.allow_lun_scan=0. If you must enable zfcp.allow_lun_scan=1 because you use a CSI driver, for example, you must configure your NPIV so that each node cannot access the boot partition of another node.
+----
+3. You can adjust further parameters if required.
+
+[IMPORTANT]
+----
+Additional postinstallation steps are required to fully enable multipathing. For more information, see “Enabling multipathing with kernel arguments on RHCOS" in Postinstallation machine configuration tasks.
+----
+
+The following is an example parameter file, additional-worker-fcp.parm for a worker node with multipathing:
+
+```terminal
+cio_ignore=all,!condev rd.neednet=1 \
+console=ttysclp0 \
+coreos.inst.install_dev=/dev/sda \
+coreos.live.rootfs_url=http://<http_server>/rhcos-<version>-live-rootfs.<architecture>.img \
+coreos.inst.ignition_url=http://<http_server>/worker.ign \
+ip=<ip>::<gateway>:<netmask>:<hostname>::none nameserver=<dns> \
+rd.znet=qeth,0.0.bdf0,0.0.bdf1,0.0.bdf2,layer2=1,portno=0 \
+zfcp.allow_lun_scan=0 \
+rd.zfcp=0.0.1987,0x50050763070bc5e3,0x4008400B00000000 \
+rd.zfcp=0.0.19C7,0x50050763070bc5e3,0x4008400B00000000 \
+rd.zfcp=0.0.1987,0x50050763071bc5e3,0x4008400B00000000 \
+rd.zfcp=0.0.19C7,0x50050763071bc5e3,0x4008400B00000000
+```
+
+
+Write all options in the parameter file as a single line and make sure that you have no newline characters.
+8. Transfer the initramfs, kernel, parameter files, and RHCOS images to z/VM, for example, by using FTP. For details about how to transfer the files with FTP and boot from the virtual reader, see Installing under Z/VM.
+9. Punch the files to the virtual reader of the z/VM guest virtual machine.
+
+See PUNCH in IBM&#174; Documentation.
+
+[TIP]
+----
+You can use the CP PUNCH command or, if you use Linux, the vmur command to transfer files between two z/VM guest virtual machines.
+----
+10. Log in to CMS on the bootstrap machine.
+11. IPL the bootstrap machine from the reader by running the following command:
+
+```
+$ ipl c
+```
+
+
+See IPL in IBM&#174; Documentation.
+
+# Approving the certificate signing requests for your machines
+
+When you add machines to a cluster, two pending certificate signing requests (CSRs) are generated for each machine that you added. You must confirm that these CSRs are approved or, if necessary, approve them yourself. The client requests must be approved first, followed by the server requests.
+
+* You added machines to your cluster.
+
+1. Confirm that the cluster recognizes the machines:
+
+```terminal
+$ oc get nodes
+```
+
+Example output
+
+```terminal
+NAME      STATUS    ROLES   AGE  VERSION
+master-0  Ready     master  63m  v1.31.3
+master-1  Ready     master  63m  v1.31.3
+master-2  Ready     master  64m  v1.31.3
+```
+
+
+The output lists all of the machines that you created.
+
+[NOTE]
+----
+The preceding output might not include the compute nodes, also known as worker nodes, until some CSRs are approved.
+----
+2. Review the pending CSRs and ensure that you see the client requests with the Pending or Approved status for each machine that you added to the cluster:
+
+```terminal
+$ oc get csr
+```
+
+Example output
+
+```terminal
+NAME        AGE     REQUESTOR                                                                   CONDITION
+csr-8b2br   15m     system:serviceaccount:openshift-machine-config-operator:node-bootstrapper   Pending
+csr-8vnps   15m     system:serviceaccount:openshift-machine-config-operator:node-bootstrapper   Pending
+...
+```
+
+
+In this example, two machines are joining the cluster. You might see more approved CSRs in the list.
+3. If the CSRs were not approved, after all of the pending CSRs for the machines you added are in Pending status, approve the CSRs for your cluster machines:
+
+[NOTE]
+----
+Because the CSRs rotate automatically, approve your CSRs within an hour of adding the machines to the cluster. If you do not approve them within an hour, the certificates will rotate, and more than two certificates will be present for each node. You must approve all of these certificates. After the client CSR is approved, the Kubelet creates a secondary CSR for the serving certificate, which requires manual approval. Then, subsequent serving certificate renewal requests are automatically approved by the machine-approver if the Kubelet requests a new certificate with identical parameters.
+----
+
+[NOTE]
+----
+For clusters running on platforms that are not machine API enabled, such as bare metal and other user-provisioned infrastructure, you must implement a method of automatically approving the kubelet serving certificate requests (CSRs). If a request is not approved, then the oc exec, oc rsh, and oc logs commands cannot succeed, because a serving certificate is required when the API server connects to the kubelet. Any operation that contacts the Kubelet endpoint requires this certificate approval to be in place. The method must watch for new CSRs, confirm that the CSR was submitted by the node-bootstrapper service account in the system:node or system:admin groups, and confirm the identity of the node.
+----
+* To approve them individually, run the following command for each valid CSR:
+
+```terminal
+$ oc adm certificate approve <csr_name> 1
+```
+
+<csr_name> is the name of a CSR from the list of current CSRs.
+* To approve all pending CSRs, run the following command:
+
+```terminal
+$ oc get csr -o go-template='{{range .items}}{{if not .status}}{{.metadata.name}}{{"\n"}}{{end}}{{end}}' | xargs --no-run-if-empty oc adm certificate approve
+```
+
+
+[NOTE]
+----
+Some Operators might not become available until some CSRs are approved.
+----
+4. Now that your client requests are approved, you must review the server requests for each machine that you added to the cluster:
+
+```terminal
+$ oc get csr
+```
+
+Example output
+
+```terminal
+NAME        AGE     REQUESTOR                                                                   CONDITION
+csr-bfd72   5m26s   system:node:ip-10-0-50-126.us-east-2.compute.internal                       Pending
+csr-c57lv   5m26s   system:node:ip-10-0-95-157.us-east-2.compute.internal                       Pending
+...
+```
+
+5. If the remaining CSRs are not approved, and are in the Pending status, approve the CSRs for your cluster machines:
+* To approve them individually, run the following command for each valid CSR:
+
+```terminal
+$ oc adm certificate approve <csr_name> 1
+```
+
+<csr_name> is the name of a CSR from the list of current CSRs.
+* To approve all pending CSRs, run the following command:
+
+```terminal
+$ oc get csr -o go-template='{{range .items}}{{if not .status}}{{.metadata.name}}{{"\n"}}{{end}}{{end}}' | xargs oc adm certificate approve
+```
+
+6. After all client and server CSRs have been approved, the machines have the Ready status. Verify this by running the following command:
+
+```terminal
+$ oc get nodes
+```
+
+Example output
+
+```terminal
+NAME      STATUS    ROLES   AGE  VERSION
+master-0  Ready     master  73m  v1.31.3
+master-1  Ready     master  73m  v1.31.3
+master-2  Ready     master  74m  v1.31.3
+worker-0  Ready     worker  11m  v1.31.3
+worker-1  Ready     worker  11m  v1.31.3
+```
+
+
+[NOTE]
+----
+It can take a few minutes after approval of the server CSRs for the machines to transition to the Ready status.
+----
+
+* Certificate Signing Requests

@@ -1,0 +1,167 @@
+# Accessing a virtual machine by using its external FQDN
+
+
+You can access a virtual machine (VM) that is attached to a secondary network interface from outside the cluster by using its fully qualified domain name (FQDN).
+
+[IMPORTANT]
+----
+Accessing a VM from outside the cluster by using its FQDN is a Technology Preview feature only. Technology Preview features are not supported with Red Hat production service level agreements (SLAs) and might not be functionally complete. Red Hat does not recommend using them in production. These features provide early access to upcoming product features, enabling customers to test functionality and provide feedback during the development process.
+For more information about the support scope of Red Hat Technology Preview features, see Technology Preview Features Support Scope.
+----
+
+# Configuring a DNS server for secondary networks
+
+The Cluster Network Addons Operator (CNAO) deploys a Domain Name Server (DNS) server and monitoring components when you enable the deployKubeSecondaryDNS feature gate in the HyperConverged custom resource (CR).
+
+* You installed the OpenShift CLI (oc).
+* You configured a load balancer for the cluster.
+* You logged in to the cluster with cluster-admin permissions.
+
+1. Edit the HyperConverged CR in your default editor by running the following command:
+
+```terminal
+$ oc edit hyperconverged kubevirt-hyperconverged -n openshift-cnv
+```
+
+2. Enable the DNS server and monitoring components according to the following example:
+
+```yaml
+apiVersion: hco.kubevirt.io/v1beta1
+kind: HyperConverged
+metadata:
+  name: kubevirt-hyperconverged
+  namespace: openshift-cnv
+spec:
+    featureGates:
+      deployKubeSecondaryDNS: true 1
+# ...
+```
+
+Enables the DNS server
+3. Save the file and exit the editor.
+4. Create a load balancer service to expose the DNS server outside the cluster by running the oc expose command according to the following example:
+
+```terminal
+$ oc expose -n openshift-cnv deployment/secondary-dns --name=dns-lb \
+  --type=LoadBalancer --port=53 --target-port=5353 --protocol='UDP'
+```
+
+5. Retrieve the external IP address by running the following command:
+
+```terminal
+$ oc get service -n openshift-cnv
+```
+
+Example output
+
+```text
+NAME       TYPE             CLUSTER-IP     EXTERNAL-IP      PORT(S)          AGE
+dns-lb     LoadBalancer     172.30.27.5    10.46.41.94      53:31829/TCP     5s
+```
+
+6. Edit the HyperConverged CR again:
+
+```terminal
+$ oc edit hyperconverged kubevirt-hyperconverged -n openshift-cnv
+```
+
+7. Add the external IP address that you previously retrieved to the kubeSecondaryDNSNameServerIP field in the enterprise DNS server records. For example:
+
+```yaml
+apiVersion: hco.kubevirt.io/v1beta1
+kind: HyperConverged
+metadata:
+  name: kubevirt-hyperconverged
+  namespace: openshift-cnv
+spec:
+  featureGates:
+    deployKubeSecondaryDNS: true
+  kubeSecondaryDNSNameServerIP: "10.46.41.94" 1
+# ...
+```
+
+Specify the external IP address exposed by the load balancer service.
+8. Save the file and exit the editor.
+9. Retrieve the cluster FQDN by running the following command:
+
+```terminal
+ $ oc get dnses.config.openshift.io cluster -o jsonpath='{.spec.baseDomain}'
+```
+
+Example output
+
+```text
+openshift.example.com
+```
+
+10. Point to the DNS server. To do so, add the kubeSecondaryDNSNameServerIP value and the cluster FQDN to the enterprise DNS server records. For example:
+
+```terminal
+vm.<FQDN>. IN NS ns.vm.<FQDN>.
+```
+
+
+```terminal
+ns.vm.<FQDN>. IN A <kubeSecondaryDNSNameServerIP>
+```
+
+
+# Connecting to a VM on a secondary network by using the cluster FQDN
+
+You can access a running virtual machine (VM) attached to a secondary network interface by using the fully qualified domain name (FQDN) of the cluster.
+
+* You installed the QEMU guest agent on the VM.
+* The IP address of the VM is public.
+* You configured the DNS server for secondary networks.
+* You retrieved the fully qualified domain name (FQDN) of the cluster.
+
+To obtain the FQDN, use the oc get command as follows:
+
+```terminal
+$ oc get dnses.config.openshift.io cluster -o json | jq .spec.baseDomain
+```
+
+
+1. Retrieve the network interface name from the VM configuration by running the following command:
+
+```terminal
+$ oc get vm -n <namespace> <vm_name> -o yaml
+```
+
+Example output
+
+```yaml
+apiVersion: kubevirt.io/v1
+kind: VirtualMachine
+metadata:
+  name: example-vm
+  namespace: example-namespace
+spec:
+  runStrategy: Always
+  template:
+    spec:
+      domain:
+        devices:
+          interfaces:
+            - bridge: {}
+              name: example-nic
+# ...
+      networks:
+      - multus:
+          networkName: bridge-conf
+        name: example-nic 1
+```
+
+Note the name of the network interface.
+2. Connect to the VM by using the ssh command:
+
+```terminal
+$ ssh <user_name>@<interface_name>.<vm_name>.<namespace>.vm.<cluster_fqdn>
+```
+
+
+# Additional resources
+
+* Configuring ingress cluster traffic using a load balancer
+* About MetalLB and the MetalLB Operator
+* Configuring IP addresses for virtual machines

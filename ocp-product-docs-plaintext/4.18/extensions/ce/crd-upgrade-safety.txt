@@ -1,0 +1,260 @@
+# Custom resource definition (CRD) upgrade safety
+
+
+When you update a custom resource definition (CRD) that is provided by a cluster extension, Operator Lifecycle Manager (OLM) v1 runs a CRD upgrade safety preflight check to ensure backwards compatibility with previous versions of that CRD. The CRD update must pass the validation checks before the change is allowed to progress on a cluster.
+* Updating a cluster extension
+
+# Prohibited CRD upgrade changes
+
+The following changes to an existing custom resource definition (CRD) are caught by the CRD upgrade safety preflight check and prevent the upgrade:
+
+* A new required field is added to an existing version of the CRD
+* An existing field is removed from an existing version of the CRD
+* An existing field type is changed in an existing version of the CRD
+* A new default value is added to a field that did not previously have a default value
+* The default value of a field is changed
+* An existing default value of a field is removed
+* New enum restrictions are added to an existing field which did not previously have enum restrictions
+* Existing enum values from an existing field are removed
+* The minimum value of an existing field is increased in an existing version
+* The maximum value of an existing field is decreased in an existing version
+* Minimum or maximum field constraints are added to a field that did not previously have constraints
+
+
+[NOTE]
+----
+The rules for changes to minimum and maximum values apply to minimum, minLength, minProperties, minItems, maximum, maxLength, maxProperties, and maxItems constraints.
+----
+
+The following changes to an existing CRD are reported by the CRD upgrade safety preflight check and prevent the upgrade, though the operations are technically handled by the Kubernetes API server:
+
+* The scope changes from Cluster to Namespace or from Namespace to Cluster
+* An existing stored version of the CRD is removed
+
+If the CRD upgrade safety preflight check encounters one of the prohibited upgrade changes, it logs an error for each prohibited change detected in the CRD upgrade.
+
+
+[TIP]
+----
+In cases where a change to the CRD does not fall into one of the prohibited change categories, but is also unable to be properly detected as allowed, the CRD upgrade safety preflight check will prevent the upgrade and log an error for an "unknown change".
+----
+
+# Allowed CRD upgrade changes
+
+The following changes to an existing custom resource definition (CRD) are safe for backwards compatibility and will not cause the CRD upgrade safety preflight check to halt the upgrade:
+
+* Adding new enum values to the list of allowed enum values in a field
+* An existing required field is changed to optional in an existing version
+* The minimum value of an existing field is decreased in an existing version
+* The maximum value of an existing field is increased in an existing version
+* A new version of the CRD is added with no modifications to existing versions
+
+# Disabling CRD upgrade safety preflight check
+
+The custom resource definition (CRD) upgrade safety preflight check can be disabled by adding the preflight.crdUpgradeSafety.disabled field with a value of true to the ClusterExtension object that provides the CRD.
+
+
+[WARNING]
+----
+Disabling the CRD upgrade safety preflight check could break backwards compatibility with stored versions of the CRD and cause other unintended consequences on the cluster.
+----
+
+You cannot disable individual field validators. If you disable the CRD upgrade safety preflight check, all field validators are disabled.
+
+
+[NOTE]
+----
+The following checks are handled by the Kubernetes API server:
+* The scope changes from Cluster to Namespace or from Namespace to Cluster
+* An existing stored version of the CRD is removed
+After disabling the CRD upgrade safety preflight check via Operator Lifecycle Manager (OLM) v1, these two operations are still prevented by Kubernetes.
+----
+
+* You have a cluster extension installed.
+
+1. Edit the ClusterExtension object of the CRD:
+
+```terminal
+$ oc edit clusterextension <clusterextension_name>
+```
+
+2. Set the preflight.crdUpgradeSafety.disabled field to true:
+Example ClusterExtension object
+
+```yaml
+apiVersion: olm.operatorframework.io/v1alpha1
+kind: ClusterExtension
+metadata:
+    name: clusterextension-sample
+spec:
+    installNamespace: default
+    packageName: argocd-operator
+    version: 0.6.0
+    preflight:
+        crdUpgradeSafety:
+            disabled: true 1
+```
+
+Set to true.
+
+# Examples of unsafe CRD changes
+
+The following examples demonstrate specific changes to sections of an example custom resource definition (CRD) that would be caught by the CRD upgrade safety preflight check.
+
+For the following examples, consider a CRD object in the following starting state:
+
+
+```yaml
+apiVersion: apiextensions.k8s.io/v1
+kind: CustomResourceDefinition
+metadata:
+  annotations:
+    controller-gen.kubebuilder.io/version: v0.13.0
+  name: example.test.example.com
+spec:
+  group: test.example.com
+  names:
+    kind: Sample
+    listKind: SampleList
+    plural: samples
+    singular: sample
+  scope: Namespaced
+  versions:
+  - name: v1alpha1
+    schema:
+      openAPIV3Schema:
+        properties:
+          apiVersion:
+            type: string
+          kind:
+            type: string
+          metadata:
+            type: object
+          spec:
+            type: object
+          status:
+            type: object
+          pollInterval:
+            type: string
+        type: object
+    served: true
+    storage: true
+    subresources:
+      status: {}
+```
+
+## Scope change
+
+In the following custom resource definition (CRD) example, the scope field is changed from Namespaced to Cluster:
+
+
+```yaml
+    spec:
+      group: test.example.com
+      names:
+        kind: Sample
+        listKind: SampleList
+        plural: samples
+        singular: sample
+      scope: Cluster
+      versions:
+      - name: v1alpha1
+```
+
+
+```text
+validating upgrade for CRD "test.example.com" failed: CustomResourceDefinition test.example.com failed upgrade safety validation. "NoScopeChange" validation failed: scope changed from "Namespaced" to "Cluster"
+```
+
+## Removal of a stored version
+
+In the following custom resource definition (CRD) example, the existing stored version, v1alpha1, is removed:
+
+
+```yaml
+      versions:
+      - name: v1alpha2
+        schema:
+          openAPIV3Schema:
+            properties:
+              apiVersion:
+                type: string
+              kind:
+                type: string
+              metadata:
+                type: object
+              spec:
+                type: object
+              status:
+                type: object
+              pollInterval:
+                type: string
+            type: object
+```
+
+
+```text
+validating upgrade for CRD "test.example.com" failed: CustomResourceDefinition test.example.com failed upgrade safety validation. "NoStoredVersionRemoved" validation failed: stored version "v1alpha1" removed
+```
+
+## Removal of an existing field
+
+In the following custom resource definition (CRD) example, the pollInterval property field is removed from the v1alpha1 schema:
+
+
+```yaml
+      versions:
+      - name: v1alpha1
+        schema:
+          openAPIV3Schema:
+            properties:
+              apiVersion:
+                type: string
+              kind:
+                type: string
+              metadata:
+                type: object
+              spec:
+                type: object
+              status:
+                type: object
+            type: object
+```
+
+
+```text
+validating upgrade for CRD "test.example.com" failed: CustomResourceDefinition test.example.com failed upgrade safety validation. "NoExistingFieldRemoved" validation failed: crd/test.example.com version/v1alpha1 field/^.spec.pollInterval may not be removed
+```
+
+## Addition of a required field
+
+In the following custom resource definition (CRD) example, the pollInterval property has been changed to a required field:
+
+
+```yaml
+      versions:
+      - name: v1alpha2
+        schema:
+          openAPIV3Schema:
+            properties:
+              apiVersion:
+                type: string
+              kind:
+                type: string
+              metadata:
+                type: object
+              spec:
+                type: object
+              status:
+                type: object
+              pollInterval:
+                type: string
+            type: object
+            required:
+            - pollInterval
+```
+
+
+```text
+validating upgrade for CRD "test.example.com" failed: CustomResourceDefinition test.example.com failed upgrade safety validation. "ChangeValidator" validation failed: version "v1alpha1", field "^": new required fields added: [pollInterval]
+```

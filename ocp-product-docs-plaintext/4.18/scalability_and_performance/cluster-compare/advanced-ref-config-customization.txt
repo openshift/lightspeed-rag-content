@@ -1,0 +1,219 @@
+# Performing advanced reference configuration customization
+
+
+For scenarios where you want to allow temporary deviations from the reference design, you can apply more advanced customizations.
+
+[WARNING]
+----
+These customizations override the default matching process that the cluster-compare plugin uses during a comparison. Use caution when applying these advanced customizations as it can lead to unintended consequences, such as excluding consequential information from a cluster comparison.
+----
+Some advanced tasks to dynamically customize your reference configuration include the following:
+* Manual matching: Configure a user configuration file to manually match a custom resource from the cluster to a template in the reference configuration.
+* Patching the reference: Patch a reference to configure a reference configuration by using a patch option with the cluster-compare command.
+
+# Configuring manual matching between CRs and templates
+
+For scenarios where the cluster-compare plugin&#8217;s default matching does not work as expected, you can manually match a custom resource (CR) to a template.
+
+For example, if there is more than one CR in the cluster with the same apiversion, kind, name, and namespace fields, the plugin&#8217;s default matching compares the CR that features the least differences. To control what CR the plugin chooses, you can create a user configuration YAML file with the manual matching configuration, then pass this configuration file to the cluster-compare command.
+
+1. Create a user configuration file to define the manual matching criteria:
+Example user-config.yaml file
+
+```yaml
+correlationSettings:
+   manualCorrelation:
+      correlationPairs:
+         apps.v1.DaemonSet.kube-system.kindnet.yaml: "template_example.yaml" 1
+```
+
+Specifies the CR and template pair to match. The CR specification uses the following format: <apiversion>.<kind>.<namespace>.<name>. For cluster scoped CRs that do not have a namespace, use the format <apiversion>.<kind>.<name>.
+2. Reference the user configuration file in a cluster-compare command by running the following command:
+
+```terminal
+$ oc cluster-compare -r <path_to_reference_config>/metadata.yaml -c <path_to_user_config>/user-config.yaml 1
+```
+
+Specify the user-config.yaml file by using the -c option.
+
+# Patching a reference configuration
+
+In certain scenarios, you might need to patch the reference configuration to handle expected deviations in a cluster configuration. The plugin applies the patch during the comparison process, modifying the specified resource fields as defined in the patch file.
+
+For example, you might need to temporarily patch a template because a cluster uses a deprecated field that is out-of-date with the latest reference configuration. Patched files are reported in the comparison output summary.
+
+You can create a patch file in two ways:
+
+* Use the cluster-compare plugin to generate a patch YAML file.
+* Create your own patch file.
+
+## Using the cluster-compare plugin to generate a patch
+
+You can use the cluster-compare plugin to generate a patch for specific template files. The plugin adjusts the template to ensure it matches with the cluster custom resource (CR). Any previously valid differences in the patched template are not reported. The plugin highlights the patched files in the output.
+
+1. Generate patches for templates by running the following command:
+
+```terminal
+$ oc cluster-compare -r <path_to_reference_config>/metadata.yaml -o 'generate-patches' --override-reason "A valid reason for the override" --generate-override-for "<template1_path>" --generate-override-for "<template2_path>" > <path_to_patches_file>
+```
+
+* -r specifies the path to the metadata.yaml file of the reference configuration.
+* -o specifies the output format. To generate a patch output, you must use the generate-patches value.
+* --override-reason describes the reason for the patch.
+* --generate-override-for specifies a path to the template that requires a patch.
+
+[NOTE]
+----
+You must use a file path for the target template that is relative to the metadata.yaml file. For example, if the file path for the metadata.yaml file is ./compare/metadata.yaml, a relative file path for the template might be optional/my-template.yaml.
+----
+* <path_to_patches_file> specifies the filename and path for your patch.
+2. Optional: Review the patch file before applying to the reference configuration:
+Example patch-config file
+
+```yaml
+- apiVersion: storage.k8s.io/v1
+  kind: StorageClass
+  name: crc-csi-hostpath-provisioner
+  patch: '{"provisioner":"kubevirt.io.hostpath-provisioner"}' 1
+  reason: A valid reason for the override
+  templatePath: optional/local-storage-operator/StorageClass.yaml 2
+  type: mergepatch 3
+```
+
+The plugin patches the fields in the template to match the CR.
+The path to the template.
+The mergepath option merges the JSON into the target template. Unspecified fields remain unchanged.
+3. Apply the patch to the reference configuration by running the following command:
+
+```terminal
+$ oc cluster-compare -r <referenceConfigurationDirectory> -p <path_to_patches_file>
+```
+
+* -r specifies the path to the metadata.yaml file of the reference configuration.
+* -p specifies the path to the patch file.
+Example output
+
+```terminal
+...
+
+Cluster CR: storage.k8s.io/v1_StorageClass_crc-csi-hostpath-provisioner
+Reference File: optional/local-storage-operator/StorageClass.yaml
+Description: Component description
+Diff Output: None
+Patched with patch
+Patch Reasons:
+- A valid reason for the override
+
+...
+
+No CRs are unmatched to reference CRs
+Metadata Hash: bb2165004c496b32e0c8509428fb99c653c3cf4fba41196ea6821bd05c3083ab
+Cluster CRs with patches applied: 1
+```
+
+
+## Creating a patch file manually
+
+You can write a patch file to handle expected deviations in a cluster configuration.
+
+
+[NOTE]
+----
+Patches have three possible values for the type field:
+* mergepatch - Merges the JSON into the target template. Unspecified fields remain unchanged.
+* rfc6902 - Merges the JSON in the target template using add, remove, replace, move, and copy operations. Each operation targets a specific path.
+* go-template - Defines a Golang template. The plugin renders the template using the cluster custom resource (CR) as input and generates either a mergepatch or rfc6902 patch for the target template.
+The following example shows the same patch using all three different formats.
+----
+
+1. Create a patch file to match your use case. Use the following structure as an example:
+Example patch-config
+
+```yaml
+- apiVersion: v1 1
+  kind: Namespace
+  name: openshift-storage
+  reason: known deviation
+  templatePath: namespace.yaml
+  type: mergepatch
+  patch: '{"metadata":{"annotations":{"openshift.io/sa.scc.mcs":"s0:c29,c14","openshift.io/sa.scc.supplemental-groups":"1000840000/10000","openshift.io/sa.scc.uid-range":"1000840000/10000","reclaimspace.csiaddons.openshift.io/schedule":"@weekly","workload.openshift.io/allowed":null},"labels":{"kubernetes.io/metadata.name":"openshift-storage","olm.operatorgroup.uid/ffcf3f2d-3e37-4772-97bc-983cdfce128b":"","openshift.io/cluster-monitoring":"false","pod-security.kubernetes.io/audit":"privileged","pod-security.kubernetes.io/audit-version":"v1.24","pod-security.kubernetes.io/warn":"privileged","pod-security.kubernetes.io/warn-version":"v1.24","security.openshift.io/scc.podSecurityLabelSync":"true"}},"spec":{"finalizers":["kubernetes"]}}'
+- name: openshift-storage
+  apiVersion: v1
+  kind: Namespace
+  templatePath: namespace.yaml
+  type: rfc6902
+  reason: known deviation
+  patch: '[
+    {"op": "add", "path": "/metadata/annotations/openshift.io~1sa.scc.mcs", "value": "s0:c29,c14"},
+    {"op": "add", "path": "/metadata/annotations/openshift.io~1sa.scc.supplemental-groups", "value": "1000840000/10000"},
+    {"op": "add", "path": "/metadata/annotations/openshift.io~1sa.scc.uid-range", "value": "1000840000/10000"},
+    {"op": "add", "path": "/metadata/annotations/reclaimspace.csiaddons.openshift.io~1schedule", "value": "@weekly"},
+    {"op": "remove", "path": "/metadata/annotations/workload.openshift.io~1allowed"},
+    {"op": "add", "path": "/metadata/labels/kubernetes.io~1metadata.name", "value": "openshift-storage"},
+    {"op": "add", "path": "/metadata/labels/olm.operatorgroup.uid~1ffcf3f2d-3e37-4772-97bc-983cdfce128b", "value": ""},
+    {"op": "add", "path": "/metadata/labels/openshift.io~1cluster-monitoring", "value": "false"},
+    {"op": "add", "path": "/metadata/labels/pod-security.kubernetes.io~1audit", "value": "privileged"},
+    {"op": "add", "path": "/metadata/labels/pod-security.kubernetes.io~1audit-version", "value": "v1.24"},
+    {"op": "add", "path": "/metadata/labels/pod-security.kubernetes.io~1warn", "value": "privileged"},
+    {"op": "add", "path": "/metadata/labels/pod-security.kubernetes.io~1warn-version", "value": "v1.24"},
+    {"op": "add", "path": "/metadata/labels/security.openshift.io~1scc.podSecurityLabelSync", "value": "true"},
+    {"op": "add", "path": "/spec", "value": {"finalizers": ["kubernetes"]}}
+    ]'
+- apiVersion: v1
+  kind: Namespace
+  name: openshift-storage
+  reason: "known deviation"
+  templatePath: namespace.yaml
+  type: go-template
+  patch: |
+    {
+        "type": "rfc6902",
+        "patch": '[
+            {"op": "add", "path": "/metadata/annotations/openshift.io~1sa.scc.mcs", "value": "s0:c29,c14"},
+            {"op": "add", "path": "/metadata/annotations/openshift.io~1sa.scc.supplemental-groups", "value": "1000840000/10000"},
+            {"op": "add", "path": "/metadata/annotations/openshift.io~1sa.scc.uid-range", "value": "1000840000/10000"},
+            {"op": "add", "path": "/metadata/annotations/reclaimspace.csiaddons.openshift.io~1schedule", "value": "@weekly"},
+            {"op": "remove", "path": "/metadata/annotations/workload.openshift.io~1allowed"},
+            {"op": "add", "path": "/metadata/labels/kubernetes.io~1metadata.name", "value": "openshift-storage"},
+            {"op": "add", "path": "/metadata/labels/olm.operatorgroup.uid~1ffcf3f2d-3e37-4772-97bc-983cdfce128b", "value": ""},
+            {"op": "add", "path": "/metadata/labels/openshift.io~1cluster-monitoring", "value": "false"},
+            {"op": "add", "path": "/metadata/labels/pod-security.kubernetes.io~1audit", "value": "privileged"},
+            {"op": "add", "path": "/metadata/labels/pod-security.kubernetes.io~1audit-version", "value": "v1.24"},
+            {"op": "add", "path": "/metadata/labels/pod-security.kubernetes.io~1warn", "value": "privileged"},
+            {"op": "add", "path": "/metadata/labels/pod-security.kubernetes.io~1warn-version", "value": "v1.24"},
+            {"op": "add", "path": "/metadata/labels/security.openshift.io~1scc.podSecurityLabelSync", "value": "true"},
+            {"op": "add", "path": "/spec", "value": {"finalizers": {{ .spec.finalizers | toJson }} }}
+        ]'
+    }
+```
+
+The patches uses the kind, apiVersion, name, and namespace fields to match the patch with the correct cluster CR.
+2. Apply the patch to the reference configuration by running the following command:
+
+```terminal
+$ oc cluster-compare -r <referenceConfigurationDirectory> -p <path_to_patches_file>
+```
+
+* -r specifies the path to the metadata.yaml file of the reference configuration.
+* p specifies the path to the patch file.
+Example output
+
+```terminal
+...
+
+Cluster CR: storage.k8s.io/v1_StorageClass_crc-csi-hostpath-provisioner
+Reference File: namespace.yaml
+Description: Component description
+Diff Output: None
+Patched with patch
+Patch Reasons:
+- known deviation
+- known deviation
+- known deviation
+
+...
+
+No CRs are unmatched to reference CRs
+Metadata Hash: bb2165004c496b32e0c8509428fb99c653c3cf4fba41196ea6821bd05c3083ab
+Cluster CRs with patches applied: 1
+```

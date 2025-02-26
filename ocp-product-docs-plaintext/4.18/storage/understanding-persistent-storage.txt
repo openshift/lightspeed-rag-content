@@ -1,0 +1,561 @@
+# Understanding persistent storage
+
+
+
+# Persistent storage overview
+
+Managing storage is a distinct problem from managing compute resources. Red Hat OpenShift Container Platform uses the Kubernetes persistent volume (PV) framework to allow cluster administrators to provision persistent storage for a cluster. Developers can use persistent volume claims (PVCs) to request PV resources without having specific knowledge of the underlying storage infrastructure.
+
+PVCs are specific to a project, and are created and used by developers as a means to use a PV. PV resources on their own are not scoped to any single project; they can be shared across the entire Red Hat OpenShift Container Platform cluster and claimed from any project. After a PV is bound to a PVC, that PV can not then be bound to additional PVCs. This has the effect of scoping a bound PV to a single namespace, that of the binding project.
+
+PVs are defined by a PersistentVolume API object, which represents a piece of existing storage in the cluster that was either statically provisioned by the cluster administrator or dynamically provisioned using a StorageClass object. It is a resource in the cluster just like a node is a cluster resource.
+
+PVs are volume plugins like Volumes but have a lifecycle that is independent of any individual pod that uses the PV. PV objects capture the details of the implementation of the storage, be that NFS, iSCSI, or a cloud-provider-specific storage system.
+
+
+[IMPORTANT]
+----
+High availability of storage in the infrastructure is left to the underlying storage provider.
+----
+
+PVCs are defined by a PersistentVolumeClaim API object, which represents a request for storage by a developer. It is similar to a pod in that pods consume node resources and PVCs consume PV resources. For example, pods can request specific levels of resources, such as CPU and memory, while PVCs can request specific storage capacity and access modes. For example, they can be mounted once read-write or many times read-only.
+
+# Lifecycle of a volume and claim
+
+PVs are resources in the cluster. PVCs are requests for those resources
+and also act as claim checks to the resource. The interaction between PVs
+and PVCs have the following lifecycle.
+
+## Provision storage
+
+In response to requests from a developer defined in a PVC, a cluster
+administrator configures one or more dynamic provisioners that provision
+storage and a matching PV.
+
+## Bind claims
+
+When you create a PVC, you request a specific amount of storage, specify the
+required access mode, and create a storage class to describe and classify
+the storage. The control loop in the master watches for new PVCs and binds
+the new PVC to an appropriate PV. If an appropriate PV does not exist, a
+provisioner for the storage class creates one.
+
+The size of all PVs might exceed your PVC size. This is especially true
+with manually provisioned PVs. To minimize the excess, Red Hat OpenShift Container Platform
+binds to the smallest PV that matches all other criteria.
+
+Claims remain unbound indefinitely if a matching volume does not exist or
+can not be created with any available provisioner servicing a storage
+class. Claims are bound as matching volumes become available. For example,
+a cluster with many manually provisioned 50Gi volumes would not match a
+PVC requesting 100Gi. The PVC can be bound when a 100Gi PV is added to the
+cluster.
+
+## Use pods and claimed PVs
+
+Pods use claims as volumes. The cluster inspects the claim to find the bound
+volume and mounts that volume for a pod. For those volumes that support
+multiple access modes, you must specify which mode applies when you use
+the claim as a volume in a pod.
+
+Once you have a claim and that claim is bound, the bound PV belongs to you
+for as long as you need it. You can schedule pods and access claimed
+PVs by including persistentVolumeClaim in the pod&#8217;s volumes block.
+
+
+[NOTE]
+----
+If you attach persistent volumes that have high file counts to pods, those pods can fail or can take a long time to start. For
+more information, see When using Persistent Volumes with high file counts in OpenShift, why do pods fail to start or take an excessive amount of time to achieve "Ready" state?.
+----
+
+## Release a persistent volume
+
+When you are finished with a volume, you can delete the PVC object from
+the API, which allows reclamation of the resource. The volume is
+considered released when the claim is deleted, but it is not yet available
+for another claim. The previous claimant&#8217;s data remains on the volume and
+must be handled according to policy.
+
+## Reclaim policy for persistent volumes
+
+The reclaim policy of a persistent volume tells the cluster what to do with the volume after it is released. A volume&#8217;s reclaim policy can be
+Retain, Recycle, or Delete.
+
+* Retain reclaim policy allows manual reclamation of the resource for
+those volume plugins that support it.
+* Recycle reclaim policy recycles the volume back into the pool of
+unbound persistent volumes once it is released from its claim.
+
+
+[IMPORTANT]
+----
+The Recycle reclaim policy is deprecated in Red Hat OpenShift Container Platform 4. Dynamic provisioning is recommended for equivalent and better
+functionality.
+----
+
+* Delete reclaim policy deletes  both the PersistentVolume object
+from Red Hat OpenShift Container Platform and the associated storage asset in external
+infrastructure, such as Amazon Elastic Block Store (Amazon EBS) or VMware vSphere.
+
+
+[NOTE]
+----
+Dynamically provisioned volumes are always deleted.
+----
+
+## Reclaiming a persistent volume manually
+
+When a persistent volume claim (PVC) is deleted, the persistent volume (PV) still exists and is considered "released". However, the PV is not yet available for another claim because the data of the previous claimant remains on the volume.
+
+To manually reclaim the PV as a cluster administrator:
+
+1. Delete the PV.
+
+```terminal
+$ oc delete pv <pv-name>
+```
+
+
+The associated storage asset in the external infrastructure, such as an AWS EBS, GCE PD, Azure Disk, or Cinder volume, still exists after the PV is deleted.
+2. Clean up the data on the associated storage asset.
+3. Delete the associated storage asset. Alternately, to reuse the same storage asset, create a new PV with the storage asset definition.
+
+The reclaimed PV is now available for use by another PVC.
+
+## Changing the reclaim policy of a persistent volume
+
+To change the reclaim policy of a persistent volume:
+
+1. List the persistent volumes in your cluster:
+
+```terminal
+$ oc get pv
+```
+
+Example output
+
+```terminal
+NAME                                       CAPACITY   ACCESSMODES   RECLAIMPOLICY   STATUS    CLAIM             STORAGECLASS     REASON    AGE
+ pvc-b6efd8da-b7b5-11e6-9d58-0ed433a7dd94   4Gi        RWO           Delete          Bound     default/claim1    manual                     10s
+ pvc-b95650f8-b7b5-11e6-9d58-0ed433a7dd94   4Gi        RWO           Delete          Bound     default/claim2    manual                     6s
+ pvc-bb3ca71d-b7b5-11e6-9d58-0ed433a7dd94   4Gi        RWO           Delete          Bound     default/claim3    manual                     3s
+```
+
+2. Choose one of your persistent volumes and change its reclaim policy:
+
+```terminal
+$ oc patch pv <your-pv-name> -p '{"spec":{"persistentVolumeReclaimPolicy":"Retain"}}'
+```
+
+3. Verify that your chosen persistent volume has the right policy:
+
+```terminal
+$ oc get pv
+```
+
+Example output
+
+```terminal
+NAME                                       CAPACITY   ACCESSMODES   RECLAIMPOLICY   STATUS    CLAIM             STORAGECLASS     REASON    AGE
+ pvc-b6efd8da-b7b5-11e6-9d58-0ed433a7dd94   4Gi        RWO           Delete          Bound     default/claim1    manual                     10s
+ pvc-b95650f8-b7b5-11e6-9d58-0ed433a7dd94   4Gi        RWO           Delete          Bound     default/claim2    manual                     6s
+ pvc-bb3ca71d-b7b5-11e6-9d58-0ed433a7dd94   4Gi        RWO           Retain          Bound     default/claim3    manual                     3s
+```
+
+
+In the preceding output, the volume bound to claim default/claim3 now has a Retain reclaim policy. The volume will not be automatically deleted when a user deletes claim default/claim3.
+
+# Persistent volumes
+
+Each PV contains a spec and status, which is the specification and status of the volume, for example:
+
+
+```yaml
+apiVersion: v1
+kind: PersistentVolume
+metadata:
+  name: pv0001 1
+spec:
+  capacity:
+    storage: 5Gi 2
+  accessModes:
+    - ReadWriteOnce 3
+  persistentVolumeReclaimPolicy: Retain 4
+  ...
+status:
+  ...
+```
+
+
+Name of the persistent volume.
+The amount of storage available to the volume.
+The access mode, defining the read-write and mount permissions.
+The reclaim policy, indicating how the resource should be handled once it is released.
+
+You can view the name of a PVC that is bound to a PV by running the following command:
+
+
+```terminal
+$ oc get pv <pv-name> -o jsonpath='{.spec.claimRef.name}'
+```
+
+
+## Types of PVs
+
+Red Hat OpenShift Container Platform supports the following persistent volume plugins:
+
+* AWS Elastic Block Store (EBS)
+* GCP Persistent Disk
+* GCP Filestore
+
+## Capacity
+
+Generally, a persistent volume (PV) has a specific storage capacity. This is set by using the capacity attribute of the PV.
+
+Currently, storage capacity is the only resource that can be set or requested. Future attributes may include IOPS, throughput, and so on.
+
+## Access modes
+
+A persistent volume can be mounted on a host in any way supported by the resource provider. Providers have different capabilities and each PV&#8217;s access modes are set to the specific modes supported by that particular volume. For example, NFS can support multiple read-write clients, but a specific NFS PV might be exported on the server as read-only. Each PV gets its own set of access modes describing that specific PV&#8217;s capabilities.
+
+Claims are matched to volumes with similar access modes. The only two matching criteria are access modes and size. A claim&#8217;s access modes represent a request. Therefore, you might be granted more, but never less. For example, if a claim requests RWO, but the only volume available is an NFS PV (RWO+ROX+RWX), the claim would then match NFS because it supports RWO.
+
+Direct matches are always attempted first. The volume&#8217;s modes must match or contain more modes than you requested. The size must be greater than or equal to what is expected. If two types of volumes, such as NFS and iSCSI, have the same set of access modes, either of them can match a claim with those modes. There is no ordering between types of volumes and no way to choose one type over another.
+
+All volumes with the same modes are grouped, and then sorted by size, smallest to largest. The binder gets the group with matching modes and iterates over each, in size order, until one size matches.
+
+
+[IMPORTANT]
+----
+Volume access modes describe volume capabilities. They are not enforced constraints. The storage provider is responsible for runtime errors resulting from invalid use of the resource. Errors in the provider show up at runtime as mount errors.
+For example, NFS offers ReadWriteOnce access mode. If you want to use the volume's ROX capability, mark the claims as ReadOnlyMany.
+iSCSI and Fibre Channel volumes do not currently have any fencing mechanisms. You must ensure the volumes are only used by one node at a time. In certain situations, such as draining a node, the volumes can be used simultaneously by two nodes. Before draining the node, delete the pods that use the volumes.
+----
+
+The following table lists the access modes:
+
+
+
+1. RWOP uses the SELinux mount feature. This feature is driver dependent, and enabled by default in ODF, AWS EBS, Azure Disk, GCP PD, IBM Cloud Block Storage volume, Cinder, and vSphere. For third-party drivers, please contact your storage vendor.
+
+
+
+1. ReadWriteOnce (RWO) volumes cannot be mounted on multiple nodes. If a node fails, the system does not allow the attached RWO volume to be mounted on a new node because it is already assigned to the failed node. If you encounter a multi-attach error message as a result, force delete the pod on a shutdown or crashed node to avoid data loss in critical workloads, such as when dynamic persistent volumes are attached.
+2. Use a recreate deployment strategy for pods that rely on AWS EBS.
+3. Only raw block volumes support the ReadWriteMany (RWX) access mode for Fibre Channel and iSCSI. For more information, see "Block volume support".
+4. If the underlying vSphere environment supports the vSAN file service, then the vSphere Container Storage Interface (CSI) Driver Operator installed by
+Red Hat OpenShift Container Platform supports provisioning of ReadWriteMany (RWX) volumes. If you do not have vSAN file service configured, and you request RWX, the volume fails to get created and an error is logged. For more information, see "Using Container Storage Interface" -> "VMware vSphere CSI Driver Operator".
+
+## Phase
+
+Volumes can be found in one of the following phases:
+
+
+
+### Last phase transition time
+
+The LastPhaseTransitionTime field has a timestamp that updates every time a persistent volume (PV) transitions to a different phase (pv.Status.Phase). To find the time of the last phase transition for a PV, run the following command:
+
+
+```terminal
+$ oc get pv <pv-name> -o json | jq '.status.lastPhaseTransitionTime' 1
+```
+
+
+Specify the name of the PV that you want to see the last phase transition.
+
+### Mount options
+
+You can specify mount options while mounting a PV by using the attribute mountOptions.
+
+For example:
+
+
+```yaml
+apiVersion: v1
+kind: PersistentVolume
+metadata:
+  name: pv0001
+spec:
+  capacity:
+    storage: 1Gi
+  accessModes:
+    - ReadWriteOnce
+  mountOptions: 1
+    - nfsvers=4.1
+  nfs:
+    path: /tmp
+    server: 172.17.0.2
+  persistentVolumeReclaimPolicy: Retain
+  claimRef:
+    name: claim1
+    namespace: default
+```
+
+
+Specified mount options are used while mounting the PV to the disk.
+
+The following PV types support mount options:
+
+* AWS Elastic Block Store (EBS)
+* Azure Disk
+* Azure File
+* Cinder
+* GCE Persistent Disk
+* iSCSI
+* Local volume
+* NFS
+* Red Hat OpenShift Data Foundation (Ceph RBD only)
+* CIFS/SMB
+* VMware vSphere
+
+
+[NOTE]
+----
+Fibre Channel and HostPath PVs do not support mount options.
+----
+
+* ReadWriteMany vSphere volume support
+
+# Persistent volume claims
+
+Each PersistentVolumeClaim object contains a spec and status, which
+is the specification and status of the persistent volume claim (PVC), for example:
+
+
+```yaml
+kind: PersistentVolumeClaim
+apiVersion: v1
+metadata:
+  name: myclaim 1
+spec:
+  accessModes:
+    - ReadWriteOnce 2
+  resources:
+    requests:
+      storage: 8Gi 3
+  storageClassName: gold 4
+status:
+  ...
+```
+
+
+Name of the PVC.
+The access mode, defining the read-write and mount permissions.
+The amount of storage available to the PVC.
+Name of the StorageClass required by the claim.
+
+## Storage classes
+
+Claims can optionally request a specific storage class by specifying the
+storage class&#8217;s name in the storageClassName attribute. Only PVs of the
+requested class, ones with the same storageClassName as the PVC, can be
+bound to the PVC. The cluster administrator can configure dynamic
+provisioners to service one or more storage classes. The cluster
+administrator can create a PV on demand that matches the specifications
+in the PVC.
+
+
+[IMPORTANT]
+----
+The Cluster Storage Operator might install a default storage class depending
+on the platform in use. This storage class is owned and controlled by the
+Operator. It cannot be deleted or modified beyond defining annotations
+and labels. If different behavior is desired, you must define a custom
+storage class.
+----
+
+The cluster administrator can also set a default storage class for all PVCs.
+When a default storage class is configured, the PVC must explicitly ask for
+StorageClass or storageClassName annotations set to "" to be bound
+to a PV without a storage class.
+
+
+[NOTE]
+----
+If more than one storage class is marked as default, a PVC can only be created if the storageClassName is explicitly specified. Therefore, only one storage class should be set as the default.
+----
+
+## Access modes
+
+Claims use the same conventions as volumes when requesting storage with
+specific access modes.
+
+## Resources
+
+Claims, such as pods, can request specific quantities of a resource. In
+this case, the request is for storage. The same resource model applies to
+volumes and claims.
+
+## Claims as volumes
+
+Pods access storage by using the claim as a volume. Claims must exist in the
+same namespace as the pod using the claim. The cluster finds the claim
+in the pod&#8217;s namespace and uses it to get the PersistentVolume backing
+the claim. The volume is mounted to the host and into the pod, for example:
+
+
+```yaml
+kind: Pod
+apiVersion: v1
+metadata:
+  name: mypod
+spec:
+  containers:
+    - name: myfrontend
+      image: dockerfile/nginx
+      volumeMounts:
+      - mountPath: "/var/www/html" 1
+        name: mypd 2
+  volumes:
+    - name: mypd
+      persistentVolumeClaim:
+        claimName: myclaim 3
+```
+
+
+Path to mount the volume inside the pod.
+Name of the volume to mount. Do not mount to the container root, /, or any path that is the same in the host and the container. This can corrupt your host system if the container is sufficiently privileged, such as the host /dev/pts files. It is safe to mount the host by using /host.
+Name of the PVC, that exists in the same namespace, to use.
+
+# Block volume support
+
+Red Hat OpenShift Container Platform can statically provision raw block volumes. These volumes
+do not have a file system, and can provide performance benefits for
+applications that either write to the disk directly or implement their own
+storage service.
+
+Raw block volumes are provisioned by specifying volumeMode: Block in the
+PV and PVC specification.
+
+
+[IMPORTANT]
+----
+Pods using raw block volumes must be configured to allow privileged containers.
+----
+
+The following table displays which volume plugins support block volumes.
+
+
+
+
+[IMPORTANT]
+----
+{FeatureName} is a Technology Preview feature only. Technology Preview features are not supported with Red Hat production service level agreements (SLAs) and might not be functionally complete. Red Hat does not recommend using them in production. These features provide early access to upcoming product features, enabling customers to test functionality and provide feedback during the development process.
+For more information about the support scope of Red Hat Technology Preview features, see Technology Preview Features Support Scope.
+----
+
+## Block volume examples
+
+
+```yaml
+apiVersion: v1
+kind: PersistentVolume
+metadata:
+  name: block-pv
+spec:
+  capacity:
+    storage: 10Gi
+  accessModes:
+    - ReadWriteOnce
+  volumeMode: Block 1
+  persistentVolumeReclaimPolicy: Retain
+  fc:
+    targetWWNs: ["50060e801049cfd1"]
+    lun: 0
+    readOnly: false
+```
+
+
+volumeMode must be set to Block to indicate that this PV is a raw
+block volume.
+
+
+```yaml
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: block-pvc
+spec:
+  accessModes:
+    - ReadWriteOnce
+  volumeMode: Block 1
+  resources:
+    requests:
+      storage: 10Gi
+```
+
+
+volumeMode must be set to Block to indicate that a raw block PVC
+is requested.
+
+
+```yaml
+apiVersion: v1
+kind: Pod
+metadata:
+  name: pod-with-block-volume
+spec:
+  containers:
+    - name: fc-container
+      image: fedora:26
+      command: ["/bin/sh", "-c"]
+      args: [ "tail -f /dev/null" ]
+      volumeDevices:  1
+        - name: data
+          devicePath: /dev/xvda 2
+  volumes:
+    - name: data
+      persistentVolumeClaim:
+        claimName: block-pvc 3
+```
+
+
+volumeDevices, instead of volumeMounts, is used for block
+devices. Only PersistentVolumeClaim sources can be used with
+raw block volumes.
+devicePath, instead of mountPath, represents the path to the
+physical device where the raw block is mapped to the system.
+The volume source must be of type persistentVolumeClaim and must
+match the name of the PVC as expected.
+
+
+
+
+
+
+[IMPORTANT]
+----
+Unspecified values result in the default value of Filesystem.
+----
+
+# Using fsGroup to reduce pod timeouts
+
+If a storage volume contains many files (~1,000,000 or greater), you may experience pod timeouts.
+
+This can occur because, by default, Red Hat OpenShift Container Platform recursively changes ownership and permissions for the contents of each volume to match the fsGroup specified in a pod&#8217;s securityContext when that volume is mounted. For large volumes, checking and changing ownership and permissions can be time consuming, slowing pod startup. You can use the fsGroupChangePolicy field inside a securityContext to control the way that Red Hat OpenShift Container Platform checks and manages ownership and permissions for a volume.
+
+fsGroupChangePolicy defines behavior for changing ownership and permission of the volume before being exposed inside a pod. This field only applies to volume types that support fsGroup-controlled ownership and permissions. This field has two possible values:
+
+* OnRootMismatch: Only change permissions and ownership if permission and ownership of root directory does not match with expected permissions of the volume. This can help shorten the time it takes to change ownership and permission of a volume to reduce pod timeouts.
+* Always: Always change permission and ownership of the volume when a volume is mounted.
+
+
+```yaml
+securityContext:
+  runAsUser: 1000
+  runAsGroup: 3000
+  fsGroup: 2000
+  fsGroupChangePolicy: "OnRootMismatch" 1
+  ...
+```
+
+
+OnRootMismatch specifies skipping recursive permission change, thus helping to avoid pod timeout problems.
+
+
+[NOTE]
+----
+The fsGroupChangePolicyfield has no effect on ephemeral volume types, such as secret, configMap, and emptydir.
+----

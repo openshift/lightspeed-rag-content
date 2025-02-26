@@ -1,0 +1,442 @@
+# Developing PTP events consumer applications with the REST API v1
+
+
+When developing consumer applications that make use of Precision Time Protocol (PTP) events on a bare-metal cluster node, you deploy your consumer application in a separate application pod.
+The consumer application subscribes to PTP events by using the PTP events REST API v1.
+
+[NOTE]
+----
+The following information provides general guidance for developing consumer applications that use PTP events.
+A complete events consumer application example is outside the scope of this information.
+----
+
+[IMPORTANT]
+----
+PTP events REST API v1 and events consumer application sidecar is a deprecated feature. Deprecated functionality is still included in Red Hat OpenShift Container Platform and continues to be supported; however, it will be removed in a future release of this product and is not recommended for new deployments.
+For the most recent list of major functionality that has been deprecated or removed within Red Hat OpenShift Container Platform, refer to the Deprecated and removed features section of the Red Hat OpenShift Container Platform release notes.
+----
+* PTP events REST API v1 reference
+
+# About the PTP fast event notifications framework
+
+Use the Precision Time Protocol (PTP) fast event REST API v2 to subscribe cluster applications to PTP events that the bare-metal cluster node generates.
+
+
+[NOTE]
+----
+The fast events notifications framework uses a REST API for communication. The PTP events REST API v1 and v2 are based on the O-RAN O-Cloud Notification API Specification for Event Consumers 3.0 that is available from O-RAN ALLIANCE Specifications.
+Only the PTP events REST API v2 is O-RAN v3 compliant.
+----
+
+# Retrieving PTP events with the PTP events REST API v1
+
+Applications run the cloud-event-proxy container in a sidecar pattern to subscribe to PTP events.
+The cloud-event-proxy sidecar container can access the same resources as the primary application container without using any of the resources of the primary application and with no significant latency.
+
+![Overview of PTP fast events with consumer sidecar and HTTP message transport]
+
+ Event is generated on the cluster host:: linuxptp-daemon in the PTP Operator-managed pod runs as a Kubernetes DaemonSet and manages the various linuxptp processes (ptp4l, phc2sys, and optionally for grandmaster clocks, ts2phc).
+The linuxptp-daemon passes the event to the UNIX domain socket.
+ Event is passed to the cloud-event-proxy sidecar:: The PTP plugin reads the event from the UNIX domain socket and passes it to the cloud-event-proxy sidecar in the PTP Operator-managed pod.
+cloud-event-proxy delivers the event from the Kubernetes infrastructure to Cloud-Native Network Functions (CNFs) with low latency.
+ Event is persisted:: The cloud-event-proxy sidecar in the PTP Operator-managed pod processes the event and publishes the cloud-native event by using a REST API.
+ Message is transported:: The message transporter transports the event to the cloud-event-proxy sidecar in the application pod over HTTP.
+ Event is available from the REST API:: The cloud-event-proxy sidecar in the Application pod processes the event and makes it available by using the REST API.
+ Consumer application requests a subscription and receives the subscribed event:: The consumer application sends an API request to the cloud-event-proxy sidecar in the application pod to create a PTP events subscription.
+The cloud-event-proxy sidecar creates an HTTP messaging listener protocol for the resource specified in the subscription.
+
+The cloud-event-proxy sidecar in the application pod receives the event from the PTP Operator-managed pod, unwraps the cloud events object to retrieve the data, and posts the event to the consumer application.
+The consumer application listens to the address specified in the resource qualifier and receives and processes the PTP event.
+
+# Configuring the PTP fast event notifications publisher
+
+To start using PTP fast event notifications for a network interface in your cluster, you must enable the fast event publisher in the PTP Operator PtpOperatorConfig custom resource (CR) and configure ptpClockThreshold values in a PtpConfig CR that you create.
+
+* You have installed the Red Hat OpenShift Container Platform CLI (oc).
+* You have logged in as a user with cluster-admin privileges.
+* You have installed the PTP Operator.
+
+1. Modify the default PTP Operator config to enable PTP fast events.
+1. Save the following YAML in the ptp-operatorconfig.yaml file:
+
+```yaml
+apiVersion: ptp.openshift.io/v1
+kind: PtpOperatorConfig
+metadata:
+  name: default
+  namespace: openshift-ptp
+spec:
+  daemonNodeSelector:
+    node-role.kubernetes.io/worker: ""
+  ptpEventConfig:
+    enableEventPublisher: true 1
+```
+
+Enable PTP fast event notifications by setting enableEventPublisher to true.
+
+[NOTE]
+----
+In Red Hat OpenShift Container Platform 4.13 or later, you do not need to set the spec.ptpEventConfig.transportHost field in the PtpOperatorConfig resource when you use HTTP transport for PTP events.
+----
+2. Update the PtpOperatorConfig CR:
+
+```terminal
+$ oc apply -f ptp-operatorconfig.yaml
+```
+
+2. Create a PtpConfig custom resource (CR) for the PTP enabled interface, and set the required values for ptpClockThreshold and ptp4lOpts.
+The following YAML illustrates the required values that you must set in the PtpConfig CR:
+
+```yaml
+spec:
+  profile:
+  - name: "profile1"
+    interface: "enp5s0f0"
+    ptp4lOpts: "-2 -s --summary_interval -4" 1
+    phc2sysOpts: "-a -r -m -n 24 -N 8 -R 16" 2
+    ptp4lConf: "" 3
+    ptpClockThreshold: 4
+      holdOverTimeout: 5
+      maxOffsetThreshold: 100
+      minOffsetThreshold: -100
+```
+
+Append --summary_interval -4 to use PTP fast events.
+Required phc2sysOpts values. -m prints messages to stdout. The linuxptp-daemon DaemonSet parses the logs and generates Prometheus metrics.
+Specify a string that contains the configuration to replace the default /etc/ptp4l.conf file. To use the default configuration, leave the field empty.
+Optional. If the ptpClockThreshold stanza is not present, default values are used for the ptpClockThreshold fields. The stanza shows default ptpClockThreshold values. The ptpClockThreshold values configure how long after the PTP master clock is disconnected before PTP events are triggered. holdOverTimeout is the time value in seconds before the PTP clock event state changes to FREERUN when the PTP master clock is disconnected. The maxOffsetThreshold and minOffsetThreshold settings configure offset values in nanoseconds that compare against the values for CLOCK_REALTIME (phc2sys) or master offset (ptp4l). When the ptp4l or phc2sys offset value is outside this range, the PTP clock state is set to FREERUN. When the offset value is within this range, the PTP clock state is set to LOCKED.
+
+* For a complete example CR that configures linuxptp services as an ordinary clock with PTP fast events, see Configuring linuxptp services as ordinary clock.
+
+# PTP events consumer application reference
+
+PTP event consumer applications require the following features:
+
+1. A web service running with a POST handler to receive the cloud native PTP events JSON payload
+2. A createSubscription function to subscribe to the PTP events producer
+3. A getCurrentState function to poll the current state of the PTP events producer
+
+The following example Go snippets illustrate these requirements:
+
+
+```go
+func server() {
+  http.HandleFunc("/event", getEvent)
+  http.ListenAndServe("localhost:8989", nil)
+}
+
+func getEvent(w http.ResponseWriter, req *http.Request) {
+  defer req.Body.Close()
+  bodyBytes, err := io.ReadAll(req.Body)
+  if err != nil {
+    log.Errorf("error reading event %v", err)
+  }
+  e := string(bodyBytes)
+  if e != "" {
+    processEvent(bodyBytes)
+    log.Infof("received event %s", string(bodyBytes))
+  } else {
+    w.WriteHeader(http.StatusNoContent)
+  }
+}
+```
+
+
+
+```go
+import (
+"github.com/redhat-cne/sdk-go/pkg/pubsub"
+"github.com/redhat-cne/sdk-go/pkg/types"
+v1pubsub "github.com/redhat-cne/sdk-go/v1/pubsub"
+)
+
+// Subscribe to PTP events using REST API
+s1,_:=createsubscription("/cluster/node/<node_name>/sync/sync-status/os-clock-sync-state") 1
+s2,_:=createsubscription("/cluster/node/<node_name>/sync/ptp-status/class-change")
+s3,_:=createsubscription("/cluster/node/<node_name>/sync/ptp-status/lock-state")
+
+// Create PTP event subscriptions POST
+func createSubscription(resourceAddress string) (sub pubsub.PubSub, err error) {
+  var status int
+      apiPath:= "/api/ocloudNotifications/v1/"
+      localAPIAddr:=localhost:8989 // vDU service API address
+      apiAddr:= "localhost:8089" // event framework API address
+
+  subURL := &types.URI{URL: url.URL{Scheme: "http",
+    Host: apiAddr
+    Path: fmt.Sprintf("%s%s", apiPath, "subscriptions")}}
+  endpointURL := &types.URI{URL: url.URL{Scheme: "http",
+    Host: localAPIAddr,
+    Path: "event"}}
+
+  sub = v1pubsub.NewPubSub(endpointURL, resourceAddress)
+  var subB []byte
+
+  if subB, err = json.Marshal(&sub); err == nil {
+    rc := restclient.New()
+    if status, subB = rc.PostWithReturn(subURL, subB); status != http.StatusCreated {
+      err = fmt.Errorf("error in subscription creation api at %s, returned status %d", subURL, status)
+    } else {
+      err = json.Unmarshal(subB, &sub)
+    }
+  } else {
+    err = fmt.Errorf("failed to marshal subscription for %s", resourceAddress)
+  }
+  return
+}
+```
+
+
+Replace <node_name> with the FQDN of the node that is generating the PTP events. For example, compute-1.example.com.
+
+
+```go
+//Get PTP event state for the resource
+func getCurrentState(resource string) {
+  //Create publisher
+  url := &types.URI{URL: url.URL{Scheme: "http",
+    Host: localhost:8989,
+    Path: fmt.SPrintf("/api/ocloudNotifications/v1/%s/CurrentState",resource}}
+  rc := restclient.New()
+  status, event := rc.Get(url)
+  if status != http.StatusOK {
+    log.Errorf("CurrentState:error %d from url %s, %s", status, url.String(), event)
+  } else {
+    log.Debugf("Got CurrentState: %s ", event)
+  }
+}
+```
+
+
+# Reference cloud-event-proxy deployment and service CRs
+
+Use the following example cloud-event-proxy deployment and subscriber service CRs as a reference when deploying your PTP events consumer application.
+
+
+```yaml
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: event-consumer-deployment
+  namespace: <namespace>
+  labels:
+    app: consumer
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: consumer
+  template:
+    metadata:
+      labels:
+        app: consumer
+    spec:
+      serviceAccountName: sidecar-consumer-sa
+      containers:
+        - name: event-subscriber
+          image: event-subscriber-app
+        - name: cloud-event-proxy-as-sidecar
+          image: openshift4/ose-cloud-event-proxy
+          args:
+            - "--metrics-addr=127.0.0.1:9091"
+            - "--store-path=/store"
+            - "--transport-host=consumer-events-subscription-service.cloud-events.svc.cluster.local:9043"
+            - "--http-event-publishers=ptp-event-publisher-service-NODE_NAME.openshift-ptp.svc.cluster.local:9043"
+            - "--api-port=8089"
+          env:
+            - name: NODE_NAME
+              valueFrom:
+                fieldRef:
+                  fieldPath: spec.nodeName
+            - name: NODE_IP
+              valueFrom:
+                fieldRef:
+                  fieldPath: status.hostIP
+              volumeMounts:
+                - name: pubsubstore
+                  mountPath: /store
+          ports:
+            - name: metrics-port
+              containerPort: 9091
+            - name: sub-port
+              containerPort: 9043
+          volumes:
+            - name: pubsubstore
+              emptyDir: {}
+```
+
+
+
+```yaml
+apiVersion: v1
+kind: Service
+metadata:
+  annotations:
+    prometheus.io/scrape: "true"
+    service.alpha.openshift.io/serving-cert-secret-name: sidecar-consumer-secret
+  name: consumer-events-subscription-service
+  namespace: cloud-events
+  labels:
+    app: consumer-service
+spec:
+  ports:
+    - name: sub-port
+      port: 9043
+  selector:
+    app: consumer
+  clusterIP: None
+  sessionAffinity: None
+  type: ClusterIP
+```
+
+
+# Subscribing to PTP events with the REST API v1
+
+Deploy your cloud-event-consumer application container and cloud-event-proxy sidecar container in a separate application pod.
+
+Subscribe the cloud-event-consumer application to PTP events posted by the cloud-event-proxy container at http://localhost:8089/api/ocloudNotifications/v1/ in the application pod.
+
+
+[NOTE]
+----
+9089 is the default port for the cloud-event-consumer container deployed in the application pod.
+You can configure a different port for your application as required.
+----
+
+* api/ocloudNotifications/v1/subscriptions
+
+# Verifying that the PTP events REST API v1 consumer application is receiving events
+
+Verify that the cloud-event-proxy container in the application pod is receiving PTP events.
+
+* You have installed the OpenShift CLI (oc).
+* You have logged in as a user with cluster-admin privileges.
+* You have installed and configured the PTP Operator.
+
+1. Get the list of active linuxptp-daemon pods.
+Run the following command:
+
+```terminal
+$ oc get pods -n openshift-ptp
+```
+
+Example output
+
+```terminal
+NAME                    READY   STATUS    RESTARTS   AGE
+linuxptp-daemon-2t78p   3/3     Running   0          8h
+linuxptp-daemon-k8n88   3/3     Running   0          8h
+```
+
+2. Access the metrics for the required consumer-side cloud-event-proxy container by running the following command:
+
+```terminal
+$ oc exec -it <linuxptp-daemon> -n openshift-ptp -c cloud-event-proxy -- curl 127.0.0.1:9091/metrics
+```
+
+
+where:
+<linuxptp-daemon>:: Specifies the pod you want to query, for example, linuxptp-daemon-2t78p.
+Example output
+
+```terminal
+# HELP cne_transport_connections_resets Metric to get number of connection resets
+# TYPE cne_transport_connections_resets gauge
+cne_transport_connection_reset 1
+# HELP cne_transport_receiver Metric to get number of receiver created
+# TYPE cne_transport_receiver gauge
+cne_transport_receiver{address="/cluster/node/compute-1.example.com/ptp",status="active"} 2
+cne_transport_receiver{address="/cluster/node/compute-1.example.com/redfish/event",status="active"} 2
+# HELP cne_transport_sender Metric to get number of sender created
+# TYPE cne_transport_sender gauge
+cne_transport_sender{address="/cluster/node/compute-1.example.com/ptp",status="active"} 1
+cne_transport_sender{address="/cluster/node/compute-1.example.com/redfish/event",status="active"} 1
+# HELP cne_events_ack Metric to get number of events produced
+# TYPE cne_events_ack gauge
+cne_events_ack{status="success",type="/cluster/node/compute-1.example.com/ptp"} 18
+cne_events_ack{status="success",type="/cluster/node/compute-1.example.com/redfish/event"} 18
+# HELP cne_events_transport_published Metric to get number of events published by the transport
+# TYPE cne_events_transport_published gauge
+cne_events_transport_published{address="/cluster/node/compute-1.example.com/ptp",status="failed"} 1
+cne_events_transport_published{address="/cluster/node/compute-1.example.com/ptp",status="success"} 18
+cne_events_transport_published{address="/cluster/node/compute-1.example.com/redfish/event",status="failed"} 1
+cne_events_transport_published{address="/cluster/node/compute-1.example.com/redfish/event",status="success"} 18
+# HELP cne_events_transport_received Metric to get number of events received  by the transport
+# TYPE cne_events_transport_received gauge
+cne_events_transport_received{address="/cluster/node/compute-1.example.com/ptp",status="success"} 18
+cne_events_transport_received{address="/cluster/node/compute-1.example.com/redfish/event",status="success"} 18
+# HELP cne_events_api_published Metric to get number of events published by the rest api
+# TYPE cne_events_api_published gauge
+cne_events_api_published{address="/cluster/node/compute-1.example.com/ptp",status="success"} 19
+cne_events_api_published{address="/cluster/node/compute-1.example.com/redfish/event",status="success"} 19
+# HELP cne_events_received Metric to get number of events received
+# TYPE cne_events_received gauge
+cne_events_received{status="success",type="/cluster/node/compute-1.example.com/ptp"} 18
+cne_events_received{status="success",type="/cluster/node/compute-1.example.com/redfish/event"} 18
+# HELP promhttp_metric_handler_requests_in_flight Current number of scrapes being served.
+# TYPE promhttp_metric_handler_requests_in_flight gauge
+promhttp_metric_handler_requests_in_flight 1
+# HELP promhttp_metric_handler_requests_total Total number of scrapes by HTTP status code.
+# TYPE promhttp_metric_handler_requests_total counter
+promhttp_metric_handler_requests_total{code="200"} 4
+promhttp_metric_handler_requests_total{code="500"} 0
+promhttp_metric_handler_requests_total{code="503"} 0
+```
+
+
+# Monitoring PTP fast event metrics
+
+You can monitor PTP fast events metrics from cluster nodes where the linuxptp-daemon is running.
+You can also monitor PTP fast event metrics in the Red Hat OpenShift Container Platform web console by using the preconfigured and self-updating Prometheus monitoring stack.
+
+* Install the Red Hat OpenShift Container Platform CLI oc.
+* Log in as a user with cluster-admin privileges.
+* Install and configure the PTP Operator on a node with PTP-capable hardware.
+
+1. Start a debug pod for the node by running the following command:
+
+```terminal
+$ oc debug node/<node_name>
+```
+
+2. Check for PTP metrics exposed by the linuxptp-daemon container. For example, run the following command:
+
+```terminal
+sh-4.4# curl http://localhost:9091/metrics
+```
+
+Example output
+
+```terminal
+# HELP cne_api_events_published Metric to get number of events published by the rest api
+# TYPE cne_api_events_published gauge
+cne_api_events_published{address="/cluster/node/compute-1.example.com/sync/gnss-status/gnss-sync-status",status="success"} 1
+cne_api_events_published{address="/cluster/node/compute-1.example.com/sync/ptp-status/lock-state",status="success"} 94
+cne_api_events_published{address="/cluster/node/compute-1.example.com/sync/ptp-status/class-change",status="success"} 18
+cne_api_events_published{address="/cluster/node/compute-1.example.com/sync/sync-status/os-clock-sync-state",status="success"} 27
+```
+
+3. Optional.
+You can also find PTP events in the logs for the cloud-event-proxy container.
+For example, run the following command:
+
+```terminal
+$ oc logs -f linuxptp-daemon-cvgr6 -n openshift-ptp -c cloud-event-proxy
+```
+
+4. To view the PTP event in the Red Hat OpenShift Container Platform web console, copy the name of the PTP metric you want to query, for example, openshift_ptp_offset_ns.
+5. In the Red Hat OpenShift Container Platform web console, click Observe -> Metrics.
+6. Paste the PTP metric name into the Expression field, and click Run queries.
+
+* Accessing metrics as a developer
+
+# PTP fast event metrics reference
+
+The following table describes the PTP fast events metrics that are available from cluster nodes where the linuxptp-daemon service is running.
+
+
+
+## PTP fast event metrics only when T-GM is enabled
+
+The following table describes the PTP fast event metrics that are available only when PTP grandmaster clock (T-GM) is enabled.
+
