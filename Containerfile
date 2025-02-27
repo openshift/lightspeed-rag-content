@@ -1,4 +1,4 @@
-ARG EMBEDDING_MODEL=sentence-transformers/all-mpnet-base-v2
+ARG EMBEDDING_MODEL=nomic-ai/modernbert-embed-base
 ARG FLAVOR=cpu
 ARG HERMETIC=false
 
@@ -30,7 +30,7 @@ COPY embeddings_model ./embeddings_model
 RUN cd embeddings_model; if [ "$HERMETIC" == "true" ]; then \
         cp /cachi2/output/deps/generic/model.safetensors model.safetensors; \
     else \
-        curl -L -O https://huggingface.co/sentence-transformers/all-mpnet-base-v2/resolve/9a3225965996d404b775526de6dbfe85d3368642/model.safetensors; \
+        curl -L -O https://huggingface.co/nomic-ai/modernbert-embed-base/resolve/6d6d0692e17d33202f71a60662d4c6f6c0896bd2/model.safetensors; \
     fi
 
 RUN if [ "$FLAVOR" == "gpu" ]; then \
