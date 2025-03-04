@@ -1,0 +1,649 @@
+# Setting up the environment for an Red Hat OpenShift Container Platform installation
+
+
+
+# Preparing the provisioner node on IBM Cloud(R) Bare Metal (Classic) infrastructure
+
+Perform the following steps to prepare the provisioner node.
+
+1. Log in to the provisioner node via ssh.
+2. Create a non-root user (kni) and provide that user with sudo privileges:
+
+```terminal
+# useradd kni
+```
+
+
+```terminal
+# passwd kni
+```
+
+
+```terminal
+# echo "kni ALL=(root) NOPASSWD:ALL" | tee -a /etc/sudoers.d/kni
+```
+
+
+```terminal
+# chmod 0440 /etc/sudoers.d/kni
+```
+
+3. Create an ssh key for the new user:
+
+```terminal
+# su - kni -c "ssh-keygen -f /home/kni/.ssh/id_rsa -N ''"
+```
+
+4. Log in as the new user on the provisioner node:
+
+```terminal
+# su - kni
+```
+
+5. Use Red Hat Subscription Manager to register the provisioner node:
+
+```terminal
+$ sudo subscription-manager register --username=<user> --password=<pass> --auto-attach
+```
+
+
+```terminal
+$ sudo subscription-manager repos --enable=rhel-8-for-x86_64-appstream-rpms \
+                                  --enable=rhel-8-for-x86_64-baseos-rpms
+```
+
+
+[NOTE]
+----
+For more information about Red Hat Subscription Manager, see Registering a RHEL system with command-line tools.
+----
+6. Install the following packages:
+
+```terminal
+$ sudo dnf install -y libvirt qemu-kvm mkisofs python3-devel jq ipmitool
+```
+
+7. Modify the user to add the libvirt group to the newly created user:
+
+```terminal
+$ sudo usermod --append --groups libvirt kni
+```
+
+8. Start firewalld:
+
+```terminal
+$ sudo systemctl start firewalld
+```
+
+9. Enable firewalld:
+
+```terminal
+$ sudo systemctl enable firewalld
+```
+
+10. Start the http service:
+
+```terminal
+$ sudo firewall-cmd --zone=public --add-service=http --permanent
+```
+
+
+```terminal
+$ sudo firewall-cmd --reload
+```
+
+11. Start and enable the libvirtd service:
+
+```terminal
+$ sudo systemctl enable libvirtd --now
+```
+
+12. Set the ID of the provisioner node:
+
+```terminal
+$ PRVN_HOST_ID=<ID>
+```
+
+
+You can view the ID with the following ibmcloud command:
+
+```terminal
+$ ibmcloud sl hardware list
+```
+
+13. Set the ID of the public subnet:
+
+```terminal
+$ PUBLICSUBNETID=<ID>
+```
+
+
+You can view the ID with the following ibmcloud command:
+
+```terminal
+$ ibmcloud sl subnet list
+```
+
+14. Set the ID of the private subnet:
+
+```terminal
+$ PRIVSUBNETID=<ID>
+```
+
+
+You can view the ID with the following ibmcloud command:
+
+```terminal
+$ ibmcloud sl subnet list
+```
+
+15. Set the provisioner node public IP address:
+
+```terminal
+$ PRVN_PUB_IP=$(ibmcloud sl hardware detail $PRVN_HOST_ID --output JSON | jq .primaryIpAddress -r)
+```
+
+16. Set the CIDR for the public network:
+
+```terminal
+$ PUBLICCIDR=$(ibmcloud sl subnet detail $PUBLICSUBNETID --output JSON | jq .cidr)
+```
+
+17. Set the IP address and CIDR for the public network:
+
+```terminal
+$ PUB_IP_CIDR=$PRVN_PUB_IP/$PUBLICCIDR
+```
+
+18. Set the gateway for the public network:
+
+```terminal
+$ PUB_GATEWAY=$(ibmcloud sl subnet detail $PUBLICSUBNETID --output JSON | jq .gateway -r)
+```
+
+19. Set the private IP address of the provisioner node:
+
+```terminal
+$ PRVN_PRIV_IP=$(ibmcloud sl hardware detail $PRVN_HOST_ID --output JSON | \
+                 jq .primaryBackendIpAddress -r)
+```
+
+20. Set the CIDR for the private network:
+
+```terminal
+$ PRIVCIDR=$(ibmcloud sl subnet detail $PRIVSUBNETID --output JSON | jq .cidr)
+```
+
+21. Set the IP address and CIDR for the private network:
+
+```terminal
+$ PRIV_IP_CIDR=$PRVN_PRIV_IP/$PRIVCIDR
+```
+
+22. Set the gateway for the private network:
+
+```terminal
+$ PRIV_GATEWAY=$(ibmcloud sl subnet detail $PRIVSUBNETID --output JSON | jq .gateway -r)
+```
+
+23. Set up the bridges for the baremetal and provisioning networks:
+
+```terminal
+$ sudo nohup bash -c "
+    nmcli --get-values UUID con show | xargs -n 1 nmcli con delete
+    nmcli connection add ifname provisioning type bridge con-name provisioning
+    nmcli con add type bridge-slave ifname eth1 master provisioning
+    nmcli connection add ifname baremetal type bridge con-name baremetal
+    nmcli con add type bridge-slave ifname eth2 master baremetal
+    nmcli connection modify baremetal ipv4.addresses $PUB_IP_CIDR ipv4.method manual ipv4.gateway $PUB_GATEWAY
+    nmcli connection modify provisioning ipv4.addresses 172.22.0.1/24,$PRIV_IP_CIDR ipv4.method manual
+    nmcli connection modify provisioning +ipv4.routes \"10.0.0.0/8 $PRIV_GATEWAY\"
+    nmcli con down baremetal
+    nmcli con up baremetal
+    nmcli con down provisioning
+    nmcli con up provisioning
+    init 6
+"
+```
+
+
+[NOTE]
+----
+For eth1 and eth2, substitute the appropriate interface name, as needed.
+----
+24. If required, SSH back into the provisioner node:
+
+```terminal
+# ssh kni@provisioner.<cluster-name>.<domain>
+```
+
+25. Verify the connection bridges have been properly created:
+
+```terminal
+$ sudo nmcli con show
+```
+
+Example output
+
+```terminal
+NAME               UUID                                  TYPE      DEVICE
+baremetal          4d5133a5-8351-4bb9-bfd4-3af264801530  bridge    baremetal
+provisioning       43942805-017f-4d7d-a2c2-7cb3324482ed  bridge    provisioning
+virbr0             d9bca40f-eee1-410b-8879-a2d4bb0465e7  bridge    virbr0
+bridge-slave-eth1  76a8ed50-c7e5-4999-b4f6-6d9014dd0812  ethernet  eth1
+bridge-slave-eth2  f31c3353-54b7-48de-893a-02d2b34c4736  ethernet  eth2
+```
+
+26. Create a pull-secret.txt file:
+
+```terminal
+$ vim pull-secret.txt
+```
+
+
+In a web browser, navigate to Install on Bare Metal with user-provisioned infrastructure. In step 1, click Download pull secret. Paste the contents into the pull-secret.txt file and save the contents in the kni user&#8217;s home directory.
+
+# Configuring the public subnet
+
+All of the Red Hat OpenShift Container Platform cluster nodes must be on the public subnet. IBM Cloud&#174; Bare Metal (Classic) does not provide a DHCP server on the subnet. Set it up separately on the provisioner node.
+
+You must reset the BASH variables defined when preparing the provisioner node. Rebooting the provisioner node after preparing it will delete the BASH variables previously set.
+
+1. Install dnsmasq:
+
+```terminal
+$ sudo dnf install dnsmasq
+```
+
+2. Open the dnsmasq configuration file:
+
+```terminal
+$ sudo vi /etc/dnsmasq.conf
+```
+
+3. Add the following configuration to the dnsmasq configuration file:
+
+```text
+interface=baremetal
+except-interface=lo
+bind-dynamic
+log-dhcp
+
+dhcp-range=<ip_addr>,<ip_addr>,<pub_cidr> 1
+dhcp-option=baremetal,121,0.0.0.0/0,<pub_gateway>,<prvn_priv_ip>,<prvn_pub_ip> 2
+
+dhcp-hostsfile=/var/lib/dnsmasq/dnsmasq.hostsfile
+```
+
+Set the DHCP range. Replace both instances of <ip_addr> with one unused IP address from the public subnet so that the dhcp-range for the baremetal network begins and ends with the same the IP address. Replace <pub_cidr> with the CIDR of the public subnet.
+Set the DHCP option. Replace <pub_gateway> with the IP address of the gateway for the baremetal network. Replace <prvn_priv_ip> with the IP address of the provisioner node's private IP address on the provisioning network. Replace <prvn_pub_ip> with the IP address of the provisioner node's public IP address on the baremetal network.
+
+To retrieve the value for <pub_cidr>, execute:
+
+```terminal
+$ ibmcloud sl subnet detail <publicsubnetid> --output JSON | jq .cidr
+```
+
+
+Replace <publicsubnetid> with the ID of the public subnet.
+
+To retrieve the value for <pub_gateway>, execute:
+
+```terminal
+$ ibmcloud sl subnet detail <publicsubnetid> --output JSON | jq .gateway -r
+```
+
+
+Replace <publicsubnetid> with the ID of the public subnet.
+
+To retrieve the value for <prvn_priv_ip>, execute:
+
+```terminal
+$ ibmcloud  sl hardware detail <id> --output JSON | \
+            jq .primaryBackendIpAddress -r
+```
+
+
+Replace <id> with the ID of the provisioner node.
+
+To retrieve the value for <prvn_pub_ip>, execute:
+
+```terminal
+$ ibmcloud sl hardware detail <id> --output JSON | jq .primaryIpAddress -r
+```
+
+
+Replace <id> with the ID of the provisioner node.
+4. Obtain the list of hardware for the cluster:
+
+```terminal
+$ ibmcloud sl hardware list
+```
+
+5. Obtain the MAC addresses and IP addresses for each node:
+
+```terminal
+$ ibmcloud sl hardware detail <id> --output JSON | \
+  jq '.networkComponents[] | \
+  "\(.primaryIpAddress) \(.macAddress)"' | grep -v null
+```
+
+
+Replace <id> with the ID of the node.
+Example output
+
+```terminal
+"10.196.130.144 00:e0:ed:6a:ca:b4"
+"141.125.65.215 00:e0:ed:6a:ca:b5"
+```
+
+
+Make a note of the MAC address and IP address of the public network. Make a separate note of the MAC address of the private network, which you will use later in the install-config.yaml file. Repeat this procedure for each node until you have all the public MAC and IP addresses for the public baremetal network, and the MAC addresses of the private provisioning network.
+6. Add the MAC and IP address pair of the public baremetal network for each node into the dnsmasq.hostsfile file:
+
+```terminal
+$ sudo vim /var/lib/dnsmasq/dnsmasq.hostsfile
+```
+
+Example input
+
+```text
+00:e0:ed:6a:ca:b5,141.125.65.215,master-0
+<mac>,<ip>,master-1
+<mac>,<ip>,master-2
+<mac>,<ip>,worker-0
+<mac>,<ip>,worker-1
+...
+```
+
+
+Replace <mac>,<ip> with the public MAC address and public IP address of the corresponding node name.
+7. Start dnsmasq:
+
+```terminal
+$ sudo systemctl start dnsmasq
+```
+
+8. Enable dnsmasq so that it starts when booting the node:
+
+```terminal
+$ sudo systemctl enable dnsmasq
+```
+
+9. Verify dnsmasq is running:
+
+```terminal
+$ sudo systemctl status dnsmasq
+```
+
+Example output
+
+```terminal
+● dnsmasq.service - DNS caching server.
+Loaded: loaded (/usr/lib/systemd/system/dnsmasq.service; enabled; vendor preset: disabled)
+Active: active (running) since Tue 2021-10-05 05:04:14 CDT; 49s ago
+Main PID: 3101 (dnsmasq)
+Tasks: 1 (limit: 204038)
+Memory: 732.0K
+CGroup: /system.slice/dnsmasq.service
+└─3101 /usr/sbin/dnsmasq -k
+```
+
+10. Open ports 53 and 67 with UDP protocol:
+
+```terminal
+$ sudo firewall-cmd --add-port 53/udp --permanent
+```
+
+
+```terminal
+$ sudo firewall-cmd --add-port 67/udp --permanent
+```
+
+11. Add provisioning to the external zone with masquerade:
+
+```terminal
+$ sudo firewall-cmd --change-zone=provisioning --zone=external --permanent
+```
+
+
+This step ensures network address translation for IPMI calls to the management subnet.
+12. Reload the firewalld configuration:
+
+```terminal
+$ sudo firewall-cmd --reload
+```
+
+
+# Retrieving the Red Hat OpenShift Container Platform installer
+
+Use the stable-4.x version of the installation program and your selected architecture to deploy the generally available stable version of Red Hat OpenShift Container Platform:
+
+
+```terminal
+$ export VERSION=stable-4.18
+```
+
+
+
+```terminal
+$ export RELEASE_ARCH=<architecture>
+```
+
+
+
+```terminal
+$ export RELEASE_IMAGE=$(curl -s https://mirror.openshift.com/pub/openshift-v4/$RELEASE_ARCH/clients/ocp/$VERSION/release.txt | grep 'Pull From: quay.io' | awk -F ' ' '{print $3}')
+```
+
+
+# Extracting the Red Hat OpenShift Container Platform installer
+
+After retrieving the installer, the next step is to extract it.
+
+1. Set the environment variables:
+
+```terminal
+$ export cmd=openshift-baremetal-install
+```
+
+
+```terminal
+$ export pullsecret_file=~/pull-secret.txt
+```
+
+
+```terminal
+$ export extract_dir=$(pwd)
+```
+
+2. Get the oc binary:
+
+```terminal
+$ curl -s https://mirror.openshift.com/pub/openshift-v4/clients/ocp/$VERSION/openshift-client-linux.tar.gz | tar zxvf - oc
+```
+
+3. Extract the installer:
+
+```terminal
+$ sudo cp oc /usr/local/bin
+```
+
+
+```terminal
+$ oc adm release extract --registry-config "${pullsecret_file}" --command=$cmd --to "${extract_dir}" ${RELEASE_IMAGE}
+```
+
+
+```terminal
+$ sudo cp openshift-baremetal-install /usr/local/bin
+```
+
+
+# Configuring the install-config.yaml file
+
+The install-config.yaml file requires some additional details. Most of the information is teaching the installer and the resulting cluster enough about the available IBM Cloud&#174; Bare Metal (Classic) hardware so that it is able to fully manage it. The material difference between installing on bare metal and installing on IBM Cloud&#174; Bare Metal (Classic) is that you must explicitly set the privilege level for IPMI in the BMC section of the install-config.yaml file.
+
+1. Configure install-config.yaml. Change the appropriate variables to match the environment, including pullSecret and sshKey.
+
+```yaml
+apiVersion: v1
+baseDomain: <domain>
+metadata:
+  name: <cluster_name>
+networking:
+  machineNetwork:
+  - cidr: <public-cidr>
+  networkType: OVNKubernetes
+compute:
+- name: worker
+  replicas: 2
+controlPlane:
+  name: master
+  replicas: 3
+  platform:
+    baremetal: {}
+platform:
+  baremetal:
+    apiVIP: <api_ip>
+    ingressVIP: <wildcard_ip>
+    provisioningNetworkInterface: <NIC1>
+    provisioningNetworkCIDR: <CIDR>
+    hosts:
+      - name: openshift-master-0
+        role: master
+        bmc:
+          address: ipmi://10.196.130.145?privilegelevel=OPERATOR 1
+          username: root
+          password: <password>
+        bootMACAddress: 00:e0:ed:6a:ca:b4 2
+        rootDeviceHints:
+          deviceName: "/dev/sda"
+      - name: openshift-worker-0
+        role: worker
+        bmc:
+          address: ipmi://<out-of-band-ip>?privilegelevel=OPERATOR 1
+          username: <user>
+          password: <password>
+        bootMACAddress: <NIC1_mac_address> 2
+        rootDeviceHints:
+          deviceName: "/dev/sda"
+pullSecret: '<pull_secret>'
+sshKey: '<ssh_pub_key>'
+```
+
+The bmc.address provides a privilegelevel configuration setting with the value set to OPERATOR. This is required for IBM Cloud(R) Bare Metal (Classic) infrastructure.
+Add the MAC address of the private provisioning network NIC for the corresponding node.
+
+[NOTE]
+----
+You can use the ibmcloud command-line utility to retrieve the password.
+
+```terminal
+$ ibmcloud sl hardware detail <id> --output JSON | \
+  jq '"(.networkManagementIpAddress) (.remoteManagementAccounts[0].password)"'
+```
+
+Replace <id> with the ID of the node.
+----
+2. Create a directory to store the cluster configuration:
+
+```terminal
+$ mkdir ~/clusterconfigs
+```
+
+3. Copy the install-config.yaml file into the directory:
+
+```terminal
+$ cp install-config.yaml ~/clusterconfigs
+```
+
+4. Ensure all bare metal nodes are powered off prior to installing the Red Hat OpenShift Container Platform cluster:
+
+```terminal
+$ ipmitool -I lanplus -U <user> -P <password> -H <management_server_ip> power off
+```
+
+5. Remove old bootstrap resources if any are left over from a previous deployment attempt:
+
+```bash
+for i in $(sudo virsh list | tail -n +3 | grep bootstrap | awk {'print $2'});
+do
+  sudo virsh destroy $i;
+  sudo virsh undefine $i;
+  sudo virsh vol-delete $i --pool $i;
+  sudo virsh vol-delete $i.ign --pool $i;
+  sudo virsh pool-destroy $i;
+  sudo virsh pool-undefine $i;
+done
+```
+
+
+# Additional install-config parameters
+
+See the following tables for the required parameters, the hosts parameter, and the bmc parameter for the install-config.yaml file.
+
+
+
+
+
+## Hosts
+
+The hosts parameter is a list of separate bare metal assets used to build the cluster.
+
+
+
+# Root device hints
+
+The rootDeviceHints parameter enables the installer to provision the Red Hat Enterprise Linux CoreOS (RHCOS) image to a particular device. The installer examines the devices in the order it discovers them, and compares the discovered values with the hint values. The installer uses the first discovered device that matches the hint value. The configuration can combine multiple hints, but a device must match all hints for the installer to select it.
+
+
+
+
+```yaml
+     - name: master-0
+       role: master
+       bmc:
+         address: ipmi://10.10.0.3:6203
+         username: admin
+         password: redhat
+       bootMACAddress: de:ad:be:ef:00:40
+       rootDeviceHints:
+         deviceName: "/dev/sda"
+```
+
+
+# Creating the Red Hat OpenShift Container Platform manifests
+
+1. Create the Red Hat OpenShift Container Platform manifests.
+
+```terminal
+$ ./openshift-baremetal-install --dir ~/clusterconfigs create manifests
+```
+
+
+```terminal
+INFO Consuming Install Config from target directory
+WARNING Making control-plane schedulable by setting MastersSchedulable to true for Scheduler cluster settings
+WARNING Discarding the OpenShift Manifest that was provided in the target directory because its dependencies are dirty and it needs to be regenerated
+```
+
+
+# Deploying the cluster via the Red Hat OpenShift Container Platform installer
+
+Run the Red Hat OpenShift Container Platform installer:
+
+
+```terminal
+$ ./openshift-baremetal-install --dir ~/clusterconfigs --log-level debug create cluster
+```
+
+
+# Following the progress of the installation
+
+During the deployment process, you can check the installation&#8217;s overall status by issuing the tail command to the .openshift_install.log log file in the install directory folder:
+
+
+```terminal
+$ tail -f /path/to/install-dir/.openshift_install.log
+```

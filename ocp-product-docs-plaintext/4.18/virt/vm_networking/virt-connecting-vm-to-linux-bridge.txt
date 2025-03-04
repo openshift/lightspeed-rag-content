@@ -1,0 +1,208 @@
+# Connecting a virtual machine to a Linux bridge network
+
+
+By default, OpenShift Virtualization is installed with a single, internal pod network.
+You can create a Linux bridge network and attach a virtual machine (VM) to the network by performing the following steps:
+1. Create a Linux bridge node network configuration policy (NNCP).
+2. Create a Linux bridge network attachment definition (NAD) by using the web console or the command line.
+3. Configure the VM to recognize the NAD by using the web console or the command line.
+
+[NOTE]
+----
+OpenShift Virtualization does not support Linux bridge bonding modes 0, 5, and 6. For more information, see Which bonding modes work when used with a bridge that virtual machine guests or containers connect to?.
+----
+
+# Creating a Linux bridge NNCP
+
+You can create a NodeNetworkConfigurationPolicy (NNCP) manifest for a Linux bridge network.
+
+* You have installed the Kubernetes NMState Operator.
+
+* Create the NodeNetworkConfigurationPolicy manifest. This example includes sample values that you must replace with your own information.
+
+```yaml
+apiVersion: nmstate.io/v1
+kind: NodeNetworkConfigurationPolicy
+metadata:
+  name: br1-eth1-policy 1
+spec:
+  desiredState:
+    interfaces:
+      - name: br1 2
+        description: Linux bridge with eth1 as a port 3
+        type: linux-bridge 4
+        state: up 5
+        ipv4:
+          enabled: false 6
+        bridge:
+          options:
+            stp:
+              enabled: false 7
+          port:
+            - name: eth1 8
+```
+
+Name of the policy.
+Name of the interface.
+Optional: Human-readable description of the interface.
+The type of interface. This example creates a bridge.
+The requested state for the interface after creation.
+Disables IPv4 in this example.
+Disables STP in this example.
+The node NIC to which the bridge is attached.
+
+# Creating a Linux bridge NAD
+
+You can create a Linux bridge network attachment definition (NAD) by using the Red Hat OpenShift Container Platform web console or command line.
+
+## Creating a Linux bridge NAD by using the web console
+
+You can create a network attachment definition (NAD) to provide layer-2 networking to pods and virtual machines by using the Red Hat OpenShift Container Platform web console.
+
+A Linux bridge network attachment definition is the most efficient method for connecting a virtual machine to a VLAN.
+
+
+[WARNING]
+----
+Configuring IP address management (IPAM) in a network attachment definition for virtual machines is not supported.
+----
+
+1. In the web console, click Networking -> NetworkAttachmentDefinitions.
+2. Click Create Network Attachment Definition.
+
+[NOTE]
+----
+The network attachment definition must be in the same namespace as the pod or virtual machine.
+----
+3. Enter a unique Name and optional Description.
+4. Select CNV Linux bridge from the Network Type list.
+5. Enter the name of the bridge in the Bridge Name field.
+6. Optional: If the resource has VLAN IDs configured, enter the ID numbers in the VLAN Tag Number field.
+7. Optional: Select MAC Spoof Check to enable MAC spoof filtering. This feature provides security against a MAC spoofing attack by allowing only a single MAC address to exit the pod.
+8. Click Create.
+
+## Creating a Linux bridge NAD by using the command line
+
+You can create a network attachment definition (NAD) to provide layer-2 networking to pods and virtual machines (VMs) by using the command line.
+
+The NAD and the VM must be in the same namespace.
+
+
+[WARNING]
+----
+Configuring IP address management (IPAM) in a network attachment definition for virtual machines is not supported.
+----
+
+* The node must support nftables and the nft binary must be deployed to enable MAC spoof check.
+
+1. Add the VM to the NetworkAttachmentDefinition configuration, as in the following example:
+
+```yaml
+apiVersion: "k8s.cni.cncf.io/v1"
+kind: NetworkAttachmentDefinition
+metadata:
+  name: bridge-network 1
+  annotations:
+    k8s.v1.cni.cncf.io/resourceName: bridge.network.kubevirt.io/br1 2
+spec:
+  config: |
+    {
+      "cniVersion": "0.3.1",
+      "name": "bridge-network", 3
+      "type": "bridge", 4
+      "bridge": "br1", 5
+      "macspoofchk": false, 6
+      "vlan": 100, 7
+      "disableContainerInterface": true,
+      "preserveDefaultVlan": false 8
+    }
+```
+
+The name for the NetworkAttachmentDefinition object.
+Optional: Annotation key-value pair for node selection for the bridge configured on some nodes. If you add this annotation to your network attachment definition, your virtual machine instances will only run on the nodes that have the defined bridge connected.
+The name for the configuration. It is recommended to match the configuration name to the name value of the network attachment definition.
+The actual name of the Container Network Interface (CNI) plugin that provides the network for this network attachment definition. Do not change this field unless you want to use a different CNI.
+The name of the Linux bridge configured on the node. The name should match the interface bridge name defined in the NodeNetworkConfigurationPolicy manifest.
+Optional: A flag to enable the MAC spoof check. When set to true, you cannot change the MAC address of the pod or guest interface. This attribute allows only a single MAC address to exit the pod, which provides security against a MAC spoofing attack.
+Optional: The VLAN tag. No additional VLAN configuration is required on the node network configuration policy.
+Optional: Indicates whether the VM connects to the bridge through the default VLAN. The default value is true.
+
+[NOTE]
+----
+A Linux bridge network attachment definition is the most efficient method for connecting a virtual machine to a VLAN.
+----
+2. Create the network attachment definition:
+
+```terminal
+$ oc create -f network-attachment-definition.yaml 1
+```
+
+Where network-attachment-definition.yaml is the file name of the network attachment definition manifest.
+
+* Verify that the network attachment definition was created by running the following command:
+
+```terminal
+$ oc get network-attachment-definition bridge-network
+```
+
+
+# Configuring a VM network interface
+
+You can configure a virtual machine (VM) network interface by using the Red Hat OpenShift Container Platform web console or command line.
+
+## Configuring a VM network interface by using the web console
+
+You can configure a network interface for a virtual machine (VM) by using the Red Hat OpenShift Container Platform web console.
+
+* You created a network attachment definition for the network.
+
+1. Navigate to Virtualization -> VirtualMachines.
+2. Click a VM to view the VirtualMachine details page.
+3. On the Configuration tab, click the Network interfaces tab.
+4. Click Add network interface.
+5. Enter the interface name and select the network attachment definition from the Network list.
+6. Click Save.
+7. Restart the VM to apply the changes.
+
+## Networking fields
+
+
+
+## Configuring a VM network interface by using the command line
+
+You can configure a virtual machine (VM) network interface for a bridge network by using the command line.
+
+* Shut down the virtual machine before editing the configuration. If you edit a running virtual machine, you must restart the virtual machine for the changes to take effect.
+
+1. Add the bridge interface and the network attachment definition to the VM configuration as in the following example:
+
+```yaml
+apiVersion: kubevirt.io/v1
+kind: VirtualMachine
+metadata:
+  name: example-vm
+spec:
+  template:
+    spec:
+      domain:
+        devices:
+          interfaces:
+            - bridge: {}
+              name: bridge-net 1
+# ...
+      networks:
+        - name: bridge-net 2
+          multus:
+            networkName: a-bridge-network 3
+```
+
+The name of the bridge interface.
+The name of the network. This value must match the name value of the corresponding spec.template.spec.domain.devices.interfaces entry.
+The name of the network attachment definition.
+2. Apply the configuration:
+
+```terminal
+$ oc apply -f example-vm.yaml
+```
+
+3. Optional: If you edited a running virtual machine, you must restart it for the changes to take effect.
