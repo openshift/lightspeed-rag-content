@@ -47,7 +47,7 @@ update-docs: ## Update the plaintext OCP docs in ocp-product-docs-plaintext/
 
 update-model: ## Update the local copy of the embedding model
 	@rm -rf ./embeddings_model
-	@python scripts/download_embeddings_model.py -l ./embeddings_model -r sentence-transformers/all-mpnet-base-v2
+	@python scripts/download_embeddings_model.py -l ./embeddings_model -r ibm-granite/granite-embedding-125m-english
 
 build-image: ## Build a rag-content container image.
 	podman build -t rag-content .
