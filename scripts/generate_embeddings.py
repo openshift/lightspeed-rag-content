@@ -118,7 +118,7 @@ if __name__ == "__main__":
         help="HF repo id of the embedding model",
     )
     parser.add_argument(
-        "-c", "--chunk", type=int, default=380, help="Chunk size for embedding"
+        "-c", "--chunk", type=int, default=485, help="Chunk size for embedding"
     )
     parser.add_argument(
         "-l", "--overlap", type=int, default=0, help="Chunk overlap for embedding"
