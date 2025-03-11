@@ -23,9 +23,14 @@ spec:
       description: 'Namespace to run tests in'
       default: 'openshift-lightspeed'
   tasks:
-    - name: ols-rag-content-verification
-      description: Task to verify rag content contains expected paths
+    - name: get-information-from-snapshot
+      description: Task to get information from snapshot
       taskSpec:
+        results:
+          - name: rag-content-image
+            value: "$(steps.get-rag-content-image.results.rag-content-image)"
+          - name: commit
+            value: "$(steps.get-rag-content-image.results.commit)"
         steps:
           - name: get-rag-content-image
             image: registry.redhat.io/openshift4/ose-cli:latest
@@ -36,14 +41,44 @@ spec:
               - name: rag-content-image
                 type: string
                 description: "service image from snapshot"
+              - name: commit
+                type: string
+                description: "commit sha to be used in tests"
             script: |
               dnf -y install jq
               echo -n "$(jq -r --arg component_name "lightspeed-rag-content" '.components[] | select(.name == $component_name) | .containerImage' <<< "$SNAPSHOT")" > $(step.results.rag-content-image.path)
+              echo -n "$(jq -r --arg component_name "lightspeed-rag-content" '.components[] | select(.name == $component_name) | .source.git.revision' <<< "$SNAPSHOT")" > $(step.results.commit.path)
+    - name: ols-rag-content-verification
+      description: Task to verify rag content contains expected paths
+      runAfter:
+        - get-information-from-snapshot
+      params:
+        - name: ragImage
+          value: $(tasks.get-information-from-snapshot.results.rag-content-image)
+        - name: commit
+          value: $(tasks.get-information-from-snapshot.results.commit)
+      taskSpec:
+        params:
+          - name: ragImage
+            type: string
+          - name: commit
+            type: string
+        steps:
           - name: run-tests
             env:
-              - name: RAG_IMAGE
-                value: "$(steps.get-rag-content-image.results.rag-content-image)"
-            image: RAG_IMAGE
+              - name: COMMIT_SHA
+                value: "$(params.commit)"
+            image: $(params.ragImage)
+            securityContext:
+              runAsUser: 0
             script: |
               echo "---------------------------------------------"
-              echo "working so far"
+              echo "${COMMIT_SHA}"
+              microdnf install -y python3.11 git
+              git clone https://github.com/openshift/lightspeed-rag-content.git
+              cd lightspeed-rag-content
+              git config --global user.email olsci@redhat.com
+              git config --global user.name olsci
+              git pull origin ${COMMIT_SHA} --rebase
+              python3.11 scripts/verify_rag_image_test.py
+
