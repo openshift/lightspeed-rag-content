@@ -4,14 +4,14 @@
 You can back up and restore virtual machines (VMs) by using snapshots. Snapshots are supported by the following storage providers:
 * Red Hat OpenShift Data Foundation
 * Any other cloud storage provider with the Container Storage Interface (CSI) driver that supports the Kubernetes Volume Snapshot API
-Online snapshots have a default time deadline of five minutes (5m) that can be changed, if needed.
+To create snapshots of a VM in the Running state with the highest integrity, install the QEMU guest agent if it is not included with your operating system. The QEMU guest agent is included with the default Red Hat templates.
 
 [IMPORTANT]
 ----
 Online snapshots are supported for virtual machines that have hot plugged virtual disks. However, hot plugged disks that are not in the virtual machine specification are not included in the snapshot.
 ----
-To create snapshots of an online (Running state) VM with the highest integrity, install the QEMU guest agent if it is not included with your operating system. The QEMU guest agent is included with the default Red Hat templates.
-The QEMU guest agent takes a consistent snapshot by attempting to quiesce the VM file system as much as possible, depending on the system workload. This ensures that in-flight I/O is written to the disk before the snapshot is taken. If the guest agent is not present, quiescing is not possible and a best-effort snapshot is taken. The conditions under which the snapshot was taken are reflected in the snapshot indications that are displayed in the web console or CLI.
+The QEMU guest agent takes a consistent snapshot by attempting to quiesce the VM file system. This ensures that in-flight I/O is written to the disk before the snapshot is taken. If the guest agent is not present, quiescing is not possible and a best-effort snapshot is taken.
+The conditions under which a snapshot is taken are reflected in the snapshot indications that are displayed in the web console or CLI. If these conditions do not meet your requirements, try creating the snapshot again or use an offline snapshot
 
 # About snapshots
 
@@ -27,7 +27,12 @@ The snapshot stores a copy of each Container Storage Interface (CSI) volume atta
 You can perform the following snapshot actions:
 
 * Create a new snapshot
-* Create a copy of a virtual machine from a snapshot
+* Create a clone of a virtual machine from a snapshot
+
+[IMPORTANT]
+----
+Cloning a VM with a vTPM device attached to it or creating a new VM from its snapshot is not supported.
+----
 * List all snapshots attached to a specific VM
 * Restore a VM from a snapshot
 * Delete an existing VM snapshot
@@ -56,10 +61,11 @@ You can create snapshots of virtual machines (VMs) by using the Red Hat OpenShif
 
 You can create a snapshot of a virtual machine (VM) by using the Red Hat OpenShift Container Platform web console.
 
-The VM snapshot includes disks that meet the following requirements:
-
-* Either a data volume or a persistent volume claim
-* Belong to a storage class that supports Container Storage Interface (CSI) volume snapshots
+* The snapshot feature gate is enabled in the YAML configuration of the kubevirt CR.
+* The VM snapshot includes disks that meet the following requirements:
+* The disks are data volumes or persistent volume claims.
+* The disks belong to a storage class that supports Container Storage Interface (CSI) volume snapshots.
+* The disks are bound to a persistent volume (PV) and populated with a datasource.
 
 1. Navigate to Virtualization -> VirtualMachines in the web console.
 2. Select a VM to open the VirtualMachine details page.
@@ -73,7 +79,25 @@ The VM snapshot includes disks that meet the following requirements:
 
 You can create a virtual machine (VM) snapshot for an offline or online VM by creating a VirtualMachineSnapshot object.
 
-* Ensure that the persistent volume claims (PVCs) are in a storage class that supports Container Storage Interface (CSI) volume snapshots.
+* Ensure the Snapshot feature gate is enabled for the kubevirt CR by using the following command:
+
+```terminal
+$ oc get kubevirt kubevirt-hyperconverged -n openshift-cnv -o yaml
+```
+
+Truncated output
+
+```yaml
+spec:
+  developerConfiguration:
+    featureGates:
+      - Snapshot
+```
+
+* Ensure that the VM snapshot includes disks that meet the following requirements:
+* The disks are data volumes or persistent volume claims.
+* The disks belong to a storage class that supports Container Storage Interface (CSI) volume snapshots.
+* The disks are bound to a persistent volume (PV) and populated with a datasource.
 * Install the OpenShift CLI (oc).
 * Optional: Power down the VM for which you want to create a snapshot.
 
@@ -99,7 +123,8 @@ $ oc create -f <snapshot_name>.yaml
 
 
 The snapshot controller creates a VirtualMachineSnapshotContent object, binds it to the VirtualMachineSnapshot, and updates the status and readyToUse fields of the VirtualMachineSnapshot object.
-3. Optional: If you are taking an online snapshot, you can use the wait command and monitor the status of the snapshot:
+
+1. Optional: During the snapshot creation process, you can use the wait command to monitor the status of the snapshot and wait until it is ready for use:
 1. Enter the following command:
 
 ```terminal
@@ -107,9 +132,9 @@ $ oc wait <vm_name> <snapshot_name> --for condition=Ready
 ```
 
 2. Verify the status of the snapshot:
-* InProgress - The online snapshot operation is still in progress.
-* Succeeded - The online snapshot operation completed successfully.
-* Failed - The online snapshot operaton failed.
+* InProgress - The snapshot operation is still in progress.
+* Succeeded - The snapshot operation completed successfully.
+* Failed - The snapshot operaton failed.
 
 [NOTE]
 ----
@@ -118,8 +143,7 @@ To change the default time deadline, add the FailureDeadline attribute to the VM
 To set no deadline, you can specify 0, though this is generally not recommended, as it can result in an unresponsive VM.
 If you do not specify a unit of time such as m or s, the default is seconds (s).
 ----
-
-1. Verify that the VirtualMachineSnapshot object is created and bound with VirtualMachineSnapshotContent and that the readyToUse flag is set to true:
+2. Verify that the VirtualMachineSnapshot object is created and bound with VirtualMachineSnapshotContent and that the readyToUse flag is set to true:
 
 ```terminal
 $ oc describe vmsnapshot <snapshot_name>
@@ -161,13 +185,24 @@ status:
   readyToUse: true 3
   sourceUID: 355897f3-73a0-4ec4-83d3-3c2df9486f4f
   virtualMachineSnapshotContentName: vmsnapshot-content-28eedf08-5d6a-42c1-969c-2eda58e2a78d 4
+  indications: 5
+    - Online
+  includedVolumes: 6
+    - name: rootdisk
+      kind: PersistentVolumeClaim
+      namespace: default
+    - name: datadisk1
+      kind: DataVolume
+      namespace: default
 ```
 
 The status field of the Progressing condition specifies if the snapshot is still being created.
 The status field of the Ready condition specifies if the snapshot creation process is complete.
 Specifies if the snapshot is ready to be used.
 Specifies that the snapshot is bound to a VirtualMachineSnapshotContent object created by the snapshot controller.
-2. Check the spec:volumeBackups property of the VirtualMachineSnapshotContent resource to verify that the expected PVCs are included in the snapshot.
+Specifies additional information about the snapshot, such as whether it is an online snapshot, or whether it was created with QEMU guest agent running.
+Lists the storage volumes that are part of the snapshot, as well as their parameters.
+3. Check the includedVolumes section in the snapshot description to verify that the expected PVCs are included in the snapshot.
 
 # Verifying online snapshots by using snapshot indications
 
@@ -198,12 +233,21 @@ You can restore a virtual machine (VM) to a previous configuration represented b
 5. Select a snapshot to open the Snapshot Details screen.
 6. Click the Options menu . and select Restore VirtualMachine from snapshot.
 7. Click Restore.
+8. Optional: You can also create a new VM based on the snapshot. To do so:
+1. In the Options menu . of the the snapshot, select Create VirtualMachine from Snapshot.
+2. Provide a name for the new VM.
+3. Click Create
 
 ## Restoring a VM from a snapshot by using the command line
 
 You can restore an existing virtual machine (VM) to a previous configuration by using the command line. You can only restore from an offline VM snapshot.
 
 * Power down the VM you want to restore.
+* Optional: Adjust what happens if the target VM is not fully stopped (ready). To do so, set the targetReadinessPolicy parameter in the vmrestore YAML configuration to one of the following values:
+* FailImmediate - The restore process fails immediately if the VM is not ready.
+* StopTarget - If the VM is not ready, it gets stopped, and the restore process starts.
+* WaitGracePeriod 5 - The restore process waits for a set amount of time, in minutes, for the VM to be ready. This is the default setting, with the default value set to 5 minutes.
+* WaitEventually - The restore process waits indefinitely for the VM to be ready.
 
 1. Create a YAML file to define a VirtualMachineRestore object that specifies the name of the VM you want to restore and the name of the snapshot to be used as the source as in the following example:
 
