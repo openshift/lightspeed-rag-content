@@ -1,22 +1,25 @@
+#!/usr/bin/env python3
 """Utility script to generate embeddings."""
 
 import argparse
 import json
 import os
 import time
-from typing import Callable, Dict
+from typing import Callable, Dict, List
 
 import faiss
 import requests
 from llama_index.core import Settings, SimpleDirectoryReader, VectorStoreIndex
 from llama_index.core.llms.utils import resolve_llm
 
-# from llama_index.core.node_parser import MarkdownNodeParser
-from llama_index.core.schema import TextNode
+from llama_index.core.schema import TextNode, Document
 from llama_index.core.storage.storage_context import StorageContext
 from llama_index.embeddings.huggingface import HuggingFaceEmbedding
 from llama_index.readers.file.flat.base import FlatReader
 from llama_index.vector_stores.faiss import FaissVectorStore
+
+# from langchain.text_splitter import MarkdownHeaderTextSplitter, RecursiveCharacterTextSplitter
+from layered_algorithm import chunk_markdown
 
 OCP_DOCS_ROOT_URL = "https://docs.openshift.com/container-platform/"
 OCP_DOCS_VERSION = "4.15"
@@ -99,6 +102,62 @@ def got_whitespace(text: str) -> bool:
     return False
 
 
+def create_nodes_from_chunks(doc: Document, chunks: List[str]) -> List[TextNode]:
+    """Create TextNode objects from chunks with the document's metadata.
+
+    Args:
+        doc: The source document
+        chunks: List of text chunks
+
+    Returns:
+        List of TextNode objects
+    """
+    nodes = []
+
+    for chunk in chunks:
+        if not chunk.strip():
+            continue
+
+        node = TextNode(
+            text=chunk,
+            metadata=doc.metadata.copy()
+        )
+        nodes.append(node)
+
+    return nodes
+
+
+def create_nodes_with_layered_chunking(documents: List[Document], token_limit: int,
+                                   keep_siblings_together: bool, prepend_parent_section_text: bool) -> List[TextNode]:
+    """Create nodes from documents using the layered chunking algorithm.
+
+    Args:
+        documents: List of Document objects
+        token_limit: Maximum tokens per chunk
+        keep_siblings_together: Whether to keep sibling headings together
+        prepend_parent_section_text: Whether to prepend parent section text
+
+    Returns:
+        List of TextNode objects
+    """
+    all_nodes = []
+
+    for doc in documents:
+        # Chunk the document text
+        chunks = chunk_markdown(
+            doc.text,
+            token_limit=token_limit,
+            keep_siblings_together=keep_siblings_together,
+            prepend_parent_section_text=prepend_parent_section_text
+        )
+
+        # Create TextNode objects from chunks
+        doc_nodes = create_nodes_from_chunks(doc, chunks)
+        all_nodes.extend(doc_nodes)
+
+    return all_nodes
+
+
 if __name__ == "__main__":
 
     start_time = time.time()
@@ -124,6 +183,14 @@ if __name__ == "__main__":
         "-l", "--overlap", type=int, default=0, help="Chunk overlap for embedding"
     )
     parser.add_argument(
+        "-k", "--keep-siblings", type=bool, default=True,
+        help="Whether to keep sibling headings together"
+    )
+    parser.add_argument(
+        "-p", "--prepend-parent", type=bool, default=True,
+        help="Whether to prepend parent section text"
+    )
+    parser.add_argument(
         "-em",
         "--exclude-metadata",
         nargs="+",
@@ -133,9 +200,7 @@ if __name__ == "__main__":
     parser.add_argument("-o", "--output", help="Vector DB output folder")
     parser.add_argument("-i", "--index", help="Product index")
     parser.add_argument("-v", "--ocp-version", help="OCP version")
-    parser.add_argument(
-        "-hb", "--hermetic-build", type=bool, default=False, help="Hermetic build"
-    )
+    parser.add_argument("-hb", "--hermetic-build", type=bool, default=False, help="Hermetic build")
     args = parser.parse_args()
     print(f"Arguments used: {args}")
 
@@ -171,20 +236,21 @@ if __name__ == "__main__":
         args.folder, recursive=True, file_metadata=ocp_file_metadata_func
     ).load_data()
 
-    # Split based on header/section
-    # md_parser = MarkdownNodeParser()
-    # documents = md_parser.get_nodes_from_documents(documents)
-
-    # Create chunks/nodes
-    nodes = Settings.text_splitter.get_nodes_from_documents(documents)
+    # Create chunks/nodes using the layered algorithm
+    nodes = create_nodes_with_layered_chunking(
+        documents,
+        args.chunk,
+        args.keep_siblings,
+        args.prepend_parent
+    )
 
     # Filter out invalid nodes
     good_nodes = []
     for node in nodes:
         if isinstance(node, TextNode) and got_whitespace(node.text):
             # Exclude given metadata during embedding
-            # if args.exclude_metadata is not None:
-            #     node.excluded_embed_metadata_keys.extend(args.exclude_metadata)
+            if args.exclude_metadata is not None:
+                node.excluded_embed_metadata_keys.extend(args.exclude_metadata)
             good_nodes.append(node)
         else:
             print("skipping node without whitespace: " + node.__repr__())
@@ -196,9 +262,27 @@ if __name__ == "__main__":
         file_extractor={".md": FlatReader()},
         file_metadata=runbook_file_metadata_func,
     ).load_data()
-    runbook_nodes = Settings.text_splitter.get_nodes_from_documents(runbook_documents)
 
-    good_nodes.extend(runbook_nodes)
+    # Create runbook nodes using the layered algorithm
+    runbook_nodes = create_nodes_with_layered_chunking(
+        runbook_documents,
+        args.chunk,
+        args.keep_siblings,
+        args.prepend_parent
+    )
+
+    # Filter out invalid runbook nodes
+    good_runbook_nodes = []
+    for node in runbook_nodes:
+        if isinstance(node, TextNode) and got_whitespace(node.text):
+            # Exclude given metadata during embedding
+            if args.exclude_metadata is not None:
+                node.excluded_embed_metadata_keys.extend(args.exclude_metadata)
+            good_runbook_nodes.append(node)
+        else:
+            print("skipping node without whitespace: " + node.__repr__())
+
+    good_nodes.extend(good_runbook_nodes)
 
     # Create & save Index
     index = VectorStoreIndex(
@@ -218,6 +302,9 @@ if __name__ == "__main__":
     metadata["chunk"] = args.chunk
     metadata["overlap"] = args.overlap
     metadata["total-embedded-files"] = len(documents)
+    metadata["chunking-algorithm"] = "markdown-aware-chunker"
+    metadata["keep-siblings-together"] = args.keep_siblings
+    metadata["prepend-parent-section-text"] = args.prepend_parent
 
     with open(os.path.join(PERSIST_FOLDER, "metadata.json"), "w") as file:
         file.write(json.dumps(metadata))
