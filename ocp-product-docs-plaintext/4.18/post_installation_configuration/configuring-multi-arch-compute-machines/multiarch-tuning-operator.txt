@@ -4,7 +4,7 @@
 The Multiarch Tuning Operator optimizes workload management within multi-architecture clusters and in single-architecture clusters transitioning to multi-architecture environments.
 Architecture-aware workload scheduling allows the scheduler to place pods onto nodes that match the architecture of the pod images.
 By default, the scheduler does not consider the architecture of a pod's container images when determining the placement of new pods onto nodes.
-To enable architecture-aware workload scheduling, you must create the ClusterPodPlacementConfig object. When you create the ClusterPodPlacementConfig object, the Multiarch Tuning Operator deploys the necessary operands to support architecture-aware workload scheduling.
+To enable architecture-aware workload scheduling, you must create the ClusterPodPlacementConfig object. When you create the ClusterPodPlacementConfig object, the Multiarch Tuning Operator deploys the necessary operands to support architecture-aware workload scheduling. You can also use the nodeAffinityScoring plugin in the ClusterPodPlacementConfig object to set cluster-wide scores for node architectures. If you enable the nodeAffinityScoring plugin, the scheduler first filters nodes with compatible architectures and then places the pod on the node with the highest score.
 When a pod is created, the operands perform the following actions:
 1. Add the multiarch.openshift.io/scheduling-gate scheduling gate that prevents the scheduling of the pod.
 2. Compute a scheduling predicate that includes the supported architecture values for the kubernetes.io/arch label.
@@ -17,6 +17,10 @@ Note the following operand behaviors:
 * If the nodeSelector field is already configured with the kubernetes.io/arch label for a workload, the operand does not update the nodeAffinity field for that workload.
 * If the nodeSelector field is not configured with the kubernetes.io/arch label for a workload, the operand updates the nodeAffinity field for that workload. However, in that nodeAffinity field, the operand updates only the node selector terms that are not configured with the kubernetes.io/arch label.
 * If the nodeName field is already set, the Multiarch Tuning Operator does not process the pod.
+* If the pod is owned by a DaemonSet, the operand does not update the the nodeAffinity field.
+* If both nodeSelector or nodeAffinity and preferredAffinity fields are set for the kubernetes.io/arch label, the operand does not update the nodeAffinity field.
+* If only nodeSelector or nodeAffinity field is set for the kubernetes.io/arch label and the nodeAffinityScoring plugin is disabled, the operand does not update the nodeAffinity field.
+* If the nodeAffinity.preferredDuringSchedulingIgnoredDuringExecution field already contains terms that score nodes based on the kubernetes.io/arch label, the operand ignores the configuration in the nodeAffinityScoring plugin.
 ----
 
 # Installing the Multiarch Tuning Operator by using the CLI
@@ -68,7 +72,7 @@ spec:
   source: redhat-operators
   sourceNamespace: openshift-marketplace
   installPlanApproval: Automatic
-  startingCSV: multiarch-tuning-operator.v1.0.0
+  startingCSV: multiarch-tuning-operator.<version>
 ```
 
 2. Create the Subscription object by running the following command:
@@ -94,8 +98,8 @@ $ oc get csv -n openshift-multiarch-tuning-operator
 Example output
 
 ```terminal
-NAME                               DISPLAY                     VERSION   REPLACES                              PHASE
-multiarch-tuning-operator.v1.0.0   Multiarch Tuning Operator   1.0.0     multiarch-tuning-operator.v0.9.0      Succeeded
+NAME                                   DISPLAY                     VERSION       REPLACES                            PHASE
+multiarch-tuning-operator.<version>   Multiarch Tuning Operator   <version>     multiarch-tuning-operator.1.0.0      Succeeded
 ```
 
 
@@ -192,12 +196,26 @@ spec:
     matchExpressions:
       - key: multiarch.openshift.io/exclude-pod-placement
         operator: DoesNotExist
+  plugins: 4
+    nodeAffinityScoring: 5
+      enabled: true 6
+      platforms: 7
+        - architecture: amd64 8
+          weight: 100 9
+        - architecture: arm64
+          weight: 50
 ```
 
 
 You must set this field value to cluster.
 Optional: You can set the field value to Normal, Debug, Trace, or TraceAll. The value is set to Normal by default.
 Optional: You can configure the namespaceSelector to select the namespaces in which the Multiarch Tuning Operator's pod placement operand must process the nodeAffinity of the pods. All namespaces are considered by default.
+Optional: Includes a list of plugins for architecture-aware workload scheduling.
+Optional: You can use this plugin to set architecture preferences for pod placement. When enabled, the scheduler first filters out nodes that do not meet the pod’s requirements. Then, it prioritizes the remaining nodes based on the architecture scores defined in the nodeAffinityScoring.platforms field.
+Optional: Set this field to true to enable the nodeAffinityScoring plugin. The default value is false.
+Optional: Defines a list of architectures and their corresponding scores.
+Specify the node architecture to score. The scheduler prioritizes nodes for pod placement based on the architecture scores that you set and the scheduling requirements defined in the pod specification. Accepted values are arm64, amd64, ppc64le, or s390x.
+Assign a score to the architecture. The value for this field must be configured in the range of 1 (lowest priority) to 100 (highest priority). The scheduler uses this score to prioritize nodes for pod placement, favoring nodes with architectures that have higher scores.
 
 In this example, the operator field value is set to DoesNotExist. Therefore, if the key field value (multiarch.openshift.io/exclude-pod-placement) is set as a label in a namespace, the operand does not process the nodeAffinity of the pods in that namespace. Instead, the operand processes the nodeAffinity of the pods in namespaces that do not contain the label.
 
@@ -242,6 +260,14 @@ spec:
     matchExpressions:
       - key: multiarch.openshift.io/exclude-pod-placement
         operator: DoesNotExist
+  plugins:
+    nodeAffinityScoring:
+      enabled: true
+      platforms:
+        - architecture: amd64
+          weight: 100
+        - architecture: arm64
+          weight: 50
 ```
 
 2. Create the ClusterPodPlacementConfig object by running the following command:
@@ -375,7 +401,7 @@ Replace <subscription_name> with the Subscription object name. For example: open
 Example output
 
 ```terminal
-currentCSV: multiarch-tuning-operator.v1.0.0
+currentCSV: multiarch-tuning-operator.<version>
 ```
 
 3. Delete the Subscription object by running the following command:
@@ -397,11 +423,11 @@ subscription.operators.coreos.com "openshift-multiarch-tuning-operator" deleted
 $ oc delete clusterserviceversion <currentCSV_value> -n <namespace> 1
 ```
 
-Replace <currentCSV> with the currentCSV value for the Multiarch Tuning Operator. For example: multiarch-tuning-operator.v1.0.0. Replace <namespace> with the name of the namespace where you want to uninstall the Multiarch Tuning Operator.
+Replace <currentCSV> with the currentCSV value for the Multiarch Tuning Operator. For example: multiarch-tuning-operator.<version>. Replace <namespace> with the name of the namespace where you want to uninstall the Multiarch Tuning Operator.
 Example output
 
 ```terminal
-clusterserviceversion.operators.coreos.com "multiarch-tuning-operator.v1.0.0" deleted
+clusterserviceversion.operators.coreos.com "multiarch-tuning-operator.<version>" deleted
 ```
 
 
