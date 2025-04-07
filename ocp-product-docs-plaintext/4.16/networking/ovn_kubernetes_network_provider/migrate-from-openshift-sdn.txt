@@ -84,6 +84,10 @@ During the limited live migration, both OVN-Kubernetes and OpenShift SDN run in 
 * When there are multiple NICs inside of the host, and the default route is not on the interface that has the Kubernetes NodeIP, you must use the offline migration instead.
 * All DaemonSet objects in the openshift-sdn namespace, which are not managed by the Cluster Network Operator (CNO), must be removed before initiating the limited live migration. These unmanaged daemon sets can cause the migration status to remain incomplete if not properly handled.
 * If you run an Operator or you have configured any application with the pod disruption budget, you might experience an interruption during the update process. If minAvailable is set to 1 in PodDisruptionBudget, the nodes are drained to apply pending machine configs which might block the eviction process. If several nodes are rebooted, all the pods might run on only one node, and the PodDisruptionBudget field can prevent the node drain.
+* Like OpenShift SDN, OVN-Kubernetes resources such as EgressFirewall resources require ClusterAdmin privileges. Migrating from OpenShift SDN to OVN-Kubernetes does not automatically update role-base access control (RBAC) resources. OpenShift SDN resources granted to a project administrator through the aggregate-to-admin ClusterRole must be manually reviewed and adjusted, as these changes are not included in the migration process.
+
+After migration, manual verification of RBAC resources is required. For information about setting the aggregate-to-admin ClusterRole after migration, see the example in How to allow project admins to manage Egressfirewall resources in RHOCP4.
+* When a cluster depends on static routes or routing policies in the host network so that pods can reach some destinations, users should set routingViaHost spec to true and ipForwarding to Global in the gatewayConfig object during migration. This will offload routing decision to host kernel. For more information, see Recommended practice to follow before Openshift SDN network plugin migration to OVNKubernetes plugin (Red Hat Knowledgebase) and, see step five in "Checking cluster resources before initiating the limited live migration".
 
 * Understanding update channels and releases
 * Asynchronous errata updates
@@ -199,6 +203,43 @@ NAME              POD-SELECTOR   AGE
 allow-multicast   app=my-app     11m
 ```
 
+5. Optional: If your cluster uses static routes or routing policies in the host network, set routingViaHost spec to true and the ipForwarding spec to Global in the gatewayConfig object during migration.
+
+```terminal
+$ oc patch Network.operator.openshift.io cluster --type=merge \
+  --patch '{
+    "spec":{
+      "defaultNetwork":{
+        "ovnKubernetesConfig":{
+          "gatewayConfig": {
+            "ipForwarding": "Global",
+            "routingViaHost": true
+    }}}}}'
+```
+
+1. Verify that the ipForwarding spec has been set to Global and the routingViaHost spec to true by running the following command:
+
+```terminal
+$  oc get networks.operator.openshift.io cluster -o yaml | grep -A 5 "gatewayConfig"
+```
+
+Example output
+
+```terminal
+apiVersion: operator.openshift.io/v1
+kind: Network
+metadata:
+  name: cluster
+# ...
+gatewayConfig:
+        ipForwarding: Global
+        ipv4: {}
+        ipv6: {}
+        routingViaHost: true
+      genevePort: 6081
+# ...
+```
+
 
 ### Removing egress router pods before initiating the limited live migration
 
@@ -287,7 +328,7 @@ After you have checked the behavior of egress IP resources, egress firewall reso
 * You have created a recent backup of the etcd database.
 * The cluster is in a known good state without any errors.
 * Before migration to OVN-Kubernetes, a security group rule must be in place to allow UDP packets on port 6081 for all nodes on all cloud platforms.
-* If the 100.64.0.0/16 and 100.88.0.0/16 address ranges were previously in use by OpenShift-SDN, you have patched them. The first step of this procedure checks whether these address ranges are in use. If they are in use, see "Patching OVN-Kubernetes address ranges".
+* If the 100.64.0.0/16 and 100.88.0.0/16 address ranges were previously in use by OpenShift-SDN, you have patched them. A step in the procedure checks whether these address ranges are in use. If they are in use, see "Patching OVN-Kubernetes address ranges".
 * You have checked for egress IP resources, egress firewall resources, and multicast enabled namespaces.
 * You have removed any egress router pods before beginning the limited live migration. For more information about egress router pods, see "Deploying an egress router pod in redirect mode".
 * You have reviewed the "Considerations for limited live migration to the OVN-Kubernetes network plugin" section of this document.
@@ -338,10 +379,10 @@ This is an optional procedure and must only be used if the migration was blocked
 
 * You have access to the cluster as a user with the cluster-admin role.
 
-1. If the 100.64.0.0/16 IP address range is already in use, enter the following command to patch it to a different range. The following example uses  100.63.0.0/16.
+1. If the 100.64.0.0/16 IP address range is already in use, enter the following command to patch it to a different range. The following example uses 100.70.0.0/16.
 
 ```terminal
-$ oc patch network.operator.openshift.io cluster --type='merge' -p='{"spec":{"defaultNetwork":{"ovnKubernetesConfig":{"ipv4":{"internalJoinSubnet": "100.63.0.0/16"}}}}}'
+$ oc patch network.operator.openshift.io cluster --type='merge' -p='{"spec":{"defaultNetwork":{"ovnKubernetesConfig":{"ipv4":{"internalJoinSubnet": "100.70.0.0/16"}}}}}'
 ```
 
 2. If the 100.88.0.0/16 IP address range is already in use, enter the following command to patch it to a different range. The following example uses  100.99.0.0/16.
@@ -675,6 +716,9 @@ While the OVN-Kubernetes network plugin implements many of the capabilities pres
 * Namespace isolation
 * Egress router pods
 * Before migrating to OVN-Kubernetes, ensure that the following IP address ranges are not in use: 100.64.0.0/16, 169.254.169.0/29, 100.88.0.0/16, fd98::/64, fd69::/125, and fd97::/64. OVN-Kubernetes uses these ranges internally. Do not include any of these ranges in any other CIDR definitions in your cluster or infrastructure.
+* Like OpenShift SDN, OVN-Kubernetes resources require ClusterAdmin privileges. Migrating from OpenShift SDN to OVN-Kubernetes does not automatically update role-base access control (RBAC) resources. OpenShift SDN resources granted to a project administrator through the aggregate-to-admin ClusterRole must be manually reviewed and adjusted, as these changes are not included in the migration process.
+
+After migration, manual verification of RBAC resources is required.
 
 The following sections highlight the differences in configuration between the aforementioned capabilities in OVN-Kubernetes and OpenShift SDN network plugins.
 
