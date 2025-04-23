@@ -1112,12 +1112,6 @@ async def main_async(args):
         force=args.force, 
         skip_toc=args.skip_toc_verification
     )
-    parser.add_argument(
-        "--max-retries",
-        type=check_positive_int,
-        default=3,
-        help="Maximum number of retry attempts for failed downloads (default: 3)"
-    )
     
     return verification_passed and toc_verification_passed
 
@@ -1162,6 +1156,12 @@ def main():
         "--skip-toc-verification",
         action="store_true",
         help="Skip TOC verification step"
+    )
+    parser.add_argument(
+        "--max-retries",
+        type=check_positive_int,
+        default=3,
+        help="Maximum number of retry attempts for failed downloads (default: 3)"
     )
     args = parser.parse_args()
     
