@@ -1094,6 +1094,12 @@ def construct_base_url(version, specific_doc=None):
     
     return (base_url, output_dir)
 
+def check_positive_int(value):
+    ivalue = int(value)
+    if ivalue < 0:
+        raise argparse.ArgumentTypeError(f"{value} is not a non-negative integer")
+    return ivalue
+
 async def main_async(args):
     """
     Main async function to run the downloader
@@ -1155,7 +1161,7 @@ def main():
     )
     parser.add_argument(
         "--rate-limit",
-        type=float,
+        type=check_positive_int,
         default=0,
         help="Time in seconds to wait between requests (default: 0, no limit)"
     )
