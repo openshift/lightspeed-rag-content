@@ -893,27 +893,6 @@ async def verify_against_toc(session, html_single_urls, visited_urls, base_url, 
     logger.info("TOC verification completed successfully.")
     return True
 
-async def proxy_setup(proxy_url=None):
-    """
-    Set up proxy configuration for requests
-    
-    Args:
-        proxy_url (str): Proxy URL if provided
-        
-    Returns:
-        dict: Proxy configuration for aiohttp
-    """
-    if not proxy_url:
-        # Check environment variables
-        proxy_url = os.environ.get('HTTP_PROXY') or os.environ.get('http_proxy')
-        
-    if proxy_url:
-        logger.info(f"Using proxy: {proxy_url}")
-        return {
-            'proxy': proxy_url
-        }
-    return None
-
 def export_url_mapping(db_path, output_dir):
     """
     Export a mapping of local file paths to their source URLs
@@ -952,7 +931,7 @@ def export_change_report(db_path, output_dir):
     
     return report
 
-async def run_downloader(base_url, output_dir, concurrency=5, force=False, proxy_url=None, skip_toc=False):
+async def run_downloader(base_url, output_dir, concurrency=5, force=False, skip_toc=False):
     """
     Run the complete download process
     
@@ -961,7 +940,6 @@ async def run_downloader(base_url, output_dir, concurrency=5, force=False, proxy
         output_dir (str): Directory where documentation will be saved
         concurrency (int): Number of concurrent downloads
         force (bool): Force download even if files haven't changed
-        proxy_url (str): Proxy URL to use for requests
         skip_toc (bool): Skip TOC verification
         
     Returns:
@@ -986,12 +964,9 @@ async def run_downloader(base_url, output_dir, concurrency=5, force=False, proxy
     # Create semaphore for limiting concurrent requests
     semaphore = asyncio.Semaphore(concurrency)
     
-    # Set up proxy
-    proxy_config = await proxy_setup(proxy_url)
-    
     start_time = time.time()
     
-    async with aiohttp.ClientSession() as session:
+    async with aiohttp.ClientSession(trust_env=True) as session:
         # Step 1: Crawl to discover all html-single pages
         visited_urls, html_single_urls = await crawl(session, base_url, base_url, semaphore)
         
