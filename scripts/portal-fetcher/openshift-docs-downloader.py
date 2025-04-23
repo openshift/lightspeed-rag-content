@@ -126,9 +126,7 @@ def is_in_scope(url: str, base_url: str) -> bool:
     if "/html-single/" in base_path:
         # If this is a specific doc, make sure it's within that doc's URL path
         # Check if url_path starts with base_path or is the exact doc index
-        is_in_scope = url_path.startswith(base_path) or url_path == base_path.rstrip(
-            "/index"
-        )
+        is_in_scope = url_path.startswith(base_path) or url_path == base_path.removesuffix("/index")
     else:
         # For entire docs, anything with openshift_container_platform/VERSION in scope
         try:
