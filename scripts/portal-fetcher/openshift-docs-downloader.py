@@ -268,10 +268,6 @@ def record_download(db_path, url, local_path, status="success", etag=None, last_
     local_path_str = str(local_path)
     
     try:
-        # Check if the record already exists
-        cursor.execute("SELECT * FROM downloads WHERE url = ?", (url,))
-        existing_record = cursor.fetchone()
-        
         # Record in main downloads table
         cursor.execute(
             "INSERT OR REPLACE INTO downloads (url, local_path, status, etag, last_modified, timestamp) VALUES (?, ?, ?, ?, ?, datetime('now'))",
