@@ -54,8 +54,7 @@ def normalize_url(url):
     
     # Build the path without trailing index if present
     path = parsed.path
-    if path.endswith('/index'):
-        path = path[:-6]
+    path = path.removesuffix('/index')
     if not path.endswith('/'):
         path = path + '/'
         
