@@ -762,7 +762,7 @@ async def extract_root_guides(
 
     for a_tag in soup.find_all("a", href=True):
         href = a_tag["href"]
-        # Look for HTML documentation links that aren't API references or external links
+        # Look for HTML documentation links, excluding external links
         if "/html/" in href and "redhat.com" not in href and "://" not in href:
             absolute_url = urljoin(url, href)
             guide_links.add(absolute_url)
