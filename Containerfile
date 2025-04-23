@@ -15,6 +15,7 @@ FROM ${FLAVOR}-base as lightspeed-rag-builder
 ARG EMBEDDING_MODEL
 ARG FLAVOR
 ARG HERMETIC
+RUN dnf install -y unzip
 
 USER 0
 WORKDIR /workdir
@@ -26,11 +27,16 @@ COPY ocp-product-docs-plaintext ./ocp-product-docs-plaintext
 COPY runbooks ./runbooks
 
 COPY embeddings_model ./embeddings_model
-#RUN cat embeddings_model/model.safetensors.part* > embeddings_model/model.safetensors && rm embeddings_model/model.safetensors.part*
 RUN cd embeddings_model; if [ "$HERMETIC" == "true" ]; then \
         cp /cachi2/output/deps/generic/model.safetensors model.safetensors; \
     else \
         curl -L -O https://huggingface.co/sentence-transformers/all-mpnet-base-v2/resolve/9a3225965996d404b775526de6dbfe85d3368642/model.safetensors; \
+    fi
+
+RUN if [ "$HERMETIC" == "true" ]; then \
+        cp /cachi2/output/deps/generic/9b5ad71b2ce5302211f9c61530b329a4922fc6a4 /usr/local/lib/python3.11/site-packages/llama_index/core/_static/tiktoken_cache; \
+        unzip /cachi2/output/deps/generic/stopwords.zip -d /usr/local/lib/python3.11/site-packages/llama_index/core/_static/nltk_cache/corpora; \
+	unzip /cachi2/output/deps/generic/punkt_tab.zip -d /usr/local/lib/python3.11/site-packages/llama_index/core/_static/nltk_cache/tokenizers; \
     fi
 
 RUN if [ "$FLAVOR" == "gpu" ]; then \
