@@ -46,28 +46,30 @@ BUILDDEPS_SCRIPT_PATH = "master/bin"  # wokeignore:rule=master
 BUILDDEPS_SCRIPT_NAME = "pip_find_builddeps.py"
 
 
-def shell(command, directory):
+def shell(command: str, directory: str) -> bytes:
     """Run command via shell inside specified directory."""
     return subprocess.check_output(command, cwd=directory, shell=True)  # noqa: S602
 
 
-def copy_project_stub(directory):
+def copy_project_stub(directory: str) -> None:
     """Copy all files that represent project stub into specified directory."""
     for project_file in PROJECT_FILES:
         shutil.copy(project_file, directory)
 
 
-def remove_torch_dependency(directory):
+def remove_torch_dependency(directory: str) -> None:
     """Remove torch (specifically torch+cpu) dependency from the project.toml file."""
     shell("pdm remove torch", directory)
 
 
-def generate_requirements_file(work_directory):
+def generate_requirements_file(work_directory: str) -> None:
     """Generate file requirements.txt that contains hashes for all packages."""
     shell("pip-compile -vv pyproject.toml --generate-hashes", work_directory)
 
 
-def remove_package(directory, source, target, package_prefix):
+def remove_package(
+    directory: str, source: str, target: str, package_prefix: str
+) -> None:
     """Remove package or packages with specified prefix from the requirements file."""
     package_block = False
 
@@ -86,7 +88,7 @@ def remove_package(directory, source, target, package_prefix):
                     fout.write(line)
 
 
-def remove_unwanted_dependencies(directory):
+def remove_unwanted_dependencies(directory: str) -> None:
     """Remove all unwanted dependencies from requirements file, creating in-between files."""
     # the torch itself
     remove_package(directory, "requirements.txt", "step1.txt", "torch")
@@ -95,19 +97,19 @@ def remove_unwanted_dependencies(directory):
     remove_package(directory, "step1.txt", "step2.txt", "nvidia")
 
 
-def wheel_url(registry, wheel):
+def wheel_url(registry: str, wheel: str) -> str:
     """Construct full URL to wheel."""
     return f"{registry}/{wheel}"
 
 
-def download_wheel(directory, registry, wheel):
+def download_wheel(directory: str, registry: str, wheel: str) -> None:
     """Download selected wheel from registry."""
     url = wheel_url(registry, wheel)
     into = join(directory, wheel)
     urlretrieve(url, into)  # noqa: S310
 
 
-def generate_hash(directory, registry, wheel, target):
+def generate_hash(directory: str, registry: str, wheel: str, target: str) -> None:
     """Generate hash entry for given wheel."""
     output = shell(f"pip hash {wheel}", directory)
     hash_line = output.decode("ascii").splitlines()[1]
@@ -117,7 +119,7 @@ def generate_hash(directory, registry, wheel, target):
         fout.write(f"    {hash_line}\n")
 
 
-def generate_list_of_packages(work_directory):
+def generate_list_of_packages(work_directory: str) -> None:
     """Generate list of packages, take care of unwanted packages and wheel with Torch package."""
     copy_project_stub(work_directory)
     if PROCESS_SPECIAL_PACKAGES:
@@ -135,7 +137,7 @@ def generate_list_of_packages(work_directory):
         shutil.copy(join(work_directory, "requirements.txt"), "requirements.txt")
 
 
-def generate_packages_to_be_build(work_directory):
+def generate_packages_to_be_build(work_directory: str) -> None:
     """Generate list of packages that will need to be build."""
     # download helper script to generate list of packages
     url = f"{CACHITO_URL}/{BUILDDEPS_SCRIPT_PATH}/{BUILDDEPS_SCRIPT_NAME}"
