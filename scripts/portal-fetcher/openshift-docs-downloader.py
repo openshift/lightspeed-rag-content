@@ -495,7 +495,7 @@ async def check_if_modified(session, url, db_path, semaphore):
         # If we can't check, assume we need to download
         return True, None, None
 
-async def download_page(session, url, output_dir, db_path, semaphore, force=False):
+async def download_page(session, url, output_dir, db_path, semaphore, force=False, max_retries=3):
     """
     Download a page and save it to the local file system
     
@@ -505,6 +505,7 @@ async def download_page(session, url, output_dir, db_path, semaphore, force=Fals
         output_dir (Path): Base output directory
         db_path (Path): Path to SQLite database
         semaphore (asyncio.Semaphore): Semaphore for limiting concurrent requests
+        max_retries (int): Maximum number of retry attempts
         force (bool): Force download even if not modified
         
     Returns:
@@ -525,51 +526,68 @@ async def download_page(session, url, output_dir, db_path, semaphore, force=Fals
             logger.info(f"Skipping {url} (not modified)")
             record_download(db_path, url, local_path, status="success", etag=etag, last_modified=last_modified, change_type="unchanged")
             return (url, True, set())
-    
-    try:
-        async with semaphore:
-            logger.info(f"Downloading {url}")
-            async with session.get(url, timeout=30) as response:
-                if response.status == 200:
-                    content = await response.text()
-                    
-                    # Get ETag and Last-Modified
-                    etag = response.headers.get('ETag')
-                    last_modified = response.headers.get('Last-Modified')
-                    
-                    # Determine change type
-                    if local_path.exists():
-                        change_type = "updated"
-                    else:
-                        change_type = "new"
-                    
-                    # Save the content
-                    with open(local_path, "w", encoding="utf-8") as f:
-                        f.write(content)
-                    
-                    # Record in database
-                    record_download(db_path, url, local_path, etag=etag, last_modified=last_modified, change_type=change_type)
-                    logger.info(f"Downloaded {url} -> {local_path} ({change_type})")
-                    return (url, True, set())
-                elif response.status == 404:
-                    # Check if this might be an expected 404 for an external link
-                    if is_likely_external_link(url):
-                        logger.info(f"Skipping 404 for likely external URL: {url}")
-                        record_download(db_path, url, "N/A", status="skipped", change_type="external_404")
+    for attempt in range(max_retries):
+        try:
+            async with semaphore:
+                retry_msg = f" (attempt {attempt+1}/{max_retries})" if attempt > 0 else ""
+                logger.info(f"Downloading {url}{retry_msg}")
+                async with session.get(url, timeout=30) as response:
+                    if response.status == 200:
+                        content = await response.text()
+                        
+                        # Get ETag and Last-Modified
+                        etag = response.headers.get('ETag')
+                        last_modified = response.headers.get('Last-Modified')
+                        
+                        # Determine change type
+                        if local_path.exists():
+                            change_type = "updated"
+                        else:
+                            change_type = "new"
+                        
+                        # Save the content
+                        with open(local_path, "w", encoding="utf-8") as f:
+                            f.write(content)
+                        
+                        # Record in database
+                        record_download(db_path, url, local_path, etag=etag, last_modified=last_modified, change_type=change_type)
+                        logger.info(f"Downloaded {url} -> {local_path} ({change_type})")
                         return (url, True, set())
+                    elif response.status == 404:
+                        # Check if this might be an expected 404 for an external link
+                        if is_likely_external_link(url):
+                            logger.info(f"Skipping 404 for likely external URL: {url}")
+                            record_download(db_path, url, "N/A", status="skipped", change_type="external_404")
+                            return (url, True, set())
+                        elif attempt == max_retries - 1:
+                            # It's a real 404 for a document that should exist, and we've tried max times
+                            logger.warning(f"Failed to download {url}: HTTP 404")
+                            record_download(db_path, url, local_path, status="failed_404", change_type="error")
+                            return (url, False, {url})
                     else:
-                        # It's a real 404 for a document that should exist
-                        logger.warning(f"Failed to download {url}: HTTP 404")
-                        record_download(db_path, url, local_path, status="failed_404", change_type="error")
-                        return (url, False, {url})
-                else:
-                    logger.warning(f"Failed to download {url}: HTTP {response.status}")
-                    record_download(db_path, url, local_path, status="failed", change_type="error")
-                    return (url, False, {url})
-    except Exception as e:
-        logger.error(f"Error downloading {url}: {e}")
-        record_download(db_path, url, local_path, status="error", change_type="error")
-        return (url, False, {url})
+                        if attempt == max_retries - 1:
+                            # Final attempt failed with a non-404 error
+                            logger.warning(f"Failed to download {url}: HTTP {response.status}")
+                            record_download(db_path, url, local_path, status="failed", change_type="error")
+                            return (url, False, {url})
+                
+                # If we got here and it's not the last attempt, continue to next try
+                if attempt < max_retries - 1:
+                    logger.warning(f"Retrying download for {url} after unsuccessful attempt")
+                    await asyncio.sleep(1)  # Small delay before retry
+                
+        except Exception as e:
+            if attempt < max_retries - 1:
+                logger.warning(f"Error downloading {url}: {e}. Retrying...")
+                await asyncio.sleep(1)  # Small delay before retry
+            else:
+                logger.error(f"Error downloading {url}: {e}. Max retries reached.")
+                record_download(db_path, url, local_path, status="error", change_type="error")
+                return (url, False, {url})
+    
+    # Fallback case - this should rarely happen but just in case
+    record_download(db_path, url, local_path, status="error", change_type="error")
+    return (url, False, {url})
 
 async def extract_links(session, url, base_url, visited_urls, semaphore):
     """
@@ -707,7 +725,7 @@ async def crawl(session, start_url, base_url, semaphore):
     
     return (visited_urls, html_single_urls)
 
-async def download_all(session, urls, output_dir, db_path, semaphore, force=False):
+async def download_all(session, urls, output_dir, db_path, semaphore, force=False, max_retries=3):
     """
     Download all discovered html-single pages
     
@@ -718,6 +736,7 @@ async def download_all(session, urls, output_dir, db_path, semaphore, force=Fals
         db_path (Path): Path to SQLite database
         semaphore (asyncio.Semaphore): Semaphore for limiting concurrent requests
         force (bool): Force download even if files haven't changed
+        max_retries (int): Maximum number of retry attempts for failed downloads
         
     Returns:
         tuple: (successes, failures, failed_downloads)
@@ -726,10 +745,10 @@ async def download_all(session, urls, output_dir, db_path, semaphore, force=Fals
         logger.warning("No html-single pages found to download.")
         return (0, 0, set())
     
-    logger.info(f"Starting download of {len(urls)} pages (force={force})...")
+    logger.info(f"Starting download of {len(urls)} pages (force={force}, max_retries={max_retries})...")
     
     # Create tasks for all downloads
-    tasks = [download_page(session, url, output_dir, db_path, semaphore, force) for url in urls]
+    tasks = [download_page(session, url, output_dir, db_path, semaphore, force, max_retries) for url in urls]
     results = await asyncio.gather(*tasks)
     
     # Count successes and failures, and collect failed downloads
@@ -931,7 +950,7 @@ def export_change_report(db_path, output_dir):
     
     return report
 
-async def run_downloader(base_url, output_dir, concurrency=5, force=False, skip_toc=False):
+async def run_downloader(base_url, output_dir, concurrency=5, force=False, skip_toc=False, max_retries=3):
     """
     Run the complete download process
     
@@ -941,6 +960,7 @@ async def run_downloader(base_url, output_dir, concurrency=5, force=False, skip_
         concurrency (int): Number of concurrent downloads
         force (bool): Force download even if files haven't changed
         skip_toc (bool): Skip TOC verification
+        max_retries (int): Maximum number of retry attempts for failed downloads
         
     Returns:
         tuple: (verification_passed, toc_verification_passed, elapsed_time)
@@ -948,6 +968,7 @@ async def run_downloader(base_url, output_dir, concurrency=5, force=False, skip_
     logger.info(f"Starting OpenShift Documentation download for {base_url}")
     logger.info(f"Output directory: {output_dir}")
     logger.info(f"Force download: {force}")
+    logger.info(f"Max retries: {max_retries}")
     
     # Normalize base URL
     if base_url.endswith('/'):
@@ -970,26 +991,16 @@ async def run_downloader(base_url, output_dir, concurrency=5, force=False, skip_
         # Step 1: Crawl to discover all html-single pages
         visited_urls, html_single_urls = await crawl(session, base_url, base_url, semaphore)
         
-        # Step 2: Download discovered pages
+        # Step 2: Download discovered pages with built-in retry
         successes, failures, failed_downloads = await download_all(
-            session, html_single_urls, output_dir_path, db_path, semaphore, force
+            session, html_single_urls, output_dir_path, db_path, semaphore, force, max_retries
         )
         
-        # Step 3: Retry failed downloads
-        if failed_downloads:
-            logger.info(f"Retrying {len(failed_downloads)} failed downloads...")
-            retry_successes, retry_failures, still_failed = await download_all(
-                session, failed_downloads, output_dir_path, db_path, semaphore, True
-            )
-            
-            logger.info(f"Retry completed: {retry_successes} successful, {retry_failures} still failed.")
-            
-            if retry_failures > 0:
-                logger.warning(f"Failed to download {retry_failures} pages after retry.")
-                # Update failed downloads list
-                with open(output_dir_path / "failed_downloads.json", "w") as f:
-                    json.dump(list(still_failed), f, indent=2)
-        
+        # Record any failed downloads
+        if failures > 0:
+            with open(output_dir_path / "failed_downloads.json", "w") as f:
+                json.dump(list(failed_downloads), f, indent=2)
+
         # Step 4: Verify downloads
         verification_passed = await verify_downloads(html_single_urls, db_path, output_dir_path)
         
@@ -1095,10 +1106,17 @@ async def main_async(args):
     # Run the downloader
     verification_passed, toc_verification_passed, elapsed_time = await run_downloader(
         base_url, 
-        output_dir, 
+        output_dir,
+        max_retries=args.max_retries,
         concurrency=args.concurrency, 
         force=args.force, 
         skip_toc=args.skip_toc_verification
+    )
+    parser.add_argument(
+        "--max-retries",
+        type=check_positive_int,
+        default=3,
+        help="Maximum number of retry attempts for failed downloads (default: 3)"
     )
     
     return verification_passed and toc_verification_passed
