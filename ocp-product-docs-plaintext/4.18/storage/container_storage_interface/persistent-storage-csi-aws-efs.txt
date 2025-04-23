@@ -215,7 +215,7 @@ A cluster admin can create several StorageClass objects, each using a different 
 
 # AWS EFS CSI cross account support
 
-Cross account support allows you to have an Red Hat OpenShift Container Platform cluster in one AWS account and mount your file system in another AWS account using the AWS Elastic File System (EFS) Container Storage Interface (CSI) driver.
+Cross account support allows you to have an Red Hat OpenShift Container Platform cluster in one AWS account and mount your file system in another AWS account by using the AWS Elastic File System (EFS) Container Storage Interface (CSI) driver.
 
 
 [NOTE]
@@ -248,7 +248,7 @@ To use AWS EFS across accounts:
 3. Configure networking access to the AWS EFS volume on AWS account B:
 1. Go to https://console.aws.amazon.com/ec2/v2/home#SecurityGroups.
 2. Find the Security Group used by the AWS EFS volume by filtering for the group ID copied earlier.
-3. On the Inbound rules tab, click  Edit inbound rules, and then add a new rule to allow Red Hat OpenShift Container Platform nodes to access the AWS EFS volumes (that is, use NFS ports from the cluster):
+3. On the Inbound rules tab, click Edit inbound rules, and then add a new rule to allow Red Hat OpenShift Container Platform nodes to access the AWS EFS volumes (that is, use NFS ports from the cluster):
 * Type: NFS
 * Protocol: TCP
 * Port range: 2049
@@ -276,176 +276,6 @@ Ensure the two VPCs are using different network CIDRs, and after creating the VP
 3. Click the Routes tab.
 4. Under Destination, enter the CIDR for the VPC in account B, which for this example is 172.20.0.0/16.
 5. Under Target, use the peer connection type point from the created peer connection.
-5. Create an IAM role, for example, “my-efs-acrossaccount-role” in AWS account B, which has a trust relationship with AWS account A, and add an inline AWS EFS policy with permissions to call “my-efs-acrossaccount-driver-policy”.
-
-This role is used by the CSI driver&#8217;s controller service running on the Red Hat OpenShift Container Platform cluster in AWS account A to determine the mount targets for your file system in AWS account B.
-
-```json
-# Trust relationships trusted entity trusted account A configuration on my-efs-acrossaccount-role in account B
-
-{
-    "Version": "2012-10-17",
-    "Statement": [
-        {
-            "Effect": "Allow",
-            "Principal": {
-                "AWS": "arn:aws:iam::301721915996:root"
-            },
-            "Action": "sts:AssumeRole",
-            "Condition": {}
-        }
-    ]
-}
-
-# my-cross-account-assume-policy policy attached to my-efs-acrossaccount-role in account B
-
-{
-    "Version": "2012-10-17",
-    "Statement": {
-        "Effect": "Allow",
-        "Action": "sts:AssumeRole",
-        "Resource": "arn:aws:iam::589722580343:role/my-efs-acrossaccount-role"
-    }
-}
-
-# my-efs-acrossaccount-driver-policy attached to my-efs-acrossaccount-role in account B
-
-{
-    "Version": "2012-10-17",
-    "Statement": [
-        {
-            "Sid": "VisualEditor0",
-            "Effect": "Allow",
-            "Action": [
-                "ec2:DescribeNetworkInterfaces",
-                "ec2:DescribeSubnets"
-            ],
-            "Resource": "*"
-        },
-        {
-            "Sid": "VisualEditor1",
-            "Effect": "Allow",
-            "Action": [
-                "elasticfilesystem:DescribeMountTargets",
-                "elasticfilesystem:DeleteAccessPoint",
-                "elasticfilesystem:ClientMount",
-                "elasticfilesystem:DescribeAccessPoints",
-                "elasticfilesystem:ClientWrite",
-                "elasticfilesystem:ClientRootAccess",
-                "elasticfilesystem:DescribeFileSystems",
-                "elasticfilesystem:CreateAccessPoint"
-            ],
-            "Resource": [
-                "arn:aws:elasticfilesystem:*:589722580343:access-point/*",
-                "arn:aws:elasticfilesystem:*:589722580343:file-system/*"
-            ]
-        }
-    ]
-}
-```
-
-6. In AWS account A, attach an inline policy to the IAM role of the AWS EFS CSI driver's controller service account with the necessary permissions to perform Security Token Service (STS) assume role on the IAM role created earlier.
-
-```json
-# my-cross-account-assume-policy policy attached to Openshift cluster efs csi driver user in account A
-
-{
-    "Version": "2012-10-17",
-    "Statement": {
-        "Effect": "Allow",
-        "Action": "sts:AssumeRole",
-        "Resource": "arn:aws:iam::589722580343:role/my-efs-acrossaccount-role"
-    }
-}
-```
-
-7. In AWS account A, attach the AWS-managed policy “AmazonElasticFileSystemClientFullAccess” to Red Hat OpenShift Container Platform cluster master role. The role name is in the form <clusterID>-master-role (for example, my-0120ef-czjrl-master-role).
-8. Create a Kubernetes secret with awsRoleArn as the key and the role created earlier as the value:
-
-```cli
-$ oc -n openshift-cluster-csi-drivers create secret generic my-efs-cross-account --from-literal=awsRoleArn='arn:aws:iam::589722580343:role/my-efs-acrossaccount-role'
-```
-
-
-Since the driver controller needs to get the cross account role information from the secret, you need to add the secret role binding to the AWS EFS CSI driver controller ServiceAccount (SA):
-
-```cli
-$ oc -n openshift-cluster-csi-drivers create role access-secrets --verb=get,list,watch --resource=secrets
-
-$ oc -n openshift-cluster-csi-drivers create rolebinding --role=access-secrets default-to-secrets --serviceaccount=openshift-cluster-csi-drivers:aws-efs-csi-driver-controller-sa
-```
-
-9. Create a filesystem policy for the file system (AWS EFS volume) in account B, which allows AWS account A to perform a mount on it.
-
-```
-This step is not mandatory, but can be safer for AWS EFS volume usage.
-```
-
-
-```json
-# EFS volume filesystem policy in account B
-{
-    "Version": "2012-10-17",
-    "Id": "efs-policy-wizard-8089bf4a-9787-40f0-958e-bc2363012ace",
-    "Statement": [
-        {
-            "Sid": "efs-statement-bd285549-cfa2-4f8b-861e-c372399fd238",
-            "Effect": "Allow",
-            "Principal": {
-                "AWS": "*"
-            },
-            "Action": [
-                "elasticfilesystem:ClientRootAccess",
-                "elasticfilesystem:ClientWrite",
-                "elasticfilesystem:ClientMount"
-            ],
-            "Resource": "arn:aws:elasticfilesystem:us-east-2:589722580343:file-system/fs-091066a9bf9becbd5",
-            "Condition": {
-                "Bool": {
-                    "elasticfilesystem:AccessedViaMountTarget": "true"
-                }
-            }
-        },
-        {
-            "Sid": "efs-statement-03646e39-d80f-4daf-b396-281be1e43bab",
-            "Effect": "Allow",
-            "Principal": {
-                "AWS": "arn:aws:iam::589722580343:role/my-efs-acrossaccount-role"
-            },
-            "Action": [
-                "elasticfilesystem:ClientRootAccess",
-                "elasticfilesystem:ClientWrite",
-                "elasticfilesystem:ClientMount"
-            ],
-            "Resource": "arn:aws:elasticfilesystem:us-east-2:589722580343:file-system/fs-091066a9bf9becbd5"
-        }
-    ]
-}
-```
-
-10. Create an AWS EFS volume storage class using a similar configuration to the following:
-
-```yaml
-# The cross account efs volume storageClass
-kind: StorageClass
-apiVersion: storage.k8s.io/v1
-metadata:
-  name: efs-cross-account-mount-sc
-provisioner: efs.csi.aws.com
-mountOptions:
-  - tls
-parameters:
-  provisioningMode: efs-ap
-  fileSystemId: fs-00f6c3ae6f06388bb
-  directoryPerms: "700"
-  gidRangeStart: "1000"
-  gidRangeEnd: "2000"
-  basePath: "/account-a-data"
-  csi.storage.k8s.io/provisioner-secret-name: my-efs-cross-account
-  csi.storage.k8s.io/provisioner-secret-namespace: openshift-cluster-csi-drivers
-volumeBindingMode: Immediate
-```
-
 
 # Creating and configuring access to EFS volumes in AWS
 
