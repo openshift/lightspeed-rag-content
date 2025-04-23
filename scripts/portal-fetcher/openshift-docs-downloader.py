@@ -739,7 +739,7 @@ async def download_all(session, urls, output_dir, db_path, semaphore, force=Fals
     
     # Count successes and failures, and collect failed downloads
     successes = sum(1 for _, success, _ in results if success)
-    failures = sum(1 for _, success, _ in results if not success)
+    failures = len(results) - successes
     failed_downloads = set()
     for _, success, fails in results:
         if not success:
