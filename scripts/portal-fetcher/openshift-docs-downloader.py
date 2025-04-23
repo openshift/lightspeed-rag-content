@@ -1032,7 +1032,7 @@ async def run_downloader(base_url, output_dir, concurrency=5, force=False, proxy
             except Exception as e:
                 logger.warning(f"TOC verification failed with error: {e}")
                 logger.warning("Continuing without TOC verification")
-                toc_verification_passed = True
+                toc_verification_passed = False
         
         # Step 6: Export URL mapping and reports
         export_url_mapping(db_path, output_dir_path)
