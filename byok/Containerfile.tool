@@ -1,5 +1,10 @@
-FROM registry.access.redhat.com/ubi9/ubi:latest
+ARG BYOK_TOOL_IMAGE=quay.io/$USERNAME/tool:latest
+ARG UBI_BASE_IMAGE=registry.access.redhat.com/ubi9/ubi:latest
+FROM ${UBI_BASE_IMAGE}
+ARG LOG_LEVEL=info
 ARG OUT_IMAGE_TAG=byok-image
+ARG BYOK_TOOL_IMAGE
+ARG UBI_BASE_IMAGE
 RUN dnf install -y buildah python3.11 python3.11-pip
 
 USER 0
@@ -14,4 +19,10 @@ COPY byok/generate_embeddings_tool.py byok/Containerfile.output .
 ENV _BUILDAH_STARTED_IN_USERNS=""
 ENV BUILDAH_ISOLATION=chroot
 ENV OUT_IMAGE_TAG=$OUT_IMAGE_TAG
-CMD buildah build -t $OUT_IMAGE_TAG -f Containerfile.output -v /markdown:/markdown:Z . && rm -f /output/$OUT_IMAGE_TAG.tar && buildah push $OUT_IMAGE_TAG docker-archive:/output/$OUT_IMAGE_TAG.tar
+ENV BYOK_TOOL_IMAGE=$BYOK_TOOL_IMAGE
+ENV UBI_BASE_IMAGE=$UBI_BASE_IMAGE
+ENV LOG_LEVEL=$LOG_LEVEL
+CMD buildah --log-level $LOG_LEVEL build --build-arg BYOK_TOOL_IMAGE=$BYOK_TOOL_IMAGE \
+    --build-arg UBI_BASE_IMAGE=$UBI_BASE_IMAGE -t $OUT_IMAGE_TAG -f Containerfile.output \
+    -v /markdown:/markdown:Z . && rm -f /output/$OUT_IMAGE_TAG.tar && \
+    buildah push $OUT_IMAGE_TAG docker-archive:/output/$OUT_IMAGE_TAG.tar

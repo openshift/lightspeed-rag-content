@@ -1,35 +1,33 @@
 # BYOK tooling HOWTO
 
-These are quick notes on how to build and run OpenShift Lightspeed BYOK tooling. The rest of the text assumes you created the
-`quay.io/$USERNAME/tool` container repository and corrected the first line in byok/Containerfile.output accordingly:
-
-```Containerfile
-FROM quay.io/$USERNAME/tool:latest as tool
-```
+These are quick notes on how to build and run OpenShift Lightspeed BYOK tooling. The rest of the text assumes you created
+`quay.io/$USERNAME/byok_tool` container image repository.
 
 ## Design
 
-The tool image, quay.io/$USERNAME/tool:latest, which wraps buildah, byok/Containerfile.output and the RAG embeddings
-generation script with its Python dependencies. The purpose of the tool image is to encapsulate in a container everything
-needed to build a BYOK container image. There are two mandatory parameters: the input directory with the user-provided
+The purpose of the tool image is to encapsulate in a container everything needed to build a BYOK container image.
+The tool image wraps buildah, byok/Containerfile.output and the RAG embeddings
+generation script with its Python dependencies. There are two mandatory parameters: the input directory with the user-provided
 content and an output directory for the resulting container image. byok/Containerfile.output is the Containerfile
 for resulting image containing the RAG database.
 
 ## These steps will be done during the OLS build:
 
-Only used for your experimentation and once released will be replaced with a real image tag under registry.redhat.io/openshift-lightspeed-tech-preview.
+Use for your experimentation. Once released, MY_BYOK_TOOL_IMAGE will be an image tag under registry.redhat.io/openshift-lightspeed-tech-preview.
 
 ### Build and push the BYOK tool image.
 
 ```bash
-$ podman build -t quay.io/$USERNAME/tool:latest -f byok/Containerfile.tool .
-$ podman push quay.io/$USERNAME/tool:latest
+$ MY_BYOK_TOOL_IMAGE=quay.io/$USERNAME/byok_tool:0.0.1
+$ podman build --build-arg BYOK_TOOL_IMAGE=$MY_BYOK_TOOL_IMAGE -t $MY_BYOK_TOOL_IMAGE -f byok/Containerfile.tool .
+$ podman push $MY_BYOK_TOOL_IMAGE
 ```
 
 ## This is how the user runs the BYOK tool:
 
 ```bash
-$ podman run -e OUT_IMAGE_TAG=my-byok-image -it --rm --device=/dev/fuse -v <dir_tree_with_markdown_files>:/markdown:Z -v <dir_for_image_tar>:/output:Z quay.io/$USERNAME/tool:latest
+$ MY_BYOK_TOOL_IMAGE=quay.io/$USERNAME/byok_tool:0.0.1
+$ podman run -e OUT_IMAGE_TAG=my-byok-image -it --rm --device=/dev/fuse -v <dir_tree_with_markdown_files>:/markdown:Z -v <dir_for_image_tar>:/output:Z $MY_BYOK_TOOL_IMAGE
 ```
 
 The tool runs on CPUs, not GPUs.
