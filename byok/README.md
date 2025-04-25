@@ -1,41 +1,25 @@
 # BYOK tooling HOWTO
 
-These are quick notes on how to build and run OpenShift Lightspeed BYOK tooling. The rest of the text assumes you created the following container repositories:
-
-- quay.io/$USERNAME/output.builder
-- quay.io/$USERNAME/tool
-
-and corrected the first line in byok/Containerfie.output accordingly:
+These are quick notes on how to build and run OpenShift Lightspeed BYOK tooling. The rest of the text assumes you created the
+`quay.io/$USERNAME/tool` container repository and corrected the first line in byok/Containerfile.output accordingly:
 
 ```Containerfile
-FROM quay.io/$USERNAME/output.builder:latest as builder
+FROM quay.io/$USERNAME/tool:latest as tool
 ```
 
 ## Design
 
-There are two BYOK container images:
-
-- the tool image, quay.io/$USERNAME/tool:latest, which wraps buildah and byok/Containerfile.output. The purpose of the tool image is to encapsulate in a container
-everything needed to build a BYOK container image. There are two mandatory parameters: the input directory with the user-provided content and an output directory
-for the resulting container image. byok/Containerfile.output is the Containerfile for resulting image containing the RAG database.
-
-- the builder image, quay.io/$USERNAME/output.builder, which encasulates the Python-based environment for the generation of embeddings.
-
-The user only needs to be aware of the tool image.
-
+The tool image, quay.io/$USERNAME/tool:latest, which wraps buildah, byok/Containerfile.output and the RAG embeddings
+generation script with its Python dependencies. The purpose of the tool image is to encapsulate in a container everything
+needed to build a BYOK container image. There are two mandatory parameters: the input directory with the user-provided
+content and an output directory for the resulting container image. byok/Containerfile.output is the Containerfile
+for resulting image containing the RAG database.
 
 ## These steps will be done during the OLS build:
 
-Only used for your experimentation and once released will be replaced with real image tags under registry.redhat.io/openshift-lightspeed-tech-preview.
+Only used for your experimentation and once released will be replaced with a real image tag under registry.redhat.io/openshift-lightspeed-tech-preview.
 
-### Build and push the builder image. The working directory is the root of the ligthspeed-rag-content repository.
-
-```bash
-$ podman build -t quay.io/$USERNAME/output.builder:latest -f byok/Containerfile.output.builder .
-$ podman push quay.io/$USERNAME/output.builder:latest
-```
-
-### Build and push the BYOK tool image. It wraps the output.builder image. This image is visible to the user.
+### Build and push the BYOK tool image.
 
 ```bash
 $ podman build -t quay.io/$USERNAME/tool:latest -f byok/Containerfile.tool .
@@ -45,7 +29,7 @@ $ podman push quay.io/$USERNAME/tool:latest
 ## This is how the user runs the BYOK tool:
 
 ```bash
-$ podman run -e OUT_IMAGE_TAG=my-byok-image -it --rm --device=/dev/fuse -v <dir_tree_with_markdown_files>:/markdown:ro -v <dir_for_image_tar>:/output:Z quay.io/$USERNAME/tool:latest
+$ podman run -e OUT_IMAGE_TAG=my-byok-image -it --rm --device=/dev/fuse -v <dir_tree_with_markdown_files>:/markdown:Z -v <dir_for_image_tar>:/output:Z quay.io/$USERNAME/tool:latest
 ```
 
 The tool runs on CPUs, not GPUs.
