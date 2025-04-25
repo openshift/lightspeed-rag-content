@@ -1,0 +1,498 @@
+# Deploying hosted control planes on IBM Z
+
+
+You can deploy hosted control planes by configuring a cluster to function as a management cluster. The management cluster is the Red Hat OpenShift Container Platform cluster where the control planes are hosted. The management cluster is also known as the hosting cluster.
+
+[NOTE]
+----
+The management cluster is not the managed cluster. A managed cluster is a cluster that the hub cluster manages.
+----
+You can convert a managed cluster to a management cluster by using the hypershift add-on to deploy the HyperShift Operator on that cluster. Then, you can start to create the hosted cluster.
+The multicluster engine Operator supports only the default local-cluster, which is a hub cluster that is managed, and the hub cluster as the management cluster.
+To provision hosted control planes on bare metal, you can use the Agent platform. The Agent platform uses the central infrastructure management service to add worker nodes to a hosted cluster. For more information, see "Enabling the central infrastructure management service".
+Each IBM Z system host must be started with the PXE images provided by the central infrastructure management. After each host starts, it runs an Agent process to discover the details of the host and completes the installation. An Agent custom resource represents each host.
+When you create a hosted cluster with the Agent platform, HyperShift Operator installs the Agent Cluster API provider in the hosted control plane namespace.
+
+# Prerequisites to configure hosted control planes on IBM Z
+
+* The multicluster engine for Kubernetes Operator version 2.5 or later must be installed on an Red Hat OpenShift Container Platform cluster. You can install multicluster engine Operator as an Operator from the Red Hat OpenShift Container Platform OperatorHub.
+* The multicluster engine Operator must have at least one managed Red Hat OpenShift Container Platform cluster. The local-cluster is automatically imported in multicluster engine Operator 2.5 and later. For more information about the local-cluster, see Advanced configuration in the Red Hat Advanced Cluster Management documentation. You can check the status of your hub cluster by running the following command:
+
+```terminal
+$ oc get managedclusters local-cluster
+```
+
+* You need a hosting cluster with at least three worker nodes to run the HyperShift Operator.
+* You need to enable the central infrastructure management service. For more information, see Enabling the central infrastructure management service.
+* You need to install the hosted control plane command-line interface. For more information, see Installing the hosted control plane command-line interface.
+
+* Advanced configuration
+* Enabling the central infrastructure management service
+* Installing the hosted control planes command-line interface
+* Enabling or disabling the hosted control planes feature
+
+# IBM Z infrastructure requirements
+
+The Agent platform does not create any infrastructure, but requires the following resources for infrastructure:
+
+* Agents: An Agent represents a host that is booted with a discovery image, or PXE image and is ready to be provisioned as an Red Hat OpenShift Container Platform node.
+* DNS: The API and Ingress endpoints must be routable.
+
+The hosted control planes feature is enabled by default. If you disabled the feature and want to manually enable it, or if you need to disable the feature, see Enabling or disabling the hosted control planes feature.
+
+* Enabling or disabling the hosted control planes feature
+
+# DNS configuration for hosted control planes on IBM Z
+
+The API server for the hosted cluster is exposed as a NodePort service. A DNS entry must exist for the api.<hosted_cluster_name>.<base_domain> that points to the destination where the API server is reachable.
+
+The DNS entry can be as simple as a record that points to one of the nodes in the managed cluster that is running the hosted control plane.
+
+The entry can also point to a load balancer deployed to redirect incoming traffic to the Ingress pods.
+
+See the following example of a DNS configuration:
+
+
+```terminal
+$ cat /var/named/<example.krnl.es.zone>
+```
+
+
+
+```terminal
+$ TTL 900
+@ IN  SOA bastion.example.krnl.es.com. hostmaster.example.krnl.es.com. (
+      2019062002
+      1D 1H 1W 3H )
+  IN NS bastion.example.krnl.es.com.
+;
+;
+api                   IN A 1xx.2x.2xx.1xx 1
+api-int               IN A 1xx.2x.2xx.1xx
+;
+;
+*.apps        IN A 1xx.2x.2xx.1xx
+;
+;EOF
+```
+
+
+The record refers to the IP address of the API load balancer that handles ingress and egress traffic for hosted control planes.
+
+For IBM z/VM, add IP addresses that correspond to the IP address of the agent.
+
+
+```terminal
+compute-0              IN A 1xx.2x.2xx.1yy
+compute-1              IN A 1xx.2x.2xx.1yy
+```
+
+
+# Creating a hosted cluster on bare metal
+
+When you create a hosted cluster with the Agent platform, HyperShift installs the Agent Cluster API provider in the hosted control plane namespace. You can create a hosted cluster on bare metal or import one.
+
+As you create a hosted cluster, keep the following guidelines in mind:
+
+* Each hosted cluster must have a cluster-wide unique name. A hosted cluster name cannot be the same as any existing managed cluster in order for multicluster engine Operator to manage it.
+* Do not use clusters as a hosted cluster name.
+* A hosted cluster cannot be created in the namespace of a multicluster engine Operator managed cluster.
+* The most common service publishing strategy is to expose services through a load balancer. That strategy is the preferred method for exposing the Kubernetes API server. If you create a hosted cluster by using the web console or by using Red Hat Advanced Cluster Management, to set a publishing strategy for a service besides the Kubernetes API server, you must manually specify the servicePublishingStrategy information in the HostedCluster custom resource.
+
+1. Create the hosted control plane namespace by entering the following command:
+
+```terminal
+$ oc create ns <hosted_cluster_namespace>-<hosted_cluster_name>
+```
+
+
+Replace <hosted_cluster_namespace> with your hosted cluster namespace name, for example, clusters. Replace <hosted_cluster_name> with your hosted cluster name.
+2. Verify that you have a default storage class configured for your cluster. Otherwise, you might see pending PVCs. Run the following command:
+
+```terminal
+$ hcp create cluster agent \
+    --name=<hosted_cluster_name> \1
+    --pull-secret=<path_to_pull_secret> \2
+    --agent-namespace=<hosted_control_plane_namespace> \3
+    --base-domain=<basedomain> \4
+    --api-server-address=api.<hosted_cluster_name>.<basedomain> \5
+    --etcd-storage-class=<etcd_storage_class> \6
+    --ssh-key  <path_to_ssh_public_key> \7
+    --namespace <hosted_cluster_namespace> \8
+    --control-plane-availability-policy HighlyAvailable \9
+    --release-image=quay.io/openshift-release-dev/ocp-release:<ocp_release_image> \10
+    --node-pool-replicas <node_pool_replica_count> 11
+```
+
+Specify the name of your hosted cluster, for instance, example.
+Specify the path to your pull secret, for example, /user/name/pullsecret.
+Specify your hosted control plane namespace, for example, clusters-example. Ensure that agents are available in this namespace by using the oc get agent -n <hosted_control_plane_namespace> command.
+Specify your base domain, for example, krnl.es.
+The --api-server-address flag defines the IP address that is used for the Kubernetes API communication in the hosted cluster. If you do not set the --api-server-address flag, you must log in to connect to the management cluster.
+Specify the etcd storage class name, for example, lvm-storageclass.
+Specify the path to your SSH public key. The default file path is ~/.ssh/id_rsa.pub.
+Specify your hosted cluster namespace.
+Specify the availability policy for the hosted control plane components. Supported options are SingleReplica and HighlyAvailable. The default value is HighlyAvailable.
+Specify the supported Red Hat OpenShift Container Platform version that you want to use, for example, 4.18.0-multi. If you are using a disconnected environment, replace <ocp_release_image> with the digest image. To extract the Red Hat OpenShift Container Platform release image digest, see Extracting the Red Hat OpenShift Container Platform release image digest.
+Specify the node pool replica count, for example, 3. You must specify the replica count as 0 or greater to create the same number of replicas. Otherwise, no node pools are created.
+3. After a few moments, verify that your hosted control plane pods are up and running by entering the following command:
+
+```terminal
+$ oc -n <hosted_cluster_namespace>-<hosted_cluster_name> get pods
+```
+
+Example output
+
+```terminal
+NAME                                             READY   STATUS    RESTARTS   AGE
+capi-provider-7dcf5fc4c4-nr9sq                   1/1     Running   0          4m32s
+catalog-operator-6cd867cc7-phb2q                 2/2     Running   0          2m50s
+certified-operators-catalog-884c756c4-zdt64      1/1     Running   0          2m51s
+cluster-api-f75d86f8c-56wfz                      1/1     Running   0          4m32s
+```
+
+
+* Creating a hosted cluster on bare metal by using the console
+
+# Creating an InfraEnv resource for hosted control planes on IBM Z
+
+An InfraEnv is an environment where hosts that are booted with PXE images can join as agents. In this case, the agents are created in the same namespace as your hosted control plane.
+
+1. Create a YAML file to contain the configuration. See the following example:
+
+```yaml
+apiVersion: agent-install.openshift.io/v1beta1
+kind: InfraEnv
+metadata:
+  name: <hosted_cluster_name>
+  namespace: <hosted_control_plane_namespace>
+spec:
+  cpuArchitecture: s390x
+  pullSecretRef:
+    name: pull-secret
+  sshAuthorizedKey: <ssh_public_key>
+```
+
+2. Save the file as infraenv-config.yaml.
+3. Apply the configuration by entering the following command:
+
+```terminal
+$ oc apply -f infraenv-config.yaml
+```
+
+4. To fetch the URL to download the PXE images, such as, initrd.img, kernel.img, or rootfs.img, which allows IBM Z machines to join as agents, enter the following command:
+
+```terminal
+$ oc -n <hosted_control_plane_namespace> get InfraEnv <hosted_cluster_name> -o json
+```
+
+
+# Adding IBM Z agents to the InfraEnv resource
+
+To attach compute nodes to a hosted control plane, create agents that help you to scale the node pool. Adding agents in an IBM Z environment requires additional steps, which are described in detail in this section.
+
+Unless stated otherwise, these procedures apply to both z/VM and RHEL KVM installations on IBM Z and IBM LinuxONE.
+
+## Adding IBM Z KVM as agents
+
+For IBM Z with KVM, run the following command to start your IBM Z environment with the downloaded PXE images from the InfraEnv resource. After the Agents are created, the host communicates with the Assisted Service and registers in the same namespace as the InfraEnv resource on the management cluster.
+
+1. Run the following command:
+
+```terminal
+virt-install \
+   --name "<vm_name>" \ 1
+   --autostart \
+   --ram=16384 \
+   --cpu host \
+   --vcpus=4 \
+   --location "<path_to_kernel_initrd_image>,kernel=kernel.img,initrd=initrd.img" \ 2
+   --disk <qcow_image_path> \ 3
+   --network network:macvtap-net,mac=<mac_address> \ 4
+   --graphics none \
+   --noautoconsole \
+   --wait=-1
+   --extra-args "rd.neednet=1 nameserver=<nameserver>   coreos.live.rootfs_url=http://<http_server>/rootfs.img random.trust_cpu=on rd.luks.options=discard ignition.firstboot ignition.platform.id=metal console=tty1 console=ttyS1,115200n8 coreos.inst.persistent-kargs=console=tty1 console=ttyS1,115200n8" 5
+```
+
+Specify the name of the virtual machine.
+Specify the location of the kernel_initrd_image file.
+Specify the disk image path.
+Specify the Mac address.
+Specify the server name of the agents.
+2. For ISO boot, download ISO from the InfraEnv resource and boot the nodes by running the following command:
+
+```terminal
+virt-install \
+  --name "<vm_name>" \ 1
+  --autostart \
+  --memory=16384 \
+  --cpu host \
+  --vcpus=4 \
+  --network network:macvtap-net,mac=<mac_address> \ 2
+  --cdrom "<path_to_image.iso>" \ 3
+  --disk <qcow_image_path> \
+  --graphics none \
+  --noautoconsole \
+  --os-variant <os_version> \ 4
+  --wait=-1
+```
+
+Specify the name of the virtual machine.
+Specify the Mac address.
+Specify the location of the image.iso file.
+Specify the operating system version that you are using.
+
+## Adding IBM Z LPAR as agents
+
+You can add the Logical Partition (LPAR) on IBM Z or IBM LinuxONE as a compute node to a hosted control plane.
+
+1. Create a boot parameter file for the agents:
+Example parameter file
+
+```yaml
+rd.neednet=1 cio_ignore=all,!condev \
+console=ttysclp0 \
+ignition.firstboot ignition.platform.id=metal
+coreos.live.rootfs_url=http://<http_server>/rhcos-<version>-live-rootfs.<architecture>.img \1
+coreos.inst.persistent-kargs=console=ttysclp0
+ip=<ip>::<gateway>:<netmask>:<hostname>::none nameserver=<dns> \2
+rd.znet=qeth,<network_adaptor_range>,layer2=1
+rd.<disk_type>=<adapter> \3
+zfcp.allow_lun_scan=0
+ai.ip_cfg_override=1 \4
+random.trust_cpu=on rd.luks.options=discard
+```
+
+For the coreos.live.rootfs_url artifact, specify the matching rootfs artifact for the kernel and initramfs that you are starting. Only HTTP and HTTPS protocols are supported.
+For the ip parameter, manually assign the IP address, as described in Installing a cluster with z/VM on IBM Z and IBM LinuxONE.
+For installations on DASD-type disks, use rd.dasd to specify the DASD where Red Hat Enterprise Linux CoreOS (RHCOS) is to be installed. For installations on FCP-type disks, use rd.zfcp=<adapter>,<wwpn>,<lun> to specify the FCP disk where RHCOS is to be installed.
+Specify this parameter when you use an Open Systems Adapter (OSA) or HiperSockets.
+2. Download the .ins and initrd.img.addrsize files from the InfraEnv resource.
+
+By default, the URL for the .ins and initrd.img.addrsize files is not available in the InfraEnv resource. You must edit the URL to fetch those artifacts.
+1. Update the kernel URL endpoint to include ins-file by running the followign command:
+
+```terminal
+$ curl -k -L -o generic.ins "< url for ins-file >"
+```
+
+Example URL
+
+```yaml
+https://…/boot-artifacts/ins-file?arch=s390x&version=4.17.0
+```
+
+2. Update the initrd URL endpoint to include s390x-initrd-addrsize:
+Example URL
+
+```yaml
+https://…./s390x-initrd-addrsize?api_key=<api-key>&arch=s390x&version=4.17.0
+```
+
+3. Transfer the initrd, kernel, generic.ins, and initrd.img.addrsize parameter files to the file server. For more information about how to transfer the files with FTP and boot, see "Installing in an LPAR".
+4. Start the machine.
+5. Repeat the procedure for all other machines in the cluster.
+
+* Installing in an LPAR
+
+## Adding IBM z/VM as agents
+
+If you want to use a static IP for z/VM guest, you must configure the NMStateConfig attribute for the z/VM agent so that the IP parameter persists in the second start.
+
+Complete the following steps to start your IBM Z environment with the downloaded PXE images from the InfraEnv resource. After the Agents are created, the host communicates with the Assisted Service and registers in the same namespace as the InfraEnv resource on the management cluster.
+
+1. Update the parameter file to add the rootfs_url, network_adaptor and disk_type values.
+Example parameter file
+
+```yaml
+rd.neednet=1 cio_ignore=all,!condev \
+console=ttysclp0  \
+ignition.firstboot ignition.platform.id=metal \
+coreos.live.rootfs_url=http://<http_server>/rhcos-<version>-live-rootfs.<architecture>.img \1
+coreos.inst.persistent-kargs=console=ttysclp0
+ip=<ip>::<gateway>:<netmask>:<hostname>::none nameserver=<dns> \2
+rd.znet=qeth,<network_adaptor_range>,layer2=1
+rd.<disk_type>=<adapter> \3
+zfcp.allow_lun_scan=0
+ai.ip_cfg_override=1 \4
+```
+
+For the coreos.live.rootfs_url artifact, specify the matching rootfs artifact for the kernel and initramfs that you are starting. Only HTTP and HTTPS protocols are supported.
+For the ip parameter, manually assign the IP address, as described in Installing a cluster with z/VM on IBM Z and IBM LinuxONE.
+For installations on DASD-type disks, use rd.dasd to specify the DASD where Red Hat Enterprise Linux CoreOS (RHCOS) is to be installed. For installations on FCP-type disks, use rd.zfcp=<adapter>,<wwpn>,<lun> to specify the FCP disk where RHCOS is to be installed.
+Specify this parameter when you use an Open Systems Adapter (OSA) or HiperSockets.
+2. Move initrd, kernel images, and the parameter file to the guest VM by running the following commands:
+
+```terminal
+vmur pun -r -u -N kernel.img $INSTALLERKERNELLOCATION/<image name>
+```
+
+
+```terminal
+vmur pun -r -u -N generic.parm $PARMFILELOCATION/paramfilename
+```
+
+
+```terminal
+vmur pun -r -u -N initrd.img $INSTALLERINITRAMFSLOCATION/<image name>
+```
+
+3. Run the following command from the guest VM console:
+
+```terminal
+cp ipl c
+```
+
+4. To list the agents and their properties, enter the following command:
+
+```terminal
+$ oc -n <hosted_control_plane_namespace> get agents
+```
+
+Example output
+
+```terminal
+NAME    CLUSTER APPROVED    ROLE    STAGE
+50c23cda-cedc-9bbd-bcf1-9b3a5c75804d    auto-assign
+5e498cd3-542c-e54f-0c58-ed43e28b568a    auto-assign
+```
+
+5. Run the following command to approve the agent.
+
+```terminal
+$ oc -n <hosted_control_plane_namespace> patch agent \
+  50c23cda-cedc-9bbd-bcf1-9b3a5c75804d -p \
+  '{"spec":{"installation_disk_id":"/dev/sda","approved":true,"hostname":"worker-zvm-0.hostedn.example.com"}}' \1
+  --type merge
+```
+
+Optionally, you can set the agent ID <installation_disk_id> and <hostname> in the specification.
+6. Run the following command to verify that the agents are approved:
+
+```terminal
+$ oc -n <hosted_control_plane_namespace> get agents
+```
+
+Example output
+
+```terminal
+NAME                                            CLUSTER     APPROVED   ROLE          STAGE
+50c23cda-cedc-9bbd-bcf1-9b3a5c75804d             true       auto-assign
+5e498cd3-542c-e54f-0c58-ed43e28b568a             true       auto-assign
+```
+
+
+# Scaling the NodePool object for a hosted cluster on IBM Z
+
+The NodePool object is created when you create a hosted cluster. By scaling the NodePool object, you can add more compute nodes to the hosted control plane.
+
+When you scale up a node pool, a machine is created. The Cluster API provider finds an Agent that is approved, is passing validations, is not currently in use, and meets the requirements that are specified in the node pool specification. You can monitor the installation of an Agent by checking its status and conditions.
+
+1. Run the following command to scale the NodePool object to two nodes:
+
+```terminal
+$ oc -n <clusters_namespace> scale nodepool <nodepool_name> --replicas 2
+```
+
+
+The Cluster API agent provider randomly picks two agents that are then assigned to the hosted cluster. Those agents go through different states and finally join the hosted cluster as Red Hat OpenShift Container Platform nodes. The agents pass through the transition phases in the following order:
+* binding
+* discovering
+* insufficient
+* installing
+* installing-in-progress
+* added-to-existing-cluster
+2. Run the following command to see the status of a specific scaled agent:
+
+```terminal
+$ oc -n <hosted_control_plane_namespace> get agent -o \
+  jsonpath='{range .items[*]}BMH: {@.metadata.labels.agent-install\.openshift\.io/bmh} \
+  Agent: {@.metadata.name} State: {@.status.debugInfo.state}{"\n"}{end}'
+```
+
+Example output
+
+```terminal
+BMH: Agent: 50c23cda-cedc-9bbd-bcf1-9b3a5c75804d State: known-unbound
+BMH: Agent: 5e498cd3-542c-e54f-0c58-ed43e28b568a State: insufficient
+```
+
+3. Run the following command to see the transition phases:
+
+```terminal
+$ oc -n <hosted_control_plane_namespace> get agent
+```
+
+Example output
+
+```terminal
+NAME                                   CLUSTER           APPROVED       ROLE        STAGE
+50c23cda-cedc-9bbd-bcf1-9b3a5c75804d   hosted-forwarder   true          auto-assign
+5e498cd3-542c-e54f-0c58-ed43e28b568a                      true          auto-assign
+da503cf1-a347-44f2-875c-4960ddb04091   hosted-forwarder   true          auto-assign
+```
+
+4. Run the following command to generate the kubeconfig file to access the hosted cluster:
+
+```terminal
+$ hcp create kubeconfig \
+  --namespace <clusters_namespace> \
+  --name <hosted_cluster_namespace> > <hosted_cluster_name>.kubeconfig
+```
+
+5. After the agents reach the added-to-existing-cluster state, verify that you can see the Red Hat OpenShift Container Platform nodes by entering the following command:
+
+```terminal
+$ oc --kubeconfig <hosted_cluster_name>.kubeconfig get nodes
+```
+
+Example output
+
+```terminal
+NAME                             STATUS   ROLES    AGE      VERSION
+worker-zvm-0.hostedn.example.com Ready    worker   5m41s    v1.24.0+3882f8f
+worker-zvm-1.hostedn.example.com Ready    worker   6m3s     v1.24.0+3882f8f
+```
+
+
+Cluster Operators start to reconcile by adding workloads to the nodes.
+6. Enter the following command to verify that two machines were created when you scaled up the NodePool object:
+
+```terminal
+$ oc -n <hosted_control_plane_namespace> get machine.cluster.x-k8s.io
+```
+
+Example output
+
+```terminal
+NAME                                CLUSTER  NODENAME PROVIDERID     PHASE     AGE   VERSION
+hosted-forwarder-79558597ff-5tbqp   hosted-forwarder-crqq5   worker-zvm-0.hostedn.example.com   agent://50c23cda-cedc-9bbd-bcf1-9b3a5c75804d   Running   41h   4.15.0
+hosted-forwarder-79558597ff-lfjfk   hosted-forwarder-crqq5   worker-zvm-1.hostedn.example.com   agent://5e498cd3-542c-e54f-0c58-ed43e28b568a   Running   41h   4.15.0
+```
+
+7. Run the following command to check the cluster version:
+
+```terminal
+$ oc --kubeconfig <hosted_cluster_name>.kubeconfig get clusterversion,co
+```
+
+Example output
+
+```terminal
+NAME                                         VERSION       AVAILABLE   PROGRESSING   SINCE   STATUS
+clusterversion.config.openshift.io/version   4.15.0-ec.2   True        False         40h     Cluster version is 4.15.0-ec.2
+```
+
+8. Run the following command to check the cluster operator status:
+
+```terminal
+$ oc --kubeconfig <hosted_cluster_name>.kubeconfig get clusteroperators
+```
+
+
+For each component of your cluster, the output shows the following cluster operator statuses: NAME, VERSION, AVAILABLE, PROGRESSING, DEGRADED, SINCE, and MESSAGE.
+
+For an output example, see Initial Operator configuration.
+
+* Initial Operator configuration

@@ -1,0 +1,336 @@
+# Deploying hosted control planes on bare metal
+
+
+You can deploy hosted control planes by configuring a cluster to function as a management cluster. The management cluster is the Red Hat OpenShift Container Platform cluster where the control planes are hosted. In some contexts, the management cluster is also known as the hosting cluster.
+
+[NOTE]
+----
+The management cluster is not the same thing as the managed cluster. A managed cluster is a cluster that the hub cluster manages.
+----
+The hosted control planes feature is enabled by default.
+The multicluster engine Operator supports only the default local-cluster, which is a hub cluster that is managed, and the hub cluster as the management cluster. If you have Red Hat Advanced Cluster Management installed, you can use the managed hub cluster, also known as the local-cluster, as the management cluster.
+A hosted cluster is an Red Hat OpenShift Container Platform cluster with its API endpoint and control plane that are hosted on the management cluster. The hosted cluster includes the control plane and its corresponding data plane. You can use the multicluster engine Operator console or the hosted control plane command-line interface, hcp, to create a hosted cluster.
+The hosted cluster is automatically imported as a managed cluster. If you want to disable this automatic import feature, see Disabling the automatic import of hosted clusters into multicluster engine Operator.
+
+# Preparing to deploy hosted control planes on bare metal
+
+As you prepare to deploy hosted control planes on bare metal, consider the following information:
+
+* Run the management cluster and workers on the same platform for hosted control planes.
+* All bare metal hosts require a manual start with a Discovery Image ISO that the central infrastructure management provides. You can start the hosts manually or through automation by using Cluster-Baremetal-Operator. After each host starts, it runs an Agent process to discover the host details and complete the installation. An Agent custom resource represents each host.
+* When you configure storage for hosted control planes, consider the recommended etcd practices. To ensure that you meet the latency requirements, dedicate a fast storage device to all hosted control plane etcd instances that run on each control-plane node. You can use LVM storage to configure a local storage class for hosted etcd pods. For more information, see "Recommended etcd practices" and "Persistent storage using logical volume manager storage".
+
+## Prerequisites to configure a management cluster
+
+* You need the multicluster engine for Kubernetes Operator 2.2 and later installed on an Red Hat OpenShift Container Platform cluster. You can install multicluster engine Operator as an Operator from the Red Hat OpenShift Container Platform OperatorHub.
+* The multicluster engine Operator must have at least one managed Red Hat OpenShift Container Platform cluster. The local-cluster is automatically imported in multicluster engine Operator 2.2 and later. For more information about the local-cluster, see Advanced configuration in the Red Hat Advanced Cluster Management documentation. You can check the status of your hub cluster by running the following command:
+
+```terminal
+$ oc get managedclusters local-cluster
+```
+
+* You must add the topology.kubernetes.io/zone label to your bare-metal hosts on your management cluster. Ensure that each host has a unique value for topology.kubernetes.io/zone. Otherwise, all of the hosted control plane pods are scheduled on a single node, causing a single point of failure.
+* To provision hosted control planes on bare metal, you can use the Agent platform. The Agent platform uses the central infrastructure management service to add worker nodes to a hosted cluster. For more information, see Enabling the central infrastructure management service.
+* You need to install the hosted control plane command-line interface.
+
+* Advanced configuration
+* Enabling the central infrastructure management service
+
+## Bare metal firewall, port, and service requirements
+
+You must meet the firewall, port, and service requirements so that ports can communicate between the management cluster, the control plane, and hosted clusters.
+
+
+[NOTE]
+----
+Services run on their default ports. However, if you use the NodePort publishing strategy, services run on the port that is assigned by the NodePort service.
+----
+
+Use firewall rules, security groups, or other access controls to restrict access to only required sources. Avoid exposing ports publicly unless necessary. For production deployments, use a load balancer to simplify access through a single IP address.
+
+If your hub cluster has a proxy configuration, ensure that it can reach the hosted cluster API endpoint by adding all hosted cluster API endpoints to the noProxy field on the Proxy object. For more information, see "Configuring the cluster-wide proxy".
+
+A hosted control plane exposes the following services on bare metal:
+
+* APIServer
+* The APIServer service runs on port 6443 by default and requires ingress access for communication between the control plane components.
+* If you use MetalLB load balancing, allow ingress access to the IP range that is used for load balancer IP addresses.
+* OAuthServer
+* The OAuthServer service runs on port 443 by default when you use the route and ingress to expose the service.
+* If you use the NodePort publishing strategy, use a firewall rule for the OAuthServer service.
+* Konnectivity
+* The Konnectivity service runs on port 443 by default when you use the route and ingress to expose the service.
+* The Konnectivity agent establishes a reverse tunnel to allow the control plane to access the network for the hosted cluster. The agent uses egress to connect to the Konnectivity server. The server is exposed by using either a route on port 443 or a manually assigned NodePort.
+* If the cluster API server address is an internal IP address, allow access from the workload subnets to the IP address on port 6443.
+* If the address is an external IP address, allow egress on port 6443 to that external IP address from the nodes.
+* Ignition
+* The Ignition service runs on port 443 by default when you use the route and ingress to expose the service.
+* If you use the NodePort publishing strategy, use a firewall rule for the Ignition service.
+
+You do not need the following services on bare metal:
+
+* OVNSbDb
+* OIDC
+
+* Configuring the cluster-wide proxy
+
+## Bare metal infrastructure requirements
+
+The Agent platform does not create any infrastructure, but it does have the following requirements for infrastructure:
+
+* Agents: An Agent represents a host that is booted with a discovery image and is ready to be provisioned as an Red Hat OpenShift Container Platform node.
+* DNS: The API and ingress endpoints must be routable.
+
+* Recommended etcd practices
+* Persistent storage using LVM Storage
+* Disabling the automatic import of hosted clusters into multicluster engine Operator
+* Enabling or disabling the hosted control planes feature
+* Configuring Ansible Automation Platform jobs to run on hosted clusters
+
+# DNS configurations on bare metal
+
+The API Server for the hosted cluster is exposed as a NodePort service. A DNS entry must exist for api.<hosted_cluster_name>.<base_domain> that points to destination where the API Server can be reached.
+
+The DNS entry can be as simple as a record that points to one of the nodes in the managed cluster that is running the hosted control plane. The entry can also point to a load balancer that is deployed to redirect incoming traffic to the ingress pods.
+
+
+```terminal
+api.example.krnl.es.    IN A 192.168.122.20
+api.example.krnl.es.    IN A 192.168.122.21
+api.example.krnl.es.    IN A 192.168.122.22
+api-int.example.krnl.es.    IN A 192.168.122.20
+api-int.example.krnl.es.    IN A 192.168.122.21
+api-int.example.krnl.es.    IN A 192.168.122.22
+`*`.apps.example.krnl.es. IN A 192.168.122.23
+```
+
+
+If you are configuring DNS for a disconnected environment on an IPv6 network, the configuration looks like the following example.
+
+
+```terminal
+api.example.krnl.es.    IN A 2620:52:0:1306::5
+api.example.krnl.es.    IN A 2620:52:0:1306::6
+api.example.krnl.es.    IN A 2620:52:0:1306::7
+api-int.example.krnl.es.    IN A 2620:52:0:1306::5
+api-int.example.krnl.es.    IN A 2620:52:0:1306::6
+api-int.example.krnl.es.    IN A 2620:52:0:1306::7
+`*`.apps.example.krnl.es. IN A 2620:52:0:1306::10
+```
+
+
+If you are configuring DNS for a disconnected environment on a dual stack network, be sure to include DNS entries for both IPv4 and IPv6.
+
+
+```terminal
+host-record=api-int.hub-dual.dns.base.domain.name,192.168.126.10
+host-record=api.hub-dual.dns.base.domain.name,192.168.126.10
+address=/apps.hub-dual.dns.base.domain.name/192.168.126.11
+dhcp-host=aa:aa:aa:aa:10:01,ocp-master-0,192.168.126.20
+dhcp-host=aa:aa:aa:aa:10:02,ocp-master-1,192.168.126.21
+dhcp-host=aa:aa:aa:aa:10:03,ocp-master-2,192.168.126.22
+dhcp-host=aa:aa:aa:aa:10:06,ocp-installer,192.168.126.25
+dhcp-host=aa:aa:aa:aa:10:07,ocp-bootstrap,192.168.126.26
+
+host-record=api-int.hub-dual.dns.base.domain.name,2620:52:0:1306::2
+host-record=api.hub-dual.dns.base.domain.name,2620:52:0:1306::2
+address=/apps.hub-dual.dns.base.domain.name/2620:52:0:1306::3
+dhcp-host=aa:aa:aa:aa:10:01,ocp-master-0,[2620:52:0:1306::5]
+dhcp-host=aa:aa:aa:aa:10:02,ocp-master-1,[2620:52:0:1306::6]
+dhcp-host=aa:aa:aa:aa:10:03,ocp-master-2,[2620:52:0:1306::7]
+dhcp-host=aa:aa:aa:aa:10:06,ocp-installer,[2620:52:0:1306::8]
+dhcp-host=aa:aa:aa:aa:10:07,ocp-bootstrap,[2620:52:0:1306::9]
+```
+
+
+# Creating a hosted cluster on bare metal
+
+When you create a hosted cluster with the Agent platform, HyperShift installs the Agent Cluster API provider in the hosted control plane namespace. You can create a hosted cluster on bare metal or import one.
+
+As you create a hosted cluster, keep the following guidelines in mind:
+
+* Each hosted cluster must have a cluster-wide unique name. A hosted cluster name cannot be the same as any existing managed cluster in order for multicluster engine Operator to manage it.
+* Do not use clusters as a hosted cluster name.
+* A hosted cluster cannot be created in the namespace of a multicluster engine Operator managed cluster.
+* The most common service publishing strategy is to expose services through a load balancer. That strategy is the preferred method for exposing the Kubernetes API server. If you create a hosted cluster by using the web console or by using Red Hat Advanced Cluster Management, to set a publishing strategy for a service besides the Kubernetes API server, you must manually specify the servicePublishingStrategy information in the HostedCluster custom resource.
+
+1. Create the hosted control plane namespace by entering the following command:
+
+```terminal
+$ oc create ns <hosted_cluster_namespace>-<hosted_cluster_name>
+```
+
+
+Replace <hosted_cluster_namespace> with your hosted cluster namespace name, for example, clusters. Replace <hosted_cluster_name> with your hosted cluster name.
+2. Verify that you have a default storage class configured for your cluster. Otherwise, you might see pending PVCs. Run the following command:
+
+```terminal
+$ hcp create cluster agent \
+    --name=<hosted_cluster_name> \1
+    --pull-secret=<path_to_pull_secret> \2
+    --agent-namespace=<hosted_control_plane_namespace> \3
+    --base-domain=<basedomain> \4
+    --api-server-address=api.<hosted_cluster_name>.<basedomain> \5
+    --etcd-storage-class=<etcd_storage_class> \6
+    --ssh-key  <path_to_ssh_public_key> \7
+    --namespace <hosted_cluster_namespace> \8
+    --control-plane-availability-policy HighlyAvailable \9
+    --release-image=quay.io/openshift-release-dev/ocp-release:<ocp_release_image> \10
+    --node-pool-replicas <node_pool_replica_count> 11
+```
+
+Specify the name of your hosted cluster, for instance, example.
+Specify the path to your pull secret, for example, /user/name/pullsecret.
+Specify your hosted control plane namespace, for example, clusters-example. Ensure that agents are available in this namespace by using the oc get agent -n <hosted_control_plane_namespace> command.
+Specify your base domain, for example, krnl.es.
+The --api-server-address flag defines the IP address that is used for the Kubernetes API communication in the hosted cluster. If you do not set the --api-server-address flag, you must log in to connect to the management cluster.
+Specify the etcd storage class name, for example, lvm-storageclass.
+Specify the path to your SSH public key. The default file path is ~/.ssh/id_rsa.pub.
+Specify your hosted cluster namespace.
+Specify the availability policy for the hosted control plane components. Supported options are SingleReplica and HighlyAvailable. The default value is HighlyAvailable.
+Specify the supported Red Hat OpenShift Container Platform version that you want to use, for example, 4.18.0-multi. If you are using a disconnected environment, replace <ocp_release_image> with the digest image. To extract the Red Hat OpenShift Container Platform release image digest, see Extracting the Red Hat OpenShift Container Platform release image digest.
+Specify the node pool replica count, for example, 3. You must specify the replica count as 0 or greater to create the same number of replicas. Otherwise, no node pools are created.
+3. After a few moments, verify that your hosted control plane pods are up and running by entering the following command:
+
+```terminal
+$ oc -n <hosted_cluster_namespace>-<hosted_cluster_name> get pods
+```
+
+Example output
+
+```terminal
+NAME                                             READY   STATUS    RESTARTS   AGE
+capi-provider-7dcf5fc4c4-nr9sq                   1/1     Running   0          4m32s
+catalog-operator-6cd867cc7-phb2q                 2/2     Running   0          2m50s
+certified-operators-catalog-884c756c4-zdt64      1/1     Running   0          2m51s
+cluster-api-f75d86f8c-56wfz                      1/1     Running   0          4m32s
+```
+
+
+* Manually importing a hosted cluster
+
+## Creating a hosted cluster on bare metal by using the console
+
+To create a hosted cluster by using the console, complete the following steps.
+
+1. Open the Red Hat OpenShift Container Platform web console and log in by entering your administrator credentials. For instructions to open the console, see Accessing the web console.
+2. In the console header, ensure that All Clusters is selected.
+3. Click Infrastructure -> Clusters.
+4. Click Create cluster -> Host inventory -> Hosted control plane.
+
+The Create cluster page is displayed.
+5. On the Create cluster page, follow the prompts to enter details about the cluster, node pools, networking, and automation.
+
+[NOTE]
+----
+As you enter details about the cluster, you might find the following tips useful:
+* If you want to use predefined values to automatically populate fields in the console, you can create a host inventory credential. For more information, see Creating a credential for an on-premises environment.
+* On the Cluster details page, the pull secret is your Red Hat OpenShift Container Platform pull secret that you use to access Red Hat OpenShift Container Platform resources. If you selected a host inventory credential, the pull secret is automatically populated.
+* On the Node pools page, the namespace contains the hosts for the node pool. If you created a host inventory by using the console, the console creates a dedicated namespace.
+* On the Networking page, you select an API server publishing strategy. The API server for the hosted cluster can be exposed either by using an existing load balancer or as a service of the NodePort type. A DNS entry must exist for the api.<hosted_cluster_name>.<base_domain> setting that points to the destination where the API server can be reached. This entry can be a record that points to one of the nodes in the management cluster or a record that points to a load balancer that redirects incoming traffic to the Ingress pods.
+----
+6. Review your entries and click Create.
+
+The Hosted cluster view is displayed.
+7. Monitor the deployment of the hosted cluster in the Hosted cluster view.
+8. If you do not see information about the hosted cluster, ensure that All Clusters is selected, then click the cluster name.
+9. Wait until the control plane components are ready. This process can take a few minutes.
+10. To view the node pool status, scroll to the NodePool section. The process to install the nodes takes about 10 minutes. You can also click Nodes to confirm whether the nodes joined the hosted cluster.
+
+* To access the web console, see Accessing the web console.
+
+## Creating a hosted cluster on bare metal by using a mirror registry
+
+You can use a mirror registry to create a hosted cluster on bare metal by specifying the --image-content-sources flag in the hcp create cluster command.
+
+1. Create a YAML file to define Image Content Source Policies (ICSP). See the following example:
+
+```yaml
+- mirrors:
+  - brew.registry.redhat.io
+  source: registry.redhat.io
+- mirrors:
+  - brew.registry.redhat.io
+  source: registry.stage.redhat.io
+- mirrors:
+  - brew.registry.redhat.io
+  source: registry-proxy.engineering.redhat.com
+```
+
+2. Save the file as icsp.yaml. This file contains your mirror registries.
+3. To create a hosted cluster by using your mirror registries, run the following command:
+
+```terminal
+$ hcp create cluster agent \
+    --name=<hosted_cluster_name> \1
+    --pull-secret=<path_to_pull_secret> \2
+    --agent-namespace=<hosted_control_plane_namespace> \3
+    --base-domain=<basedomain> \4
+    --api-server-address=api.<hosted_cluster_name>.<basedomain> \5
+    --image-content-sources icsp.yaml  \6
+    --ssh-key  <path_to_ssh_key> \7
+    --namespace <hosted_cluster_namespace> \8
+    --release-image=quay.io/openshift-release-dev/ocp-release:<ocp_release_image> 9
+```
+
+Specify the name of your hosted cluster, for instance, example.
+Specify the path to your pull secret, for example, /user/name/pullsecret.
+Specify your hosted control plane namespace, for example, clusters-example. Ensure that agents are available in this namespace by using the oc get agent -n <hosted-control-plane-namespace> command.
+Specify your base domain, for example, krnl.es.
+The --api-server-address flag defines the IP address that is used for the Kubernetes API communication in the hosted cluster. If you do not set the --api-server-address flag, you must log in to connect to the management cluster.
+Specify the icsp.yaml file that defines ICSP and your mirror registries.
+Specify the path to your SSH public key. The default file path is ~/.ssh/id_rsa.pub.
+Specify your hosted cluster namespace.
+Specify the supported Red Hat OpenShift Container Platform version that you want to use, for example, 4.18.0-multi. If you are using a disconnected environment, replace <ocp_release_image> with the digest image. To extract the Red Hat OpenShift Container Platform release image digest, see Extracting the Red Hat OpenShift Container Platform release image digest.
+
+* To create credentials that you can reuse when you create a hosted cluster with the console, see Creating a credential for an on-premises environment.
+* To access a hosted cluster, see Accessing the hosted cluster.
+* To add hosts to the host inventory by using the Discovery Image, see Adding hosts to the host inventory by using the Discovery Image.
+* To extract the Red Hat OpenShift Container Platform release image digest, see Extracting the Red Hat OpenShift Container Platform release image digest.
+
+# Verifying hosted cluster creation
+
+After the deployment process is complete, you can verify that the hosted cluster was created successfully. Follow these steps a few minutes after you create the hosted cluster.
+
+1. Obtain the kubeconfig for your new hosted cluster by entering the extract command:
+
+```terminal
+$ oc extract -n <hosted-control-plane-namespace> secret/admin-kubeconfig \
+  --to=- > kubeconfig-<hosted-cluster-name>
+```
+
+2. Use the kubeconfig to view the cluster Operators of the hosted cluster. Enter the following command:
+
+```terminal
+$ oc get co --kubeconfig=kubeconfig-<hosted-cluster-name>
+```
+
+Example output
+
+```
+NAME                                       VERSION   AVAILABLE   PROGRESSING   DEGRADED   SINCE   MESSAGE
+console                                    4.10.26   True        False         False      2m38s
+dns                                        4.10.26   True        False         False      2m52s
+image-registry                             4.10.26   True        False         False      2m8s
+ingress                                    4.10.26   True        False         False      22m
+```
+
+3. You can also view the running pods on your hosted cluster by entering the following command:
+
+```terminal
+$ oc get pods -A --kubeconfig=kubeconfig-<hosted-cluster-name>
+```
+
+Example output
+
+```
+NAMESPACE                                          NAME                                                      READY   STATUS             RESTARTS        AGE
+kube-system                                        konnectivity-agent-khlqv                                  0/1     Running            0               3m52s
+openshift-cluster-node-tuning-operator             tuned-dhw5p                                               1/1     Running            0               109s
+openshift-cluster-storage-operator                 cluster-storage-operator-5f784969f5-vwzgz                 1/1     Running            1 (113s ago)    20m
+openshift-cluster-storage-operator                 csi-snapshot-controller-6b7687b7d9-7nrfw                  1/1     Running            0               3m8s
+openshift-console                                  console-5cbf6c7969-6gk6z                                  1/1     Running            0               119s
+openshift-console                                  downloads-7bcd756565-6wj5j                                1/1     Running            0               4m3s
+openshift-dns-operator                             dns-operator-77d755cd8c-xjfbn                             2/2     Running            0               21m
+openshift-dns                                      dns-default-kfqnh                                         2/2     Running            0               113s
+```

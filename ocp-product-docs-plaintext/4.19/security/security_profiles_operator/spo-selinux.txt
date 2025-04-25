@@ -1,0 +1,576 @@
+# Managing SELinux profiles
+
+
+Create and manage SELinux profiles and bind them to workloads.
+
+[IMPORTANT]
+----
+The Security Profiles Operator supports only Red Hat Enterprise Linux CoreOS (RHCOS) worker nodes. Red Hat Enterprise Linux (RHEL) nodes are not supported.
+----
+
+# Creating SELinux profiles
+
+Use the {kind} object to create profiles.
+
+The {kind} object has several features that allow for better security hardening and readability:
+
+* Restricts the profiles to inherit from to the current namespace or a system-wide profile. Because there are typically many profiles installed on the system, but only a subset should be used by cluster workloads, the inheritable system profiles are listed in the spod instance in spec.selinuxOptions.allowedSystemProfiles.
+* Performs basic validation of the permissions, classes and labels.
+* Adds a new keyword @self that describes the process using the policy. This allows reusing a policy between workloads and namespaces easily, as the usage of the policy is based on the name and namespace.
+* Adds features for better security hardening and readability compared to writing a profile directly in the SELinux CIL language.
+
+1. Create a project by running the following command:
+
+```terminal
+$ oc new-project nginx-deploy
+```
+
+2. Create a policy that can be used with a non-privileged workload by creating the following {kind} object:
+
+```yaml
+apiVersion: security-profiles-operator.x-k8s.io/v1alpha2
+kind: {kind}
+metadata:
+  name: nginx-secure
+  namespace: nginx-deploy
+spec:
+  allow:
+    '@self':
+      tcp_socket:
+      - listen
+    http_cache_port_t:
+      tcp_socket:
+      - name_bind
+    node_t:
+      tcp_socket:
+      - node_bind
+  inherit:
+  - kind: System
+    name: container
+```
+
+3. Wait for selinuxd to install the policy by running the following command:
+
+```terminal
+$ oc wait --for=condition=ready -n nginx-deploy selinuxprofile nginx-secure
+```
+
+Example output
+
+```terminal
+selinuxprofile.security-profiles-operator.x-k8s.io/nginx-secure condition met
+```
+
+
+The policies are placed into an emptyDir in the container owned by the Security Profiles Operator. The policies are saved in Common Intermediate Language (CIL) format in /etc/selinux.d/<name>_<namespace>.cil.
+4. Access the pod by running the following command:
+
+```terminal
+$ oc -n openshift-security-profiles rsh -c selinuxd ds/spod
+```
+
+
+1. View the file contents with cat by running the following command:
+
+```terminal
+$ cat /etc/selinux.d/nginx-secure_nginx-deploy.cil
+```
+
+Example output
+
+```terminal
+(block nginx-secure_nginx-deploy
+(blockinherit container)
+(allow process nginx-secure_nginx-deploy.process ( tcp_socket ( listen )))
+(allow process http_cache_port_t ( tcp_socket ( name_bind )))
+(allow process node_t ( tcp_socket ( node_bind )))
+)
+```
+
+2. Verify that a policy has been installed by running the following command:
+
+```terminal
+$ semodule -l | grep nginx-secure
+```
+
+Example output
+
+```terminal
+nginx-secure_nginx-deploy
+```
+
+
+# Applying SELinux profiles to a pod
+
+Create a pod to apply one of the created profiles.
+
+For {type} profiles, the namespace must be labelled to allow privileged workloads.
+
+1. Apply the scc.podSecurityLabelSync=false label to the nginx-deploy namespace by running the following command:
+
+```terminal
+$ oc label ns nginx-deploy security.openshift.io/scc.podSecurityLabelSync=false
+```
+
+2. Apply the privileged label to the nginx-deploy namespace by running the following command:
+
+```terminal
+$ oc label ns nginx-deploy --overwrite=true pod-security.kubernetes.io/enforce=privileged
+```
+
+3. Obtain the SELinux profile usage string by running the following command:
+
+```terminal
+$ oc get selinuxprofile.security-profiles-operator.x-k8s.io/nginx-secure -n nginx-deploy -ojsonpath='{.status.usage}'
+```
+
+Example output
+
+```terminal
+nginx-secure_nginx-deploy.process
+```
+
+4. Apply the output string in the workload manifest in the .spec.containers[].securityContext.seLinuxOptions attribute:
+
+```yaml
+apiVersion: v1
+kind: Pod
+metadata:
+  name: nginx-secure
+  namespace: nginx-deploy
+spec:
+  securityContext:
+    runAsNonRoot: true
+    seccompProfile:
+      type: RuntimeDefault
+  containers:
+    - image: nginxinc/nginx-unprivileged:1.21
+      name: nginx
+      securityContext:
+        allowPrivilegeEscalation: false
+        capabilities:
+          drop: [ALL]
+        seLinuxOptions:
+          # NOTE: This uses an appropriate SELinux type
+          type: nginx-secure_nginx-deploy.process
+```
+
+
+[IMPORTANT]
+----
+The SELinux type must exist before creating the workload.
+----
+
+## Applying SELinux log policies
+
+To log policy violations or AVC denials, set the SElinuxProfile profile to permissive.
+
+
+[IMPORTANT]
+----
+This procedure defines logging policies. It does not set enforcement policies.
+----
+
+* Add permissive: true to an SElinuxProfile:
+
+```yaml
+apiVersion: security-profiles-operator.x-k8s.io/v1alpha2
+kind: SelinuxProfile
+metadata:
+  name: nginx-secure
+  namespace: nginx-deploy
+spec:
+  permissive: true
+```
+
+
+## Binding workloads to profiles with ProfileBindings
+
+You can use the ProfileBinding resource to bind a security profile to the SecurityContext of a container.
+
+1. To bind a pod that uses a quay.io/security-profiles-operator/test-nginx-unprivileged:1.21 image to the example {kind} profile, create a ProfileBinding object in the same namespace with the pod and the {kind} objects:
+
+```yaml
+apiVersion: security-profiles-operator.x-k8s.io/v1alpha1
+kind: ProfileBinding
+metadata:
+  namespace: my-namespace
+  name: nginx-binding
+spec:
+  profileRef:
+    kind: {kind} 1
+    name: profile 2
+  image: quay.io/security-profiles-operator/test-nginx-unprivileged:1.21 3
+```
+
+The kind: variable refers to the kind of the profile.
+The name: variable refers to the name of the profile.
+You can enable a default security profile by using a wildcard in the image attribute: image: "*"
+
+[IMPORTANT]
+----
+Using the image: "*" wildcard attribute binds all new pods with a default security profile in a given namespace.
+----
+2. Label the namespace with enable-binding=true by running the following command:
+
+```terminal
+$ oc label ns my-namespace spo.x-k8s.io/enable-binding=true
+```
+
+3. Define a pod named test-pod.yaml:
+
+```yaml
+apiVersion: v1
+kind: Pod
+metadata:
+  name: test-pod
+spec:
+  containers:
+  - name: test-container
+    image: quay.io/security-profiles-operator/test-nginx-unprivileged:1.21
+```
+
+4. Create the pod:
+
+```terminal
+$ oc create -f test-pod.yaml
+```
+
+
+[NOTE]
+----
+If the pod already exists, you must re-create the pod for the binding to work properly.
+----
+
+* Confirm the pod inherits the ProfileBinding by running the following command:
+
+```terminal
+$ oc get pod test-pod -o jsonpath='{.spec.containers[*].securityContext.seLinuxOptions.type}'
+```
+
+Example output
+
+```terminal
+profile_nginx-binding.process
+```
+
+
+## Replicating controllers and SecurityContextConstraints
+
+When you deploy SELinux policies for replicating controllers, such as deployments or daemon sets, note that the Pod objects spawned by the controllers are not running with the identity of the user who creates the workload. Unless a ServiceAccount is selected, the pods might revert to using a restricted SecurityContextConstraints (SCC) which does not allow use of custom security policies.
+
+1. Create a project by running the following command:
+
+```terminal
+$ oc new-project nginx-secure
+```
+
+2. Create the following RoleBinding object to allow SELinux policies to be used in the nginx-secure namespace:
+
+```yaml
+kind: RoleBinding
+apiVersion: rbac.authorization.k8s.io/v1
+metadata:
+  name: spo-nginx
+  namespace: nginx-secure
+subjects:
+- kind: ServiceAccount
+  name: spo-deploy-test
+roleRef:
+  kind: Role
+  name: spo-nginx
+  apiGroup: rbac.authorization.k8s.io
+```
+
+3. Create the Role object:
+
+```yaml
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  creationTimestamp: null
+  name: spo-nginx
+  namespace: nginx-secure
+rules:
+- apiGroups:
+  - security.openshift.io
+  resources:
+  - securitycontextconstraints
+  resourceNames:
+  - privileged
+  verbs:
+  - use
+```
+
+4. Create the ServiceAccount object:
+
+```yaml
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  creationTimestamp: null
+  name: spo-deploy-test
+  namespace: nginx-secure
+```
+
+5. Create the Deployment object:
+
+```yaml
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: selinux-test
+  namespace: nginx-secure
+  metadata:
+    labels:
+      app: selinux-test
+spec:
+  replicas: 3
+  selector:
+    matchLabels:
+      app: selinux-test
+  template:
+    metadata:
+      labels:
+        app: selinux-test
+    spec:
+      serviceAccountName: spo-deploy-test
+      securityContext:
+        seLinuxOptions:
+          type: nginx-secure_nginx-secure.process 1
+      containers:
+      - name: nginx-unpriv
+        image: quay.io/security-profiles-operator/test-nginx-unprivileged:1.21
+        ports:
+        - containerPort: 8080
+```
+
+The .seLinuxOptions.type must exist before the Deployment is created.
+
+[NOTE]
+----
+The SELinux type is not specified in the workload and is handled by the SCC. When the pods are created by the deployment and the ReplicaSet, the pods will run with the appropriate profile.
+----
+
+Ensure that your SCC is usable by only the correct service account. Refer to Additional resources for more information.
+
+# Recording profiles from workloads
+
+The Security Profiles Operator can record system calls with ProfileRecording objects, making it easier to create baseline profiles for applications.
+
+When using the log enricher for recording {type} profiles, verify the log enricher feature is enabled. See Additional resources for more information.
+
+
+[NOTE]
+----
+A container with privileged: true security context restraints prevents log-based recording. Privileged containers are not subject to {type} policies, and log-based recording makes use of a special {type} profile to record events.
+----
+
+1. Create a project by running the following command:
+
+```terminal
+$ oc new-project my-namespace
+```
+
+2. Label the namespace with enable-recording=true by running the following command:
+
+```terminal
+$ oc label ns my-namespace spo.x-k8s.io/enable-recording=true
+```
+
+3. Create a ProfileRecording object containing a recorder: logs variable:
+
+```yaml
+apiVersion: security-profiles-operator.x-k8s.io/v1alpha1
+kind: ProfileRecording
+metadata:
+  namespace: my-namespace
+  name: test-recording
+spec:
+  kind: {kind}
+  recorder: logs
+  podSelector:
+    matchLabels:
+      app: my-app
+```
+
+4. Create a workload to record:
+
+```yaml
+apiVersion: v1
+kind: Pod
+metadata:
+  namespace: my-namespace
+  name: my-pod
+  labels:
+    app: my-app
+spec:
+  securityContext:
+    runAsNonRoot: true
+    seccompProfile:
+      type: RuntimeDefault
+  containers:
+    - name: nginx
+      image: quay.io/security-profiles-operator/test-nginx-unprivileged:1.21
+      ports:
+        - containerPort: 8080
+      securityContext:
+        allowPrivilegeEscalation: false
+        capabilities:
+          drop: [ALL]
+    - name: redis
+      image: quay.io/security-profiles-operator/redis:6.2.1
+      securityContext:
+        allowPrivilegeEscalation: false
+        capabilities:
+          drop: [ALL]
+```
+
+5. Confirm the pod is in a Running state by entering the following command:
+
+```terminal
+$ oc -n my-namespace get pods
+```
+
+Example output
+
+```terminal
+NAME     READY   STATUS    RESTARTS   AGE
+my-pod   2/2     Running   0          18s
+```
+
+6. Confirm the enricher indicates that it receives audit logs for those containers:
+
+```terminal
+$ oc -n openshift-security-profiles logs --since=1m --selector name=spod -c log-enricher
+```
+
+Example output
+
+```terminal
+I0517 13:55:36.383187  348295 enricher.go:376] log-enricher "msg"="audit" "container"="redis" "namespace"="my-namespace" "node"="ip-10-0-189-53.us-east-2.compute.internal" "perm"="name_bind" "pod"="my-pod" "profile"="test-recording_redis_6kmrb_1684331729" "scontext"="system_u:system_r:selinuxrecording.process:s0:c4,c27" "tclass"="tcp_socket" "tcontext"="system_u:object_r:redis_port_t:s0" "timestamp"="1684331735.105:273965" "type"="selinux"
+```
+
+
+1. Remove the pod:
+
+```terminal
+$ oc -n my-namepace delete pod my-pod
+```
+
+2. Confirm the Security Profiles Operator reconciles the two {type} profiles:
+
+```terminal
+$ oc get selinuxprofiles -lspo.x-k8s.io/recording-id=test-recording -n my-namespace
+```
+
+Example output for selinuxprofile
+
+```terminal
+NAME                   USAGE                                       STATE
+test-recording-nginx   test-recording-nginx_my-namespace.process   Installed
+test-recording-redis   test-recording-redis_my-namespace.process   Installed
+```
+
+
+## Merging per-container profile instances
+
+By default, each container instance records into a separate profile. The Security Profiles Operator can merge the per-container profiles into a single profile. Merging profiles is useful when deploying applications using ReplicaSet or Deployment objects.
+
+1. Edit a ProfileRecording object to include a mergeStrategy: containers variable:
+
+```yaml
+apiVersion: security-profiles-operator.x-k8s.io/v1alpha1
+kind: ProfileRecording
+metadata:
+  # The name of the Recording is the same as the resulting {kind} CRD
+  # after reconciliation.
+  name: test-recording
+  namespace: my-namespace
+spec:
+  kind: {kind}
+  recorder: logs
+  mergeStrategy: containers
+  podSelector:
+    matchLabels:
+      app: sp-record
+```
+
+2. Label the namespace by running the following command:
+
+```terminal
+$ oc label ns my-namespace security.openshift.io/scc.podSecurityLabelSync=false pod-security.kubernetes.io/enforce=privileged pod-security.kubernetes.io/audit=privileged pod-security.kubernetes.io/warn=privileged --overwrite=true
+```
+
+3. Create the workload with the following YAML:
+
+```yaml
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: nginx-deploy
+  namespace: my-namespace
+spec:
+  replicas: 3
+  selector:
+    matchLabels:
+      app: sp-record
+  template:
+    metadata:
+      labels:
+        app: sp-record
+    spec:
+      serviceAccountName: spo-record-sa
+      containers:
+      - name: nginx-record
+        image: quay.io/security-profiles-operator/test-nginx-unprivileged:1.21
+        ports:
+        - containerPort: 8080
+```
+
+4. To record the individual profiles, delete the deployment by running the following command:
+
+```terminal
+$ oc delete deployment nginx-deploy -n my-namespace
+```
+
+5. To merge the profiles, delete the profile recording by running the following command:
+
+```terminal
+$ oc delete profilerecording test-recording -n my-namespace
+```
+
+6. To start the merge operation and generate the results profile, run the following command:
+
+```terminal
+$ oc get {object} -lspo.x-k8s.io/recording-id=test-recording -n my-namespace
+```
+
+Example output for {object}
+
+```terminal
+NAME                          USAGE                                              STATE
+test-recording-nginx-record   test-recording-nginx-record_my-namespace.process   Installed
+```
+
+7. To view the permissions used by any of the containers, run the following command:
+
+```terminal
+$ oc get {object} test-recording-nginx-record -o yaml
+```
+
+
+## About seLinuxContext: RunAsAny
+
+Recording of SELinux policies is implemented with a webhook that injects a special SELinux type to the pods being recorded. The SELinux type makes the pod run in permissive mode, logging all the AVC denials into audit.log. By default, a workload is not allowed to run with a custom SELinux policy, but uses an auto-generated type.
+
+To record a workload, the workload must use a service account that has permissions to use an SCC that allows the webhook to inject the permissive SELinux type. The privileged SCC contains seLinuxContext: RunAsAny.
+
+In addition, the namespace must be labeled with pod-security.kubernetes.io/enforce: privileged if your cluster enables the Pod Security Admission because only the privileged Pod Security Standard allows using a custom SELinux policy.
+
+## Additional resources
+
+* Managing security context constraints
+* Managing SCCs in OpenShift
+* Using the log enricher
+* About security profiles

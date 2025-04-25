@@ -1,0 +1,475 @@
+# Configuring IPsec encryption
+
+
+By enabling IPsec, you can encrypt both internal pod-to-pod cluster traffic between nodes and external traffic between pods and IPsec endpoints external to your cluster. All pod-to-pod network traffic between nodes on the OVN-Kubernetes cluster network is encrypted with IPsec in Transport mode.
+IPsec is disabled by default. You can enable IPsec either during or after installing the cluster. For information about cluster installation, see Red Hat OpenShift Container Platform installation overview.
+The following support limitations exist for IPsec on a Red Hat OpenShift Container Platform cluster:
+* You must disable IPsec before updating to Red Hat OpenShift Container Platform 4.15. There is a known issue that can cause interruptions in pod-to-pod communication if you update without disabling IPsec. (OCPBUGS-43323)
+* On IBM Cloud(R), IPsec supports only NAT-T. Encapsulating Security Payload (ESP) is not supported on this platform.
+* If your cluster uses hosted control planes for Red Hat Red Hat OpenShift Container Platform, IPsec is not supported for IPsec encryption of either pod-to-pod or traffic to external hosts.
+* Using ESP hardware offloading on any network interface is not supported if one or more of those interfaces is attached to Open vSwitch (OVS). Enabling IPsec for your cluster triggers the use of IPsec with interfaces attached to OVS. By default, Red Hat OpenShift Container Platform disables ESP hardware offloading on any interfaces attached to OVS.
+* If you enabled IPsec for network interfaces that are not attached to OVS, a cluster administrator must manually disable ESP hardware offloading on each interface that is not attached to OVS.
+The following list outlines key tasks in the IPsec documentation:
+* Enable and disable IPsec after cluster installation.
+* Configure IPsec encryption for traffic between the cluster and external hosts.
+* Verify that IPsec encrypts traffic between pods on different nodes.
+
+# Modes of operation
+
+When using IPsec on your Red Hat OpenShift Container Platform cluster, you can choose from the following operating modes:
+
+
+
+# Prerequisites
+
+For IPsec support for encrypting traffic to external hosts, ensure that the following prerequisites are met:
+
+* The OVN-Kubernetes network plugin must be configured in local gateway mode, where ovnKubernetesConfig.gatewayConfig.routingViaHost=true.
+* The NMState Operator is installed. This Operator is required for specifying the IPsec configuration. For more information, see Kubernetes NMState Operator.
+
+[NOTE]
+----
+The NMState Operator is supported on Google Cloud Platform (GCP) only for configuring IPsec.
+----
+* The Butane tool (butane) is installed. To install Butane, see Installing Butane.
+
+These prerequisites are required to add certificates into the host NSS database and to configure IPsec to communicate with external hosts.
+
+# Network connectivity requirements when IPsec is enabled
+
+You must configure the network connectivity between machines to allow Red Hat OpenShift Container Platform cluster components to communicate. Each machine must be able to resolve the hostnames of all other machines in the cluster.
+
+
+
+# IPsec encryption for pod-to-pod traffic
+
+For IPsec encryption of pod-to-pod traffic, the following sections describe which specific pod-to-pod traffic is encrypted, what kind of encryption protocol is used, and how X.509 certificates are handled. These sections do not apply to IPsec encryption between the cluster and external hosts, which you must configure manually for your specific external network infrastructure.
+
+## Types of network traffic flows encrypted by pod-to-pod IPsec
+
+With IPsec enabled, only the following network traffic flows between pods are encrypted:
+
+* Traffic between pods on different nodes on the cluster network
+* Traffic from a pod on the host network to a pod on the cluster network
+
+The following traffic flows are not encrypted:
+
+* Traffic between pods on the same node on the cluster network
+* Traffic between pods on the host network
+* Traffic from a pod on the cluster network to a pod on the host network
+
+The encrypted and unencrypted flows are illustrated in the following diagram:
+
+![IPsec encrypted and unencrypted traffic flows]
+
+## Encryption protocol and IPsec mode
+
+The encrypt cipher used is AES-GCM-16-256. The integrity check value (ICV) is 16 bytes. The key length is 256 bits.
+
+The IPsec mode used is Transport mode, a mode that encrypts end-to-end communication by adding an Encapsulated Security Payload (ESP) header to the IP header of the original packet and encrypts the packet data. Red Hat OpenShift Container Platform does not currently use or support IPsec Tunnel mode for pod-to-pod communication.
+
+## Security certificate generation and rotation
+
+The Cluster Network Operator (CNO) generates a self-signed X.509 certificate authority (CA) that is used by IPsec for encryption. Certificate signing requests (CSRs) from each node are automatically fulfilled by the CNO.
+
+The CA is valid for 10 years. The individual node certificates are valid for 5 years and are automatically rotated after 4 1/2 years elapse.
+
+# IPsec encryption for external traffic
+
+Red Hat OpenShift Container Platform supports IPsec encryption for traffic to external hosts with TLS certificates that you must supply.
+
+## Supported platforms
+
+This feature is supported on the following platforms:
+
+* Bare metal
+* Google Cloud Platform (GCP)
+* Red Hat OpenStack Platform (RHOSP)
+* VMware vSphere
+
+
+[IMPORTANT]
+----
+If you have Red Hat Enterprise Linux (RHEL) worker nodes, these do not support IPsec encryption for external traffic.
+----
+
+If your cluster uses hosted control planes for Red Hat Red Hat OpenShift Container Platform, configuring IPsec for encrypting traffic to external hosts is not supported.
+
+## Limitations
+
+Ensure that the following prohibitions are observed:
+
+* IPv6 configuration is not currently supported by the NMState Operator when configuring IPsec for external traffic.
+* Certificate common names (CN) in the provided certificate bundle must not begin with the ovs_ prefix, because this naming can conflict with pod-to-pod IPsec CN names in the Network Security Services (NSS) database of each node.
+
+# Enabling IPsec encryption
+
+As a cluster administrator, you can enable pod-to-pod IPsec encryption, IPsec encryption between the cluster, and external IPsec endpoints.
+
+You can configure IPsec in either of the following modes:
+
+* Full: Encryption for pod-to-pod and external traffic
+* External: Encryption for external traffic
+
+
+[NOTE]
+----
+If you configure IPsec in Full mode, you must also complete the "Configuring IPsec encryption for external traffic" procedure.
+----
+
+* Install the OpenShift CLI (`oc`).
+* You are logged in to the cluster as a user with cluster-admin privileges.
+* You have reduced the size of your cluster MTU by 46 bytes to allow for the overhead of the IPsec ESP header.
+
+1. To enable IPsec encryption, enter the following command:
+
+```terminal
+$ oc patch networks.operator.openshift.io cluster --type=merge -p \
+  '{
+  "spec":{
+    "defaultNetwork":{
+      "ovnKubernetesConfig":{
+        "ipsecConfig":{
+          "mode":"<mode"> 1
+        }}}}}'
+```
+
+Specify External to encrypt traffic to external hosts or specify Full to encrypt pod-to-pod traffic and, optionally, traffic to external hosts. By default, IPsec is disabled.
+2. Encrypt external traffic with IPsec by completing the "Configuring IPsec encryption for external traffic" procedure.
+
+1. To find the names of the OVN-Kubernetes data plane pods, enter the following command:
+
+```terminal
+$ oc get pods -n openshift-ovn-kubernetes -l=app=ovnkube-node
+```
+
+Example output
+
+```terminal
+ovnkube-node-5xqbf                       8/8     Running   0              28m
+ovnkube-node-6mwcx                       8/8     Running   0              29m
+ovnkube-node-ck5fr                       8/8     Running   0              31m
+ovnkube-node-fr4ld                       8/8     Running   0              26m
+ovnkube-node-wgs4l                       8/8     Running   0              33m
+ovnkube-node-zfvcl                       8/8     Running   0              34m
+...
+```
+
+2. Verify that IPsec is enabled on your cluster by running the following command:
+
+[NOTE]
+----
+As a cluster administrator, you can verify that IPsec is enabled between pods on your cluster when IPsec is configured in Full mode. This step does not verify whether IPsec is working between your cluster and external hosts.
+----
+
+```terminal
+$ oc -n openshift-ovn-kubernetes rsh ovnkube-node-<XXXXX> ovn-nbctl --no-leader-only get nb_global . ipsec 1
+```
+
+Where <XXXXX> specifies the random sequence of letters for a pod from the previous step.
+Example output
+
+```text
+true
+```
+
+
+# Configuring IPsec encryption for external traffic
+
+As a cluster administrator, to encrypt external traffic with IPsec you must configure IPsec for your network infrastructure, including providing PKCS#12 certificates. Because this procedure uses Butane to create machine configs, you must have the butane command installed.
+
+
+[NOTE]
+----
+After you apply the machine config, the Machine Config Operator reboots affected nodes in your cluster to rollout the new machine config.
+----
+
+* Install the OpenShift CLI (`oc`).
+* You have installed the butane utility on your local computer.
+* You have installed the NMState Operator on the cluster.
+* You are logged in to the cluster as a user with cluster-admin privileges.
+* You have an existing PKCS#12 certificate for the IPsec endpoint and a CA cert in PEM format.
+* You enabled IPsec in either Full or External mode on your cluster.
+* The OVN-Kubernetes network plugin must be configured in local gateway mode, where ovnKubernetesConfig.gatewayConfig.routingViaHost=true.
+
+1. Create an IPsec configuration with an NMState Operator node network configuration policy. For more information, see Libreswan as an IPsec VPN implementation.
+1. To identify the IP address of the cluster node that is the IPsec endpoint, enter the following command:
+
+```
+$ oc get nodes
+```
+
+2. Create a file named ipsec-config.yaml that contains a node network configuration policy for the NMState Operator, such as in the following examples. For an overview about NodeNetworkConfigurationPolicy objects, see The Kubernetes NMState project.
+
+```yaml
+apiVersion: nmstate.io/v1
+kind: NodeNetworkConfigurationPolicy
+metadata:
+  name: ipsec-config
+spec:
+  nodeSelector:
+    kubernetes.io/hostname: "<hostname>" 1
+  desiredState:
+    interfaces:
+    - name: <interface_name> 2
+      type: ipsec
+      libreswan:
+        left: <cluster_node> 3
+        leftid: '%fromcert'
+        leftrsasigkey: '%cert'
+        leftcert: left_server
+        leftmodecfgclient: false
+        right: <external_host> 4
+        rightid: '%fromcert'
+        rightrsasigkey: '%cert'
+        rightsubnet: <external_address>/32 5
+        ikev2: insist
+        type: transport
+```
+
+Specifies the host name to apply the policy to. This host serves as the left side host in the IPsec configuration.
+Specifies the name of the interface to create on the host.
+Specifies the host name of the cluster node that terminates the IPsec tunnel on the cluster side. The name should match SAN [Subject Alternate Name] from your supplied PKCS#12 certificates.
+Specifies the external host name, such as host.example.com. The name should match the SAN [Subject Alternate Name] from your supplied PKCS#12 certificates.
+Specifies the IP address of the external host, such as 10.1.2.3/32.
+
+```yaml
+apiVersion: nmstate.io/v1
+kind: NodeNetworkConfigurationPolicy
+metadata:
+  name: ipsec-config
+spec:
+  nodeSelector:
+    kubernetes.io/hostname: "<hostname>" 1
+  desiredState:
+    interfaces:
+    - name: <interface_name> 2
+      type: ipsec
+      libreswan:
+        left: <cluster_node> 3
+        leftid: '%fromcert'
+        leftmodecfgclient: false
+        leftrsasigkey: '%cert'
+        leftcert: left_server
+        right: <external_host> 4
+        rightid: '%fromcert'
+        rightrsasigkey: '%cert'
+        rightsubnet: <external_address>/32 5
+        ikev2: insist
+        type: tunnel
+```
+
+Specifies the host name to apply the policy to. This host serves as the left side host in the IPsec configuration.
+Specifies the name of the interface to create on the host.
+Specifies the host name of the cluster node that terminates the IPsec tunnel on the cluster side. The name should match SAN [Subject Alternate Name] from your supplied PKCS#12 certificates.
+Specifies the external host name, such as host.example.com. The name should match the SAN [Subject Alternate Name] from your supplied PKCS#12 certificates.
+Specifies the IP address of the external host, such as 10.1.2.3/32.
+3. To configure the IPsec interface, enter the following command:
+
+```terminal
+$ oc create -f ipsec-config.yaml
+```
+
+2. Provide the following certificate files to add to the Network Security Services (NSS) database on each host. These files are imported as part of the Butane configuration in subsequent steps.
+* left_server.p12: The certificate bundle for the IPsec endpoints
+* ca.pem: The certificate authority that you signed your certificates with
+3. Create a machine config to add your certificates to the cluster:
+1. To create Butane config files for the control plane and worker nodes, enter the following command:
+
+[NOTE]
+----
+The Butane version you specify in the config file should match the Red Hat OpenShift Container Platform version and always ends in 0. For example, 4.19.0. See "Creating machine configs with Butane" for information about Butane.
+----
+
+```terminal
+$ for role in master worker; do
+  cat >> "99-ipsec-${role}-endpoint-config.bu" <<-EOF
+  variant: openshift
+  version: 4.19.0
+  metadata:
+    name: 99-${role}-import-certs
+    labels:
+      machineconfiguration.openshift.io/role: $role
+  systemd:
+    units:
+    - name: ipsec-import.service
+      enabled: true
+      contents: |
+        [Unit]
+        Description=Import external certs into ipsec NSS
+        Before=ipsec.service
+
+        [Service]
+        Type=oneshot
+        ExecStart=/usr/local/bin/ipsec-addcert.sh
+        RemainAfterExit=false
+        StandardOutput=journal
+
+        [Install]
+        WantedBy=multi-user.target
+  storage:
+    files:
+    - path: /etc/pki/certs/ca.pem
+      mode: 0400
+      overwrite: true
+      contents:
+        local: ca.pem
+    - path: /etc/pki/certs/left_server.p12
+      mode: 0400
+      overwrite: true
+      contents:
+        local: left_server.p12
+    - path: /usr/local/bin/ipsec-addcert.sh
+      mode: 0740
+      overwrite: true
+      contents:
+        inline: |
+          #!/bin/bash -e
+          echo "importing cert to NSS"
+          certutil -A -n "CA" -t "CT,C,C" -d /var/lib/ipsec/nss/ -i /etc/pki/certs/ca.pem
+          pk12util -W "" -i /etc/pki/certs/left_server.p12 -d /var/lib/ipsec/nss/
+          certutil -M -n "left_server" -t "u,u,u" -d /var/lib/ipsec/nss/
+EOF
+done
+```
+
+2. To transform the Butane files that you created in the previous step into machine configs, enter the following command:
+
+```terminal
+$ for role in master worker; do
+  butane -d . 99-ipsec-${role}-endpoint-config.bu -o ./99-ipsec-$role-endpoint-config.yaml
+done
+```
+
+4. To apply the machine configs to your cluster, enter the following command:
+
+```terminal
+$ for role in master worker; do
+  oc apply -f 99-ipsec-${role}-endpoint-config.yaml
+done
+```
+
+
+[IMPORTANT]
+----
+As the Machine Config Operator (MCO) updates machines in each machine config pool, it reboots each node one by one. You must wait until all the nodes are updated before external IPsec connectivity is available.
+----
+5. Check the machine config pool status by entering the following command:
+
+```terminal
+$ oc get mcp
+```
+
+
+A successfully updated node has the following status: UPDATED=true, UPDATING=false, DEGRADED=false.
+
+[NOTE]
+----
+By default, the MCO updates one machine per pool at a time, causing the total time the migration takes to increase with the size of the cluster.
+----
+6. To confirm that IPsec machine configs rolled out successfully, enter the following commands:
+1. Confirm that the IPsec machine configs were created:
+
+```terminal
+$ oc get mc | grep ipsec
+```
+
+Example output
+
+```text
+80-ipsec-master-extensions        3.2.0        6d15h
+80-ipsec-worker-extensions        3.2.0        6d15h
+```
+
+2. Confirm that the that the IPsec extension are applied to control plane nodes:
+
+```terminal
+$ oc get mcp master -o yaml | grep 80-ipsec-master-extensions -c
+```
+
+Expected output
+
+```text
+2
+```
+
+3. Confirm that the that the IPsec extension are applied to worker nodes:
+
+```terminal
+$ oc get mcp worker -o yaml | grep 80-ipsec-worker-extensions -c
+```
+
+Expected output
+
+```text
+2
+```
+
+
+* For more information about the nmstate IPsec API, see IPsec Encryption
+
+# Disabling IPsec encryption for an external IPsec endpoint
+
+As a cluster administrator, you can remove an existing IPsec tunnel to an external host.
+
+* Install the OpenShift CLI (`oc`).
+* You are logged in to the cluster as a user with cluster-admin privileges.
+* You enabled IPsec in either Full or External mode on your cluster.
+
+1. Create a file named remove-ipsec-tunnel.yaml with the following YAML:
+
+```yaml
+kind: NodeNetworkConfigurationPolicy
+apiVersion: nmstate.io/v1
+metadata:
+  name: <name>
+spec:
+  nodeSelector:
+    kubernetes.io/hostname: <node_name>
+  desiredState:
+    interfaces:
+    - name: <tunnel_name>
+      type: ipsec
+      state: absent
+```
+
+where:
+name:: Specifies a name for the node network configuration policy.
+node_name:: Specifies the name of the node where the IPsec tunnel that you want to remove exists.
+tunnel_name:: Specifies the interface name for the existing IPsec tunnel.
+2. To remove the IPsec tunnel, enter the following command:
+
+```terminal
+$ oc apply -f remove-ipsec-tunnel.yaml
+```
+
+
+# Disabling IPsec encryption
+
+As a cluster administrator, you can disable IPsec encryption.
+
+* Install the OpenShift CLI (oc).
+* Log in to the cluster with a user with cluster-admin privileges.
+
+1. To disable IPsec encryption, enter the following command:
+
+```terminal
+$ oc patch networks.operator.openshift.io cluster --type=merge \
+-p '{
+  "spec":{
+    "defaultNetwork":{
+      "ovnKubernetesConfig":{
+        "ipsecConfig":{
+          "mode":"Disabled"
+        }}}}}'
+```
+
+2. Optional: You can increase the size of your cluster MTU by 46 bytes because there is no longer any overhead from the IPsec ESP header in IP packets.
+
+# Additional resources
+
+* Configuring a VPN with IPsec in Red Hat Enterprise Linux (RHEL) 9
+* Installing Butane
+* About the OVN-Kubernetes Container Network Interface (CNI) network plugin
+* Changing the MTU for the cluster network
+* Network [operator.openshift.io/v1] API

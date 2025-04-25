@@ -1,0 +1,337 @@
+# Installing a cluster on Oracle Compute Cloud@Customer by using the Agent-based Installer
+
+
+You can use the Agent-based Installer to install a cluster on Oracle(R) Compute Cloud@Customer, so that you can run cluster workloads on on-premise infrastructure while still using Oracle(R) Cloud Infrastructure (OCI) services.
+
+# Installation process workflow
+
+The following workflow describes a high-level outline for the process of installing an Red Hat OpenShift Container Platform cluster on Compute Cloud@Customer using the Agent-based Installer:
+
+1. Create Compute Cloud@Customer resources and services (Oracle).
+2. Prepare configuration files for the Agent-based Installer (Red Hat).
+3. Generate the agent ISO image (Red Hat).
+4. Convert the ISO image to an Oracle Cloud Infrastructure (OCI) image, upload it to an OCI Home Region Bucket, and then import the uploaded image to the Compute Cloud@Customer system (Oracle).
+5. Disconnected environments: Prepare a web server that is accessible by OCI instances (Red Hat).
+6. Disconnected environments: Upload the rootfs image to the web server (Red Hat).
+7. Configure your firewall for Red Hat OpenShift Container Platform (Red Hat).
+8. Create control plane nodes and configure load balancers (Oracle).
+9. Create compute nodes and configure load balancers (Oracle).
+10. Verify that your cluster runs on OCI (Oracle).
+
+# Creating Oracle Compute Cloud@Customer infrastructure resources and services
+
+You must create an Compute Cloud@Customer environment on your virtual machine (VM) shape. By creating this environment, you can install Red Hat OpenShift Container Platform and deploy a cluster on an infrastructure that supports a wide range of cloud options and strong security policies. Having prior knowledge of OCI components can help you with understanding the concept of OCI resources and how you can configure them to meet your organizational needs.
+
+
+[IMPORTANT]
+----
+To ensure compatibility with Red Hat OpenShift Container Platform, you must set A as the record type for each DNS record and name records as follows:
+* api.<cluster_name>.<base_domain>, which targets the apiVIP parameter of the API load balancer
+* api-int.<cluster_name>.<base_domain>, which targets the apiVIP parameter of the API load balancer
+* *.apps.<cluster_name>.<base_domain>, which targets the ingressVIP parameter of the Ingress load balancer
+The api.* and api-int.* DNS records relate to control plane machines, so you must ensure that all nodes in your installed Red Hat OpenShift Container Platform cluster can access these DNS records.
+----
+
+* You configured an OCI account to host the Red Hat OpenShift Container Platform cluster.
+See "Access and Considerations" in OpenShift Cluster Setup with
+Agent Based Installer on Compute
+Cloud@Customer (Oracle documentation).
+
+* Create the required Compute Cloud@Customer resources and services.
+
+For more information, see "Terraform Script Execution" in OpenShift Cluster Setup with
+Agent Based Installer on Compute
+Cloud@Customer (Oracle documentation).
+
+* Learn About Oracle Cloud Basics (Oracle documentation)
+
+# Creating configuration files for installing a cluster on Compute Cloud@Customer
+
+You must create the install-config.yaml and the agent-config.yaml configuration files so that you can use the Agent-based Installer to generate a bootable ISO image. The Agent-based installation comprises a bootable ISO that has the Assisted discovery agent and the Assisted Service. Both of these components are required to perform the cluster installation, but the latter component runs on only one of the hosts.
+
+
+[NOTE]
+----
+You can also use the Agent-based Installer to generate or accept Zero Touch Provisioning (ZTP) custom resources.
+----
+
+* You reviewed details about the Red Hat OpenShift Container Platform installation and update processes.
+* You read the documentation on selecting a cluster installation method and preparing the method for users.
+* You have read the "Preparing to install with the Agent-based Installer" documentation.
+* You downloaded the Agent-Based Installer and the command-line interface (CLI) from the Red Hat Hybrid Cloud Console.
+* If you are installing in a disconnected environment, you have prepared a mirror registry in your environment and mirrored release images to the registry.
+
+[IMPORTANT]
+----
+Check that your openshift-install binary version relates to your local image container registry and not a shared registry, such as Red Hat Quay, by running the following command:
+
+```terminal
+$ ./openshift-install version
+```
+
+
+```terminal
+./openshift-install 4.18.0
+built from commit ae7977b7d1ca908674a0d45c5c243c766fa4b2ca
+release image registry.ci.openshift.org/origin/release:4.18ocp-release@sha256:0da6316466d60a3a4535d5fed3589feb0391989982fba59d47d4c729912d6363
+release architecture amd64
+```
+
+----
+* You have logged in to the Red Hat OpenShift Container Platform with administrator privileges.
+
+1. Create an installation directory to store configuration files in by running the following command:
+
+```terminal
+$ mkdir ~/<directory_name>
+```
+
+2. Configure the install-config.yaml configuration file to meet the needs of your organization and save the file in the directory you created.
+install-config.yaml file that sets an external platform
+
+```yaml
+# install-config.yaml
+apiVersion: v1
+baseDomain: <base_domain> 1
+networking:
+  clusterNetwork:
+  - cidr: 10.128.0.0/14
+    hostPrefix: 23
+  network type: OVNKubernetes
+  machineNetwork:
+  - cidr: <ip_address_from_cidr> 2
+  serviceNetwork:
+  - 172.30.0.0/16
+compute:
+  - architecture: amd64 3
+  hyperthreading: Enabled
+  name: worker
+  replicas: 0
+controlPlane:
+  architecture: amd64 3
+  hyperthreading: Enabled
+  name: master
+  replicas: 3
+platform:
+   external:
+    platformName: oci 4
+    cloudControllerManager: External
+sshKey: <public_ssh_key> 5
+pullSecret: '<pull_secret>' 6
+# ...
+```
+
+The base domain of your cloud provider.
+The IP address from the virtual cloud network (VCN) that the CIDR allocates to resources and components that operate on your network.
+Depending on your infrastructure, you can select either arm64 or amd64.
+Set OCI as the external platform, so that Red Hat OpenShift Container Platform can integrate with OCI.
+Specify your SSH public key.
+The pull secret that you need for authenticate purposes when downloading container images for Red Hat OpenShift Container Platform components and services, such as Quay.io. See Install Red Hat OpenShift Container Platform 4 from the Red Hat Hybrid Cloud Console.
+3. Create a directory on your local system named openshift. This must be a subdirectory of the installation directory.
+
+[IMPORTANT]
+----
+Do not move the install-config.yaml or agent-config.yaml configuration files to the openshift directory.
+----
+4. Configure the Oracle custom manifest files.
+1. Go to "Prepare the OpenShift Master Images" in OpenShift Cluster Setup with
+Agent Based Installer on Compute
+Cloud@Customer (Oracle documentation).
+2. Copy and paste the oci-ccm.yml, oci-csi.yml, and machineconfig-ccm.yml files into your openshift directory.
+3. Edit the oci-ccm.yml and oci-csi.yml files to specify the compartment Oracle(R) Cloud Identifier (OCID), VCN OCID, subnet OCID from the load balancer, the security lists OCID, and the c3-cert.pem section.
+5. Configure the agent-config.yaml configuration file to meet your organization's requirements.
+Sample agent-config.yaml file for an IPv4 network.
+
+```yaml
+apiVersion: v1beta1
+metadata:
+  name: <cluster_name> 1
+  namespace: <cluster_namespace> 2
+rendezvousIP: <ip_address_from_CIDR> 3
+bootArtifactsBaseURL: <server_URL> 4
+# ...
+```
+
+The cluster name that you specified in your DNS record.
+The namespace of your cluster on Red Hat OpenShift Container Platform.
+If you use IPv4 as the network IP address format, ensure that you set the rendezvousIP parameter to an IPv4 address that the VCN's Classless Inter-Domain Routing (CIDR) method allocates on your network. Also ensure that at least one instance from the pool of instances that you booted with the ISO matches the IP address value you set for the rendezvousIP parameter.
+The URL of the server where you want to upload the rootfs image. This parameter is required only for disconnected environments.
+6. Generate a minimal ISO image, which excludes the rootfs image, by entering the following command in your installation directory:
+
+```terminal
+$ ./openshift-install agent create image --log-level debug
+```
+
+
+The command also completes the following actions:
+* Creates a subdirectory, ./<installation_directory>/auth directory:, and places kubeadmin-password and kubeconfig files in the subdirectory.
+* Creates a rendezvousIP file based on the IP address that you specified in the agent-config.yaml configuration file.
+* Optional: Any modifications you made to agent-config.yaml and install-config.yaml configuration files get imported to the Zero Touch Provisioning (ZTP) custom resources.
+
+[IMPORTANT]
+----
+The Agent-based Installer uses Red Hat Enterprise Linux CoreOS (RHCOS). The rootfs image, which is mentioned in a later step, is required for booting, recovering, and repairing your operating system.
+----
+7. Disconnected environments only: Upload the rootfs image to a web server.
+1. Go to the ./<installation_directory>/boot-artifacts directory that was generated when you created the minimal ISO image.
+2. Use your preferred web server, such as any Hypertext Transfer Protocol daemon (httpd), to upload the rootfs image to the location specified in the bootArtifactsBaseURL parameter of the agent-config.yaml file.
+
+For example, if the bootArtifactsBaseURL parameter states http://192.168.122.20, you would upload the generated rootfs image to this location so that the Agent-based installer can access the image from http://192.168.122.20/agent.x86_64-rootfs.img. After the Agent-based installer boots the minimal ISO for the external platform, the Agent-based Installer downloads the rootfs image from the http://192.168.122.20/agent.x86_64-rootfs.img location into the system memory.
+
+[NOTE]
+----
+The Agent-based Installer also adds the value of the bootArtifactsBaseURL to the minimal ISO Image's configuration, so that when the Operator boots a cluster's node, the Agent-based Installer downloads the rootfs image into system memory.
+----
+
+[IMPORTANT]
+----
+Consider that the full ISO image, which is in excess of 1 GB, includes the rootfs image. The image is larger than the minimal ISO Image, which is typically less than 150 MB.
+----
+
+* About Red Hat OpenShift Container Platform installation
+* Selecting a cluster installation type
+* Preparing to install with the Agent-based Installer
+* Downloading the Agent-based Installer
+* Creating a mirror registry with mirror registry for Red Hat OpenShift
+* Mirroring the Red Hat OpenShift Container Platform image repository
+* Optional: Using ZTP manifests
+
+# Configuring your firewall for Red Hat OpenShift Container Platform
+
+Before you install Red Hat OpenShift Container Platform, you must configure your firewall to grant access to the sites that Red Hat OpenShift Container Platform requires. When using a firewall, make additional configurations to the firewall so that Red Hat OpenShift Container Platform can access the sites that it requires to function.
+
+There are no special configuration considerations for services running on only controller nodes compared to worker nodes.
+
+
+[NOTE]
+----
+If your environment has a dedicated load balancer in front of your Red Hat OpenShift Container Platform cluster, review the allowlists between your firewall and load balancer to prevent unwanted network restrictions to your cluster.
+----
+
+1. Set the following registry URLs for your firewall's allowlist:
+
+* You can use the wildcards *.quay.io and *.openshiftapps.com instead of cdn.quay.io and cdn0[1-6].quay.io in your allowlist.
+* You can use the wildcard *.access.redhat.com to simplify the configuration and ensure that all subdomains, including registry.access.redhat.com, are allowed.
+* When you add a site, such as quay.io, to your allowlist, do not add a wildcard entry, such as *.quay.io, to your denylist. In most cases, image registries use a content delivery network (CDN) to serve images. If a firewall blocks access, image downloads are denied when the initial download request redirects to a hostname such as cdn01.quay.io.
+2. Set your firewall's allowlist to include any site that provides resources for a language or framework that your builds require.
+3. If you do not disable Telemetry, you must grant access to the following URLs to access Red Hat Insights:
+
+4. If you use Alibaba Cloud, Amazon Web Services (AWS), Microsoft Azure, or Google Cloud Platform (GCP) to host your cluster, you must grant access to the URLs that offer the cloud provider API and DNS for that cloud:
+
+5. Allowlist the following URLs:
+
+
+Operators require route access to perform health checks. Specifically, the authentication and web console Operators connect to two routes to verify that the routes work. If you are the cluster administrator and do not want to allow *.apps.<cluster_name>.<base_domain>, then allow these routes:
+* oauth-openshift.apps.<cluster_name>.<base_domain>
+* canary-openshift-ingress-canary.apps.<cluster_name>.<base_domain>
+* console-openshift-console.apps.<cluster_name>.<base_domain>, or the hostname
+that is specified in the spec.route.hostname field of the
+consoles.operator/cluster object if the field is not empty.
+6. Allowlist the following URLs for optional third-party content:
+
+7. If you use a default Red Hat Network Time Protocol (NTP) server allow the following URLs:
+* 1.rhel.pool.ntp.org
+* 2.rhel.pool.ntp.org
+* 3.rhel.pool.ntp.org
+
+
+[NOTE]
+----
+If you do not use a default Red Hat NTP server, verify the NTP server for your platform and allow it in your firewall.
+----
+
+# Running a cluster on Compute Cloud@Customer
+
+To run a cluster on Oracle&#174; Compute Cloud@Customer, you must first convert your generated Agent ISO image into an OCI image, upload it to an OCI Home Region Bucket, and then import the uploaded image to the Compute Cloud@Customer system.
+
+
+[NOTE]
+----
+Compute Cloud@Customer supports the following Red Hat OpenShift Container Platform cluster topologies:
+* Installing an Red Hat OpenShift Container Platform cluster on a single node.
+* A highly available cluster that has a minimum of three control plane instances and two compute instances.
+* A compact three-node cluster that has a minimum of three control plane instances.
+----
+
+* You generated an Agent ISO image. See the "Creating configuration files for installing a cluster on Compute Cloud@Customer" section.
+
+1. Convert the agent ISO image to an OCI image, upload it to an OCI Home Region Bucket, and then import the uploaded image to the Compute Cloud@Customer system.
+See "Prepare the OpenShift Master Images" in OpenShift Cluster Setup with
+Agent Based Installer on Compute
+Cloud@Customer (Oracle documentation) for instructions.
+2. Create control plane instances on Compute Cloud@Customer.
+See "Create control plane instances on C3 and Master Node LB Backend Sets" in OpenShift Cluster Setup with
+Agent Based Installer on Compute
+Cloud@Customer (Oracle documentation) for instructions.
+3. Create a compute instance from the supplied base image for your cluster topology.
+See "Add worker nodes" in OpenShift Cluster Setup with
+Agent Based Installer on Compute
+Cloud@Customer (Oracle documentation) for instructions.
+
+[IMPORTANT]
+----
+Before you create the compute instance, check that you have enough memory and disk resources for your cluster. Additionally, ensure that at least one compute instance has the same IP address as the address stated under rendezvousIP in the agent-config.yaml file.
+----
+
+# Verifying that your Agent-based cluster installation runs on Compute Cloud@Customer
+
+Verify that your cluster was installed and is running effectively on Compute Cloud@Customer.
+
+* You created all the required Oracle(R) Compute Cloud@Customer resources and services. See the "Creating Oracle Compute Cloud@Customer infrastructure resources and services" section.
+* You created install-config.yaml and agent-config.yaml configuration files. See the "Creating configuration files for installing a cluster on Compute Cloud@Customer" section.
+* You uploaded the agent ISO image to a default Oracle Object Storage bucket, and you created a compute instance on Compute Cloud@Customer. For more information, see "Running a cluster on Compute Cloud@Customer".
+
+After you deploy the compute instance on a self-managed node in your Red Hat OpenShift Container Platform cluster, you can monitor the cluster’s status by choosing one of the following options:
+
+* From the Red Hat OpenShift Container Platform CLI, enter the following command:
+
+```terminal
+$ ./openshift-install agent wait-for install-complete --log-level debug
+```
+
+
+Check the status of the rendezvous host node that runs the bootstrap node.  After the host reboots, the host forms part of the cluster.
+* Use the kubeconfig API to check the status of various Red Hat OpenShift Container Platform components. For the  KUBECONFIG environment variable, set the relative path of the cluster’s kubeconfig configuration file:
+
+```terminal
+$  export KUBECONFIG=~/auth/kubeconfig
+```
+
+
+Check the status of each of the cluster’s self-managed nodes. CCM applies a label to each node to designate the node as running in a cluster on OCI.
+
+```terminal
+$ oc get nodes -A
+```
+
+Output example
+
+```terminal
+NAME                                   STATUS ROLES                 AGE VERSION
+main-0.private.agenttest.oraclevcn.com Ready  control-plane, master 7m  v1.27.4+6eeca63
+main-1.private.agenttest.oraclevcn.com Ready  control-plane, master 15m v1.27.4+d7fa83f
+main-2.private.agenttest.oraclevcn.com Ready  control-plane, master 15m v1.27.4+d7fa83f
+```
+
+
+Check the status of each of the cluster’s Operators, with the CCM Operator status being a good indicator that your cluster is running.
+
+```terminal
+$ oc get co
+```
+
+Truncated output example
+
+```terminal
+NAME           VERSION     AVAILABLE  PROGRESSING    DEGRADED   SINCE   MESSAGE
+authentication 4.18.0-0    True       False          False      6m18s
+baremetal      4.18.0-0    True       False          False      2m42s
+network        4.18.0-0    True       True           False      5m58s  Progressing: …
+    …
+```
+
+
+# Additional resources
+
+* Gathering log data from a failed Agent-based installation
+* Adding worker nodes to an on-premise cluster

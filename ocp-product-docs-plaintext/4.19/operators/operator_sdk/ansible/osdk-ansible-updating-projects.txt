@@ -1,0 +1,204 @@
+# Updating projects for newer Operator SDK versions
+
+
+Red Hat OpenShift Container Platform 4.19 supports Operator SDK 1.38.0. If you already have the 1.36.1 CLI installed on your workstation, you can update the CLI to 1.38.0 by installing the latest version.
+
+[IMPORTANT]
+----
+The Red Hat-supported version of the Operator SDK CLI tool, including the related scaffolding and testing tools for Operator projects, is deprecated and is planned to be removed in a future release of Red Hat OpenShift Container Platform. Red Hat will provide bug fixes and support for this feature during the current release lifecycle, but this feature will no longer receive enhancements and will be removed from future Red Hat OpenShift Container Platform releases.
+The Red Hat-supported version of the Operator SDK is not recommended for creating new Operator projects. Operator authors with existing Operator projects can use the version of the Operator SDK CLI tool released with Red Hat OpenShift Container Platform 4.19 to maintain their projects and create Operator releases targeting newer versions of Red Hat OpenShift Container Platform.
+The following related base images for Operator projects are not deprecated. The runtime functionality and configuration APIs for these base images are still supported for bug fixes and for addressing CVEs.
+* The base image for Ansible-based Operator projects
+* The base image for Helm-based Operator projects
+For the most recent list of major functionality that has been deprecated or removed within Red Hat OpenShift Container Platform, refer to the Deprecated and removed features section of the Red Hat OpenShift Container Platform release notes.
+For information about the unsupported, community-maintained, version of the Operator SDK, see Operator SDK (Operator Framework).
+----
+However, to ensure your existing Operator projects maintain compatibility with Operator SDK 1.38.0, update steps are required for the associated breaking changes introduced since 1.36.1. You must perform the update steps manually in any of your Operator projects that were previously created or maintained with 1.36.1.
+
+# Updating Ansible-based Operator projects for Operator SDK 1.38.0
+
+The following procedure updates an existing {type}-based Operator project for compatibility with 1.38.0.
+
+* Operator SDK 1.38.0 installed
+* An Operator project created or maintained with Operator SDK 1.36.1
+
+1. Edit the Makefile of your Operator project to update the Operator SDK version to 1.38.0, as shown in the following example:
+Example Makefile
+
+```make
+# Set the Operator SDK version to use. By default, what is installed on the system is used.
+# This is useful for CI or a project to utilize a specific version of the operator-sdk toolkit.
+OPERATOR_SDK_VERSION ?= v1.38.0 1
+```
+
+Change the version from 1.36.1 to 1.38.0.
+2. Edit the Dockerfile of your Operator project to update the ose-ansible-operator image tag to 4.19, as shown in the following example:
+Example Dockerfile
+
+```docker
+FROM registry.redhat.io/openshift4/ose-ansible-operator:v4.19
+```
+
+3. You must upgrade the Kubernetes versions in your Operator project to use 1.30 and Kubebuilder v4.
+
+[TIP]
+----
+This update include complex scaffolding changes due to the removal of kube-rbac-proxy. If these migrations become difficult to follow, scaffold a new sample project for comparison.
+----
+1. Update the Kustomize version in your Makefile by making the following changes:
+
+```diff
+- curl -sSLo - https://github.com/kubernetes-sigs/kustomize/releases/download/kustomize/v5.3.0/kustomize_v5.3.0_$(OS)_$(ARCH).tar.gz | \
++ curl -sSLo - https://github.com/kubernetes-sigs/kustomize/releases/download/kustomize/v5.4.2/kustomize_v5.4.2_$(OS)_$(ARCH).tar.gz | \
+```
+
+2. Update your config/default/kustomization.yaml file with the following changes:
+
+```diff
+  # [PROMETHEUS] To enable prometheus monitor, uncomment all sections with 'PROMETHEUS'.
+  #- ../prometheus
++ # [METRICS] Expose the controller manager metrics service.
++ - metrics_service.yaml
+
++ # Uncomment the patches line if you enable Metrics, and/or are using webhooks and cert-manager
+  patches:
+- # Protect the /metrics endpoint by putting it behind auth.
+- # If you want your controller-manager to expose the /metrics
+- # endpoint w/o any authn/z, please comment the following line.
+- - path: manager_auth_proxy_patch.yaml
++ # [METRICS] The following patch will enable the metrics endpoint using HTTPS and the port :8443.
++ # More info: https://book.kubebuilder.io/reference/metrics
++ - path: manager_metrics_patch.yaml
++   target:
++     kind: Deployment
+```
+
+3. Remove the config/default/manager_auth_proxy_patch.yaml and config/default/manager_config_patch.yaml files.
+4. Create a config/default/manager_metrics_patch.yaml file with the following content:
+
+```text
+# This patch adds the args to allow exposing the metrics endpoint using HTTPS
+- op: add
+  path: /spec/template/spec/containers/0/args/0
+  value: --metrics-bind-address=:8443
+# This patch adds the args to allow securing the metrics endpoint
+- op: add
+  path: /spec/template/spec/containers/0/args/0
+  value: --metrics-secure
+# This patch adds the args to allow RBAC-based authn/authz the metrics endpoint
+- op: add
+  path: /spec/template/spec/containers/0/args/0
+  value: --metrics-require-rbac
+```
+
+5. Create a config/default/metrics_service.yaml file with the following content:
+
+```yaml
+apiVersion: v1
+kind: Service
+metadata:
+  labels:
+    control-plane: controller-manager
+    app.kubernetes.io/name: <operator-name>
+    app.kubernetes.io/managed-by: kustomize
+  name: controller-manager-metrics-service
+  namespace: system
+spec:
+  ports:
+    - name: https
+      port: 8443
+      protocol: TCP
+      targetPort: 8443
+  selector:
+    control-plane: controller-manager
+```
+
+6. Update your config/manager/manager.yaml file with the following changes:
+
+```diff
+  - --leader-elect
++ - --health-probe-bind-address=:6789
+```
+
+7. Update your config/prometheus/monitor.yaml file with the following changes:
+
+```diff
+     - path: /metrics
+-      port: https
++      port: https # Ensure this is the name of the port that exposes HTTPS metrics
+       tlsConfig:
++        # TODO(user): The option insecureSkipVerify: true is not recommended for production since it disables
++        # certificate verification. This poses a significant security risk by making the system vulnerable to
++        # man-in-the-middle attacks, where an attacker could intercept and manipulate the communication between
++        # Prometheus and the monitored services. This could lead to unauthorized access to sensitive metrics data,
++        # compromising the integrity and confidentiality of the information.
++        # Please use the following options for secure configurations:
++        # caFile: /etc/metrics-certs/ca.crt
++        # certFile: /etc/metrics-certs/tls.crt
++        # keyFile: /etc/metrics-certs/tls.key
+         insecureSkipVerify: true
+```
+
+8. Remove the following files from the config/rbac/ directory:
+* auth_proxy_client_clusterrole.yaml
+* auth_proxy_role.yaml
+* auth_proxy_role_binding.yaml
+* auth_proxy_service.yaml
+9. Update your config/rbac/kustomization.yaml file with the following changes:
+
+```diff
+  - leader_election_role_binding.yaml
+- # Comment the following 4 lines if you want to disable
+- # the auth proxy (https://github.com/brancz/kube-rbac-proxy)
+- # which protects your /metrics endpoint.
+- - auth_proxy_service.yaml
+- - auth_proxy_role.yaml
+- - auth_proxy_role_binding.yaml
+- - auth_proxy_client_clusterrole.yaml
++ # The following RBAC configurations are used to protect
++ # the metrics endpoint with authn/authz. These configurations
++ # ensure that only authorized users and service accounts
++ # can access the metrics endpoint. Comment the following
++ # permissions if you want to disable this protection.
++ # More info: https://book.kubebuilder.io/reference/metrics.html
++ - metrics_auth_role.yaml
++ - metrics_auth_role_binding.yaml
++ - metrics_reader_role.yaml
+```
+
+10. Create a config/rbac/metrics_auth_role_binding.yaml file with the following content:
+
+```yaml
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: metrics-auth-rolebinding
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: metrics-auth-role
+subjects:
+  - kind: ServiceAccount
+    name: controller-manager
+    namespace: system
+```
+
+11. Create a config/rbac/metrics_reader_role.yaml file with the following content:
+
+```yaml
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: metrics-reader
+rules:
+- nonResourceURLs:
+  - "/metrics"
+  verbs:
+  - get
+```
+
+
+# Additional resources
+
+* Updating Ansible-based Operator projects for Operator SDK 1.36.1 (Red Hat OpenShift Container Platform 4.17)
+* Migrating package manifest projects to bundle format
