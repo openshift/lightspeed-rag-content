@@ -1,0 +1,1006 @@
+# Configuring an SR-IOV Ethernet network attachment
+
+
+You can configure an Ethernet network attachment for an Single Root I/O Virtualization (SR-IOV) device in the cluster.
+Before you perform any tasks in the following documentation, ensure that you installed the SR-IOV Network Operator.
+
+# Ethernet device configuration object
+
+You can configure an Ethernet network device by defining an SriovNetwork object.
+
+The following YAML describes an SriovNetwork object:
+
+
+```yaml
+apiVersion: sriovnetwork.openshift.io/v1
+kind: SriovNetwork
+metadata:
+  name: <name> 1
+  namespace: openshift-sriov-network-operator 2
+spec:
+  resourceName: <sriov_resource_name> 3
+  networkNamespace: <target_namespace> 4
+  vlan: <vlan> 5
+  spoofChk: "<spoof_check>" 6
+  ipam: |- 7
+    {}
+  linkState: <link_state> 8
+  maxTxRate: <max_tx_rate> 9
+  minTxRate: <min_tx_rate> 10
+  vlanQoS: <vlan_qos> 11
+  trust: "<trust_vf>" 12
+  capabilities: <capabilities> 13
+```
+
+
+A name for the object. The SR-IOV Network Operator creates a NetworkAttachmentDefinition object with same name.
+The namespace where the SR-IOV Network Operator is installed.
+The value for the spec.resourceName parameter from the SriovNetworkNodePolicy object that defines the SR-IOV hardware for this additional network.
+The target namespace for the SriovNetwork object. Only {object} in the target namespace can attach to the additional network.
+Optional: A Virtual LAN (VLAN) ID for the additional network. The integer value must be from 0 to 4095. The default value is 0.
+Optional: The spoof check mode of the VF. The allowed values are the strings "on" and "off".
+
+[IMPORTANT]
+----
+You must enclose the value you specify in quotes or the object is rejected by the SR-IOV Network Operator.
+----
+A configuration object for the IPAM CNI plugin as a YAML block scalar. The plugin manages IP address assignment for the attachment definition.
+Optional: The link state of virtual function (VF). Allowed value are enable, disable and auto.
+Optional: A maximum transmission rate, in Mbps, for the VF.
+Optional: A minimum transmission rate, in Mbps, for the VF. This value must be less than or equal to the maximum transmission rate.
+
+[NOTE]
+----
+Intel NICs do not support the minTxRate parameter. For more information, see BZ#1772847.
+----
+Optional: An IEEE 802.1p priority level for the VF. The default value is 0.
+Optional: The trust mode of the VF. The allowed values are the strings "on" and "off".
+
+[IMPORTANT]
+----
+You must enclose the value that you specify in quotes, or the SR-IOV Network Operator rejects the object.
+----
+Optional: The capabilities to configure for this additional network. You can specify '{ "ips": true }' to enable IP address support or '{ "mac": true }' to enable MAC address support.
+
+## Creating a configuration for assignment of dual-stack IP addresses dynamically
+
+Dual-stack IP address assignment can be configured with the ipRanges parameter for:
+
+* IPv4 addresses
+* IPv6 addresses
+* multiple IP address assignment
+
+1. Set type to whereabouts.
+2. Use ipRanges to allocate IP addresses as shown in the following example:
+
+```yaml
+cniVersion: operator.openshift.io/v1
+kind: Network
+=metadata:
+  name: cluster
+spec:
+  additionalNetworks:
+  - name: whereabouts-shim
+    namespace: default
+    type: Raw
+    rawCNIConfig: |-
+      {
+       "name": "whereabouts-dual-stack",
+       "cniVersion": "0.3.1,
+       "type": "bridge",
+       "ipam": {
+         "type": "whereabouts",
+         "ipRanges": [
+                  {"range": "192.168.10.0/24"},
+                  {"range": "2001:db8::/64"}
+              ]
+       }
+      }
+```
+
+3. Attach network to a pod. For more information, see "Adding a pod to an additional network".
+4. Verify that all IP addresses are assigned.
+5. Run the following command to ensure the IP addresses are assigned as metadata.
+
+```yaml
+$ oc exec -it mypod -- ip a
+```
+
+
+## Configuration of IP address assignment for a network attachment
+
+For additional networks, IP addresses can be assigned using an IP Address Management (IPAM) CNI plugin, which supports various assignment methods, including Dynamic Host Configuration Protocol (DHCP) and static assignment.
+
+The DHCP IPAM CNI plugin responsible for dynamic assignment of IP addresses operates with two distinct components:
+
+* CNI Plugin: Responsible for integrating with the Kubernetes networking stack to request and release IP addresses.
+* DHCP IPAM CNI Daemon: A listener for DHCP events that coordinates with existing DHCP servers in the environment to handle IP address assignment requests. This daemon is not a DHCP server itself.
+
+For networks requiring type: dhcp in their IPAM configuration, ensure the following:
+
+* A DHCP server is available and running in the environment. The DHCP server is external to the cluster and is expected to be part of the customer's existing network infrastructure.
+* The DHCP server is appropriately configured to serve IP addresses to the nodes.
+
+In cases where a DHCP server is unavailable in the environment, it is recommended to use the Whereabouts IPAM CNI plugin instead. The Whereabouts CNI provides similar IP address management capabilities without the need for an external DHCP server.
+
+
+[NOTE]
+----
+Use the Whereabouts CNI plugin when there is no external DHCP server or where static IP address management is preferred. The Whereabouts plugin includes a reconciler daemon to manage stale IP address allocations.
+----
+
+A DHCP lease must be periodically renewed throughout the container&#8217;s lifetime, so a separate daemon, the DHCP IPAM CNI Daemon, is required. To deploy the DHCP IPAM CNI daemon, modify the Cluster Network Operator (CNO) configuration to trigger the deployment of this daemon as part of the additional network setup.
+
+### Static IP address assignment configuration
+
+The following table describes the configuration for static IP address assignment:
+
+
+
+The addresses array requires objects with the following fields:
+
+
+
+
+
+
+
+
+```json
+{
+  "ipam": {
+    "type": "static",
+      "addresses": [
+        {
+          "address": "191.168.1.7/24"
+        }
+      ]
+  }
+}
+```
+
+
+### Dynamic IP address (DHCP) assignment configuration
+
+A pod obtains its original DHCP lease when it is created. The lease must be periodically renewed by a minimal DHCP server deployment running on the cluster.
+
+
+[IMPORTANT]
+----
+For an Ethernet network attachment, the SR-IOV Network Operator does not create a DHCP server deployment; the Cluster Network Operator is responsible for creating the minimal DHCP server deployment.
+----
+
+To trigger the deployment of the DHCP server, you must create a shim network attachment by editing the Cluster Network Operator configuration, as in the following example:
+
+
+```yaml
+apiVersion: operator.openshift.io/v1
+kind: Network
+metadata:
+  name: cluster
+spec:
+  additionalNetworks:
+  - name: dhcp-shim
+    namespace: default
+    type: Raw
+    rawCNIConfig: |-
+      {
+        "name": "dhcp-shim",
+        "cniVersion": "0.3.1",
+        "type": "bridge",
+        "ipam": {
+          "type": "dhcp"
+        }
+      }
+  # ...
+```
+
+
+The following table describes the configuration parameters for dynamic IP address address assignment with DHCP.
+
+
+
+The following JSON example describes the configuration p for dynamic IP address address assignment with DHCP.
+
+
+```json
+{
+  "ipam": {
+    "type": "dhcp"
+  }
+}
+```
+
+
+### Dynamic IP address assignment configuration with Whereabouts
+
+The Whereabouts CNI plugin allows the dynamic assignment of an IP address to an additional network without the use of a DHCP server.
+
+The Whereabouts CNI plugin also supports overlapping IP address ranges and configuration of the same CIDR range multiple times within separate NetworkAttachmentDefinition CRDs. This provides greater flexibility and management capabilities in multi-tenant environments.
+
+#### Dynamic IP address configuration objects
+
+The following table describes the configuration objects for dynamic IP address assignment with Whereabouts:
+
+
+
+#### Dynamic IP address assignment configuration that uses Whereabouts
+
+The following example shows a dynamic address assignment configuration that uses Whereabouts:
+
+
+```json
+{
+  "ipam": {
+    "type": "whereabouts",
+    "range": "192.0.2.192/27",
+    "exclude": [
+       "192.0.2.192/30",
+       "192.0.2.196/32"
+    ]
+  }
+}
+```
+
+
+#### Dynamic IP address assignment that uses Whereabouts with overlapping IP address ranges
+
+The following example shows a dynamic IP address assignment that uses overlapping IP address ranges for multi-tenant networks.
+
+
+```json
+{
+  "ipam": {
+    "type": "whereabouts",
+    "range": "192.0.2.192/29",
+    "network_name": "example_net_common", 1
+  }
+}
+```
+
+
+Optional. If set, must match the network_name of NetworkAttachmentDefinition 2.
+
+
+```json
+{
+  "ipam": {
+    "type": "whereabouts",
+    "range": "192.0.2.192/24",
+    "network_name": "example_net_common", 1
+  }
+}
+```
+
+
+Optional. If set, must match the network_name of NetworkAttachmentDefinition 1.
+
+# Configuring SR-IOV additional network
+
+You can configure an additional network that uses SR-IOV hardware by creating an {rs} object.
+When you create an {rs} object, the SR-IOV Network Operator automatically creates a NetworkAttachmentDefinition object.
+
+
+[NOTE]
+----
+Do not modify or delete an {rs} object if it is attached to any {object} in a running state.
+----
+
+* Install the OpenShift CLI (oc).
+* Log in as a user with cluster-admin privileges.
+
+1. Create a {rs} object, and then save the YAML in the <name>.yaml file, where <name> is a name for this additional network. The object specification might resemble the following example:
+
+```yaml
+apiVersion: sriovnetwork.openshift.io/v1
+kind: {rs}
+metadata:
+  name: attach1
+  namespace: openshift-sriov-network-operator
+spec:
+  resourceName: net1
+  networkNamespace: project2
+  ipam: |-
+    {
+      "type": "host-local",
+      "subnet": "10.56.217.0/24",
+      "rangeStart": "10.56.217.171",
+      "rangeEnd": "10.56.217.181",
+      "gateway": "10.56.217.1"
+    }
+```
+
+2. To create the object, enter the following command:
+
+```terminal
+$ oc create -f <name>.yaml
+```
+
+
+where <name> specifies the name of the additional network.
+3. Optional: To confirm that the NetworkAttachmentDefinition object that is associated with the {rs} object that you created in the previous step exists, enter the following command. Replace <namespace> with the networkNamespace you specified in the {rs} object.
+
+```terminal
+$ oc get net-attach-def -n <namespace>
+```
+
+
+# Assigning an SR-IOV network to a VRF
+
+As a cluster administrator, you can assign an SR-IOV network interface to your VRF domain by using the CNI VRF plugin.
+
+To do this, add the VRF configuration to the optional metaPlugins parameter of the SriovNetwork resource.
+
+
+[NOTE]
+----
+Applications that use VRFs need to bind to a specific device. The common usage is to use the SO_BINDTODEVICE option for a socket. SO_BINDTODEVICE binds the socket to a device that is specified in the passed interface name, for example, eth1. To use SO_BINDTODEVICE, the application must have CAP_NET_RAW capabilities.
+Using a VRF through the ip vrf exec command is not supported in Red Hat OpenShift Container Platform pods. To use VRF, bind applications directly to the VRF interface.
+----
+
+## Creating an additional SR-IOV network attachment with the CNI VRF plugin
+
+The SR-IOV Network Operator manages additional network definitions. When you specify an additional SR-IOV network to create, the SR-IOV Network Operator creates the NetworkAttachmentDefinition custom resource (CR) automatically.
+
+
+[NOTE]
+----
+Do not edit NetworkAttachmentDefinition custom resources that the SR-IOV Network Operator manages. Doing so might disrupt network traffic on your additional network.
+----
+
+To create an additional SR-IOV network attachment with the CNI VRF plugin, perform the following procedure.
+
+* Install the Red Hat OpenShift Container Platform CLI (oc).
+* Log in to the Red Hat OpenShift Container Platform cluster as a user with cluster-admin privileges.
+
+1. Create the SriovNetwork custom resource (CR) for the additional SR-IOV network attachment and insert the metaPlugins configuration, as in the following example CR. Save the YAML as the file sriov-network-attachment.yaml.
+Example SriovNetwork custom resource (CR) example
+
+```yaml
+apiVersion: sriovnetwork.openshift.io/v1
+kind: SriovNetwork
+metadata:
+  name: example-network
+  namespace: additional-sriov-network-1
+spec:
+  ipam: |
+    {
+      "type": "host-local",
+      "subnet": "10.56.217.0/24",
+      "rangeStart": "10.56.217.171",
+      "rangeEnd": "10.56.217.181",
+      "routes": [{
+        "dst": "0.0.0.0/0"
+      }],
+      "gateway": "10.56.217.1"
+    }
+  vlan: 0
+  resourceName: intelnics
+  metaPlugins : |
+    {
+      "type": "vrf", 1
+      "vrfname": "example-vrf-name" 2
+    }
+```
+
+type must be set to vrf.
+vrfname is the name of the VRF that the interface is assigned to. If it does not exist in the pod, it is created.
+2. Create the SriovNetwork resource:
+
+```terminal
+$ oc create -f sriov-network-attachment.yaml
+```
+
+
+* Confirm that the SR-IOV Network Operator created the NetworkAttachmentDefinition CR by running the following command:
+
+```terminal
+$ oc get network-attachment-definitions -n <namespace> 1
+```
+
+Replace <namespace> with the namespace that you specified when configuring the network attachment, for example, additional-sriov-network-1.
+Example output
+
+```terminal
+NAME                            AGE
+additional-sriov-network-1      14m
+```
+
+
+[NOTE]
+----
+There might be a delay before the SR-IOV Network Operator creates the CR.
+----
+
+To verify that the VRF CNI is correctly configured and that the additional SR-IOV network attachment is attached, do the following:
+
+1. Create an SR-IOV network that uses the VRF CNI.
+2. Assign the network to a pod.
+3. Verify that the pod network attachment is connected to the SR-IOV additional network. Remote shell into the pod and run the following command:
+
+```terminal
+$ ip vrf show
+```
+
+Example output
+
+```terminal
+Name              Table
+-----------------------
+red                 10
+```
+
+4. Confirm that the VRF interface is master of the secondary interface by running the following command:
+
+```terminal
+$ ip link
+```
+
+Example output
+
+```terminal
+...
+5: net1: <BROADCAST,MULTICAST,UP,LOWER_UP> mtu 1500 qdisc noqueue master red state UP mode
+...
+```
+
+
+# Runtime configuration for an Ethernet-based SR-IOV attachment
+
+When attaching a pod to an additional network, you can specify a runtime configuration to make specific customizations for the pod. For example, you can request a specific MAC hardware address.
+
+You specify the runtime configuration by setting an annotation in the pod specification. The annotation key is k8s.v1.cni.cncf.io/networks, and it accepts a JSON object that describes the runtime configuration.
+
+The following JSON describes the runtime configuration options for an Ethernet-based SR-IOV network attachment.
+
+
+```json
+[
+  {
+    "name": "<name>", 1
+    "mac": "<mac_address>", 2
+    "ips": ["<cidr_range>"] 3
+  }
+]
+```
+
+
+The name of the SR-IOV network attachment definition CR.
+Optional: The MAC address for the SR-IOV device that is allocated from the resource type defined in the SR-IOV network attachment definition CR. To use this feature, you also must specify { "mac": true } in the SriovNetwork object.
+Optional: IP addresses for the SR-IOV device that is allocated from the resource type defined in the SR-IOV network attachment definition CR. Both IPv4 and IPv6 addresses are supported. To use this feature, you also must specify { "ips": true } in the SriovNetwork object.
+
+
+```yaml
+apiVersion: v1
+kind: Pod
+metadata:
+  name: sample-pod
+  annotations:
+    k8s.v1.cni.cncf.io/networks: |-
+      [
+        {
+          "name": "net1",
+          "mac": "20:04:0f:f1:88:01",
+          "ips": ["192.168.10.1/24", "2001::1/64"]
+        }
+      ]
+spec:
+  containers:
+  - name: sample-container
+    image: <image>
+    imagePullPolicy: IfNotPresent
+    command: ["sleep", "infinity"]
+```
+
+
+# Adding a pod to an additional network
+
+You can add a pod to an additional network. The pod continues to send normal cluster-related network traffic over the default network.
+
+When a pod is created additional networks are attached to it. However, if a pod already exists, you cannot attach additional networks to it.
+
+The pod must be in the same namespace as the additional network.
+
+* Install the OpenShift CLI (oc).
+* Log in to the cluster.
+
+1. Add an annotation to the Pod object. Only one of the following annotation formats can be used:
+1. To attach an additional network without any customization, add an annotation with the following format. Replace <network> with the name of the additional network to associate with the pod:
+
+```yaml
+metadata:
+  annotations:
+    k8s.v1.cni.cncf.io/networks: <network>[,<network>,...] 1
+```
+
+To specify more than one additional network, separate each network
+with a comma. Do not include whitespace between the comma. If you specify
+the same additional network multiple times, that pod will have multiple network
+interfaces attached to that network.
+2. To attach an additional network with customizations, add an annotation with the following format:
+
+```yaml
+metadata:
+  annotations:
+    k8s.v1.cni.cncf.io/networks: |-
+      [
+        {
+          "name": "<network>", 1
+          "namespace": "<namespace>", 2
+          "default-route": ["<default-route>"] 3
+        }
+      ]
+```
+
+Specify the name of the additional network defined by a NetworkAttachmentDefinition object.
+Specify the namespace where the NetworkAttachmentDefinition object is defined.
+Optional: Specify an override for the default route, such as 192.168.17.1.
+2. To create the pod, enter the following command. Replace <name> with the name of the pod.
+
+```terminal
+$ oc create -f <name>.yaml
+```
+
+3. Optional: To Confirm that the annotation exists in the Pod CR, enter the following command, replacing <name> with the name of the pod.
+
+```terminal
+$ oc get pod <name> -o yaml
+```
+
+
+In the following example, the example-pod pod is attached to the net1
+additional network:
+
+```terminal
+$ oc get pod example-pod -o yaml
+apiVersion: v1
+kind: Pod
+metadata:
+  annotations:
+    k8s.v1.cni.cncf.io/networks: macvlan-bridge
+    k8s.v1.cni.cncf.io/network-status: |- 1
+      [{
+          "name": "ovn-kubernetes",
+          "interface": "eth0",
+          "ips": [
+              "10.128.2.14"
+          ],
+          "default": true,
+          "dns": {}
+      },{
+          "name": "macvlan-bridge",
+          "interface": "net1",
+          "ips": [
+              "20.2.2.100"
+          ],
+          "mac": "22:2f:60:a5:f8:00",
+          "dns": {}
+      }]
+  name: example-pod
+  namespace: default
+spec:
+  ...
+status:
+  ...
+```
+
+The k8s.v1.cni.cncf.io/network-status parameter is a JSON array of
+objects. Each object describes the status of an additional network attached
+to the pod. The annotation value is stored as a plain text value.
+
+## Exposing MTU for vfio-pci SR-IOV devices to pod
+
+After adding a pod to an additional network, you can check that the MTU is available for the SR-IOV network.
+
+1. Check that the pod annotation includes MTU by running the following command:
+
+```terminal
+$ oc describe pod example-pod
+```
+
+
+The following example shows the sample output:
+
+```text
+"mac": "20:04:0f:f1:88:01",
+       "mtu": 1500,
+       "dns": {},
+       "device-info": {
+         "type": "pci",
+         "version": "1.1.0",
+         "pci": {
+           "pci-address": "0000:86:01.3"
+    }
+  }
+```
+
+2. Verify that the MTU is available in /etc/podnetinfo/ inside the pod by running the following command:
+
+```terminal
+$ oc exec example-pod -n sriov-tests -- cat /etc/podnetinfo/annotations | grep mtu
+```
+
+
+The following example shows the sample output:
+
+```text
+k8s.v1.cni.cncf.io/network-status="[{
+    \"name\": \"ovn-kubernetes\",
+    \"interface\": \"eth0\",
+    \"ips\": [
+        \"10.131.0.67\"
+    ],
+    \"mac\": \"0a:58:0a:83:00:43\",
+    \"default\": true,
+    \"dns\": {}
+    },{
+    \"name\": \"sriov-tests/sriov-nic-1\",
+    \"interface\": \"net1\",
+    \"ips\": [
+        \"192.168.10.1\"
+    ],
+    \"mac\": \"20:04:0f:f1:88:01\",
+    \"mtu\": 1500,
+    \"dns\": {},
+    \"device-info\": {
+        \"type\": \"pci\",
+        \"version\": \"1.1.0\",
+        \"pci\": {
+            \"pci-address\": \"0000:86:01.3\"
+        }
+    }
+    }]"
+```
+
+
+# Configuring parallel node draining during SR-IOV network policy updates
+
+By default, the SR-IOV Network Operator drains workloads from a node before every policy change.
+The Operator performs this action, one node at a time, to ensure that no workloads are affected by the reconfiguration.
+
+In large clusters, draining nodes sequentially can be time-consuming, taking hours or even days. In time-sensitive environments, you can enable parallel node draining in an SriovNetworkPoolConfig custom resource (CR) for faster rollouts of SR-IOV network configurations.
+
+To configure parallel draining, use the SriovNetworkPoolConfig CR to create a node pool. You can then add nodes to the pool and define the maximum number of nodes in the pool that the Operator can drain in parallel. With this approach, you can enable parallel draining for faster reconfiguration while ensuring you still have enough nodes remaining in the pool to handle any running workloads.
+
+
+[NOTE]
+----
+A node can only belong to one SR-IOV network pool configuration. If a node is not part of a pool, it is added to a virtual, default, pool that is configured to drain one node at a time only.
+The node might restart during the draining process.
+----
+
+* Install the OpenShift CLI (oc).
+* Log in as a user with cluster-admin privileges.
+* Install the SR-IOV Network Operator.
+* Nodes have hardware that support SR-IOV.
+
+1. Create a SriovNetworkPoolConfig resource:
+1. Create a YAML file that defines the SriovNetworkPoolConfig resource:
+Example sriov-nw-pool.yaml file
+
+```yaml
+apiVersion: v1
+kind: SriovNetworkPoolConfig
+metadata:
+  name: pool-1 1
+  namespace: openshift-sriov-network-operator 2
+spec:
+  maxUnavailable: 2 3
+  nodeSelector: 4
+    matchLabels:
+      node-role.kubernetes.io/worker: ""
+```
+
+Specify the name of the SriovNetworkPoolConfig object.
+Specify namespace where the SR-IOV Network Operator is installed.
+Specify an integer number, or percentage value, for nodes that can be unavailable in the pool during an update. For example, if you have 10 nodes and you set the maximum unavailable to 2, then only 2 nodes can be drained in parallel at any time, leaving 8 nodes for handling workloads.
+Specify the nodes to add the pool by using the node selector. This example adds all nodes with the worker role to the pool.
+2. Create the SriovNetworkPoolConfig resource by running the following command:
+
+```terminal
+$ oc create -f sriov-nw-pool.yaml
+```
+
+2. Create the sriov-test namespace by running the following comand:
+
+```terminal
+$ oc create namespace sriov-test
+```
+
+3. Create a SriovNetworkNodePolicy resource:
+1. Create a YAML file that defines the SriovNetworkNodePolicy resource:
+Example sriov-node-policy.yaml file
+
+```yaml
+apiVersion: sriovnetwork.openshift.io/v1
+kind: SriovNetworkNodePolicy
+metadata:
+  name: sriov-nic-1
+  namespace: openshift-sriov-network-operator
+spec:
+  deviceType: netdevice
+  nicSelector:
+    pfNames: ["ens1"]
+  nodeSelector:
+    node-role.kubernetes.io/worker: ""
+  numVfs: 5
+  priority: 99
+  resourceName: sriov_nic_1
+```
+
+2. Create the SriovNetworkNodePolicy resource by running the following command:
+
+```terminal
+$ oc create -f sriov-node-policy.yaml
+```
+
+4. Create a SriovNetwork resource:
+1. Create a YAML file that defines the SriovNetwork resource:
+Example sriov-network.yaml file
+
+```yaml
+apiVersion: sriovnetwork.openshift.io/v1
+kind: SriovNetwork
+metadata:
+  name: sriov-nic-1
+  namespace: openshift-sriov-network-operator
+spec:
+  linkState: auto
+  networkNamespace: sriov-test
+  resourceName: sriov_nic_1
+  capabilities: '{ "mac": true, "ips": true }'
+  ipam: '{ "type": "static" }'
+```
+
+2. Create the SriovNetwork resource by running the following command:
+
+```terminal
+$ oc create -f sriov-network.yaml
+```
+
+
+* View the node pool you created by running the following command:
+
+```terminal
+$ oc get sriovNetworkpoolConfig -n openshift-sriov-network-operator
+```
+
+Example output
+
+```terminal
+NAME     AGE
+pool-1   67s 1
+```
+
+In this example, pool-1 contains all the nodes with the worker role.
+
+To demonstrate the node draining process using the example scenario from the above procedure, complete the following steps:
+
+1. Update the number of virtual functions in the SriovNetworkNodePolicy resource to trigger workload draining in the cluster:
+
+```terminal
+$ oc patch SriovNetworkNodePolicy sriov-nic-1 -n openshift-sriov-network-operator --type merge -p '{"spec": {"numVfs": 4}}'
+```
+
+2. Monitor the draining status on the target cluster by running the following command:
+
+```terminal
+$ oc get sriovNetworkNodeState -n openshift-sriov-network-operator
+```
+
+Example output
+
+```terminal
+NAMESPACE                          NAME       SYNC STATUS   DESIRED SYNC STATE   CURRENT SYNC STATE   AGE
+openshift-sriov-network-operator   worker-0   InProgress    Drain_Required       DrainComplete        3d10h
+openshift-sriov-network-operator   worker-1   InProgress    Drain_Required       DrainComplete        3d10h
+```
+
+
+When the draining process is complete, the SYNC STATUS changes to Succeeded, and the DESIRED SYNC STATE and CURRENT SYNC STATE values return to IDLE.
+Example output
+
+```terminal
+NAMESPACE                          NAME       SYNC STATUS   DESIRED SYNC STATE   CURRENT SYNC STATE   AGE
+openshift-sriov-network-operator   worker-0   Succeeded     Idle                 Idle                 3d10h
+openshift-sriov-network-operator   worker-1   Succeeded     Idle                 Idle                 3d10h
+```
+
+
+# Excluding the SR-IOV network topology for NUMA-aware scheduling
+
+To exclude advertising the SR-IOV network resource&#8217;s Non-Uniform Memory Access (NUMA) node to the Topology Manager, you can configure the excludeTopology specification in the SriovNetworkNodePolicy custom resource. Use this configuration for more flexible SR-IOV network deployments during NUMA-aware pod scheduling.
+
+* You have installed the OpenShift CLI (oc).
+* You have configured the CPU Manager policy to static. For more information about CPU Manager, see the Additional resources section.
+* You have configured the Topology Manager policy to single-numa-node.
+* You have installed the SR-IOV Network Operator.
+
+1. Create the SriovNetworkNodePolicy CR:
+1. Save the following YAML in the sriov-network-node-policy.yaml file, replacing values in the YAML to match your environment:
+
+```yaml
+apiVersion: sriovnetwork.openshift.io/v1
+kind: SriovNetworkNodePolicy
+metadata:
+  name: <policy_name>
+  namespace: openshift-sriov-network-operator
+spec:
+  resourceName: sriovnuma0 1
+  nodeSelector:
+    kubernetes.io/hostname: <node_name>
+  numVfs: <number_of_Vfs>
+  nicSelector: 2
+    vendor: "<vendor_ID>"
+    deviceID: "<device_ID>"
+  deviceType: netdevice
+  excludeTopology: true 3
+```
+
+The resource name of the SR-IOV network device plugin. This YAML uses a sample resourceName value.
+Identify the device for the Operator to configure by using the NIC selector.
+To exclude advertising the NUMA node for the SR-IOV network resource to the Topology Manager, set the value to true. The default value is false.
+
+[NOTE]
+----
+If multiple SriovNetworkNodePolicy resources target the same SR-IOV network resource, the SriovNetworkNodePolicy resources must have the same value as the excludeTopology specification. Otherwise, the conflicting policy is rejected.
+----
+2. Create the SriovNetworkNodePolicy resource by running the following command:
+
+```terminal
+$ oc create -f sriov-network-node-policy.yaml
+```
+
+Example output
+
+```terminal
+sriovnetworknodepolicy.sriovnetwork.openshift.io/policy-for-numa-0 created
+```
+
+2. Create the SriovNetwork CR:
+1. Save the following YAML in the sriov-network.yaml file, replacing values in the YAML to match your environment:
+
+```yaml
+apiVersion: sriovnetwork.openshift.io/v1
+kind: SriovNetwork
+metadata:
+  name: sriov-numa-0-network 1
+  namespace: openshift-sriov-network-operator
+spec:
+  resourceName: sriovnuma0 2
+  networkNamespace: <namespace> 3
+  ipam: |- 4
+    {
+      "type": "<ipam_type>",
+    }
+```
+
+Replace sriov-numa-0-network with the name for the SR-IOV network resource.
+Specify the resource name for the SriovNetworkNodePolicy CR from the previous step. This YAML uses a sample resourceName value.
+Enter the namespace for your SR-IOV network resource.
+Enter the IP address management configuration for the SR-IOV network.
+2. Create the SriovNetwork resource by running the following command:
+
+```terminal
+$ oc create -f sriov-network.yaml
+```
+
+Example output
+
+```terminal
+sriovnetwork.sriovnetwork.openshift.io/sriov-numa-0-network created
+```
+
+3. Create a pod and assign the SR-IOV network resource from the previous step:
+1. Save the following YAML in the sriov-network-pod.yaml file, replacing values in the YAML to match your environment:
+
+```yaml
+apiVersion: v1
+kind: Pod
+metadata:
+  name: <pod_name>
+  annotations:
+    k8s.v1.cni.cncf.io/networks: |-
+      [
+        {
+          "name": "sriov-numa-0-network", 1
+        }
+      ]
+spec:
+  containers:
+  - name: <container_name>
+    image: <image>
+    imagePullPolicy: IfNotPresent
+    command: ["sleep", "infinity"]
+```
+
+This is the name of the SriovNetwork resource that uses the SriovNetworkNodePolicy resource.
+2. Create the Pod resource by running the following command:
+
+```terminal
+$ oc create -f sriov-network-pod.yaml
+```
+
+Example output
+
+```terminal
+pod/example-pod created
+```
+
+
+1. Verify the status of the pod by running the following command, replacing <pod_name> with the name of the pod:
+
+```terminal
+$ oc get pod <pod_name>
+```
+
+Example output
+
+```terminal
+NAME                                     READY   STATUS    RESTARTS   AGE
+test-deployment-sriov-76cbbf4756-k9v72   1/1     Running   0          45h
+```
+
+2. Open a debug session with the target pod to verify that the SR-IOV network resources are deployed to a different node than the memory and CPU resources.
+1. Open a debug session with the pod by running the following command, replacing <pod_name> with the target pod name.
+
+```terminal
+$ oc debug pod/<pod_name>
+```
+
+2. Set /host as the root directory within the debug shell. The debug pod mounts the root file system from the host in /host within the pod. By changing the root directory to /host, you can run binaries from the host file system:
+
+```terminal
+$ chroot /host
+```
+
+3. View information about the CPU allocation by running the following commands:
+
+```terminal
+$ lscpu | grep NUMA
+```
+
+Example output
+
+```terminal
+NUMA node(s):                    2
+NUMA node0 CPU(s):     0,2,4,6,8,10,12,14,16,18,...
+NUMA node1 CPU(s):     1,3,5,7,9,11,13,15,17,19,...
+```
+
+
+```terminal
+$ cat /proc/self/status | grep Cpus
+```
+
+Example output
+
+```terminal
+Cpus_allowed:	aa
+Cpus_allowed_list:	1,3,5,7
+```
+
+
+```terminal
+$ cat  /sys/class/net/net1/device/numa_node
+```
+
+Example output
+
+```terminal
+0
+```
+
+
+In this example, CPUs 1,3,5, and 7 are allocated to NUMA node1 but the SR-IOV network resource can use the NIC in NUMA node0.
+
+
+[NOTE]
+----
+If the excludeTopology specification is set to True, it is possible that the required resources exist in the same NUMA node.
+----
+
+# Additional resources
+
+* Configuring an SR-IOV network device
+* Using CPU Manager

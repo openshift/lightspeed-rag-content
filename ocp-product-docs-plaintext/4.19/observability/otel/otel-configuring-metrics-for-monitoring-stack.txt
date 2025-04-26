@@ -1,0 +1,162 @@
+# Configuring metrics for the monitoring stack
+
+
+As a cluster administrator, you can configure the OpenTelemetry Collector custom resource (CR) to perform the following tasks:
+* Create a Prometheus ServiceMonitor CR for scraping the Collector’s pipeline metrics and the enabled Prometheus exporters.
+* Configure the Prometheus receiver to scrape metrics from the in-cluster monitoring stack.
+
+# Configuration for sending metrics to the monitoring stack
+
+You can configure the OpenTelemetryCollector custom resource (CR) to create a Prometheus ServiceMonitor CR or a PodMonitor CR for a sidecar deployment. A ServiceMonitor can scrape Collector&#8217;s internal metrics endpoint and Prometheus exporter metrics endpoints.
+
+
+```yaml
+apiVersion: opentelemetry.io/v1beta1
+kind: OpenTelemetryCollector
+spec:
+  mode: deployment
+  observability:
+    metrics:
+      enableMetrics: true 1
+  config:
+    exporters:
+      prometheus:
+        endpoint: 0.0.0.0:8889
+        resource_to_telemetry_conversion:
+          enabled: true # by default resource attributes are dropped
+    service:
+      telemetry:
+        metrics:
+          address: ":8888"
+      pipelines:
+        metrics:
+          exporters: [prometheus]
+```
+
+
+Configures the Red Hat build of OpenTelemetry Operator to create the Prometheus ServiceMonitor CR or PodMonitor CR to scrape the Collector's internal metrics endpoint and the Prometheus exporter metrics endpoints.
+
+
+[NOTE]
+----
+Setting enableMetrics to true creates the following two ServiceMonitor instances:
+* One ServiceMonitor instance for the <instance_name>-collector-monitoring service. This ServiceMonitor instance scrapes the Collector's internal metrics.
+* One ServiceMonitor instance for the <instance_name>-collector service. This ServiceMonitor instance scrapes the metrics exposed by the Prometheus exporter instances.
+----
+
+Alternatively, a manually created Prometheus PodMonitor CR can provide fine control, for example removing duplicated labels added during Prometheus scraping.
+
+
+```yaml
+apiVersion: monitoring.coreos.com/v1
+kind: PodMonitor
+metadata:
+  name: otel-collector
+spec:
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: <cr_name>-collector 1
+  podMetricsEndpoints:
+  - port: metrics 2
+  - port: promexporter 3
+    relabelings:
+    - action: labeldrop
+      regex: pod
+    - action: labeldrop
+      regex: container
+    - action: labeldrop
+      regex: endpoint
+    metricRelabelings:
+    - action: labeldrop
+      regex: instance
+    - action: labeldrop
+      regex: job
+```
+
+
+The name of the OpenTelemetry Collector CR.
+The name of the internal metrics port for the OpenTelemetry Collector. This port name is always metrics.
+The name of the Prometheus exporter port for the OpenTelemetry Collector.
+
+# Configuration for receiving metrics from the monitoring stack
+
+A configured OpenTelemetry Collector custom resource (CR) can set up the Prometheus receiver to scrape metrics from the in-cluster monitoring stack.
+
+
+```yaml
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: otel-collector
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: cluster-monitoring-view 1
+subjects:
+  - kind: ServiceAccount
+    name: otel-collector
+    namespace: observability
+---
+kind: ConfigMap
+apiVersion: v1
+metadata:
+  name: cabundle
+  namespce: observability
+  annotations:
+    service.beta.openshift.io/inject-cabundle: "true" 2
+---
+apiVersion: opentelemetry.io/v1beta1
+kind: OpenTelemetryCollector
+metadata:
+  name: otel
+  namespace: observability
+spec:
+  volumeMounts:
+    - name: cabundle-volume
+      mountPath: /etc/pki/ca-trust/source/service-ca
+      readOnly: true
+  volumes:
+    - name: cabundle-volume
+      configMap:
+        name: cabundle
+  mode: deployment
+  config:
+    receivers:
+      prometheus: 3
+        config:
+          scrape_configs:
+            - job_name: 'federate'
+              scrape_interval: 15s
+              scheme: https
+              tls_config:
+                ca_file: /etc/pki/ca-trust/source/service-ca/service-ca.crt
+              bearer_token_file: /var/run/secrets/kubernetes.io/serviceaccount/token
+              honor_labels: false
+              params:
+                'match[]':
+                  - '{__name__="<metric_name>"}' 4
+              metrics_path: '/federate'
+              static_configs:
+                - targets:
+                  - "prometheus-k8s.openshift-monitoring.svc.cluster.local:9091"
+    exporters:
+      debug: 5
+        verbosity: detailed
+    service:
+      pipelines:
+        metrics:
+          receivers: [prometheus]
+          processors: []
+          exporters: [debug]
+```
+
+
+Assigns the cluster-monitoring-view cluster role to the service account of the OpenTelemetry Collector so that it can access the metrics data.
+Injects the OpenShift service CA for configuring the TLS in the Prometheus receiver.
+Configures the Prometheus receiver to scrape the federate endpoint from the in-cluster monitoring stack.
+Uses the Prometheus query language to select the metrics to be scraped. See the in-cluster monitoring documentation for more details and limitations of the federate endpoint.
+Configures the debug exporter to print the metrics to the standard output.
+
+# Additional resources
+
+* Querying metrics by using the federation endpoint for Prometheus

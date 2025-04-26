@@ -1,0 +1,1910 @@
+# Managing cluster extensions
+
+
+After a catalog has been added to your cluster, you have access to the versions, patches, and over-the-air updates of the extensions and Operators that are published to the catalog.
+You can use custom resources (CRs) to manage extensions declaratively from the CLI.
+
+# Supported extensions
+
+Currently, Operator Lifecycle Manager (OLM) v1 supports installing cluster extensions that meet all of the following criteria:
+
+* The extension must use the registry+v1 bundle format introduced in OLM (Classic).
+* The extension must support installation via the AllNamespaces install mode.
+* The extension must not use webhooks.
+* The extension must not declare dependencies by using any of the following file-based catalog properties:
+* olm.gvk.required
+* olm.package.required
+* olm.constraint
+
+OLM v1 checks that the extension you want to install meets these constraints. If the extension that you want to install does not meet these constraints, an error message is printed in the cluster extension&#8217;s conditions.
+
+
+[IMPORTANT]
+----
+Operator Lifecycle Manager (OLM) v1 does not support the OperatorConditions API introduced in OLM (Classic).
+If an extension relies on only the OperatorConditions API to manage updates, the extension might not install correctly. Most extensions that rely on this API fail at start time, but some might fail during reconciliation.
+As a workaround, you can pin your extension to a specific version. When you want to update your extension, consult the extension's documentation to find out when it is safe to pin the extension to a new version.
+----
+
+* Operator conditions
+
+# Finding Operators to install from a catalog
+
+After you add a catalog to your cluster, you can query the catalog to find Operators and extensions to install.
+
+Currently in Operator Lifecycle Manager (OLM) v1, you cannot query on-cluster catalogs managed by catalogd. In OLM v1, you must use the opm and jq CLI tools to query the catalog registry.
+
+* You have added a catalog to your cluster.
+* You have installed the jq CLI tool.
+* You have installed the opm CLI tool.
+
+1. To return a list of extensions that support the AllNamespaces install mode and do not use webhooks, enter the following command:
+
+```terminal
+$ opm render <catalog_registry_url>:<tag> \
+  | jq -cs '[.[] | select(.schema == "olm.bundle" \
+  and (.properties[] | select(.type == "olm.csv.metadata").value.installModes[] \
+  | select(.type == "AllNamespaces" and .supported == true)) \
+  and .spec.webhookdefinitions == null) | .package] | unique[]'
+```
+
+
+where:
+catalog_registry_url:: Specifies the URL of the catalog registry, such as registry.redhat.io/redhat/redhat-operator-index.
+tag:: Specifies the tag or version of the catalog, such as v4.19 or latest.
+Example command
+
+```terminal
+$ opm render \
+  registry.redhat.io/redhat/redhat-operator-index:v4.19 \
+  | jq -cs '[.[] | select(.schema == "olm.bundle" \
+  and (.properties[] | select(.type == "olm.csv.metadata").value.installModes[] \
+  | select(.type == "AllNamespaces" and .supported == true)) \
+  and .spec.webhookdefinitions == null) | .package] | unique[]'
+```
+Example output
+
+```text
+"3scale-operator"
+"amq-broker-rhel8"
+"amq-online"
+"amq-streams"
+"amq-streams-console"
+"ansible-automation-platform-operator"
+"ansible-cloud-addons-operator"
+"apicast-operator"
+"authorino-operator"
+"aws-load-balancer-operator"
+"bamoe-kogito-operator"
+"cephcsi-operator"
+"cincinnati-operator"
+"cluster-logging"
+"cluster-observability-operator"
+"compliance-operator"
+"container-security-operator"
+"cryostat-operator"
+"datagrid"
+"devspaces"
+...
+```
+2. Inspect the contents of an extension's metadata by running the following command:
+
+```terminal
+$ opm render <catalog_registry_url>:<tag> \
+  | jq -s '.[] | select( .schema == "olm.package") \
+  | select( .name == "<package_name>")'
+```
+
+Example command
+
+```terminal
+$ opm render \
+  registry.redhat.io/redhat/redhat-operator-index:v4.19 \
+  | jq -s '.[] | select( .schema == "olm.package") \
+  | select( .name == "openshift-pipelines-operator-rh")'
+```
+Example output
+
+```text
+{
+  "schema": "olm.package",
+  "name": "openshift-pipelines-operator-rh",
+  "defaultChannel": "latest",
+  "icon": {
+    "base64data": "iVBORw0KGgoAAAANSUhE...",
+    "mediatype": "image/png"
+  }
+}
+```
+
+## Common catalog queries
+
+You can query catalogs by using the opm and jq CLI tools. The following tables show common catalog queries that you can use when installing, updating, and managing the lifecycle of extensions.
+
+
+```terminal
+$ opm render <catalog_registry_url>:<tag> | <jq_request>
+```
+
+
+where:
+
+catalog_registry_url:: Specifies the URL of the catalog registry, such as registry.redhat.io/redhat/redhat-operator-index.
+tag:: Specifies the tag or version of the catalog, such as v4.19 or latest.
+jq_request:: Specifies the query you want to run on the catalog.
+
+
+```terminal
+$ opm render \
+  registry.redhat.io/redhat/redhat-operator-index:v4.19 \
+  | jq -cs '[.[] | select(.schema == "olm.bundle" and (.properties[] \
+  | select(.type == "olm.csv.metadata").value.installModes[] \
+  | select(.type == "AllNamespaces" and .supported == true)) \
+  and .spec.webhookdefinitions == null) \
+  | .package] | unique[]'
+```
+
+
+
+
+
+
+
+# Cluster extension permissions
+
+In Operator Lifecycle Manager (OLM) Classic, a single service account with cluster administrator privileges manages all cluster extensions.
+
+OLM v1 is designed to be more secure than OLM (Classic) by default. OLM v1 manages a cluster extension by using the service account specified in an extension&#8217;s custom resource (CR). Cluster administrators can create a service account for each cluster extension. As a result, administrators can follow the principle of least privilege and assign only the role-based access controls (RBAC) to install and manage that extension.
+
+You must add each permission to either a cluster role or role. Then you must bind the cluster role or role to the service account with a cluster role binding or role binding.
+
+You can scope the RBAC to either the cluster or to a namespace. Use cluster roles and cluster role bindings to scope permissions to the cluster. Use roles and role bindings to scope permissions to a namespace. Whether you scope the permissions to the cluster or to a namespace depends on the design of the extension you want to install and manage.
+
+
+[IMPORTANT]
+----
+To simply the following procedure and improve readability, the following example manifest uses permissions that are scoped to the cluster. You can further restrict some of the permissions by scoping them to the namespace of the extension instead of the cluster.
+----
+
+If a new version of an installed extension requires additional permissions, OLM v1 halts the update process until a cluster administrator grants those permissions.
+
+## Creating a namespace
+
+Before you create a service account to install and manage your cluster extension, you must create a namespace.
+
+* Access to an Red Hat OpenShift Container Platform cluster using an account with cluster-admin permissions.
+
+* Create a new namespace for the service account of the extension that you want to install by running the following command:
+
+```terminal
+$ oc adm new-project <new_namespace>
+```
+
+
+## Creating a service account for an extension
+
+You must create a service account to install, manage, and update a cluster extension.
+
+* Access to an Red Hat OpenShift Container Platform cluster using an account with cluster-admin permissions.
+
+1. Create a service account, similar to the following example:
+
+```yaml
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: <extension>-installer
+  namespace: <namespace>
+```
+
+Example extension-service-account.yaml file
+
+```yaml
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: pipelines-installer
+  namespace: pipelines
+```
+2. Apply the service account by running the following command:
+
+```terminal
+$ oc apply -f extension-service-account.yaml
+```
+
+
+## Downloading the bundle manifests of an extension
+
+Use the opm CLI tool to download the bundle manifests of the extension that you want to install. Use the CLI tool or text editor of your choice to view the manifests and find the required permissions to install and manage the extension.
+
+* You have access to an Red Hat OpenShift Container Platform cluster using an account with cluster-admin permissions.
+* You have decided which extension you want to install.
+* You have installed the opm CLI tool.
+
+1. Inspect the available versions and images of the extension you want to install by running the following command:
+
+```terminal
+$ opm render <registry_url>:<tag_or_version> | \
+  jq -cs '.[] | select( .schema == "olm.bundle" ) | \
+  select( .package == "<extension_name>") | \
+  {"name":.name, "image":.image}'
+```
+
+Example command
+
+```terminal
+$ opm render registry.redhat.io/redhat/redhat-operator-index:v4.19 | \
+  jq -cs '.[] | select( .schema == "olm.bundle" ) | \
+  select( .package == "openshift-pipelines-operator-rh") | \
+  {"name":.name, "image":.image}'
+```
+Example output
+
+```text
+{"name":"openshift-pipelines-operator-rh.v1.14.3","image":"registry.redhat.io/openshift-pipelines/pipelines-operator-bundle@sha256:3f64b29f6903981470d0917b2557f49d84067bccdba0544bfe874ec4412f45b0"}
+{"name":"openshift-pipelines-operator-rh.v1.14.4","image":"registry.redhat.io/openshift-pipelines/pipelines-operator-bundle@sha256:dd3d18367da2be42539e5dde8e484dac3df33ba3ce1d5bcf896838954f3864ec"}
+{"name":"openshift-pipelines-operator-rh.v1.14.5","image":"registry.redhat.io/openshift-pipelines/pipelines-operator-bundle@sha256:f7b19ce26be742c4aaa458d37bc5ad373b5b29b20aaa7d308349687d3cbd8838"}
+{"name":"openshift-pipelines-operator-rh.v1.15.0","image":"registry.redhat.io/openshift-pipelines/pipelines-operator-bundle@sha256:22be152950501a933fe6e1df0e663c8056ca910a89dab3ea801c3bb2dc2bf1e6"}
+{"name":"openshift-pipelines-operator-rh.v1.15.1","image":"registry.redhat.io/openshift-pipelines/pipelines-operator-bundle@sha256:64afb32e3640bb5968904b3d1a317e9dfb307970f6fda0243e2018417207fd75"}
+{"name":"openshift-pipelines-operator-rh.v1.15.2","image":"registry.redhat.io/openshift-pipelines/pipelines-operator-bundle@sha256:8a593c1144709c9aeffbeb68d0b4b08368f528e7bb6f595884b2474bcfbcafcd"}
+{"name":"openshift-pipelines-operator-rh.v1.16.0","image":"registry.redhat.io/openshift-pipelines/pipelines-operator-bundle@sha256:a46b7990c0ad07dae78f43334c9bd5e6cba7b50ca60d3f880099b71e77bed214"}
+{"name":"openshift-pipelines-operator-rh.v1.16.1","image":"registry.redhat.io/openshift-pipelines/pipelines-operator-bundle@sha256:29f27245e93b3f605647993884751c490c4a44070d3857a878d2aee87d43f85b"}
+{"name":"openshift-pipelines-operator-rh.v1.16.2","image":"registry.redhat.io/openshift-pipelines/pipelines-operator-bundle@sha256:2037004666526c90329f4791f14cb6cc06e8775cb84ba107a24cc4c2cf944649"}
+{"name":"openshift-pipelines-operator-rh.v1.17.0","image":"registry.redhat.io/openshift-pipelines/pipelines-operator-bundle@sha256:d75065e999826d38408049aa1fde674cd1e45e384bfdc96523f6bad58a0e0dbc"}
+```
+2. Make a directory to extract the image of the bundle that you want to install by running the following command:
+
+```terminal
+$ mkdir <new_dir>
+```
+
+3. Change into the directory by running the following command:
+
+```terminal
+$ cd <new_dir>
+```
+
+4. Find the image reference of the version that you want to install and run the following command:
+
+```terminal
+$ oc image extract <full_path_to_registry_image>@sha256:<sha>
+```
+
+Example command
+
+```terminal
+$ oc image extract registry.redhat.io/openshift-pipelines/pipelines-operator-bundle@sha256:f7b19ce26be742c4aaa458d37bc5ad373b5b29b20aaa7d308349687d3cbd8838
+```
+
+5. Change into the manifests directory by running the following command:
+
+```terminal
+$ cd manifests
+```
+
+6. View the contents of the manifests directory by entering the following command. The output lists the manifests of the resources required to install, manage, and operate your extension.
+
+```terminal
+$ tree
+```
+
+Example output
+
+```text
+.
+├── manifests
+│   ├── config-logging_v1_configmap.yaml
+│   ├── openshift-pipelines-operator-monitor_monitoring.coreos.com_v1_servicemonitor.yaml
+│   ├── openshift-pipelines-operator-prometheus-k8s-read-binding_rbac.authorization.k8s.io_v1_rolebinding.yaml
+│   ├── openshift-pipelines-operator-read_rbac.authorization.k8s.io_v1_role.yaml
+│   ├── openshift-pipelines-operator-rh.clusterserviceversion.yaml
+│   ├── operator.tekton.dev_manualapprovalgates.yaml
+│   ├── operator.tekton.dev_openshiftpipelinesascodes.yaml
+│   ├── operator.tekton.dev_tektonaddons.yaml
+│   ├── operator.tekton.dev_tektonchains.yaml
+│   ├── operator.tekton.dev_tektonconfigs.yaml
+│   ├── operator.tekton.dev_tektonhubs.yaml
+│   ├── operator.tekton.dev_tektoninstallersets.yaml
+│   ├── operator.tekton.dev_tektonpipelines.yaml
+│   ├── operator.tekton.dev_tektonresults.yaml
+│   ├── operator.tekton.dev_tektontriggers.yaml
+│   ├── tekton-config-defaults_v1_configmap.yaml
+│   ├── tekton-config-observability_v1_configmap.yaml
+│   ├── tekton-config-read-rolebinding_rbac.authorization.k8s.io_v1_clusterrolebinding.yaml
+│   ├── tekton-config-read-role_rbac.authorization.k8s.io_v1_clusterrole.yaml
+│   ├── tekton-operator-controller-config-leader-election_v1_configmap.yaml
+│   ├── tekton-operator-info_rbac.authorization.k8s.io_v1_rolebinding.yaml
+│   ├── tekton-operator-info_rbac.authorization.k8s.io_v1_role.yaml
+│   ├── tekton-operator-info_v1_configmap.yaml
+│   ├── tekton-operator_v1_service.yaml
+│   ├── tekton-operator-webhook-certs_v1_secret.yaml
+│   ├── tekton-operator-webhook-config-leader-election_v1_configmap.yaml
+│   ├── tekton-operator-webhook_v1_service.yaml
+│   ├── tekton-result-read-rolebinding_rbac.authorization.k8s.io_v1_clusterrolebinding.yaml
+│   └── tekton-result-read-role_rbac.authorization.k8s.io_v1_clusterrole.yaml
+├── metadata
+│   ├── annotations.yaml
+│   └── properties.yaml
+└── root
+    └── buildinfo
+        ├── content_manifests
+        │   └── openshift-pipelines-operator-bundle-container-v1.16.2-3.json
+        └── Dockerfile-openshift-pipelines-pipelines-operator-bundle-container-v1.16.2-3
+```
+
+* View the contents of the install.spec.clusterpermissions stanza of cluster service version (CSV) file in the manifests directory using your preferred CLI tool or text editor. The following examples reference the openshift-pipelines-operator-rh.clusterserviceversion.yaml file of the Red Hat OpenShift Pipelines Operator.
+* Keep this file open as a reference while assigning permissions to the cluster role file in the following procedure.
+
+## Required permissions to install and manage a cluster extension
+
+You must inspect the manifests included in the bundle image of a cluster extension to assign the necessary permissions. The service account requires enough role-based access controls (RBAC) to create and manage the following resources.
+
+
+[IMPORTANT]
+----
+Follow the principle of least privilege and scope permissions to specific resource names with the least RBAC required to run.
+----
+
+Admission plugins:: Because Red Hat OpenShift Container Platform clusters use the OwnerReferencesPermissionEnforcement admission plugin, cluster extensions must have permissions to update the blockOwnerDeletion and ownerReferences finalizers.
+Cluster role and cluster role bindings for the controllers of the extension:: You must define RBAC so that the installation service account can create and manage cluster roles and cluster role bindings for the extension controllers.
+Cluster service version (CSV):: You must define RBAC for the resources defined in the CSV of the cluster extension.
+Cluster-scoped bundle resources:: You must define RBAC to create and manage any cluster-scoped resources included in the bundle. If the cluster-scoped resources matches another resource type, such as a ClusterRole, you can add the resource to the pre-existing rule under the resources or resourceNames field.
+Custom resource definitions (CRDs):: You must define RBAC so that the installation service account can create and manage the CRDs for the extension. Also, you must grant the service account for the controller of the extension the RBAC to manage its CRDs.
+Deployments:: You must define RBAC for the installation service account to create and manage the deployments needed by the extension controller, such as services and config maps.
+Extension permissions:: You must include RBAC for the permissions and cluster permissions defined in the CSV. The installation service account needs the ability to grant these permissions to the extension controller, which needs these permissions to run.
+Namespace-scoped bundle resources:: You must define RBAC for any namespace-scoped bundle resources. The installation service account requires permission to create and manage resources, such as config maps or services.
+Roles and role bindings:: You must define RBAC for any roles or role bindings defined in the CSV. The installation service account needs permission to create and manage those roles and role bindings.
+
+Service accounts:: You must define RBAC so that the installation service account can create and manage the service accounts for the extension controllers.
+
+## Creating a cluster role for an extension
+
+You must review the install.spec.clusterpermissions stanza of the cluster service version (CSV) and the manifests of an extension carefully to define the required role-based access controls (RBAC) of the extension that you want to install. You must create a cluster role by copying the required RBAC from the CSV to the new manifest.
+
+
+[TIP]
+----
+If you want to test the process for installing and updating an extension in OLM v1, you can use the following cluster role to grant cluster administrator permissions. This manifest is for testing purposes only. It should not be used in production clusters.
+
+```yaml
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: <extension>-installer-clusterrole
+rules:
+- apiGroups: ["*"]
+  resources: ["*"]
+  verbs: ["*"]
+```
+
+----
+
+The following procedure uses the openshift-pipelines-operator-rh.clusterserviceversion.yaml file of the Red Hat OpenShift Pipelines Operator as an example. The examples include excerpts of the RBAC required to install and manage the OpenShift Pipelines Operator. For a complete manifest, see "Example cluster role for the Red Hat OpenShift Pipelines Operator".
+
+
+[IMPORTANT]
+----
+To simply the following procedure and improve readability, the following example manifest uses permissions that are scoped to the cluster. You can further restrict some of the permissions by scoping them to the namespace of the extension instead of the cluster.
+----
+
+* Access to an Red Hat OpenShift Container Platform cluster using an account with cluster-admin permissions.
+* You have downloaded the manifests in the image reference of the extension that you want to install.
+
+1. Create a new cluster role manifest, similar to the following example:
+Example <extension>-cluster-role.yaml file
+
+```yaml
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: <extension>-installer-clusterrole
+```
+
+2. Edit your cluster role manifest to include permission to update finalizers on the extension, similar to the following example:
+Example <extension>-cluster-role.yaml
+
+```yaml
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: pipelines-installer-clusterrole
+rules:
+- apiGroups:
+  - olm.operatorframework.io
+  resources:
+  - clusterextensions/finalizers
+  verbs:
+  - update
+  # Scoped to the name of the ClusterExtension
+  resourceNames:
+  - <metadata_name> 1
+```
+
+Specifies the value from the metadata.name field from the custom resource (CR) of the extension.
+3. Search for the clusterrole and clusterrolebindings values in the rules.resources field in the extension's CSV file.
+* Copy the API groups, resources, verbs, and resource names to your manifest, similar to the following example:
+Example cluster role manifest
+
+```yaml
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: pipelines-installer-clusterrole
+rules:
+# ...
+# ClusterRoles and ClusterRoleBindings for the controllers of the extension
+- apiGroups:
+  - rbac.authorization.k8s.io
+  resources:
+  - clusterroles
+  verbs:
+  - create 1
+  - list
+  - watch
+- apiGroups:
+  - rbac.authorization.k8s.io
+  resources:
+  - clusterroles
+  verbs:
+  - get
+  - update
+  - patch
+  - delete
+  resourceNames: 2
+  - "*"
+- apiGroups:
+  - rbac.authorization.k8s.io
+  resources:
+  - clusterrolebindings
+  verbs:
+  - create
+  - list
+  - watch
+- apiGroups:
+  - rbac.authorization.k8s.io
+  resources:
+  - clusterrolebindings
+  verbs:
+  - get
+  - update
+  - patch
+  - delete
+  resourceNames:
+  - "*"
+# ...
+```
+
+You cannot scope create, list, and watch permissions to specific resource names (the resourceNames field). You must scope these permissions to their resources (the resources field).
+Some resource names are generated by using the following format: <package_name>.<hash>. After you install the extension, look up the resource names for the cluster roles and cluster role bindings for the controller of the extension. Replace the wildcard characters in this example with the generated names and follow the principle of least privilege.
+4. Search for the customresourcedefinitions value in the rules.resources field in the extension's CSV file.
+* Copy the API groups, resources, verbs, and resource names to your manifest, similar to the following example:
+
+```yaml
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: pipelines-installer-clusterrole
+rules:
+# ...
+# Custom resource definitions of the extension
+- apiGroups:
+  - apiextensions.k8s.io
+  resources:
+  - customresourcedefinitions
+  verbs:
+  - create
+  - list
+  - watch
+- apiGroups:
+  - apiextensions.k8s.io
+  resources:
+  - customresourcedefinitions
+  verbs:
+  - get
+  - update
+  - patch
+  - delete
+  resourceNames:
+  - manualapprovalgates.operator.tekton.dev
+  - openshiftpipelinesascodes.operator.tekton.dev
+  - tektonaddons.operator.tekton.dev
+  - tektonchains.operator.tekton.dev
+  - tektonconfigs.operator.tekton.dev
+  - tektonhubs.operator.tekton.dev
+  - tektoninstallersets.operator.tekton.dev
+  - tektonpipelines.operator.tekton.dev
+  - tektonresults.operator.tekton.dev
+  - tektontriggers.operator.tekton.dev
+# ...
+```
+
+5. Search the CSV file for stanzas with the permissions and clusterPermissions values in the rules.resources spec.
+* Copy the API groups, resources, verbs, and resource names to your manifest, similar to the following example:
+
+```yaml
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: pipelines-installer-clusterrole
+rules:
+# ...
+# Excerpt from install.spec.clusterPermissions
+- apiGroups:
+  - ''
+  resources:
+  - nodes
+  - pods
+  - services
+  - endpoints
+  - persistentvolumeclaims
+  - events
+  - configmaps
+  - secrets
+  - pods/log
+  - limitranges
+  verbs:
+  - create
+  - list
+  - watch
+  - delete
+  - deletecollection
+  - patch
+  - get
+  - update
+- apiGroups:
+  - extensions
+  - apps
+  resources:
+  - ingresses
+  - ingresses/status
+  verbs:
+  - create
+  - list
+  - watch
+  - delete
+  - patch
+  - get
+  - update
+ # ...
+```
+
+6. Search the CSV file for resources under the install.spec.deployments stanza.
+* Copy the API groups, resources, verbs, and resource names to your manifest, similar to the following example:
+
+```yaml
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: pipelines-installer-clusterrole
+rules:
+# ...
+# Excerpt from install.spec.deployments
+- apiGroups:
+  - apps
+  resources:
+  - deployments
+  verbs:
+  - create
+  - list
+  - watch
+- apiGroups:
+  - apps
+  resources:
+  - deployments
+  verbs:
+  - get
+  - update
+  - patch
+  - delete
+  # scoped to the extension controller deployment name
+  resourceNames:
+  - openshift-pipelines-operator
+  - tekton-operator-webhook
+# ...
+```
+
+7. Search for the services and configmaps values in the rules.resources field in the extension's CSV file.
+* Copy the API groups, resources, verbs, and resource names to your manifest, similar to the following example:
+
+```yaml
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: pipelines-installer-clusterrole
+rules:
+# ...
+# Services
+- apiGroups:
+  - ""
+  resources:
+  - services
+  verbs:
+  - create
+- apiGroups:
+  - ""
+  resources:
+  - services
+  verbs:
+  - get
+  - list
+  - watch
+  - update
+  - patch
+  - delete
+  # scoped to the service name
+  resourceNames:
+  - openshift-pipelines-operator-monitor
+  - tekton-operator
+  - tekton-operator-webhook
+# configmaps
+- apiGroups:
+  - ""
+  resources:
+  - configmaps
+  verbs:
+  - create
+- apiGroups:
+  - ""
+  resources:
+  - configmaps
+  verbs:
+  - get
+  - list
+  - watch
+  - update
+  - patch
+  - delete
+  # scoped to the configmap name
+  resourceNames:
+  - config-logging
+  - tekton-config-defaults
+  - tekton-config-observability
+  - tekton-operator-controller-config-leader-election
+  - tekton-operator-info
+  - tekton-operator-webhook-config-leader-election
+- apiGroups:
+  - operator.tekton.dev
+  resources:
+  - tekton-config-read-role
+  - tekton-result-read-role
+  verbs:
+  - get
+  - watch
+  - list
+```
+
+8. Add the cluster role manifest to the cluster by running the following command:
+
+```terminal
+$ oc apply -f <extension>-installer-clusterrole.yaml
+```
+
+Example command
+
+```terminal
+$ oc apply -f pipelines-installer-clusterrole.yaml
+```
+
+
+## Example cluster role for the Red Hat OpenShift Pipelines Operator
+
+See the following example for a complete cluster role manifest for the OpenShift Pipelines Operator.
+
+
+```yaml
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: pipelines-installer-clusterrole
+rules:
+- apiGroups:
+  - olm.operatorframework.io
+  resources:
+  - clusterextensions/finalizers
+  verbs:
+  - update
+  # Scoped to the name of the ClusterExtension
+  resourceNames:
+  - pipes # the value from <metadata.name> from the extension's custom resource (CR)
+# ClusterRoles and ClusterRoleBindings for the controllers of the extension
+- apiGroups:
+  - rbac.authorization.k8s.io
+  resources:
+  - clusterroles
+  verbs:
+  - create
+  - list
+  - watch
+- apiGroups:
+  - rbac.authorization.k8s.io
+  resources:
+  - clusterroles
+  verbs:
+  - get
+  - update
+  - patch
+  - delete
+  resourceNames:
+  - "*"
+- apiGroups:
+  - rbac.authorization.k8s.io
+  resources:
+  - clusterrolebindings
+  verbs:
+  - create
+  - list
+  - watch
+- apiGroups:
+  - rbac.authorization.k8s.io
+  resources:
+  - clusterrolebindings
+  verbs:
+  - get
+  - update
+  - patch
+  - delete
+  resourceNames:
+  - "*"
+# Extension's custom resource definitions
+- apiGroups:
+  - apiextensions.k8s.io
+  resources:
+  - customresourcedefinitions
+  verbs:
+  - create
+  - list
+  - watch
+- apiGroups:
+  - apiextensions.k8s.io
+  resources:
+  - customresourcedefinitions
+  verbs:
+  - get
+  - update
+  - patch
+  - delete
+  resourceNames:
+  - manualapprovalgates.operator.tekton.dev
+  - openshiftpipelinesascodes.operator.tekton.dev
+  - tektonaddons.operator.tekton.dev
+  - tektonchains.operator.tekton.dev
+  - tektonconfigs.operator.tekton.dev
+  - tektonhubs.operator.tekton.dev
+  - tektoninstallersets.operator.tekton.dev
+  - tektonpipelines.operator.tekton.dev
+  - tektonresults.operator.tekton.dev
+  - tektontriggers.operator.tekton.dev
+- apiGroups:
+  - ''
+  resources:
+  - nodes
+  - pods
+  - services
+  - endpoints
+  - persistentvolumeclaims
+  - events
+  - configmaps
+  - secrets
+  - pods/log
+  - limitranges
+  verbs:
+  - create
+  - list
+  - watch
+  - delete
+  - deletecollection
+  - patch
+  - get
+  - update
+- apiGroups:
+  - extensions
+  - apps
+  resources:
+  - ingresses
+  - ingresses/status
+  verbs:
+  - create
+  - list
+  - watch
+  - delete
+  - patch
+  - get
+  - update
+- apiGroups:
+  - ''
+  resources:
+  - namespaces
+  verbs:
+  - get
+  - list
+  - create
+  - update
+  - delete
+  - patch
+  - watch
+- apiGroups:
+  - apps
+  resources:
+  - deployments
+  - daemonsets
+  - replicasets
+  - statefulsets
+  - deployments/finalizers
+  verbs:
+  - delete
+  - deletecollection
+  - create
+  - patch
+  - get
+  - list
+  - update
+  - watch
+- apiGroups:
+  - monitoring.coreos.com
+  resources:
+  - servicemonitors
+  verbs:
+  - get
+  - create
+  - delete
+- apiGroups:
+  - rbac.authorization.k8s.io
+  resources:
+  - clusterroles
+  - roles
+  verbs:
+  - delete
+  - deletecollection
+  - create
+  - patch
+  - get
+  - list
+  - update
+  - watch
+  - bind
+  - escalate
+- apiGroups:
+  - ''
+  resources:
+  - serviceaccounts
+  verbs:
+  - get
+  - list
+  - create
+  - update
+  - delete
+  - patch
+  - watch
+  - impersonate
+- apiGroups:
+  - rbac.authorization.k8s.io
+  resources:
+  - clusterrolebindings
+  - rolebindings
+  verbs:
+  - get
+  - update
+  - delete
+  - patch
+  - create
+  - list
+  - watch
+- apiGroups:
+  - apiextensions.k8s.io
+  resources:
+  - customresourcedefinitions
+  - customresourcedefinitions/status
+  verbs:
+  - get
+  - create
+  - update
+  - delete
+  - list
+  - patch
+  - watch
+- apiGroups:
+  - admissionregistration.k8s.io
+  resources:
+  - mutatingwebhookconfigurations
+  - validatingwebhookconfigurations
+  verbs:
+  - get
+  - list
+  - create
+  - update
+  - delete
+  - patch
+  - watch
+- apiGroups:
+  - build.knative.dev
+  resources:
+  - builds
+  - buildtemplates
+  - clusterbuildtemplates
+  verbs:
+  - get
+  - list
+  - create
+  - update
+  - delete
+  - patch
+  - watch
+- apiGroups:
+  - extensions
+  resources:
+  - deployments
+  verbs:
+  - get
+  - list
+  - create
+  - update
+  - delete
+  - patch
+  - watch
+- apiGroups:
+  - extensions
+  resources:
+  - deployments/finalizers
+  verbs:
+  - get
+  - list
+  - create
+  - update
+  - delete
+  - patch
+  - watch
+- apiGroups:
+  - operator.tekton.dev
+  resources:
+  - '*'
+  - tektonaddons
+  verbs:
+  - delete
+  - deletecollection
+  - create
+  - patch
+  - get
+  - list
+  - update
+  - watch
+- apiGroups:
+  - tekton.dev
+  - triggers.tekton.dev
+  - operator.tekton.dev
+  - pipelinesascode.tekton.dev
+  resources:
+  - '*'
+  verbs:
+  - add
+  - delete
+  - deletecollection
+  - create
+  - patch
+  - get
+  - list
+  - update
+  - watch
+- apiGroups:
+  - dashboard.tekton.dev
+  resources:
+  - '*'
+  - tektonaddons
+  verbs:
+  - delete
+  - deletecollection
+  - create
+  - patch
+  - get
+  - list
+  - update
+  - watch
+- apiGroups:
+  - security.openshift.io
+  resources:
+  - securitycontextconstraints
+  verbs:
+  - use
+  - get
+  - list
+  - create
+  - update
+  - delete
+- apiGroups:
+  - events.k8s.io
+  resources:
+  - events
+  verbs:
+  - create
+- apiGroups:
+  - route.openshift.io
+  resources:
+  - routes
+  verbs:
+  - delete
+  - deletecollection
+  - create
+  - patch
+  - get
+  - list
+  - update
+  - watch
+- apiGroups:
+  - coordination.k8s.io
+  resources:
+  - leases
+  verbs:
+  - get
+  - list
+  - create
+  - update
+  - delete
+  - patch
+  - watch
+- apiGroups:
+  - console.openshift.io
+  resources:
+  - consoleyamlsamples
+  - consoleclidownloads
+  - consolequickstarts
+  - consolelinks
+  verbs:
+  - delete
+  - deletecollection
+  - create
+  - patch
+  - get
+  - list
+  - update
+  - watch
+- apiGroups:
+  - autoscaling
+  resources:
+  - horizontalpodautoscalers
+  verbs:
+  - delete
+  - create
+  - patch
+  - get
+  - list
+  - update
+  - watch
+- apiGroups:
+  - policy
+  resources:
+  - poddisruptionbudgets
+  verbs:
+  - delete
+  - deletecollection
+  - create
+  - patch
+  - get
+  - list
+  - update
+  - watch
+- apiGroups:
+  - monitoring.coreos.com
+  resources:
+  - servicemonitors
+  verbs:
+  - delete
+  - deletecollection
+  - create
+  - patch
+  - get
+  - list
+  - update
+  - watch
+- apiGroups:
+  - batch
+  resources:
+  - jobs
+  - cronjobs
+  verbs:
+  - delete
+  - deletecollection
+  - create
+  - patch
+  - get
+  - list
+  - update
+  - watch
+- apiGroups:
+  - ''
+  resources:
+  - namespaces/finalizers
+  verbs:
+  - update
+- apiGroups:
+  - resolution.tekton.dev
+  resources:
+  - resolutionrequests
+  - resolutionrequests/status
+  verbs:
+  - get
+  - list
+  - watch
+  - create
+  - delete
+  - update
+  - patch
+- apiGroups:
+  - console.openshift.io
+  resources:
+  - consoleplugins
+  verbs:
+  - get
+  - list
+  - watch
+  - create
+  - delete
+  - update
+  - patch
+# Deployments specified in install.spec.deployments
+- apiGroups:
+  - apps
+  resources:
+  - deployments
+  verbs:
+  - create
+  - list
+  - watch
+- apiGroups:
+  - apps
+  resources:
+  - deployments
+  verbs:
+  - get
+  - update
+  - patch
+  - delete
+  # scoped to the extension controller deployment name
+  resourceNames:
+  - openshift-pipelines-operator
+  - tekton-operator-webhook
+# Service accounts in the CSV
+- apiGroups:
+  - ""
+  resources:
+  - serviceaccounts
+  verbs:
+  - create
+  - list
+  - watch
+- apiGroups:
+  - ""
+  resources:
+  - serviceaccounts
+  verbs:
+  - get
+  - update
+  - patch
+  - delete
+  # scoped to the extension controller's deployment service account
+  resourceNames:
+  - openshift-pipelines-operator
+# Services
+- apiGroups:
+  - ""
+  resources:
+  - services
+  verbs:
+  - create
+- apiGroups:
+  - ""
+  resources:
+  - services
+  verbs:
+  - get
+  - list
+  - watch
+  - update
+  - patch
+  - delete
+  # scoped to the service name
+  resourceNames:
+  - openshift-pipelines-operator-monitor
+  - tekton-operator
+  - tekton-operator-webhook
+# configmaps
+- apiGroups:
+  - ""
+  resources:
+  - configmaps
+  verbs:
+  - create
+- apiGroups:
+  - ""
+  resources:
+  - configmaps
+  verbs:
+  - get
+  - list
+  - watch
+  - update
+  - patch
+  - delete
+  # scoped to the configmap name
+  resourceNames:
+  - config-logging
+  - tekton-config-defaults
+  - tekton-config-observability
+  - tekton-operator-controller-config-leader-election
+  - tekton-operator-info
+  - tekton-operator-webhook-config-leader-election
+- apiGroups:
+  - operator.tekton.dev
+  resources:
+  - tekton-config-read-role
+  - tekton-result-read-role
+  verbs:
+  - get
+  - watch
+  - list
+---
+```
+
+
+## Creating a cluster role binding for an extension
+
+After you have created a service account and cluster role, you must bind the cluster role to the service account with a cluster role binding manifest.
+
+* Access to an Red Hat OpenShift Container Platform cluster using an account with cluster-admin permissions.
+* You have created and applied the following resources for the extension you want to install:
+* Namespace
+* Service account
+* Cluster role
+
+1. Create a cluster role binding to bind the cluster role to the service account, similar to the following example:
+
+```yaml
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: <extension>-installer-binding
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: <extension>-installer-clusterrole
+subjects:
+- kind: ServiceAccount
+  name: <extension>-installer
+  namespace: <namespace>
+```
+
+Example pipelines-cluster-role-binding.yaml file
+
+```yaml
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: pipelines-installer-binding
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: pipelines-installer-clusterrole
+subjects:
+- kind: ServiceAccount
+  name: pipelines-installer
+  namespace: pipelines
+```
+2. Apply the cluster role binding by running the following command:
+
+```terminal
+$ oc apply -f pipelines-cluster-role-binding.yaml
+```
+
+
+# Installing a cluster extension from a catalog
+
+You can install an extension from a catalog by creating a custom resource (CR) and applying it to the cluster. Operator Lifecycle Manager (OLM) v1 supports installing cluster extensions, including OLM (Classic) Operators in the registry+v1 bundle format, that are scoped to the cluster. For more information, see Supported extensions.
+
+* You have created a service account and assigned enough role-based access controls (RBAC) to install, update, and manage the extension that you want to install. For more information, see "Cluster extension permissions".
+
+1. Create a CR, similar to the following example:
+
+```yaml
+apiVersion: olm.operatorframework.io/v1
+  kind: ClusterExtension
+  metadata:
+    name: <clusterextension_name>
+  spec:
+    namespace: <installed_namespace> 1
+    serviceAccount:
+      name: <service_account_installer_name> 2
+    source:
+      sourceType: Catalog
+      catalog:
+        packageName: <package_name>
+        channels:
+          - <channel_name> 3
+        version: <version_or_version_range> 4
+        upgradeConstraintPolicy: CatalogProvided 5
+```
+
+Specifies the namespace where you want the bundle installed, such as pipelines or my-extension. Extensions are still cluster-scoped and might contain resources that are installed in different namespaces.
+Specifies the name of the service account you created to install, update, and manage your extension.
+Optional: Specifies channel names as an array, such as pipelines-1.14 or latest.
+Optional: Specifies the version or version range, such as 1.14.0, 1.14.x, or >=1.16, of the package you want to install or update. For more information, see "Example custom resources (CRs) that specify a target version" and "Support for version ranges".
+Optional: Specifies the upgrade constraint policy. If unspecified, the default setting is CatalogProvided. The CatalogProvided setting only updates if the new version satisfies the upgrade constraints set by the package author. To force an update or rollback, set the field to SelfCertified. For more information, see "Forcing an update or rollback".
+
+
+```yaml
+apiVersion: olm.operatorframework.io/v1
+kind: ClusterExtension
+metadata:
+  name: pipelines-operator
+spec:
+  namespace: pipelines
+  serviceAccount:
+    name: pipelines-installer
+  source:
+    sourceType: Catalog
+    catalog:
+      packageName: openshift-pipelines-operator-rh
+      version: "1.14.x"
+```
+
+
+1. Apply the CR to the cluster by running the following command:
+
+```terminal
+$ oc apply -f pipeline-operator.yaml
+```
+
+Example output
+
+```text
+clusterextension.olm.operatorframework.io/pipelines-operator created
+```
+
+
+1. View the Operator or extension's CR in the YAML format by running the following command:
+
+```terminal
+$ oc get clusterextension pipelines-operator -o yaml
+```
+
+Example output
+
+```text
+apiVersion: v1
+items:
+- apiVersion: olm.operatorframework.io/v1
+  kind: ClusterExtension
+  metadata:
+    annotations:
+      kubectl.kubernetes.io/last-applied-configuration: |
+        {"apiVersion":"olm.operatorframework.io/v1","kind":"ClusterExtension","metadata":{"annotations":{},"name":"pipes"},"spec":{"namespace":"pipelines","serviceAccount":{"name":"pipelines-installer"},"source":{"catalog":{"packageName":"openshift-pipelines-operator-rh","version":"1.14.x"},"sourceType":"Catalog"}}}
+    creationTimestamp: "2025-02-18T21:48:13Z"
+    finalizers:
+    - olm.operatorframework.io/cleanup-unpack-cache
+    - olm.operatorframework.io/cleanup-contentmanager-cache
+    generation: 1
+    name: pipelines-operator
+    resourceVersion: "72725"
+    uid: e18b13fb-a96d-436f-be75-a9a0f2b07993
+  spec:
+    namespace: pipelines
+    serviceAccount:
+      name: pipelines-installer
+    source:
+      catalog:
+        packageName: openshift-pipelines-operator-rh
+        upgradeConstraintPolicy: CatalogProvided
+        version: 1.14.x
+      sourceType: Catalog
+  status:
+    conditions:
+    - lastTransitionTime: "2025-02-18T21:48:13Z"
+      message: ""
+      observedGeneration: 1
+      reason: Deprecated
+      status: "False"
+      type: Deprecated
+    - lastTransitionTime: "2025-02-18T21:48:13Z"
+      message: ""
+      observedGeneration: 1
+      reason: Deprecated
+      status: "False"
+      type: PackageDeprecated
+    - lastTransitionTime: "2025-02-18T21:48:13Z"
+      message: ""
+      observedGeneration: 1
+      reason: Deprecated
+      status: "False"
+      type: ChannelDeprecated
+    - lastTransitionTime: "2025-02-18T21:48:13Z"
+      message: ""
+      observedGeneration: 1
+      reason: Deprecated
+      status: "False"
+      type: BundleDeprecated
+    - lastTransitionTime: "2025-02-18T21:48:16Z"
+      message: Installed bundle registry.redhat.io/openshift-pipelines/pipelines-operator-bundle@sha256:f7b19ce26be742c4aaa458d37bc5ad373b5b29b20aaa7d308349687d3cbd8838
+        successfully
+      observedGeneration: 1
+      reason: Succeeded
+      status: "True"
+      type: Installed
+    - lastTransitionTime: "2025-02-18T21:48:16Z"
+      message: desired state reached
+      observedGeneration: 1
+      reason: Succeeded
+      status: "True"
+      type: Progressing
+    install:
+      bundle:
+        name: openshift-pipelines-operator-rh.v1.14.5
+        version: 1.14.5
+kind: List
+metadata:
+  resourceVersion: ""
+```
+
+where:
+spec.channel:: Displays the channel defined in the CR of the extension.
+spec.version:: Displays the version or version range defined in the CR of the extension.
+status.conditions:: Displays information about the status and health of the extension.
+type: Deprecated:: Displays whether one or more of following are deprecated:
+type: PackageDeprecated:: Displays whether the resolved package is deprecated.
+type: ChannelDeprecated:: Displays whether the resolved channel is deprecated.
+type: BundleDeprecated:: Displays whether the resolved bundle is deprecated.
+
+The value of False in the status field indicates that the reason: Deprecated condition is not deprecated. The value of True in the status field indicates that the reason: Deprecated condition is deprecated.
+installedBundle.name:: Displays the name of the bundle installed.
+installedBundle.version:: Displays the version of the bundle installed.
+
+* Supported extensions
+* Creating a service account
+* Example custom resources (CRs) that specify a target version
+* Support for version ranges
+
+# Updating a cluster extension
+
+You can update your cluster extension or Operator by manually editing the custom resource (CR) and applying the changes.
+
+* You have an Operator or extension installed.
+* You have installed the jq CLI tool.
+* You have installed the opm CLI tool.
+
+1. Inspect a package for channel and version information from a local copy of your catalog file by completing the following steps:
+1. Get a list of channels from a selected package by running the following command:
+
+```terminal
+$ opm render <catalog_registry_url>:<tag> \
+  | jq -s '.[] | select( .schema == "olm.channel" ) \
+  | select( .package == "openshift-pipelines-operator-rh") | .name'
+```
+
+Example command
+
+```terminal
+$ opm render registry.redhat.io/redhat/redhat-operator-index:v4.19 \
+  | jq -s '.[] | select( .schema == "olm.channel" ) \
+  | select( .package == "openshift-pipelines-operator-rh") | .name'
+```
+Example output
+
+```text
+"latest"
+"pipelines-1.14"
+"pipelines-1.15"
+"pipelines-1.16"
+"pipelines-1.17"
+```
+2. Get a list of the versions published in a channel by running the following command:
+
+```terminal
+$ opm render <catalog_registry_url>:<tag> \
+  | jq -s '.[] | select( .package == "<package_name>" ) \
+  | select( .schema == "olm.channel" ) \
+  | select( .name == "<channel_name>" ) | .entries \
+  | .[] | .name'
+```
+
+Example command
+
+```terminal
+$ opm render registry.redhat.io/redhat/redhat-operator-index:v4.19 \
+  | jq -s '.[] | select( .package == "openshift-pipelines-operator-rh" ) \
+  | select( .schema == "olm.channel" ) | select( .name == "latest" ) \
+  | .entries | .[] | .name'
+```
+Example output
+
+```text
+"openshift-pipelines-operator-rh.v1.15.0"
+"openshift-pipelines-operator-rh.v1.16.0"
+"openshift-pipelines-operator-rh.v1.17.0"
+"openshift-pipelines-operator-rh.v1.17.1"
+```
+2. Find out what version or channel is specified in your Operator or extension's CR by running the following command:
+
+```terminal
+$ oc get clusterextension <operator_name> -o yaml
+```
+
+Example command
+
+```terminal
+$ oc get clusterextension pipelines-operator -o yaml
+```
+
+Example output
+
+```text
+apiVersion: v1
+items:
+- apiVersion: olm.operatorframework.io/v1
+  kind: ClusterExtension
+  metadata:
+    annotations:
+      kubectl.kubernetes.io/last-applied-configuration: |
+        {"apiVersion":"olm.operatorframework.io/v1","kind":"ClusterExtension","metadata":{"annotations":{},"name":"pipes"},"spec":{"namespace":"pipelines","serviceAccount":{"name":"pipelines-installer"},"source":{"catalog":{"packageName":"openshift-pipelines-operator-rh","version":"1.14.x"},"sourceType":"Catalog"}}}
+    creationTimestamp: "2025-02-18T21:48:13Z"
+    finalizers:
+    - olm.operatorframework.io/cleanup-unpack-cache
+    - olm.operatorframework.io/cleanup-contentmanager-cache
+    generation: 1
+    name: pipelines-operator
+    resourceVersion: "72725"
+    uid: e18b13fb-a96d-436f-be75-a9a0f2b07993
+  spec:
+    namespace: pipelines
+    serviceAccount:
+      name: pipelines-installer
+    source:
+      catalog:
+        packageName: openshift-pipelines-operator-rh
+        upgradeConstraintPolicy: CatalogProvided
+        version: 1.14.x
+      sourceType: Catalog
+  status:
+    conditions:
+    - lastTransitionTime: "2025-02-18T21:48:13Z"
+      message: ""
+      observedGeneration: 1
+      reason: Deprecated
+      status: "False"
+      type: Deprecated
+    - lastTransitionTime: "2025-02-18T21:48:13Z"
+      message: ""
+      observedGeneration: 1
+      reason: Deprecated
+      status: "False"
+      type: PackageDeprecated
+    - lastTransitionTime: "2025-02-18T21:48:13Z"
+      message: ""
+      observedGeneration: 1
+      reason: Deprecated
+      status: "False"
+      type: ChannelDeprecated
+    - lastTransitionTime: "2025-02-18T21:48:13Z"
+      message: ""
+      observedGeneration: 1
+      reason: Deprecated
+      status: "False"
+      type: BundleDeprecated
+    - lastTransitionTime: "2025-02-18T21:48:16Z"
+      message: Installed bundle registry.redhat.io/openshift-pipelines/pipelines-operator-bundle@sha256:f7b19ce26be742c4aaa458d37bc5ad373b5b29b20aaa7d308349687d3cbd8838
+        successfully
+      observedGeneration: 1
+      reason: Succeeded
+      status: "True"
+      type: Installed
+    - lastTransitionTime: "2025-02-18T21:48:16Z"
+      message: desired state reached
+      observedGeneration: 1
+      reason: Succeeded
+      status: "True"
+      type: Progressing
+    install:
+      bundle:
+        name: openshift-pipelines-operator-rh.v1.14.5
+        version: 1.14.5
+kind: List
+metadata:
+  resourceVersion: ""
+```
+3. Edit your CR by using one of the following methods:
+* If you want to pin your Operator or extension to specific version, such as 1.15.0, edit your CR similar to the following example:
+Example pipelines-operator.yaml CR
+
+```yaml
+apiVersion: olm.operatorframework.io/v1
+kind: ClusterExtension
+metadata:
+  name: pipelines-operator
+spec:
+  namespace: pipelines
+  serviceAccount:
+    name: pipelines-installer
+  source:
+    sourceType: Catalog
+    catalog:
+      packageName: openshift-pipelines-operator-rh
+      version: "1.15.0" 1
+```
+
+Update the version from 1.14.x to 1.15.0
+* If you want to define a range of acceptable update versions, edit your CR similar to the following example:
+Example CR with a version range specified
+
+```yaml
+apiVersion: olm.operatorframework.io/v1
+kind: ClusterExtension
+metadata:
+  name: pipelines-operator
+spec:
+  namespace: pipelines
+  serviceAccount:
+    name: pipelines-installer
+  source:
+    sourceType: Catalog
+    catalog:
+      packageName: openshift-pipelines-operator-rh
+      version: ">1.15, <1.17" 1
+```
+
+Specifies that the desired version range is greater than version 1.15 and less than 1.17. For more information, see "Support for version ranges" and "Version comparison strings".
+* If you want to update to the latest version that can be resolved from a channel, edit your CR similar to the following example:
+Example CR with a specified channel
+
+```yaml
+apiVersion: olm.operatorframework.io/v1
+kind: ClusterExtension
+metadata:
+  name: pipelines-operator
+spec:
+  namespace: pipelines
+  serviceAccount:
+    name: pipelines-installer
+  source:
+    sourceType: Catalog
+    catalog:
+      packageName: openshift-pipelines-operator-rh
+      channels:
+        - latest 1
+```
+
+Installs the latest release that can be resolved from the specified channel. Updates to the channel are automatically installed. Enter values as an array.
+* If you want to specify a channel and version or version range, edit your CR similar to the following example:
+Example CR with a specified channel and version range
+
+```yaml
+apiVersion: olm.operatorframework.io/v1
+kind: ClusterExtension
+metadata:
+  name: pipelines-operator
+spec:
+  namespace: pipelines
+  serviceAccount:
+    name: pipelines-installer
+  source:
+    sourceType: Catalog
+    catalog:
+      packageName: openshift-pipelines-operator-rh
+      channels:
+        - latest
+      version: "<1.16"
+```
+
+
+For more information, see "Example custom resources (CRs) that specify a target version".
+4. Apply the update to the cluster by running the following command:
+
+```terminal
+$ oc apply -f pipelines-operator.yaml
+```
+
+Example output
+
+```text
+clusterextension.olm.operatorframework.io/pipelines-operator configured
+```
+
+
+* Verify that the channel and version updates have been applied by running the following command:
+
+```terminal
+$ oc get clusterextension pipelines-operator -o yaml
+```
+
+Example output
+
+```yaml
+apiVersion: olm.operatorframework.io/v1
+kind: ClusterExtension
+metadata:
+  annotations:
+    kubectl.kubernetes.io/last-applied-configuration: |
+      {"apiVersion":"olm.operatorframework.io/v1","kind":"ClusterExtension","metadata":{"annotations":{},"name":"pipes"},"spec":{"namespace":"pipelines","serviceAccount":{"name":"pipelines-installer"},"source":{"catalog":{"packageName":"openshift-pipelines-operator-rh","version":"\u003c1.16"},"sourceType":"Catalog"}}}
+  creationTimestamp: "2025-02-18T21:48:13Z"
+  finalizers:
+  - olm.operatorframework.io/cleanup-unpack-cache
+  - olm.operatorframework.io/cleanup-contentmanager-cache
+  generation: 2
+  name: pipes
+  resourceVersion: "90693"
+  uid: e18b13fb-a96d-436f-be75-a9a0f2b07993
+spec:
+  namespace: pipelines
+  serviceAccount:
+    name: pipelines-installer
+  source:
+    catalog:
+      packageName: openshift-pipelines-operator-rh
+      upgradeConstraintPolicy: CatalogProvided
+      version: <1.16
+    sourceType: Catalog
+status:
+  conditions:
+  - lastTransitionTime: "2025-02-18T21:48:13Z"
+    message: ""
+    observedGeneration: 2
+    reason: Deprecated
+    status: "False"
+    type: Deprecated
+  - lastTransitionTime: "2025-02-18T21:48:13Z"
+    message: ""
+    observedGeneration: 2
+    reason: Deprecated
+    status: "False"
+    type: PackageDeprecated
+  - lastTransitionTime: "2025-02-18T21:48:13Z"
+    message: ""
+    observedGeneration: 2
+    reason: Deprecated
+    status: "False"
+    type: ChannelDeprecated
+  - lastTransitionTime: "2025-02-18T21:48:13Z"
+    message: ""
+    observedGeneration: 2
+    reason: Deprecated
+    status: "False"
+    type: BundleDeprecated
+  - lastTransitionTime: "2025-02-18T21:48:16Z"
+    message: Installed bundle registry.redhat.io/openshift-pipelines/pipelines-operator-bundle@sha256:8a593c1144709c9aeffbeb68d0b4b08368f528e7bb6f595884b2474bcfbcafcd
+      successfully
+    observedGeneration: 2
+    reason: Succeeded
+    status: "True"
+    type: Installed
+  - lastTransitionTime: "2025-02-18T21:48:16Z"
+    message: desired state reached
+    observedGeneration: 2
+    reason: Succeeded
+    status: "True"
+    type: Progressing
+  install:
+    bundle:
+      name: openshift-pipelines-operator-rh.v1.15.2
+      version: 1.15.2
+```
+
+* If you specify a target version or channel that is deprecated or does not exist, you can run the following command to check the status of your extension:
+
+```terminal
+$ oc get clusterextension <operator_name> -o yaml
+```
+
+Example output for a version that does not exist
+
+```text
+apiVersion: olm.operatorframework.io/v1
+kind: ClusterExtension
+metadata:
+  annotations:
+    kubectl.kubernetes.io/last-applied-configuration: |
+      {"apiVersion":"olm.operatorframework.io/v1","kind":"ClusterExtension","metadata":{"annotations":{},"name":"pipes"},"spec":{"namespace":"pipelines","serviceAccount":{"name":"pipelines-installer"},"source":{"catalog":{"packageName":"openshift-pipelines-operator-rh","version":"9.x"},"sourceType":"Catalog"}}}
+  creationTimestamp: "2025-02-18T21:48:13Z"
+  finalizers:
+  - olm.operatorframework.io/cleanup-unpack-cache
+  - olm.operatorframework.io/cleanup-contentmanager-cache
+  generation: 3
+  name: pipes
+  resourceVersion: "93334"
+  uid: e18b13fb-a96d-436f-be75-a9a0f2b07993
+spec:
+  namespace: pipelines
+  serviceAccount:
+    name: pipelines-installer
+  source:
+    catalog:
+      packageName: openshift-pipelines-operator-rh
+      upgradeConstraintPolicy: CatalogProvided
+      version: 9.x
+    sourceType: Catalog
+status:
+  conditions:
+  - lastTransitionTime: "2025-02-18T21:48:13Z"
+    message: ""
+    observedGeneration: 2
+    reason: Deprecated
+    status: "False"
+    type: Deprecated
+  - lastTransitionTime: "2025-02-18T21:48:13Z"
+    message: ""
+    observedGeneration: 2
+    reason: Deprecated
+    status: "False"
+    type: PackageDeprecated
+  - lastTransitionTime: "2025-02-18T21:48:13Z"
+    message: ""
+    observedGeneration: 2
+    reason: Deprecated
+    status: "False"
+    type: ChannelDeprecated
+  - lastTransitionTime: "2025-02-18T21:48:13Z"
+    message: ""
+    observedGeneration: 2
+    reason: Deprecated
+    status: "False"
+    type: BundleDeprecated
+  - lastTransitionTime: "2025-02-18T21:48:16Z"
+    message: Installed bundle registry.redhat.io/openshift-pipelines/pipelines-operator-bundle@sha256:8a593c1144709c9aeffbeb68d0b4b08368f528e7bb6f595884b2474bcfbcafcd
+      successfully
+    observedGeneration: 3
+    reason: Succeeded
+    status: "True"
+    type: Installed
+  - lastTransitionTime: "2025-02-18T21:48:16Z"
+    message: 'error upgrading from currently installed version "1.15.2": no bundles
+      found for package "openshift-pipelines-operator-rh" matching version "9.x"'
+    observedGeneration: 3
+    reason: Retrying
+    status: "True"
+    type: Progressing
+  install:
+    bundle:
+      name: openshift-pipelines-operator-rh.v1.15.2
+      version: 1.15.2
+```
+
+* Update paths
+
+# Deleting an Operator
+
+You can delete an Operator and its custom resource definitions (CRDs) by deleting the ClusterExtension custom resource (CR).
+
+* You have a catalog installed.
+* You have an Operator installed.
+
+* Delete an Operator and its CRDs by running the following command:
+
+```terminal
+$ oc delete clusterextension <operator_name>
+```
+
+Example output
+
+```text
+clusterextension.olm.operatorframework.io "<operator_name>" deleted
+```
+
+
+* Run the following commands to verify that your Operator and its resources were deleted:
+* Verify the Operator is deleted by running the following command:
+
+```terminal
+$ oc get clusterextensions
+```
+
+Example output
+
+```text
+No resources found
+```
+
+* Verify that the Operator's system namespace is deleted by running the following command:
+
+```terminal
+$ oc get ns <operator_name>-system
+```
+
+Example output
+
+```text
+Error from server (NotFound): namespaces "<operator_name>-system" not found
+```

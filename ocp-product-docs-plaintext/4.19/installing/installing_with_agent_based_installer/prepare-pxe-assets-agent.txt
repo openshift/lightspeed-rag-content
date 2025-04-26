@@ -1,0 +1,603 @@
+# Preparing PXE assets for Red Hat OpenShift Container Platform
+
+
+Use the following procedures to create the assets needed to PXE boot an Red Hat OpenShift Container Platform cluster using the Agent-based Installer.
+The assets you create in these procedures will deploy a single-node Red Hat OpenShift Container Platform installation. You can use these procedures as a basis and modify configurations according to your requirements.
+See Installing an Red Hat OpenShift Container Platform cluster with the Agent-based Installer to learn about more configurations available with the Agent-based Installer.
+
+# Prerequisites
+
+* You reviewed details about the Red Hat OpenShift Container Platform installation and update processes.
+
+# Downloading the Agent-based Installer
+
+Use this procedure to download the Agent-based Installer and the CLI needed for your installation.
+
+1. Log in to the Red Hat OpenShift Container Platform web console using your login credentials.
+2. Navigate to Datacenter.
+3. Click Run Agent-based Installer locally.
+4. Select the operating system and architecture for the OpenShift Installer and Command line interface.
+5. Click Download Installer to download and extract the install program.
+6. Download or copy the pull secret by clicking on Download pull secret or Copy pull secret.
+7. Click Download command-line tools and place the openshift-install binary in a directory that is on your PATH.
+
+# Creating the preferred configuration inputs
+
+Use this procedure to create the preferred configuration inputs used to create the PXE files.
+
+
+[NOTE]
+----
+Configuring the install-config.yaml and agent-config.yaml files is the preferred method for using the Agent-based Installer. Using GitOps ZTP manifests is optional.
+----
+
+1. Install the nmstate dependency by running the following command:
+
+```terminal
+$ sudo dnf install /usr/bin/nmstatectl -y
+```
+
+2. Place the openshift-install binary in a directory that is on your PATH.
+3. Create a directory to store the install configuration by running the following command:
+
+```terminal
+$ mkdir ~/<directory_name>
+```
+
+4. Create the install-config.yaml file by running the following command:
+
+```terminal
+$ cat << EOF > ./<directory_name>/install-config.yaml
+apiVersion: v1
+baseDomain: test.example.com
+compute:
+- architecture: amd64 1
+  hyperthreading: Enabled
+  name: worker
+  replicas: 0
+controlPlane:
+  architecture: amd64
+  hyperthreading: Enabled
+  name: master
+  replicas: 1
+metadata:
+  name: sno-cluster 2
+networking:
+  clusterNetwork:
+  - cidr: 10.128.0.0/14
+    hostPrefix: 23
+  machineNetwork:
+  - cidr: 192.168.0.0/16
+  networkType: OVNKubernetes 3
+  serviceNetwork:
+  - 172.30.0.0/16
+platform: 4
+  none: {}
+pullSecret: '<pull_secret>' 5
+sshKey: '<ssh_pub_key>' 6
+EOF
+```
+
+Specify the system architecture. Valid values are amd64, arm64, ppc64le, and s390x.
+
+If you are using the release image with the multi payload, you can install the cluster on different architectures such as arm64, amd64, s390x, and ppc64le. Otherwise, you can install the cluster only on the release architecture displayed in the output of the openshift-install version command. For more information, see "Verifying the supported architecture for installing an Agent-based Installer cluster".
+Required. Specify your cluster name.
+The cluster network plugin to install. The default value OVNKubernetes is the only supported value.
+Specify your platform.
+
+[NOTE]
+----
+For bare-metal platforms, host settings made in the platform section of the install-config.yaml file are used by default, unless they are overridden by configurations made in the agent-config.yaml file.
+----
+Specify your pull secret.
+Specify your SSH public key.
+
+[NOTE]
+----
+If you set the platform to vSphere or baremetal, you can configure IP address endpoints for cluster nodes in three ways:
+* IPv4
+* IPv6
+* IPv4 and IPv6 in parallel (dual-stack)
+IPv6 is supported only on bare metal platforms.
+----
+Example of dual-stack networking
+
+```yaml
+networking:
+  clusterNetwork:
+    - cidr: 172.21.0.0/16
+      hostPrefix: 23
+    - cidr: fd02::/48
+      hostPrefix: 64
+  machineNetwork:
+    - cidr: 192.168.11.0/16
+    - cidr: 2001:DB8::/32
+  serviceNetwork:
+    - 172.22.0.0/16
+    - fd03::/112
+  networkType: OVNKubernetes
+platform:
+  baremetal:
+    apiVIPs:
+    - 192.168.11.3
+    - 2001:DB8::4
+    ingressVIPs:
+    - 192.168.11.4
+    - 2001:DB8::5
+```
+
+
+[NOTE]
+----
+When you use a disconnected mirror registry, you must add the certificate file that you created previously for your mirror registry to the additionalTrustBundle field of the install-config.yaml file.
+----
+5. Create the agent-config.yaml file by running the following command:
+
+```terminal
+$ cat > agent-config.yaml << EOF
+apiVersion: v1beta1
+kind: AgentConfig
+metadata:
+  name: sno-cluster
+rendezvousIP: 192.168.111.80 1
+hosts: 2
+  - hostname: master-0 3
+    interfaces:
+      - name: eno1
+        macAddress: 00:ef:44:21:e6:a5
+    rootDeviceHints: 4
+      deviceName: /dev/sdb
+    networkConfig: 5
+      interfaces:
+        - name: eno1
+          type: ethernet
+          state: up
+          mac-address: 00:ef:44:21:e6:a5
+          ipv4:
+            enabled: true
+            address:
+              - ip: 192.168.111.80
+                prefix-length: 23
+            dhcp: false
+      dns-resolver:
+        config:
+          server:
+            - 192.168.111.1
+      routes:
+        config:
+          - destination: 0.0.0.0/0
+            next-hop-address: 192.168.111.2
+            next-hop-interface: eno1
+            table-id: 254
+EOF
+```
+
+This IP address is used to determine which node performs the bootstrapping process as well as running the assisted-service component.
+You must provide the rendezvous IP address when you do not specify at least one host's IP address in the networkConfig parameter. If this address is not provided, one IP address is selected from the provided hosts' networkConfig.
+Optional: Host configuration. The number of hosts defined must not exceed the total number of hosts defined in the install-config.yaml file, which is the sum of the values of the compute.replicas and controlPlane.replicas parameters.
+Optional: Overrides the hostname obtained from either the Dynamic Host Configuration Protocol (DHCP) or a reverse DNS lookup. Each host must have a unique hostname supplied by one of these methods.
+Enables provisioning of the Red Hat Enterprise Linux CoreOS (RHCOS) image to a particular device. The installation program examines the devices in the order it discovers them, and compares the discovered values with the hint values. It uses the first discovered device that matches the hint value.
+Optional: Configures the network interface of a host in NMState format.
+6. Optional: To create an iPXE script, add the bootArtifactsBaseURL to the agent-config.yaml file:
+
+```yaml
+apiVersion: v1beta1
+kind: AgentConfig
+metadata:
+  name: sno-cluster
+rendezvousIP: 192.168.111.80
+bootArtifactsBaseURL: <asset_server_URL>
+```
+
+
+Where <asset_server_URL> is the URL of the server you will upload the PXE assets to.
+
+* Deploying with dual-stack networking.
+* Configuring the install-config yaml file.
+* See Configuring a three-node cluster to deploy three-node clusters in bare metal environments.
+* About root device hints.
+* NMState state examples.
+* Optional: Creating additional manifest files
+
+# Creating the PXE assets
+
+Use the following procedure to create the assets and optional script to implement in your PXE infrastructure.
+
+1. Create the PXE assets by running the following command:
+
+```terminal
+$ openshift-install agent create pxe-files
+```
+
+
+The generated PXE assets and optional iPXE script can be found in the boot-artifacts directory.
+Example filesystem with PXE assets and optional iPXE script
+
+```terminal
+boot-artifacts
+    ├─ agent.x86_64-initrd.img
+    ├─ agent.x86_64.ipxe
+    ├─ agent.x86_64-rootfs.img
+    └─ agent.x86_64-vmlinuz
+```
+
+
+[IMPORTANT]
+----
+The contents of the boot-artifacts directory vary depending on the specified architecture.
+----
+
+[NOTE]
+----
+Red Hat Enterprise Linux CoreOS (RHCOS) supports multipathing on the primary disk, allowing stronger resilience to hardware failure to achieve higher host availability. Multipathing is enabled by default in the agent ISO image, with a default /etc/multipath.conf configuration.
+----
+2. Upload the PXE assets and optional script to your infrastructure where they will be accessible during the boot process.
+
+[NOTE]
+----
+If you generated an iPXE script, the location of the assets must match the bootArtifactsBaseURL you added to the agent-config.yaml file.
+----
+
+# Manually adding IBM Z agents
+
+After creating the PXE assets, you can add IBM Z&#174; agents.
+Only use this procedure for IBM Z&#174; clusters.
+
+Depending on your IBM Z&#174; environment, you can choose from the following options:
+
+* Adding IBM Z(R) agents with z/VM
+* Adding IBM Z(R) agents with RHEL KVM
+* Adding IBM Z(R) agents with Logical Partition (LPAR)
+
+
+[NOTE]
+----
+Currently, ISO boot support on IBM Z(R) (s390x) is available only for Red Hat Enterprise Linux (RHEL) KVM, which provides the flexibility to choose either PXE or ISO-based installation. For installations with z/VM and Logical Partition (LPAR), only PXE boot is supported.
+----
+
+## Networking requirements for IBM Z
+
+In IBM Z environments, advanced networking technologies such as Open Systems Adapter (OSA), HiperSockets, and Remote Direct Memory Access (RDMA) over Converged Ethernet (RoCE) require specific configurations that deviate from the standard network settings and those needs to be persisted for multiple boot scenarios that occur in the Agent-based Installation.
+
+To persist these parameters during boot, the ai.ip_cfg_override=1 parameter is required in the .parm file. This parameter is used with the configured network cards to ensure a successful and efficient deployment on IBM Z.
+
+The following table lists the network devices that are supported on each hypervisor for the network configuration override functionality:
+
+
+
+1. Supported: When the ai.ip_cfg_override parameter is required for the installation procedure.
+2. Not Applicable: When a network card is not applicable to be used on the hypervisor.
+3. Not required: When the ai.ip_cfg_override parameter is not required for the installation procedure.
+
+## Configuring network overrides in an IBM Z environment
+
+You can specify a static IP address on IBM Z machines that use Logical Partition (LPAR) and z/VM. This is useful when the network devices do not have a static MAC address assigned to them.
+
+
+[NOTE]
+----
+If you are using an OSA network device in Processor Resource/Systems Manager (PR/SM) mode, the lack of persistent MAC addresses can lead to a dynamic assignment of roles for nodes. This means that the roles of individual nodes are not fixed and can change, as the system is unable to reliably associate specific MAC addresses with designated node roles. If MAC addresses are not persistent for any of the interfaces, roles for the nodes are assigned randomly during Agent-based installation.
+----
+
+* If you have an existing .parm file, edit it to include the following entry:
+
+```terminal
+ai.ip_cfg_override=1
+```
+
+
+This parameter allows the file to add the network settings to the Red Hat Enterprise Linux CoreOS (RHCOS) installer.
+Example .parm file
+
+```terminal
+rd.neednet=1 cio_ignore=all,!condev
+console=ttysclp0
+coreos.live.rootfs_url=<coreos_url> 1
+ip=<ip>::<gateway>:<netmask>:<hostname>::none nameserver=<dns>
+rd.znet=qeth,<network_adaptor_range>,layer2=1
+rd.<disk_type>=<adapter> 2
+rd.zfcp=<adapter>,<wwpn>,<lun> random.trust_cpu=on 3
+zfcp.allow_lun_scan=0
+ai.ip_cfg_override=1
+ignition.firstboot ignition.platform.id=metal
+random.trust_cpu=on
+```
+
+For the coreos.live.rootfs_url artifact, specify the matching rootfs artifact for the kernel and initramfs that you are booting. Only HTTP and HTTPS protocols are supported.
+For installations on direct access storage devices (DASD) type disks, use rd. to specify the DASD where Red Hat Enterprise Linux CoreOS (RHCOS) is to be installed. For installations on Fibre Channel Protocol (FCP) disks, use rd.zfcp=<adapter>,<wwpn>,<lun> to specify the FCP disk where RHCOS is to be installed.
+Specify values for adapter, wwpn, and lun as in the following example: rd.zfcp=0.0.8002,0x500507630400d1e3,0x4000404600000000.
+
+
+[NOTE]
+----
+The override parameter overrides the host's network configuration settings.
+----
+
+## Adding IBM Z agents with z/VM
+
+Use the following procedure to manually add IBM Z&#174; agents with z/VM.
+Only use this procedure for IBM Z&#174; clusters with z/VM.
+
+* A running file server with access to the guest Virtual Machines.
+
+1. Create a parameter file for the z/VM guest:
+Example parameter file
+
+```text
+rd.neednet=1 \
+console=ttysclp0 \
+coreos.live.rootfs_url=<rootfs_url> \1
+ip=172.18.78.2::172.18.78.1:255.255.255.0:::none nameserver=172.18.78.1 \2
+zfcp.allow_lun_scan=0 \3
+ai.ip_cfg_override=1 \
+rd.znet=qeth,0.0.bdd0,0.0.bdd1,0.0.bdd2,layer2=1 \
+rd.dasd=0.0.4411 \4
+rd.zfcp=0.0.8001,0x50050763040051e3,0x4000406300000000 \5
+fips=1 \6
+random.trust_cpu=on rd.luks.options=discard \
+ignition.firstboot ignition.platform.id=metal \
+console=tty1 console=ttyS1,115200n8 \
+coreos.inst.persistent-kargs="console=tty1 console=ttyS1,115200n8"
+```
+
+For the coreos.live.rootfs_url artifact, specify the matching rootfs artifact for the kernel and initramfs that you are booting. Only HTTP and HTTPS protocols are supported.
+For the ip parameter, assign the IP address automatically using DHCP, or manually assign the IP address, as described in "Installing a cluster with z/VM on IBM Z(R) and IBM(R) LinuxONE".
+The default is 1. Omit this entry when using an OSA network adapter.
+For installations on DASD-type disks, use rd.dasd to specify the DASD where Red Hat Enterprise Linux CoreOS (RHCOS) is to be installed. Omit this entry for FCP-type disks.
+For installations on FCP-type disks, use rd.zfcp=<adapter>,<wwpn>,<lun> to specify the FCP disk where RHCOS is to be installed. Omit this entry for DASD-type disks.
+To enable FIPS mode, specify fips=1. This entry is required in addition to setting the fips parameter to true in the install-config.yaml file.
+
+Leave all other parameters unchanged.
+2. Punch the kernel.img,generic.parm, and initrd.img files to the virtual reader of the z/VM guest virtual machine.
+
+For more information, see PUNCH (IBM Documentation).
+
+[TIP]
+----
+You can use the CP PUNCH command or, if you use Linux, the vmur command, to transfer files between two z/VM guest virtual machines.
+----
+3. Log in to the conversational monitor system (CMS) on the bootstrap machine.
+4. IPL the bootstrap machine from the reader by running the following command:
+
+```terminal
+$ ipl c
+```
+
+
+For more information, see IPL (IBM Documentation).
+
+* Installing a cluster with z/VM on IBM Z and IBM LinuxONE
+
+## Adding IBM Z agents with RHEL KVM
+
+Use the following procedure to manually add IBM Z&#174; agents with RHEL KVM.
+Only use this procedure for IBM Z&#174; clusters with RHEL KVM.
+
+
+[NOTE]
+----
+The nmstateconfig parameter must be configured for the KVM boot.
+----
+
+1. Boot your RHEL KVM machine.
+2. To deploy the virtual server, run the virt-install command with the following parameters:
+
+```terminal
+$ virt-install \
+   --name <vm_name> \
+   --autostart \
+   --ram=16384 \
+   --cpu host \
+   --vcpus=8 \
+   --location <path_to_kernel_initrd_image>,kernel=kernel.img,initrd=initrd.img \1
+   --disk <qcow_image_path> \
+   --network network:macvtap ,mac=<mac_address> \
+   --graphics none \
+   --noautoconsole \
+   --wait=-1 \
+   --extra-args "rd.neednet=1 nameserver=<nameserver>" \
+   --extra-args "ip=<IP>::<nameserver>::<hostname>:enc1:none" \
+   --extra-args "coreos.live.rootfs_url=http://<http_server>:8080/agent.s390x-rootfs.img" \
+   --extra-args "random.trust_cpu=on rd.luks.options=discard" \
+   --extra-args "ignition.firstboot ignition.platform.id=metal" \
+   --extra-args "console=tty1 console=ttyS1,115200n8" \
+   --extra-args "coreos.inst.persistent-kargs=console=tty1 console=ttyS1,115200n8" \
+   --osinfo detect=on,require=off
+```
+
+For the --location parameter, specify the location of the kernel and initrd files. The location can be a local server path or a URL using HTTP or HTTPS.
+3. Optional: Enable FIPS mode.
+
+To enable FIPS mode on IBM Z&#174; clusters with RHEL KVM you must use PXE boot instead and run the virt-install command with the following parameters:
+PXE boot
+
+```terminal
+$ virt-install \
+   --name <vm_name> \
+   --autostart \
+   --ram=16384 \
+   --cpu host \
+   --vcpus=8 \
+   --location <path_to_kernel_initrd_image>,kernel=kernel.img,initrd=initrd.img \1
+   --disk <qcow_image_path> \
+   --network network:macvtap ,mac=<mac_address> \
+   --graphics none \
+   --noautoconsole \
+   --wait=-1 \
+   --extra-args "rd.neednet=1 nameserver=<nameserver>" \
+   --extra-args "ip=<IP>::<nameserver>::<hostname>:enc1:none" \
+   --extra-args "coreos.live.rootfs_url=http://<http_server>:8080/agent.s390x-rootfs.img" \
+   --extra-args "random.trust_cpu=on rd.luks.options=discard" \
+   --extra-args "ignition.firstboot ignition.platform.id=metal" \
+   --extra-args "console=tty1 console=ttyS1,115200n8" \
+   --extra-args "coreos.inst.persistent-kargs=console=tty1 console=ttyS1,115200n8" \
+   --extra-args "fips=1" \2
+   --osinfo detect=on,require=off
+```
+
+For the --location parameter, specify the location of the kernel/initrd on the HTTP or HTTPS server.
+To enable FIPS mode, specify fips=1. This entry is required in addition to setting the fips parameter to true in the install-config.yaml file.
+
+[NOTE]
+----
+Currently, only PXE boot is supported to enable FIPS mode on IBM Z(R).
+----
+
+* Installing a cluster with RHEL KVM on IBM Z and IBM LinuxONE
+
+## Adding IBM Z agents in a Logical Partition (LPAR)
+
+Use the following procedure to manually add IBM Z&#174; agents to your cluster that runs in an LPAR environment. Use this procedure only for IBM Z&#174; clusters running in an LPAR.
+
+* You have Python 3 installed.
+* A running file server with access to the Logical Partition (LPAR).
+
+1. Create a boot parameter file for the agents.
+Example parameter file
+
+```terminal
+rd.neednet=1 cio_ignore=all,!condev \
+console=ttysclp0 \
+ignition.firstboot ignition.platform.id=metal
+coreos.live.rootfs_url=http://<http_server>/rhcos-<version>-live-rootfs.<architecture>.img \1
+coreos.inst.persistent-kargs=console=ttysclp0 \
+ip=<ip>::<gateway>:<netmask>:<hostname>::none nameserver=<dns> \2
+rd.znet=qeth,<network_adaptor_range>,layer2=1
+rd.<disk_type>=<adapter> \3
+fips=1 \4
+zfcp.allow_lun_scan=0 \
+ai.ip_cfg_override=1 \
+random.trust_cpu=on rd.luks.options=discard
+```
+
+For the coreos.live.rootfs_url artifact, specify the matching rootfs artifact for the kernel and initramfs that you are starting. Only HTTP and HTTPS protocols are supported.
+For the ip parameter, manually assign the IP address, as described in Installing a cluster with z/VM on IBM Z and IBM LinuxONE.
+For installations on DASD-type disks, use rd.dasd to specify the DASD where Red Hat Enterprise Linux CoreOS (RHCOS) is to be installed. For installations on FCP-type disks, use rd.zfcp=<adapter>,<wwpn>,<lun> to specify the FCP disk where RHCOS is to be installed.
+To enable FIPS mode, specify fips=1. This entry is required in addition to setting the fips parameter to true in the install-config.yaml file.
+
+[NOTE]
+----
+The .ins and initrd.img.addrsize files are automatically generated for s390x architecture as part of boot-artifacts from the installation program and are only used when booting in an LPAR environment.
+----
+Example filesystem with LPAR boot
+
+```terminal
+boot-artifacts
+    ├─ agent.s390x-generic.ins
+    ├─ agent.s390x-initrd.addrsize
+    ├─ agent.s390x-rootfs.img
+    └─ agent.s390x-kernel.img
+    └─ agent.s390x-rootfs.img
+```
+
+2. Rename the boot-artifacts file present in the generic.ins parameter file to match the names of the boot-artifacts file generated by the installation program.
+3. Transfer the initrd, kernel, generic.ins, and initrd.img.addrsize parameter files to the file server. For more information, see Booting Linux in LPAR mode (IBM documentation).
+4. Start the machine.
+5. Repeat the procedure for all other machines in the cluster.
+
+* Installing a cluster in an LPAR on IBM Z and IBM LinuxONE
+
+## Adding IBM Z agents in a Logical Partition (LPAR) to an existing cluster
+
+In Red Hat OpenShift Container Platform 4.19, the .ins and initrd.img.addrsize files are not automatically generated as part of the boot-artifacts for an existing cluster. You must manually generate these files for IBM Z&#174; clusters running in an LPAR.
+
+The .ins file is a special file that includes installation data and is present on the FTP server. You can access this file from the hardware management console (HMC) system. This file contains details such as mapping of the location of installation data on the disk or FTP server and the memory locations where the data is to be copied.
+
+* A running file server with access to the LPAR.
+
+1. Generate the .ins and initrd.img.addrsize files:
+1. Retrieve the size of the kernel and initrd by running the following commands:
+
+```terminal
+$ KERNEL_IMG_PATH='./kernel.img'
+```
+
+
+```terminal
+$ INITRD_IMG_PATH='./initrd.img'
+```
+
+
+```terminal
+$ CMDLINE_PATH='./generic.prm'
+```
+
+
+```terminal
+$ kernel_size=$(stat -c%s $KERNEL_IMG_PATH)
+```
+
+
+```terminal
+$ initrd_size=$(stat -c%s $INITRD_IMG_PATH)
+```
+
+2. Round up the kernel size to the next Mebibytes (MiB) boundary by running the following command:
+
+```terminal
+$ BYTE_PER_MIB=$(( 1024 * 1024 )) offset=$(( (kernel_size + BYTE_PER_MIB - 1) / BYTE_PER_MIB * BYTE_PER_MIB ))
+```
+
+3. Create the kernel binary patch file that contains the initrd address and size by running the following commands:
+
+```terminal
+$ INITRD_IMG_NAME=$(echo $INITRD_IMG_PATH | rev | cut -d '/' -f 1 | rev)
+```
+
+
+```terminal
+$ KERNEL_OFFSET=0x00000000
+```
+
+
+```terminal
+$ KERNEL_CMDLINE_OFFSET=0x00010480
+```
+
+
+```terminal
+$ INITRD_ADDR_SIZE_OFFSET=0x00010408
+```
+
+
+```terminal
+$ OFFSET_HEX=(printf '0x%08x\n' offset)
+```
+
+4. Convert the address and size to binary format by running the following command:
+
+```terminal
+$ printf "$(printf '%016x\n' $initrd_size)" | xxd -r -p > temp_size.bin
+```
+
+5. Merge the address and size binaries by running the following command:
+
+```terminal
+$ cat temp_address.bin temp_size.bin > "$INITRD_IMG_NAME.addrsize"
+```
+
+6. Clean up temporary files by running the following command:
+
+```terminal
+$ rm -rf temp_address.bin temp_size.bin
+```
+
+7. Create the .ins file by running the following command:
+
+```terminal
+$ cat > generic.ins <<EOF
+$KERNEL_IMG_PATH $KERNEL_OFFSET
+$INITRD_IMG_PATH $OFFSET_HEX
+$INITRD_IMG_NAME.addrsize $INITRD_ADDR_SIZE_OFFSET
+$CMDLINE_PATH $KERNEL_CMDLINE_OFFSET
+EOF
+```
+
+
+[NOTE]
+----
+The file is based on the paths of the kernel.img, initrd.img, initrd.img.addrsize, and cmdline files and the memory locations where the data is to be copied.
+----
+2. Transfer the initrd, kernel, generic.ins, and initrd.img.addrsize parameter files to the file server. For more information, see Booting Linux in LPAR mode (IBM documentation).
+3. Start the machine.
+4. Repeat the procedure for all other machines in the cluster.

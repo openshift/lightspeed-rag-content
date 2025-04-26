@@ -454,16 +454,22 @@ phc2sys[94980.512]: [ptp4l.0.config] CLOCK_REALTIME phc offset      1000 s2 freq
 ```
 
 
-# Configuring linuxptp services as a grandmaster clock for dual E810 Westport Channel NICs
+## Configuring linuxptp services as a grandmaster clock for dual E810 Westport Channel NICs
 
-You can configure the linuxptp services (ptp4l, phc2sys, ts2phc) as grandmaster clock (T-GM) for dual E810 Westport Channel NICs by creating a PtpConfig custom resource (CR) that configures the host NICs.
+You can configure the linuxptp services (ptp4l, phc2sys, ts2phc) as a grandmaster clock (T-GM) for 2 E810 NICs by creating a PtpConfig custom resource (CR) that configures the NICs.
 
-For distributed RAN (D-RAN) use cases, you can configure PTP for dual-NICs as follows:
+You can configure the linuxptp services as a T-GM for the following E810 NICs:
 
-* NIC one is synced to the global navigation satellite system (GNSS) time source.
-* NIC two is synced to the 1PPS timing output provided by NIC one. This configuration is provided by the PTP hardware plugin in the PtpConfig CR.
+* Intel E810-XXVDA4T Westport Channel NIC
+* Intel E810-CQDA2T Logan Beach NIC
 
-The dual-NIC PTP T-GM configuration uses a single instance of ptp4l and one ts2phc process reporting two ts2phc instances, one for each NIC.
+For distributed RAN (D-RAN) use cases, you can configure PTP for 2 NICs as follows:
+
+* NIC 1 is synced to the global navigation satellite system (GNSS) time source.
+* NIC 2 is synced to the 1PPS timing output provided by NIC one. This configuration is provided by the PTP hardware plugin in the PtpConfig CR.
+
+The 2-card PTP T-GM configuration uses one instance of ptp4l and one instance of ts2phc.
+The ptp4l and ts2phc programs are each configured to operate on two PTP hardware clocks (PHCs), one for each NIC.
 The host system clock is synchronized from the NIC that is connected to the GNSS time source.
 
 
@@ -774,9 +780,359 @@ phc2sys[509863.782]: [ptp4l.0.config] CLOCK_REALTIME phc offset        -7 s2 fre
 ```
 
 
+## Configuring linuxptp services as a grandmaster clock for 3 E810 NICs
+
+You can configure the linuxptp services (ptp4l, phc2sys, ts2phc) as a grandmaster clock (T-GM) for 3 E810 NICs by creating a PtpConfig custom resource (CR) that configures the NICs.
+
+You can configure the linuxptp services as a T-GM with 3 NICs for the following E810 NICs:
+
+* Intel E810-XXVDA4T Westport Channel NIC
+* Intel E810-CQDA2T Logan Beach NIC
+
+For distributed RAN (D-RAN) use cases, you can configure PTP for 3 NICs as follows:
+
+* NIC 1 is synced to the Global Navigation Satellite System (GNSS)
+* NICs 2 and 3 are synced to NIC 1 with 1PPS faceplate connections
+
+Use the following example PtpConfig CRs as the basis to configure linuxptp services as a 3-card Intel E810 T-GM.
+
+* For T-GM clocks in production environments, install 3 Intel E810 NICs in the bare-metal cluster host.
+* Install the OpenShift CLI (oc).
+* Log in as a user with cluster-admin privileges.
+* Install the PTP Operator.
+
+1. Create the PtpConfig CR. For example:
+1. Save the following YAML in the three-nic-grandmaster-clock-ptp-config.yaml file:
+PTP grandmaster clock configuration for 3 E810 NICs
+
+```yaml
+# In this example, the three cards are connected via SMA cables:
+# - $iface_timeTx1 has the GNSS signal input
+# - $iface_timeTx2 SMA1 is connected to $iface_timeTx1 SMA1
+# - $iface_timeTx3 SMA1 is connected to $iface_timeTx1 SMA2
+apiVersion: ptp.openshift.io/v1
+kind: PtpConfig
+metadata:
+  name: gm-3card
+  namespace: openshift-ptp
+  annotations:
+    ran.openshift.io/ztp-deploy-wave: "10"
+spec:
+  profile:
+  - name: grandmaster
+    ptp4lOpts: -2 --summary_interval -4
+    phc2sysOpts: -r -u 0 -m -N 8 -R 16 -s $iface_timeTx1 -n 24
+    ptpSchedulingPolicy: SCHED_FIFO
+    ptpSchedulingPriority: 10
+    ptpSettings:
+      logReduce: "true"
+    plugins:
+      e810:
+        enableDefaultConfig: false
+        settings:
+          LocalHoldoverTimeout: 14400
+          LocalMaxHoldoverOffSet: 1500
+          MaxInSpecOffset: 1500
+        pins:
+          # Syntax guide:
+          # - The 1st number in each pair must be one of:
+          #    0 - Disabled
+          #    1 - RX
+          #    2 - TX
+          # - The 2nd number in each pair must match the channel number
+          $iface_timeTx1:
+            SMA1: 2 1
+            SMA2: 2 2
+            U.FL1: 0 1
+            U.FL2: 0 2
+          $iface_timeTx2:
+            SMA1: 1 1
+            SMA2: 0 2
+            U.FL1: 0 1
+            U.FL2: 0 2
+          $iface_timeTx3:
+            SMA1: 1 1
+            SMA2: 0 2
+            U.FL1: 0 1
+            U.FL2: 0 2
+        ublxCmds:
+          - args: #ubxtool -P 29.20 -z CFG-HW-ANT_CFG_VOLTCTRL,1
+              - "-P"
+              - "29.20"
+              - "-z"
+              - "CFG-HW-ANT_CFG_VOLTCTRL,1"
+            reportOutput: false
+          - args: #ubxtool -P 29.20 -e GPS
+              - "-P"
+              - "29.20"
+              - "-e"
+              - "GPS"
+            reportOutput: false
+          - args: #ubxtool -P 29.20 -d Galileo
+              - "-P"
+              - "29.20"
+              - "-d"
+              - "Galileo"
+            reportOutput: false
+          - args: #ubxtool -P 29.20 -d GLONASS
+              - "-P"
+              - "29.20"
+              - "-d"
+              - "GLONASS"
+            reportOutput: false
+          - args: #ubxtool -P 29.20 -d BeiDou
+              - "-P"
+              - "29.20"
+              - "-d"
+              - "BeiDou"
+            reportOutput: false
+          - args: #ubxtool -P 29.20 -d SBAS
+              - "-P"
+              - "29.20"
+              - "-d"
+              - "SBAS"
+            reportOutput: false
+          - args: #ubxtool -P 29.20 -t -w 5 -v 1 -e SURVEYIN,600,50000
+              - "-P"
+              - "29.20"
+              - "-t"
+              - "-w"
+              - "5"
+              - "-v"
+              - "1"
+              - "-e"
+              - "SURVEYIN,600,50000"
+            reportOutput: true
+          - args: #ubxtool -P 29.20 -p MON-HW
+              - "-P"
+              - "29.20"
+              - "-p"
+              - "MON-HW"
+            reportOutput: true
+          - args: #ubxtool -P 29.20 -p CFG-MSG,1,38,248
+              - "-P"
+              - "29.20"
+              - "-p"
+              - "CFG-MSG,1,38,248"
+            reportOutput: true
+    ts2phcOpts: " "
+    ts2phcConf: |
+      [nmea]
+      ts2phc.master 1
+      [global]
+      use_syslog  0
+      verbose 1
+      logging_level 7
+      ts2phc.pulsewidth 100000000
+      #example value of nmea_serialport is /dev/gnss0
+      ts2phc.nmea_serialport (?<gnss_serialport>[/\w\s/]+)
+      leapfile /usr/share/zoneinfo/leap-seconds.list
+      [$iface_timeTx1]
+      ts2phc.extts_polarity rising
+      ts2phc.extts_correction 0
+      [$iface_timeTx2]
+      ts2phc.master 0
+      ts2phc.extts_polarity rising
+      #this is a measured value in nanoseconds to compensate for SMA cable delay
+      ts2phc.extts_correction -10
+      [$iface_timeTx3]
+      ts2phc.master 0
+      ts2phc.extts_polarity rising
+      #this is a measured value in nanoseconds to compensate for SMA cable delay
+      ts2phc.extts_correction -10
+    ptp4lConf: |
+      [$iface_timeTx1]
+      masterOnly 1
+      [$iface_timeTx1_1]
+      masterOnly 1
+      [$iface_timeTx1_2]
+      masterOnly 1
+      [$iface_timeTx1_3]
+      masterOnly 1
+      [$iface_timeTx2]
+      masterOnly 1
+      [$iface_timeTx2_1]
+      masterOnly 1
+      [$iface_timeTx2_2]
+      masterOnly 1
+      [$iface_timeTx2_3]
+      masterOnly 1
+      [$iface_timeTx3]
+      masterOnly 1
+      [$iface_timeTx3_1]
+      masterOnly 1
+      [$iface_timeTx3_2]
+      masterOnly 1
+      [$iface_timeTx3_3]
+      masterOnly 1
+      [global]
+      #
+      # Default Data Set
+      #
+      twoStepFlag 1
+      priority1 128
+      priority2 128
+      domainNumber 24
+      #utc_offset 37
+      clockClass 6
+      clockAccuracy 0x27
+      offsetScaledLogVariance 0xFFFF
+      free_running 0
+      freq_est_interval 1
+      dscp_event 0
+      dscp_general 0
+      dataset_comparison G.8275.x
+      G.8275.defaultDS.localPriority 128
+      #
+      # Port Data Set
+      #
+      logAnnounceInterval -3
+      logSyncInterval -4
+      logMinDelayReqInterval -4
+      logMinPdelayReqInterval 0
+      announceReceiptTimeout 3
+      syncReceiptTimeout 0
+      delayAsymmetry 0
+      fault_reset_interval -4
+      neighborPropDelayThresh 20000000
+      masterOnly 0
+      G.8275.portDS.localPriority 128
+      #
+      # Run time options
+      #
+      assume_two_step 0
+      logging_level 6
+      path_trace_enabled 0
+      follow_up_info 0
+      hybrid_e2e 0
+      inhibit_multicast_service 0
+      net_sync_monitor 0
+      tc_spanning_tree 0
+      tx_timestamp_timeout 50
+      unicast_listen 0
+      unicast_master_table 0
+      unicast_req_duration 3600
+      use_syslog 1
+      verbose 0
+      summary_interval -4
+      kernel_leap 1
+      check_fup_sync 0
+      clock_class_threshold 7
+      #
+      # Servo Options
+      #
+      pi_proportional_const 0.0
+      pi_integral_const 0.0
+      pi_proportional_scale 0.0
+      pi_proportional_exponent -0.3
+      pi_proportional_norm_max 0.7
+      pi_integral_scale 0.0
+      pi_integral_exponent 0.4
+      pi_integral_norm_max 0.3
+      step_threshold 2.0
+      first_step_threshold 0.00002
+      clock_servo pi
+      sanity_freq_limit 200000000
+      ntpshm_segment 0
+      #
+      # Transport options
+      #
+      transportSpecific 0x0
+      ptp_dst_mac 01:1B:19:00:00:00
+      p2p_dst_mac 01:80:C2:00:00:0E
+      udp_ttl 1
+      udp6_scope 0x0E
+      uds_address /var/run/ptp4l
+      #
+      # Default interface options
+      #
+      clock_type BC
+      network_transport L2
+      delay_mechanism E2E
+      time_stamping hardware
+      tsproc_mode filter
+      delay_filter moving_median
+      delay_filter_length 10
+      egressLatency 0
+      ingressLatency 0
+      boundary_clock_jbod 1
+      #
+      # Clock description
+      #
+      productDescription ;;
+      revisionData ;;
+      manufacturerIdentity 00:00:00
+      userDescription ;
+      timeSource 0x20
+    ptpClockThreshold:
+      holdOverTimeout: 5
+      maxOffsetThreshold: 1500
+      minOffsetThreshold: -1500
+  recommend:
+  - profile: grandmaster
+    priority: 4
+    match:
+    - nodeLabel: node-role.kubernetes.io/$mcp
+```
+
+[NOTE]
+----
+Set the value for ts2phc.nmea_serialport to /dev/gnss0.
+----
+2. Create the CR by running the following command:
+
+```terminal
+$ oc create -f three-nic-grandmaster-clock-ptp-config.yaml
+```
+
+
+1. Check that the PtpConfig profile is applied to the node.
+1. Get the list of pods in the openshift-ptp namespace by running the following command:
+
+```terminal
+$ oc get pods -n openshift-ptp -o wide
+```
+
+Example output
+
+```terminal
+NAME                          READY   STATUS    RESTARTS   AGE     IP             NODE
+linuxptp-daemon-74m3q         3/3     Running   3          4d15h   10.16.230.7    compute-1.example.com
+ptp-operator-5f4f48d7c-x6zkn  1/1     Running   1          4d15h   10.128.1.145   compute-1.example.com
+```
+
+2. Check that the profile is correct. Run the following command, and examine the logs of the linuxptp daemon that corresponds to the node you specified in the PtpConfig profile:
+
+```terminal
+$ oc logs linuxptp-daemon-74m3q -n openshift-ptp -c linuxptp-daemon-container
+```
+
+Example output
+
+```terminal
+ts2phc[2527.586]: [ts2phc.0.config:7] adding tstamp 1742826342.000000000 to clock /dev/ptp11 1
+ts2phc[2527.586]: [ts2phc.0.config:7] adding tstamp 1742826342.000000000 to clock /dev/ptp7 1
+ts2phc[2527.586]: [ts2phc.0.config:7] adding tstamp 1742826342.000000000 to clock /dev/ptp14 1
+ts2phc[2527.586]: [ts2phc.0.config:7] nmea delay: 56308811 ns
+ts2phc[2527.586]: [ts2phc.0.config:6] /dev/ptp14 offset          0 s2 freq      +0 2
+ts2phc[2527.587]: [ts2phc.0.config:6] /dev/ptp7 offset          0 s2 freq      +0 2
+ts2phc[2527.587]: [ts2phc.0.config:6] /dev/ptp11 offset          0 s2 freq      -0 2
+I0324 14:25:05.000439  106907 stats.go:61] state updated for ts2phc =s2
+I0324 14:25:05.000504  106907 event.go:419] dpll State s2, gnss State s2, tsphc state s2, gm state s2,
+I0324 14:25:05.000906  106907 stats.go:61] state updated for ts2phc =s2
+I0324 14:25:05.001059  106907 stats.go:61] state updated for ts2phc =s2
+ts2phc[1742826305]:[ts2phc.0.config] ens4f0 nmea_status 1 offset 0 s2
+GM[1742826305]:[ts2phc.0.config] ens4f0 T-GM-STATUS s2 3
+```
+
+ts2phc is updating the PTP hardware clock.
+Estimated PTP device offset between PTP device and the reference clock is 0 nanoseconds.
+The PTP device is in sync with the leader clock.
+T-GM is in a locked state (s2).
+
 * Configuring the PTP fast event notifications publisher
 
-## Grandmaster clock PtpConfig configuration reference
+# Grandmaster clock PtpConfig configuration reference
 
 The following reference information describes the configuration options for the PtpConfig custom resource (CR) that configures the linuxptp services (ptp4l, phc2sys, ts2phc) as a grandmaster clock.
 
@@ -849,6 +1205,19 @@ Use this information to understand how to use the Intel E810-XXVDA4T hardware pl
 Before you configure the dual-NIC cluster host, you must connect the two NICs with an SMA1 cable using the 1PPS faceplace connections.
 
 When you configure a dual-NIC T-GM, you need to compensate for the 1PPS signal delay that occurs when you connect the NICs using the SMA1 connection ports.
+Various factors such as cable length, ambient temperature, and component and manufacturing tolerances can affect the signal delay.
+To compensate for the delay, you must calculate the specific value that you use to offset the signal delay.
+
+
+
+## 3-card E810 NIC configuration reference
+
+Use this information to understand how to configure 3 E810 NICs as PTP grandmaster clock (T-GM).
+
+Before you configure the 3-card cluster host, you must connect the 3 NICs by using the 1PPS faceplate connections.
+The primary NIC 1PPS_out outputs feed the other 2 NICs.
+
+When you configure a 3-card T-GM, you need to compensate for the 1PPS signal delay that occurs when you connect the NICs by using the SMA1 connection ports.
 Various factors such as cable length, ambient temperature, and component and manufacturing tolerances can affect the signal delay.
 To compensate for the delay, you must calculate the specific value that you use to offset the signal delay.
 

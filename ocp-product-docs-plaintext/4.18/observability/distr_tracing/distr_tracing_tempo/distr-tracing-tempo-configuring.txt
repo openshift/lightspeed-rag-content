@@ -107,23 +107,18 @@ spec:
 
 * Understanding taints and tolerations
 
-# Configuration of the monitor tab in Jaeger UI
+# Configuring the Monitor tab in Jaeger UI
 
-Trace data contains rich information, and the data is normalized across instrumented languages and frameworks.
-Therefore, request rate, error, and duration (RED) metrics can be extracted from traces.
-The metrics can be visualized in Jaeger console in the Monitor tab.
+You can have the request rate, error, and duration (RED) metrics extracted from traces and visualized through the Jaeger Console in the Monitor tab of the Red Hat OpenShift Container Platform web console. The metrics are derived from spans in the OpenTelemetry Collector that are scraped from the Collector by Prometheus, which you can deploy in your user-workload monitoring stack. The Jaeger UI queries these metrics from the Prometheus endpoint and visualizes them.
 
-The metrics are derived from spans in the OpenTelemetry Collector that are scraped from the Collector by the Prometheus deployed in the user-workload monitoring stack.
-The Jaeger UI queries these metrics from the Prometheus endpoint and visualizes them.
+* You have configured the permissions and tenants for the distributed tracing platform (Tempo). For more information, see "Configuring the permissions and tenants".
 
-## OpenTelemetry Collector configuration
-
-The OpenTelemetry Collector requires configuration of the spanmetrics connector that derives metrics from traces and exports the metrics in the Prometheus format.
-
+1. In the OpenTelemetryCollector custom resource of the OpenTelemetry Collector, enable the Spanmetrics Connector (spanmetrics), which derives metrics from traces and exports the metrics in the Prometheus format.
+Example OpenTelemetryCollector custom resource for span RED
 
 ```yaml
+apiVersion: opentelemetry.io/v1beta1
 kind: OpenTelemetryCollector
-apiVersion: opentelemetry.io/v1alpha1
 metadata:
   name: otel
 spec:
@@ -147,35 +142,45 @@ spec:
         endpoint: 0.0.0.0:8889
         add_metric_suffixes: false
         resource_to_telemetry_conversion:
-          enabled: true # by default resource attributes are dropped
+          enabled: true 5
 
       otlp:
-        endpoint: "tempo-simplest-distributor:4317"
+        auth:
+          authenticator: bearertokenauth
+        endpoint: tempo-redmetrics-gateway.mynamespace.svc.cluster.local:8090
+        headers:
+          X-Scope-OrgID: dev
         tls:
-          insecure: true
+          ca_file: /var/run/secrets/kubernetes.io/serviceaccount/service-ca.crt
+          insecure: false
+
+    extensions:
+      bearertokenauth:
+        filename: /var/run/secrets/kubernetes.io/serviceaccount/token
 
     service:
+      extensions:
+      - bearertokenauth
       pipelines:
         traces:
           receivers: [otlp]
-          exporters: [otlp, spanmetrics] 5
+          exporters: [otlp, spanmetrics] 6
         metrics:
-          receivers: [spanmetrics] 6
+          receivers: [spanmetrics] 7
           exporters: [prometheus]
-```
 
+# ...
+```
 
 Creates the ServiceMonitor custom resource to enable scraping of the Prometheus exporter.
 The Spanmetrics connector receives traces and exports metrics.
 The OTLP receiver to receive spans in the OpenTelemetry protocol.
 The Prometheus exporter is used to export metrics in the Prometheus format.
+The resource attributes are dropped by default.
 The Spanmetrics connector is configured as exporter in traces pipeline.
 The Spanmetrics connector is configured as receiver in metrics pipeline.
-
-## Tempo configuration
-
-The TempoStack custom resource must specify the following: the Monitor tab is enabled, and the Prometheus endpoint is set to the Thanos querier service to query the data from the user-defined monitoring stack.
-
+2. In the TempoStack custom resource, enable the Monitor tab and set the Prometheus endpoint to the Thanos querier service to query the data from your user-defined monitoring stack.
+Example TempoStack custom resource with the enabled Monitor tab
 
 ```yaml
 apiVersion: tempo.grafana.com/v1alpha1
@@ -188,31 +193,31 @@ spec:
       name: minio-test
       type: s3
   storageSize: 1Gi
+  tenants:
+    mode: openshift
+    authentication:
+      - tenantName: dev
+        tenantId: "1610b0c3-c509-4592-a256-a1871353dbfa"
   template:
     gateway:
-      enabled: false
+      enabled: true
     queryFrontend:
       jaegerQuery:
-        enabled: true
         monitorTab:
           enabled: true 1
           prometheusEndpoint: https://thanos-querier.openshift-monitoring.svc.cluster.local:9092 2
           redMetricsNamespace: "" 3
-        ingress:
-          type: route
-```
 
+# ...
+```
 
 Enables the monitoring tab in the Jaeger console.
 The service name for Thanos Querier from user-workload monitoring.
 Optional: The metrics namespace on which the Jaeger query retrieves the Prometheus metrics. Include this line only if you are using an OpenTelemetry Collector version earlier than 0.109.0. If you are using an OpenTelemetry Collector version 0.109.0 or later, omit this line.
+3. Optional: Use the span RED metrics generated by the spanmetrics connector with alerting rules. For example, for alerts about a slow service or to define service level objectives (SLOs), the connector creates a duration_bucket histogram and the calls counter metric. These metrics have labels that identify the service, API name, operation type, and other attributes.
+Labels of the metrics created in the spanmetrics connector
 
-## Span RED metrics and alerting rules
-
-The metrics generated by the spanmetrics connector are usable with alerting rules. For example, for alerts about a slow service or to define service level objectives (SLOs), the connector creates a duration_bucket histogram and the calls counter metric. These metrics have labels that identify the service, API name, operation type, and other attributes.
-
-
-
+Example PrometheusRule custom resource that defines an alerting rule for SLO when not serving 95% of requests within 2000ms on the front-end service
 
 ```yaml
 apiVersion: monitoring.coreos.com/v1
@@ -232,8 +237,9 @@ spec:
         description: "{{$labels.instance}} has 95th request latency above 2s (current value: {{$value}}s)"
 ```
 
-
 The expression for checking if 95% of the front-end server response time values are below 2000 ms. The time range ([5m]) must be at least four times the scrape interval and long enough to accommodate a change in the metric.
+
+* Configuring the permissions and tenants
 
 # Configuring the receiver TLS
 
@@ -355,183 +361,6 @@ Minimal configuration for the TLS at the Tempo Distributor.
 
 * Understanding service serving certificates
 * Service CA certificates
-
-# Multitenancy
-
-Multitenancy with authentication and authorization is provided in the Tempo Gateway service.
-The authentication uses OpenShift OAuth and the Kubernetes TokenReview API. The authorization uses the Kubernetes SubjectAccessReview API.
-
-
-[NOTE]
-----
-The Tempo Gateway service supports ingestion of traces only via the OTLP/gRPC. The OTLP/HTTP is not supported.
-----
-
-
-```yaml
-apiVersion: tempo.grafana.com/v1alpha1
-kind:  TempoStack
-metadata:
-  name: simplest
-  namespace: chainsaw-multitenancy
-spec:
-  storage:
-    secret:
-      name: minio
-      type: s3
-  storageSize: 1Gi
-  resources:
-    total:
-      limits:
-        memory: 2Gi
-        cpu: 2000m
-  tenants:
-    mode: openshift 1
-    authentication: 2
-      - tenantName: dev 3
-        tenantId: "1610b0c3-c509-4592-a256-a1871353dbfa" 4
-      - tenantName: prod
-        tenantId: "1610b0c3-c509-4592-a256-a1871353dbfb"
-  template:
-    gateway:
-      enabled: true 5
-    queryFrontend:
-      jaegerQuery:
-        enabled: true
-```
-
-
-Must be set to openshift.
-The list of tenants.
-The tenant name. Must be provided in the X-Scope-OrgId header when ingesting the data.
-A unique tenant ID.
-Enables a gateway that performs authentication and authorization. The Jaeger UI is exposed at http://<gateway-ingress>/api/traces/v1/<tenant-name>/search.
-
-The authorization configuration uses the ClusterRole and ClusterRoleBinding of the Kubernetes Role-Based Access Control (RBAC). By default, no users have read or write permissions.
-
-
-```yaml
-apiVersion: rbac.authorization.k8s.io/v1
-kind: ClusterRole
-metadata:
-  name: tempostack-traces-reader
-rules:
-  - apiGroups:
-      - 'tempo.grafana.com'
-    resources: 1
-      - dev
-      - prod
-    resourceNames:
-      - traces
-    verbs:
-      - 'get' 2
----
-apiVersion: rbac.authorization.k8s.io/v1
-kind: ClusterRoleBinding
-metadata:
-  name: tempostack-traces-reader
-roleRef:
-  apiGroup: rbac.authorization.k8s.io
-  kind: ClusterRole
-  name: tempostack-traces-reader
-subjects:
-  - kind: Group
-    apiGroup: rbac.authorization.k8s.io
-    name: system:authenticated 3
-```
-
-
-Lists the tenants.
-The get value enables the read operation.
-Grants all authenticated users the read permissions for trace data.
-
-
-```yaml
-apiVersion: v1
-kind: ServiceAccount
-metadata:
-  name: otel-collector 1
-  namespace: otel
----
-apiVersion: rbac.authorization.k8s.io/v1
-kind: ClusterRole
-metadata:
-  name: tempostack-traces-write
-rules:
-  - apiGroups:
-      - 'tempo.grafana.com'
-    resources: 2
-      - dev
-    resourceNames:
-      - traces
-    verbs:
-      - 'create' 3
----
-apiVersion: rbac.authorization.k8s.io/v1
-kind: ClusterRoleBinding
-metadata:
-  name: tempostack-traces
-roleRef:
-  apiGroup: rbac.authorization.k8s.io
-  kind: ClusterRole
-  name: tempostack-traces-write
-subjects:
-  - kind: ServiceAccount
-    name: otel-collector
-    namespace: otel
-```
-
-
-The service account name for the client to use when exporting trace data. The client must send the service account token, /var/run/secrets/kubernetes.io/serviceaccount/token, as the bearer token header.
-Lists the tenants.
-The create value enables the write operation.
-
-Trace data can be sent to the Tempo instance from the OpenTelemetry Collector that uses the service account with RBAC for writing the data.
-
-
-```yaml
-apiVersion: opentelemetry.io/v1alpha1
-kind: OpenTelemetryCollector
-metadata:
-  name: cluster-collector
-  namespace: tracing-system
-spec:
-  mode: deployment
-  serviceAccount: otel-collector
-  config: |
-      extensions:
-        bearertokenauth:
-          filename: "/var/run/secrets/kubernetes.io/serviceaccount/token"
-      exporters:
-        otlp/dev: 1
-          endpoint: tempo-simplest-gateway.tempo.svc.cluster.local:8090
-          tls:
-            insecure: false
-            ca_file: "/var/run/secrets/kubernetes.io/serviceaccount/service-ca.crt"
-          auth:
-            authenticator: bearertokenauth
-          headers:
-            X-Scope-OrgID: "dev"
-        otlphttp/dev: 2
-          endpoint: https://tempo-simplest-gateway.chainsaw-multitenancy.svc.cluster.local:8080/api/traces/v1/dev
-          tls:
-            insecure: false
-            ca_file: "/var/run/secrets/kubernetes.io/serviceaccount/service-ca.crt"
-          auth:
-            authenticator: bearertokenauth
-          headers:
-            X-Scope-OrgID: "dev"
-      service:
-        extensions: [bearertokenauth]
-        pipelines:
-          traces:
-            exporters: [otlp/dev] 3
-```
-
-
-OTLP gRPC Exporter.
-OTLP HTTP Exporter.
-You can specify otlp/dev for the OTLP gRPC Exporter or otlphttp/dev for the OTLP HTTP Exporter.
 
 # Using taints and tolerations
 
