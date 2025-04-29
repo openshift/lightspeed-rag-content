@@ -1,759 +1,1169 @@
-from typing import List, Dict, Any, Tuple, Optional, Union
+"""
+HTML chunker module.
+
+This module splits HTML content into chunks based on semantic boundaries.
+"""
+
+from typing import List, Dict, Any, Tuple, Optional, Set, Union, Callable
+from dataclasses import dataclass
 from bs4 import BeautifulSoup, Tag, NavigableString
 import re
-import os
-
-from html_chunking.parser import parse_html, HtmlSection, identify_procedure_sections
-from html_chunking.tokenizer import count_html_tokens
-
-def chunk_html(html_content: str,
-              max_token_limit: int = 500,
-              count_tag_tokens: bool = True,
-              keep_siblings_together: bool = True,
-              prepend_parent_section_text: bool = True) -> List[str]:
-    """
-    Split HTML content into chunks based on specified parameters.
-
-    Args:
-        html_content (str): The HTML content to chunk.
-        max_token_limit (int): Maximum number of tokens allowed per chunk.
-        count_tag_tokens (bool): Whether to count HTML tags as tokens.
-        keep_siblings_together (bool): Keep adjacent heading sections together if under token limit.
-        prepend_parent_section_text (bool): Include parent heading text in child section chunks.
-
-    Returns:
-        List[str]: A list of HTML chunks.
-    """
-    html_content = _clean_duplicate_procedures(html_content)
-    soup, root_section = parse_html(html_content)
-
-    # Calculate tag-to-text ratio and provide a warning if it's high
-    html_tokens = count_html_tokens(html_content, True)
-    text_tokens = count_html_tokens(html_content, False)
-    tag_to_text_ratio = html_tokens / max(1, text_tokens)
-
-    if count_tag_tokens and tag_to_text_ratio > 3.0:
-        print(f"Warning: High tag-to-text ratio detected ({tag_to_text_ratio:.2f})")
-        print(f"  HTML tokens: {html_tokens}, Text-only tokens: {text_tokens}")
-        print(f"  This may result in excessive chunking with count_tag_tokens=True")
-        print(f"  Consider using count_tag_tokens=False if you're stripping HTML before embedding")
-
-    if count_html_tokens(html_content, count_tag_tokens) <= max_token_limit:
-        return [html_content]
-
-    chunks = []
-    found_headings = False
-    processed_sections = set()
-
-    # First try chunking by h1 sections
-    for section in root_section.children:
-        if section.level == 1:
-            found_headings = True
-            _chunk_section_tree(section, chunks, max_token_limit, count_tag_tokens,
-                             keep_siblings_together, prepend_parent_section_text, "", processed_sections)
-
-    # If no h1 sections, try h2 sections
-    if not found_headings:
-        for section in root_section.children:
-            if section.level == 2:
-                found_headings = True
-                _chunk_section_tree(section, chunks, max_token_limit, count_tag_tokens,
-                                keep_siblings_together, prepend_parent_section_text, "", processed_sections)
-
-    # If still no chunks, use fallback strategies
-    if not found_headings or not chunks:
-        raw_html = str(soup)
-        if count_html_tokens(raw_html, count_tag_tokens) <= max_token_limit:
-            chunks = [raw_html]
-        else:
-            # Try to chunk by section divs if available (common in many HTML docs)
-            section_divs = soup.find_all('div', class_='sect1')
-            if section_divs:
-                for div in section_divs:
-                    div_html = str(div)
-                    if count_html_tokens(div_html, count_tag_tokens) <= max_token_limit:
-                        chunks.append(div_html)
-                    else:
-                        subsections = div.find_all('div', class_='sectionbody')
-                        for subsection in subsections:
-                            chunks.append(str(subsection))
-            else:
-                # Final fallback: chunk by top-level elements
-                current_chunk = ""
-                for tag in soup.body.children if soup.body else soup.children:
-                    if isinstance(tag, Tag):
-                        tag_html = str(tag)
-                        if count_html_tokens(current_chunk + tag_html, count_tag_tokens) <= max_token_limit:
-                            current_chunk += tag_html
-                        else:
-                            if current_chunk:
-                                chunks.append(current_chunk)
-                            current_chunk = tag_html
-
-                if current_chunk:
-                    chunks.append(current_chunk)
-
-    # Process special elements like procedures, code blocks, and tables
-    chunks = _handle_special_elements(chunks, soup, max_token_limit, count_tag_tokens)
-
-    return chunks
-
-def _clean_duplicate_procedures(html_content: str) -> str:
-    """
-    Remove duplicate procedure sections from the HTML content.
-
-    Args:
-        html_content (str): The original HTML content.
-
-    Returns:
-        str: HTML content with duplicate procedures removed.
-    """
-    soup = BeautifulSoup(html_content, 'html.parser')
-
-    # Find all "Procedure" elements
-    procedure_markers = soup.find_all(string=lambda text: text and "Procedure" in text)
-
-    # Skip if no procedures
-    if not procedure_markers or len(procedure_markers) <= 1:
-        return html_content
-
-    # First, find all procedure sections with proper context
-    procedures_with_context = []
-    procedures_without_context = []
-
-    for marker in procedure_markers:
-        # Find the associated ordered list
-        ol = marker.parent.find_next('ol')
-        if not ol:
-            continue
-
-        # Find the section context
-        in_section = False
-        parent = marker.parent
-        while parent and parent.name != 'body':
-            if parent.name == 'div' and 'sectionbody' in parent.get('class', []):
-                in_section = True
-                break
-            parent = parent.parent
-
-        if in_section:
-            procedures_with_context.append((marker, ol))
-        else:
-            procedures_without_context.append((marker, ol))
-
-    # If we have procedures with proper context, remove the ones without proper context
-    if procedures_with_context:
-        for marker, _ in procedures_without_context:
-            # Find the complete section to remove
-            section_to_remove = marker.parent
-
-            # Go up until we find a suitable container to remove (like a div)
-            parent = section_to_remove
-            while parent and parent.name != 'body':
-                if parent.name == 'div' or parent.name == 'section':
-                    section_to_remove = parent
-                    break
-                parent = parent.parent
-
-            # If we didn't find a suitable container, start with the title
-            if section_to_remove == marker.parent:
-                # Look for a previous sibling that might be the title
-                prev = section_to_remove.previous_sibling
-                while prev and (not isinstance(prev, Tag) or not prev.name or 'title' not in prev.get('class', [])):
-                    prev = prev.previous_sibling
-
-                if prev and isinstance(prev, Tag) and 'title' in prev.get('class', []):
-                    # Remove the title element
-                    prev.decompose()
-
-            # Now remove the procedure section
-            section_to_remove.decompose()
-
-    # As a last resort, detect duplicate ordered lists with identical steps
-    ol_lists = soup.find_all('ol', class_='arabic')
-    ol_texts = {}
-
-    for ol in ol_lists:
-        # Get the text content of the list for comparison
-        ol_text = ol.get_text().strip()
-
-        if ol_text in ol_texts:
-            # This is a duplicate, remove it
-            # First try to find and remove its parent container
-            parent = ol.parent
-            while parent and parent.name != 'body':
-                if parent.name == 'div' or parent.name == 'section':
-                    parent.decompose()
-                    break
-                parent = parent.parent
-
-            # If we couldn't find a container, just remove the list itself
-            if parent and parent.name == 'body':
-                # Look for a previous sibling that might be the title
-                prev = ol.previous_sibling
-                while prev and (not isinstance(prev, Tag) or not prev.name or 'title' not in prev.get('class', [])):
-                    prev = prev.previous_sibling
-
-                if prev and isinstance(prev, Tag) and 'title' in prev.get('class', []):
-                    # Remove the title element
-                    prev.decompose()
-
-                # Remove the list
-                ol.decompose()
-        else:
-            ol_texts[ol_text] = ol
-
-    return str(soup)
-
-def chunk_html_file(file_path: str, **kwargs) -> List[str]:
-    """
-    Read an HTML file and chunk its content.
-
-    Args:
-        file_path (str): Path to the HTML file.
-        **kwargs: Additional arguments to pass to chunk_html.
-
-    Returns:
-        List[str]: A list of HTML chunks.
-    """
-    with open(file_path, 'r', encoding='utf-8') as f:
-        html_content = f.read()
-
-    return chunk_html(html_content, **kwargs)
-
-def _chunk_section_tree(section: HtmlSection,
-                      chunks: List[str],
-                      max_token_limit: int,
-                      count_tag_tokens: bool,
-                      keep_siblings_together: bool,
-                      prepend_parent_section_text: bool,
-                      parent_html: str = "",
-                      processed_sections: set = None) -> None:
-    """
-    Recursively chunk a section tree.
-
-    Args:
-        section (HtmlSection): The section to chunk.
-        chunks (List[str]): The list to append chunks to.
-        max_token_limit (int): Maximum number of tokens allowed per chunk.
-        count_tag_tokens (bool): Whether to count HTML tags as tokens.
-        keep_siblings_together (bool): Keep adjacent heading sections together if under token limit.
-        prepend_parent_section_text (bool): Include parent heading text in child section chunks.
-        parent_html (str): HTML of parent section to possibly prepend.
-        processed_sections (set): Set to track processed sections to avoid duplicates.
-    """
-    if processed_sections is None:
-        processed_sections = set()
-
-    section_id = id(section)
-    if section_id in processed_sections:
-        return
-
-    processed_sections.add(section_id)
-
-    # Get section's heading for parent prepending
-    section_heading_html = ""
-    if section.heading_tag:
-        section_heading_html = str(section.heading_tag)
-
-    # Combine parent HTML with current section's heading
-    section_prefix = ""
-    if prepend_parent_section_text:
-        section_prefix = parent_html
-
-    if not section.children:
-        section_html = section.get_html()
-        if section_html.strip():
-            if prepend_parent_section_text and parent_html:
-                combined_html = parent_html + section_html
-                if count_html_tokens(combined_html, count_tag_tokens) <= max_token_limit:
-                    chunks.append(combined_html)
-                else:
-                    chunks.append(section_html)
-            else:
-                chunks.append(section_html)
-        return
-
-    if keep_siblings_together:
-        sibling_groups = _group_siblings_by_size(
-            section.children, max_token_limit, count_tag_tokens,
-            section_prefix
-        )
-
-        for group in sibling_groups:
-            if len(group) == 1:
-                child_section = group[0]
-                child_html = child_section.get_html()
-
-                # Create new parent HTML by combining existing parent HTML with current section heading
-                new_parent_html = section_prefix
-                if section_heading_html:
-                    new_parent_html += section_heading_html
-
-                if prepend_parent_section_text:
-                    combined_parent_child = new_parent_html + child_html
-                    if count_html_tokens(combined_parent_child, count_tag_tokens) <= max_token_limit:
-                        _chunk_section_tree(
-                            child_section, chunks, max_token_limit, count_tag_tokens,
-                            keep_siblings_together, prepend_parent_section_text,
-                            new_parent_html, processed_sections
-                        )
-                    else:
-                        # If too large with parent text, still pass the parent text for deeper levels
-                        _chunk_section_tree(
-                            child_section, chunks, max_token_limit, count_tag_tokens,
-                            keep_siblings_together, prepend_parent_section_text,
-                            new_parent_html, processed_sections
-                        )
-                else:
-                    _chunk_section_tree(
-                        child_section, chunks, max_token_limit, count_tag_tokens,
-                        keep_siblings_together, prepend_parent_section_text,
-                        "", processed_sections
-                    )
-            else:
-                combined_html = section_prefix
-                for child_section in group:
-                    processed_sections.add(id(child_section))
-                    combined_html += child_section.get_html()
-
-                chunks.append(combined_html)
-    else:
-        for child_section in section.children:
-            if id(child_section) in processed_sections:
-                continue
-
-            child_html = child_section.get_html()
-
-            # Create new parent HTML by combining existing parent HTML with current section heading
-            new_parent_html = section_prefix
-            if section_heading_html:
-                new_parent_html += section_heading_html
-
-            if prepend_parent_section_text:
-                combined_parent_child = new_parent_html + child_html
-                if count_html_tokens(combined_parent_child, count_tag_tokens) <= max_token_limit:
-                    # If combined content fits, create a single chunk
-                    chunks.append(combined_parent_child)
-                else:
-                    # If too large, recursively process with parent text
-                    _chunk_section_tree(
-                        child_section, chunks, max_token_limit, count_tag_tokens,
-                        keep_siblings_together, prepend_parent_section_text,
-                        new_parent_html, processed_sections
-                    )
-            else:
-                _chunk_section_tree(
-                    child_section, chunks, max_token_limit, count_tag_tokens,
-                    keep_siblings_together, prepend_parent_section_text,
-                    "", processed_sections
-                )
-
-def _group_siblings_by_size(sections: List[HtmlSection],
-                          max_token_limit: int,
-                          count_tag_tokens: bool,
-                          parent_html: str = "") -> List[List[HtmlSection]]:
-    """
-    Group sibling sections together if they fit within the token limit.
-
-    Args:
-        sections (List[HtmlSection]): List of sibling sections.
-        max_token_limit (int): Maximum number of tokens allowed per chunk.
-        count_tag_tokens (bool): Whether to count HTML tags as tokens.
-        parent_html (str): HTML of parent section to possibly prepend.
-
-    Returns:
-        List[List[HtmlSection]]: Grouped sections.
-    """
-    if not sections:
-        return []
-
-    groups = []
-    current_group = []
-    current_size = count_html_tokens(parent_html, count_tag_tokens)
-
-    for section in sections:
-        section_html = section.get_html()
-        section_size = count_html_tokens(section_html, count_tag_tokens)
-
-        if not current_group or current_size + section_size <= max_token_limit:
-            current_group.append(section)
-            current_size += section_size
-        else:
-            groups.append(current_group)
-            current_group = [section]
-            current_size = count_html_tokens(parent_html, count_tag_tokens) + section_size
-
-    if current_group:
-        groups.append(current_group)
-
-    return groups
-
-def _handle_special_elements(chunks: List[str],
-                           soup: BeautifulSoup,
-                           max_token_limit: int,
-                           count_tag_tokens: bool) -> List[str]:
-    """
-    Process chunks to handle special elements like procedures, code blocks, and tables.
-
-    Args:
-        chunks (List[str]): The initial chunks.
-        soup (BeautifulSoup): The parsed BeautifulSoup object.
-        max_token_limit (int): Maximum number of tokens allowed per chunk.
-        count_tag_tokens (bool): Whether to count HTML tags as tokens.
-
-    Returns:
-        List[str]: Updated chunks with special elements handled.
-    """
-    chunks = _handle_procedures(chunks, soup, max_token_limit, count_tag_tokens)
-    chunks = _handle_code_blocks(chunks, soup, max_token_limit, count_tag_tokens)
-    chunks = _handle_tables(chunks, soup, max_token_limit, count_tag_tokens)
-
-    return chunks
-
-def _handle_procedures(chunks: List[str],
-                     soup: BeautifulSoup,
-                     max_token_limit: int,
-                     count_tag_tokens: bool) -> List[str]:
-    """
-    Handle procedure sections in the chunks.
-
-    Args:
-        chunks (List[str]): The initial chunks.
-        soup (BeautifulSoup): The parsed BeautifulSoup object.
-        max_token_limit (int): Maximum number of tokens allowed per chunk.
-        count_tag_tokens (bool): Whether to count HTML tags as tokens.
-
-    Returns:
-        List[str]: Updated chunks with procedures handled.
-    """
-    procedures = identify_procedure_sections(soup)
-    if not procedures:
+import warnings
+
+from tokenizer import count_html_tokens
+
+
+@dataclass
+class ChunkingOptions:
+    max_token_limit: int = 500
+    count_tag_tokens: bool = True
+    keep_siblings_together: bool = True
+    prepend_parent_section_text: bool = True
+
+
+def chunk_html(
+    html_content: str,
+    max_token_limit: int = 500,
+    count_tag_tokens: bool = True,
+    keep_siblings_together: bool = True,
+    prepend_parent_section_text: bool = True
+) -> List[str]:
+    # Check if the whole content is under the token limit
+    try:
+        content_tokens = count_html_tokens(html_content, count_tag_tokens)
+        if content_tokens <= max_token_limit:
+            return [html_content]
+    except Exception as e:
+        warnings.warn(f"Error counting tokens: {e}. Will proceed with chunking anyway.")
+    
+    options = ChunkingOptions(
+        max_token_limit=max_token_limit,
+        count_tag_tokens=count_tag_tokens,
+        keep_siblings_together=keep_siblings_together,
+        prepend_parent_section_text=prepend_parent_section_text
+    )
+    
+    try:
+        soup = BeautifulSoup(html_content, 'html.parser')
+        
+        # Use heading-based chunking as the primary approach
+        chunks = _chunk_by_headings(soup, options)
+        
+        # If no chunks were created, try other approaches
+        if not chunks:
+            chunks = _chunk_by_semantic_elements(soup, options)
+            
+        # If still no chunks, use linear chunking
+        if not chunks:
+            chunks = _linear_chunking(html_content, options)
+        
+        # Check that we haven't lost content
+        total_content = "".join(chunks)
+        if len(total_content) < len(html_content) * 0.9:  # Lost more than 10%
+            warnings.warn("Chunking may have lost content. Falling back to linear chunking.")
+            chunks = _linear_chunking(html_content, options)
+        
+        # Post-process chunks to remove empty ones
+        chunks = [chunk for chunk in chunks if chunk.strip()]
+        
+        # If we have no chunks, return the original content as one chunk
+        if not chunks:
+            return [html_content]
+            
         return chunks
+    except Exception as e:
+        warnings.warn(f"Error during chunking: {e}. Falling back to linear chunking.")
+        return _linear_chunking(html_content, options)
 
-    # Process each chunk to handle procedures
-    result_chunks = []
 
-    for chunk in chunks:
-        chunk_soup = BeautifulSoup(chunk, 'html.parser')
-
-        # Check if this chunk contains a procedure
-        contains_procedure = False
-        for proc in procedures:
-            proc_marker = chunk_soup.find(string=lambda text: text and "Procedure" in text)
-            proc_steps = chunk_soup.find('ol')
-
-            if proc_marker and proc_steps:
-                contains_procedure = True
-
-                # Try to keep the entire procedure intact
-                if count_html_tokens(chunk, count_tag_tokens) <= max_token_limit:
-                    result_chunks.append(chunk)
-                else:
-                    # The procedure is too large, split it
-                    # First, try to keep heading + intro + prerequisites if they fit
-                    heading_html = ""
-                    if proc.get('heading'):
-                        heading_html = str(proc['heading'])
-
-                    intro_html = ""
-                    if proc.get('intro'):
-                        intro_html = "".join(str(elem) for elem in proc['intro'])
-
-                    prereq_html = ""
-                    if proc.get('prerequisites'):
-                        prereq_html = str(proc['prerequisites'])
-
-                    marker_html = str(proc_marker.parent)
-                    steps_html = str(proc_steps)
-
-                    # Try combinations to keep as much context as possible
-                    if count_html_tokens(heading_html + intro_html + prereq_html + marker_html + steps_html,
-                                       count_tag_tokens) <= max_token_limit:
-                        # Everything fits
-                        result_chunks.append(heading_html + intro_html + prereq_html + marker_html + steps_html)
-                    elif count_html_tokens(prereq_html + marker_html + steps_html,
-                                       count_tag_tokens) <= max_token_limit:
-                        # Prerequisites + procedure fits
-                        result_chunks.append(heading_html + intro_html)
-                        result_chunks.append(prereq_html + marker_html + steps_html)
-                    elif count_html_tokens(marker_html + steps_html,
-                                       count_tag_tokens) <= max_token_limit:
-                        # Just procedure fits
-                        result_chunks.append(heading_html + intro_html + prereq_html)
-                        result_chunks.append(marker_html + steps_html)
-                    else:
-                        # Need to split the procedure steps themselves
-                        result_chunks.append(heading_html + intro_html + prereq_html)
-                        result_chunks.append(marker_html)
-
-                        # Split procedure steps
-                        step_chunks = _split_list_items(proc_steps, max_token_limit, count_tag_tokens)
-                        result_chunks.extend(step_chunks)
-
-                break
-
-        if not contains_procedure:
-            result_chunks.append(chunk)
-
-    return result_chunks
-
-def _handle_code_blocks(chunks: List[str],
-                      soup: BeautifulSoup,
-                      max_token_limit: int,
-                      count_tag_tokens: bool) -> List[str]:
+def _chunk_by_headings(soup: BeautifulSoup, options: ChunkingOptions) -> List[str]:
     """
-    Handle code blocks in the chunks.
-
+    Chunk HTML based on heading elements.
+    
     Args:
-        chunks (List[str]): The initial chunks.
-        soup (BeautifulSoup): The parsed BeautifulSoup object.
-        max_token_limit (int): Maximum number of tokens allowed per chunk.
-        count_tag_tokens (bool): Whether to count HTML tags as tokens.
-
+        soup: BeautifulSoup object of the HTML.
+        options: Chunking options.
+        
     Returns:
-        List[str]: Updated chunks with code blocks handled.
+        List of HTML chunks.
     """
-    # Process each chunk to handle code blocks
-    result_chunks = []
-    for chunk in chunks:
-        chunk_soup = BeautifulSoup(chunk, 'html.parser')
-        code_blocks = chunk_soup.find_all(['pre', 'code'])
-
-        if not code_blocks:
-            result_chunks.append(chunk)
-            continue
-
-        # Check if the entire chunk fits within the token limit
-        if count_html_tokens(chunk, count_tag_tokens) <= max_token_limit:
-            result_chunks.append(chunk)
-            continue
-
-        # Find the heading element for context
-        heading = None
-        for h_tag in chunk_soup.find_all(['h1', 'h2', 'h3', 'h4', 'h5', 'h6']):
-            heading = h_tag
-            break
-
-        heading_html = str(heading) if heading else ""
-
-        # Group adjacent code blocks with their context
-        current_group = []
-        current_size = count_html_tokens(heading_html, count_tag_tokens)
-
-        # Find all elements in document order
-        elements = []
-        for el in chunk_soup.find_all(True):
-            # Skip nested elements to avoid duplication
-            if not any(el in p.descendants for p in elements):
-                elements.append(el)
-
-        for element in elements:
-            # Skip the heading as we've already included it
-            if element == heading:
-                continue
-
-            is_code_block = element.name in ['pre', 'code']
-            element_html = str(element)
-            element_size = count_html_tokens(element_html, count_tag_tokens)
-
-            # If the element is small enough to add to the current group
-            if current_size + element_size <= max_token_limit:
-                current_group.append(element_html)
-                current_size += element_size
-            else:
-                # Current group is full, output it and start a new group
-                if current_group:
-                    result_chunks.append(heading_html + "".join(current_group))
-
-                # If the element itself is too large, split it
-                if is_code_block and element_size > max_token_limit:
-                    # Split code block by chunks of lines
-                    code_text = element.get_text()
-                    lines = code_text.split('\n')
-
-                    # Try to split into larger chunks (50 lines per chunk)
-                    LINES_PER_CHUNK = 50
-                    for i in range(0, len(lines), LINES_PER_CHUNK):
-                        chunk_lines = lines[i:i+LINES_PER_CHUNK]
-                        code_chunk = f"<{element.name}>{' '.join(chunk_lines)}</{element.name}>"
-
-                        # Check if this chunk fits
-                        if count_html_tokens(heading_html + code_chunk, count_tag_tokens) <= max_token_limit:
-                            result_chunks.append(heading_html + code_chunk)
-                        else:
-                            # Have to split further
-                            current_chunk = f"<{element.name}>"
-                            for line in chunk_lines:
-                                line_html = line + '\n'
-                                test_chunk = current_chunk + line_html + f"</{element.name}>"
-                                if count_html_tokens(heading_html + test_chunk, count_tag_tokens) <= max_token_limit:
-                                    current_chunk += line_html
-                                else:
-                                    current_chunk += f"</{element.name}>"
-                                    result_chunks.append(heading_html + current_chunk)
-                                    current_chunk = f"<{element.name}>{line_html}"
-
-                            if current_chunk != f"<{element.name}>":
-                                current_chunk += f"</{element.name}>"
-                                result_chunks.append(heading_html + current_chunk)
-                else:
-                    # Start a new group with this element
-                    current_group = [element_html]
-                    current_size = count_html_tokens(heading_html + element_html, count_tag_tokens)
-
-        # Output the final group if it has content
-        if current_group:
-            result_chunks.append(heading_html + "".join(current_group))
-
-    return result_chunks
-
-def _handle_tables(chunks: List[str],
-                 soup: BeautifulSoup,
-                 max_token_limit: int,
-                 count_tag_tokens: bool) -> List[str]:
-    """
-    Handle tables in the chunks.
-
-    Args:
-        chunks (List[str]): The initial chunks.
-        soup (BeautifulSoup): The parsed BeautifulSoup object.
-        max_token_limit (int): Maximum number of tokens allowed per chunk.
-        count_tag_tokens (bool): Whether to count HTML tags as tokens.
-
-    Returns:
-        List[str]: Updated chunks with tables handled.
-    """
-    # Process each chunk to handle tables
-    result_chunks = []
-    for chunk in chunks:
-        chunk_soup = BeautifulSoup(chunk, 'html.parser')
-        tables = chunk_soup.find_all('table')
-
-        if not tables:
-            result_chunks.append(chunk)
-            continue
-
-        # Check if the entire chunk fits within the token limit
-        if count_html_tokens(chunk, count_tag_tokens) <= max_token_limit:
-            result_chunks.append(chunk)
-            continue
-
-        # The chunk has tables and exceeds the token limit, process it
-        for table in tables:
-            # Get the table's context (preceding and following paragraphs)
-            prev_paragraph = table.find_previous('p')
-            next_paragraph = table.find_next('p')
-
-            table_html = str(table)
-            table_size = count_html_tokens(table_html, count_tag_tokens)
-
-            if table_size <= max_token_limit:
-                # The table fits, try to include context
-                context_html = ""
-                if prev_paragraph:
-                    context_html += str(prev_paragraph)
-
-                combined_html = context_html + table_html
-                combined_size = count_html_tokens(combined_html, count_tag_tokens)
-
-                if combined_size <= max_token_limit and next_paragraph:
-                    # Also include following paragraph if it fits
-                    next_html = str(next_paragraph)
-                    if count_html_tokens(combined_html + next_html, count_tag_tokens) <= max_token_limit:
-                        combined_html += next_html
-
-                result_chunks.append(combined_html)
-            else:
-                # The table itself exceeds the token limit, split it by rows
-                if prev_paragraph:
-                    result_chunks.append(str(prev_paragraph))
-
-                # Get header row if exists
-                header_row = table.find('thead')
-                rows = table.find_all('tr')
-
-                # Start with header
-                current_chunk = "<table>"
-                if header_row:
-                    current_chunk += str(header_row)
-
-                # Add body rows
-                for row in rows:
-                    row_html = str(row)
-                    if count_html_tokens(current_chunk + row_html + "</table>",
-                                       count_tag_tokens) <= max_token_limit:
-                        current_chunk += row_html
-                    else:
-                        current_chunk += "</table>"
-                        result_chunks.append(current_chunk)
-
-                        # Start new table chunk with header if it exists
-                        current_chunk = "<table>"
-                        if header_row:
-                            current_chunk += str(header_row)
-                        current_chunk += row_html
-
-                if current_chunk != "<table>":
-                    current_chunk += "</table>"
-                    result_chunks.append(current_chunk)
-
-                if next_paragraph:
-                    result_chunks.append(str(next_paragraph))
-
-        # Add parts of the chunk that aren't tables
-        table_parents = set()
-        for table in tables:
-            parent = table.parent
-            while parent and parent.name != 'body':
-                table_parents.add(parent)
-                parent = parent.parent
-
-        for element in chunk_soup.body.children if chunk_soup.body else chunk_soup.children:
-            if element not in tables and element not in table_parents:
-                result_chunks.append(str(element))
-
-    return result_chunks
-
-def _split_list_items(ol: Tag,
-                    max_token_limit: int,
-                    count_tag_tokens: bool) -> List[str]:
-    """
-    Split an ordered list into chunks that fit within the token limit.
-
-    Args:
-        ol (Tag): The ordered list tag.
-        max_token_limit (int): Maximum number of tokens allowed per chunk.
-        count_tag_tokens (bool): Whether to count HTML tags as tokens.
-
-    Returns:
-        List[str]: List of HTML chunks containing parts of the ordered list.
-    """
-    items = ol.find_all('li', recursive=False)
-    if not items:
-        return [str(ol)]
-
     chunks = []
-    current_chunk = "<ol>"
-    current_item_index = 1
+    
+    headings = soup.find_all(['h1', 'h2', 'h3', 'h4', 'h5', 'h6'])
+    
+    if not headings:
+        return []
+    
+    # Create chunks based on headings
+    for i, heading in enumerate(headings):
+        # Determine the level of this heading
+        level = int(heading.name[1])
+        
+        # Find the next heading of same or higher level
+        next_heading = None
+        for h in headings[i+1:]:
+            next_level = int(h.name[1])
+            if next_level <= level:
+                next_heading = h
+                break
+        
+        # Extract content between this heading and the next heading
+        chunk_content = [str(heading)]
+        current = heading.next_sibling
+        
+        while current and (not next_heading or current != next_heading):
+            # Skip empty elements
+            if (isinstance(current, NavigableString) and not current.strip()) or (hasattr(current, 'is_empty_element') and current.is_empty_element):
+                current = current.next_sibling
+                continue
+                
+            # Add this element to the chunk
+            chunk_content.append(str(current))
+            current = current.next_sibling
+        
+        chunk = "".join(chunk_content)
+        
+        # Check if chunk is too large
+        try:
+            chunk_tokens = count_html_tokens(chunk, options.count_tag_tokens)
+            
+            if chunk_tokens <= options.max_token_limit:
+                # Chunk is fine, add it
+                chunks.append(chunk)
+            else:
+                # Chunk is too large, split it further
+                sub_chunks = _split_oversized_chunk(chunk, options)
+                chunks.extend(sub_chunks)
+        except Exception:
+            # If token counting fails, be conservative and split
+            sub_chunks = _split_oversized_chunk(chunk, options)
+            chunks.extend(sub_chunks)
+    
+    # Handle content before the first heading
+    first_heading = headings[0]
+    before_content = []
+    current = first_heading.parent.contents[0]
+    
+    while current != first_heading:
+        # Skip empty elements
+        if (isinstance(current, NavigableString) and not current.strip()) or (hasattr(current, 'is_empty_element') and current.is_empty_element):
+            current = current.next_sibling
+            continue
+            
+        # Add this element to the chunk
+        before_content.append(str(current))
+        current = current.next_sibling
+    
+    # Combine content into a chunk
+    if before_content:
+        before_chunk = "".join(before_content)
+        
+        # Check if chunk is too large
+        try:
+            chunk_tokens = count_html_tokens(before_chunk, options.count_tag_tokens)
+            
+            if chunk_tokens <= options.max_token_limit:
+                # Chunk is fine, add it
+                chunks.insert(0, before_chunk)
+            else:
+                # Chunk is too large, split it further
+                sub_chunks = _split_oversized_chunk(before_chunk, options)
+                for i, sub in enumerate(sub_chunks):
+                    chunks.insert(i, sub)
+        except Exception:
+            # If token counting fails, be conservative and split
+            sub_chunks = _split_oversized_chunk(before_chunk, options)
+            for i, sub in enumerate(sub_chunks):
+                chunks.insert(i, sub)
+    
+    return chunks
 
+
+def _chunk_by_semantic_elements(soup: BeautifulSoup, options: ChunkingOptions) -> List[str]:
+    """
+    Chunk HTML based on semantic elements like sections, divs, etc.
+    
+    Args:
+        soup: BeautifulSoup object of the HTML.
+        options: Chunking options.
+        
+    Returns:
+        List of HTML chunks.
+    """
+    chunks = []
+    
+    # Find all semantic elements
+    semantic_elements = soup.find_all(['section', 'article', 'div', 'main', 'aside', 'nav'])
+    
+    # Sort by size (number of descendants)
+    top_level_elements = []
+    for elem in semantic_elements:
+        # Skip tiny elements
+        if len(list(elem.descendants)) < 5:
+            continue
+            
+        # Check if this element is a direct child of body
+        parent = elem.parent
+        is_top_level = parent.name == 'body' or parent == soup
+        
+        if is_top_level:
+            top_level_elements.append(elem)
+    
+    if not top_level_elements:
+        return []
+    
+    # Create chunks from top-level elements
+    for element in top_level_elements:
+        element_html = str(element)
+        
+        # Check if element is too large
+        try:
+            element_tokens = count_html_tokens(element_html, options.count_tag_tokens)
+            
+            if element_tokens <= options.max_token_limit:
+                # Element is fine, add it
+                chunks.append(element_html)
+            else:
+                # Element is too large, try to split by inner headings
+                inner_chunks = _chunk_by_inner_headings(element, options)
+                
+                if inner_chunks:
+                    chunks.extend(inner_chunks)
+                else:
+                    # No inner headings, split linearly
+                    sub_chunks = _split_oversized_chunk(element_html, options)
+                    chunks.extend(sub_chunks)
+        except Exception:
+            # If token counting fails, be conservative and split
+            sub_chunks = _split_oversized_chunk(element_html, options)
+            chunks.extend(sub_chunks)
+    
+    return chunks
+
+
+def _chunk_by_inner_headings(element: Tag, options: ChunkingOptions) -> List[str]:
+    """
+    Chunk an element by its inner headings.
+    
+    Args:
+        element: HTML element to chunk.
+        options: Chunking options.
+        
+    Returns:
+        List of HTML chunks.
+    """
+    chunks = []
+    
+    # Find all headings in the element
+    headings = element.find_all(['h1', 'h2', 'h3', 'h4', 'h5', 'h6'])
+    
+    if not headings:
+        return []
+    
+    # Create chunks based on headings
+    for i, heading in enumerate(headings):
+        # Find the next heading
+        next_heading = None
+        if i < len(headings) - 1:
+            next_heading = headings[i+1]
+        
+        # Extract content between this heading and the next heading
+        chunk_content = [str(heading)]
+        current = heading.next_sibling
+        
+        while current and (not next_heading or current != next_heading):
+            # Skip empty elements
+            if (isinstance(current, NavigableString) and not current.strip()) or (hasattr(current, 'is_empty_element') and current.is_empty_element):
+                current = current.next_sibling
+                continue
+                
+            # Add this element to the chunk
+            chunk_content.append(str(current))
+            current = current.next_sibling
+        
+        # Combine content into a chunk
+        chunk = "".join(chunk_content)
+        
+        # Check if chunk is too large
+        try:
+            chunk_tokens = count_html_tokens(chunk, options.count_tag_tokens)
+            
+            if chunk_tokens <= options.max_token_limit:
+                # Chunk is fine, add it
+                chunks.append(chunk)
+            else:
+                # Chunk is too large, split it further
+                sub_chunks = _split_oversized_chunk(chunk, options)
+                chunks.extend(sub_chunks)
+        except Exception:
+            # If token counting fails, be conservative and split
+            sub_chunks = _split_oversized_chunk(chunk, options)
+            chunks.extend(sub_chunks)
+    
+    # Handle content before the first heading
+    first_heading = headings[0]
+    before_content = []
+    
+    # Check if the first heading is not the first content in the element
+    if first_heading != element.contents[0]:
+        current = element.contents[0]
+        
+        while current != first_heading:
+            # Skip empty elements
+            if (isinstance(current, NavigableString) and not current.strip()) or (hasattr(current, 'is_empty_element') and current.is_empty_element):
+                current = current.next_sibling
+                continue
+                
+            # Add this element to the chunk
+            before_content.append(str(current))
+            current = current.next_sibling
+        
+        # Combine content into a chunk
+        if before_content:
+            before_chunk = "".join(before_content)
+            
+            # Check if chunk is too large
+            try:
+                chunk_tokens = count_html_tokens(before_chunk, options.count_tag_tokens)
+                
+                if chunk_tokens <= options.max_token_limit:
+                    # Chunk is fine, add it
+                    chunks.insert(0, before_chunk)
+                else:
+                    # Chunk is too large, split it further
+                    sub_chunks = _split_oversized_chunk(before_chunk, options)
+                    for i, sub in enumerate(sub_chunks):
+                        chunks.insert(i, sub)
+            except Exception:
+                # If token counting fails, be conservative and split
+                sub_chunks = _split_oversized_chunk(before_chunk, options)
+                for i, sub in enumerate(sub_chunks):
+                    chunks.insert(i, sub)
+    
+    return chunks
+
+
+def _split_oversized_chunk(chunk: str, options: ChunkingOptions) -> List[str]:
+    """
+    Split an oversized chunk into smaller chunks.
+    
+    Args:
+        chunk: HTML content to split.
+        options: Chunking options.
+        
+    Returns:
+        List of smaller HTML chunks.
+    """
+    # Try to parse the chunk
+    soup = BeautifulSoup(chunk, 'html.parser')
+    
+    # First try to split by special elements
+    special_element_chunks = _split_by_special_elements(soup, options)
+    if special_element_chunks:
+        return special_element_chunks
+    
+    # Then try to split by block elements
+    block_element_chunks = _split_by_block_elements(soup, options)
+    if block_element_chunks:
+        return block_element_chunks
+    
+    # If all else fails, split linearly
+    return _linear_split(chunk, options)
+
+
+def _split_by_special_elements(soup: BeautifulSoup, options: ChunkingOptions) -> List[str]:
+    """
+    Split content by special elements like tables, lists, code blocks.
+    
+    Args:
+        soup: BeautifulSoup object of content to split.
+        options: Chunking options.
+        
+    Returns:
+        List of HTML chunks.
+    """
+    chunks = []
+    
+    # Find special elements
+    special_elements = soup.find_all(['table', 'pre', 'ol', 'ul', 'code'])
+    
+    if not special_elements:
+        return []
+    
+    # Sort special elements by their position in the document
+    special_elements.sort(key=lambda x: _get_element_position(x))
+    
+    # Create chunks around special elements
+    for i, element in enumerate(special_elements):
+        # Find content before this element up to previous special element
+        prev_special = special_elements[i-1] if i > 0 else None
+        
+        before_content = []
+        current = element.previous_sibling
+        
+        while current and (not prev_special or current != prev_special):
+            # Skip empty elements
+            if (isinstance(current, NavigableString) and not current.strip()) or (hasattr(current, 'is_empty_element') and current.is_empty_element):
+                current = current.previous_sibling
+                continue
+                
+            # Add this element to the chunk (in reverse order)
+            before_content.insert(0, str(current))
+            current = current.previous_sibling
+        
+        # Combine content before this element
+        if before_content:
+            before_chunk = "".join(before_content)
+            
+            # Check if chunk is too large
+            try:
+                chunk_tokens = count_html_tokens(before_chunk, options.count_tag_tokens)
+                
+                if chunk_tokens <= options.max_token_limit:
+                    # Chunk is fine, add it
+                    chunks.append(before_chunk)
+                else:
+                    # Chunk is too large, split it further
+                    sub_chunks = _linear_split(before_chunk, options)
+                    chunks.extend(sub_chunks)
+            except Exception:
+                # If token counting fails, be conservative and split
+                sub_chunks = _linear_split(before_chunk, options)
+                chunks.extend(sub_chunks)
+        
+        # Handle the special element itself
+        element_html = str(element)
+        
+        # Check if element is too large
+        try:
+            element_tokens = count_html_tokens(element_html, options.count_tag_tokens)
+            
+            if element_tokens <= options.max_token_limit:
+                # Element is fine, add it
+                chunks.append(element_html)
+            else:
+                # Element is too large, split it based on its type
+                if element.name == 'table':
+                    table_chunks = _split_table(element, options)
+                    chunks.extend(table_chunks)
+                elif element.name in ['ol', 'ul']:
+                    list_chunks = _split_list(element, options)
+                    chunks.extend(list_chunks)
+                elif element.name in ['pre', 'code']:
+                    code_chunks = _split_code(element, options)
+                    chunks.extend(code_chunks)
+                else:
+                    # Unknown type, split linearly
+                    sub_chunks = _linear_split(element_html, options)
+                    chunks.extend(sub_chunks)
+        except Exception:
+            # If token counting fails, be conservative and split
+            sub_chunks = _linear_split(element_html, options)
+            chunks.extend(sub_chunks)
+    
+    # Handle content after the last special element
+    last_special = special_elements[-1]
+    after_content = []
+    current = last_special.next_sibling
+    
+    while current:
+        # Skip empty elements
+        if (isinstance(current, NavigableString) and not current.strip()) or (hasattr(current, 'is_empty_element') and current.is_empty_element):
+            current = current.next_sibling
+            continue
+            
+        # Add this element to the chunk
+        after_content.append(str(current))
+        current = current.next_sibling
+    
+    # Combine content after the last element
+    if after_content:
+        after_chunk = "".join(after_content)
+        
+        # Check if chunk is too large
+        try:
+            chunk_tokens = count_html_tokens(after_chunk, options.count_tag_tokens)
+            
+            if chunk_tokens <= options.max_token_limit:
+                # Chunk is fine, add it
+                chunks.append(after_chunk)
+            else:
+                # Chunk is too large, split it further
+                sub_chunks = _linear_split(after_chunk, options)
+                chunks.extend(sub_chunks)
+        except Exception:
+            # If token counting fails, be conservative and split
+            sub_chunks = _linear_split(after_chunk, options)
+            chunks.extend(sub_chunks)
+    
+    return chunks
+
+
+def _split_by_block_elements(soup: BeautifulSoup, options: ChunkingOptions) -> List[str]:
+    """
+    Split content by block elements.
+    
+    Args:
+        soup: BeautifulSoup object of content to split.
+        options: Chunking options.
+        
+    Returns:
+        List of HTML chunks.
+    """
+    chunks = []
+    
+    # Find block elements
+    block_elements = soup.find_all(['p', 'div', 'section', 'article', 'header', 'footer', 'nav'])
+    
+    if not block_elements:
+        return []
+    
+    # Create chunks by grouping block elements
+    current_chunk = []
+    current_tokens = 0
+    
+    for element in block_elements:
+        element_html = str(element)
+        
+        try:
+            element_tokens = count_html_tokens(element_html, options.count_tag_tokens)
+            
+            # If this element alone exceeds the limit, split it
+            if element_tokens > options.max_token_limit:
+                # First add any accumulated content
+                if current_chunk:
+                    chunks.append("".join(current_chunk))
+                    current_chunk = []
+                    current_tokens = 0
+                
+                # Split this element
+                sub_chunks = _linear_split(element_html, options)
+                chunks.extend(sub_chunks)
+                continue
+            
+            # If adding this element would exceed limit, create a new chunk
+            if current_chunk and current_tokens + element_tokens > options.max_token_limit:
+                chunks.append("".join(current_chunk))
+                current_chunk = [element_html]
+                current_tokens = element_tokens
+            else:
+                # Add to current chunk
+                current_chunk.append(element_html)
+                current_tokens += element_tokens
+        except Exception:
+            # If token counting fails, be conservative
+            if current_chunk:
+                chunks.append("".join(current_chunk))
+                current_chunk = [element_html]
+                current_tokens = 0  # Reset counter since we can't count reliably
+            else:
+                chunks.append(element_html)
+    
+    # Add the last chunk
+    if current_chunk:
+        chunks.append("".join(current_chunk))
+    
+    return chunks
+
+
+def _linear_chunking(html_content: str, options: ChunkingOptions) -> List[str]:
+    """
+    Chunk HTML content linearly.
+    
+    Args:
+        html_content: HTML content to chunk.
+        options: Chunking options.
+        
+    Returns:
+        List of HTML chunks.
+    """
+    # Try to parse the content
+    soup = BeautifulSoup(html_content, 'html.parser')
+    
+    # Get all direct children of body
+    body = soup.body or soup
+    children = list(body.children)
+    
+    # Filter out empty elements
+    filtered_children = []
+    for child in children:
+        if (isinstance(child, NavigableString) and child.strip()) or (isinstance(child, Tag) and not (hasattr(child, 'is_empty_element') and child.is_empty_element)):
+            filtered_children.append(child)
+    
+    # If no children, return original content
+    if not filtered_children:
+        return [html_content]
+    
+    # Create chunks by grouping elements
+    return _linear_split(html_content, options)
+
+
+def _linear_split(html_content: str, options: ChunkingOptions) -> List[str]:
+    """
+    Split HTML content linearly into chunks.
+    
+    Args:
+        html_content: HTML content to split.
+        options: Chunking options.
+        
+    Returns:
+        List of HTML chunks.
+    """
+    chunks = []
+    
+    # Try to parse the content
+    soup = BeautifulSoup(html_content, 'html.parser')
+    
+    # Get all top-level elements
+    top_elements = list(soup.children)
+    
+    # Create chunks by grouping elements
+    current_chunk = []
+    current_tokens = 0
+    
+    for element in top_elements:
+        # Skip empty elements
+        if (isinstance(element, NavigableString) and not element.strip()) or (hasattr(element, 'is_empty_element') and element.is_empty_element):
+            continue
+            
+        element_html = str(element)
+        
+        try:
+            element_tokens = count_html_tokens(element_html, options.count_tag_tokens)
+            
+            # If this element alone exceeds the limit, split it
+            if element_tokens > options.max_token_limit:
+                # First add any accumulated content
+                if current_chunk:
+                    chunks.append("".join(current_chunk))
+                    current_chunk = []
+                    current_tokens = 0
+                
+                # Split this element
+                if isinstance(element, Tag):
+                    # For tags, try to split by child elements
+                    child_chunks = _split_element_by_children(element, options)
+                    chunks.extend(child_chunks)
+                else:
+                    # For text nodes, split by characters
+                    chars_per_token = 4  # Rough estimate
+                    chars_per_chunk = options.max_token_limit * chars_per_token
+                    
+                    for i in range(0, len(element_html), chars_per_chunk):
+                        chunks.append(element_html[i:i+chars_per_chunk])
+                
+                continue
+            
+            # If adding this element would exceed limit, create a new chunk
+            if current_chunk and current_tokens + element_tokens > options.max_token_limit:
+                chunks.append("".join(current_chunk))
+                current_chunk = [element_html]
+                current_tokens = element_tokens
+            else:
+                # Add to current chunk
+                current_chunk.append(element_html)
+                current_tokens += element_tokens
+        except Exception:
+            # If token counting fails, be conservative
+            if current_chunk:
+                chunks.append("".join(current_chunk))
+                current_chunk = [element_html]
+            else:
+                # Split by a rough character count
+                chars_per_token = 4  # Rough estimate
+                chars_per_chunk = options.max_token_limit * chars_per_token
+                
+                if len(element_html) > chars_per_chunk:
+                    for i in range(0, len(element_html), chars_per_chunk):
+                        chunks.append(element_html[i:i+chars_per_chunk])
+                else:
+                    chunks.append(element_html)
+    
+    # Add the last chunk
+    if current_chunk:
+        chunks.append("".join(current_chunk))
+    
+    # If no chunks were created, split by characters
+    if not chunks:
+        chars_per_token = 4  # Rough estimate
+        chars_per_chunk = options.max_token_limit * chars_per_token
+        
+        for i in range(0, len(html_content), chars_per_chunk):
+            chunks.append(html_content[i:i+chars_per_chunk])
+    
+    return chunks
+
+
+def _split_element_by_children(element: Tag, options: ChunkingOptions) -> List[str]:
+    """
+    Split an element by its children.
+    
+    Args:
+        element: HTML element to split.
+        options: Chunking options.
+        
+    Returns:
+        List of HTML chunks.
+    """
+    chunks = []
+    
+    # Get tag name and attributes
+    tag_name = element.name
+    attrs = element.attrs
+    
+    # Build opening tag
+    open_tag = f"<{tag_name}"
+    for attr, value in attrs.items():
+        if isinstance(value, list):
+            value = " ".join(value)
+        open_tag += f' {attr}="{value}"'
+    open_tag += ">"
+    
+    close_tag = f"</{tag_name}>"
+    
+    # Get children
+    children = list(element.children)
+    
+    # Create chunks by grouping children
+    current_chunk = []
+    current_tokens = count_html_tokens(open_tag + close_tag, options.count_tag_tokens)
+    
+    for child in children:
+        # Skip empty elements
+        if (isinstance(child, NavigableString) and not child.strip()) or (hasattr(child, 'is_empty_element') and child.is_empty_element):
+            continue
+            
+        child_html = str(child)
+        
+        try:
+            child_tokens = count_html_tokens(child_html, options.count_tag_tokens)
+            
+            # If this child alone exceeds the limit, split it
+            if child_tokens > options.max_token_limit - count_html_tokens(open_tag + close_tag, options.count_tag_tokens):
+                # First add any accumulated content
+                if current_chunk:
+                    chunks.append(open_tag + "".join(current_chunk) + close_tag)
+                    current_chunk = []
+                    current_tokens = count_html_tokens(open_tag + close_tag, options.count_tag_tokens)
+                
+                # Split this child
+                if isinstance(child, Tag):
+                    # For tags, recursively split
+                    child_chunks = _split_element_by_children(child, options)
+                    
+                    # Wrap each chunk in the parent tag
+                    for i, child_chunk in enumerate(child_chunks):
+                        chunks.append(open_tag + child_chunk + close_tag)
+                else:
+                    # For text nodes, split by characters
+                    chars_per_token = 4  # Rough estimate
+                    chars_per_chunk = (options.max_token_limit - current_tokens) * chars_per_token
+                    
+                    for i in range(0, len(child_html), chars_per_chunk):
+                        chunks.append(open_tag + child_html[i:i+chars_per_chunk] + close_tag)
+                
+                continue
+            
+            # If adding this child would exceed limit, create a new chunk
+            if current_chunk and current_tokens + child_tokens > options.max_token_limit:
+                chunks.append(open_tag + "".join(current_chunk) + close_tag)
+                current_chunk = [child_html]
+                current_tokens = count_html_tokens(open_tag + child_html + close_tag, options.count_tag_tokens)
+            else:
+                # Add to current chunk
+                current_chunk.append(child_html)
+                current_tokens += child_tokens
+        except Exception:
+            # If token counting fails, be conservative
+            if current_chunk:
+                chunks.append(open_tag + "".join(current_chunk) + close_tag)
+                current_chunk = [child_html]
+                current_tokens = count_html_tokens(open_tag + close_tag, options.count_tag_tokens)
+            else:
+                # Split by a rough character count
+                chars_per_token = 4  # Rough estimate
+                chars_per_chunk = (options.max_token_limit - current_tokens) * chars_per_token
+                
+                if len(child_html) > chars_per_chunk:
+                    for i in range(0, len(child_html), chars_per_chunk):
+                        chunks.append(open_tag + child_html[i:i+chars_per_chunk] + close_tag)
+                else:
+                    chunks.append(open_tag + child_html + close_tag)
+    
+    # Add the last chunk
+    if current_chunk:
+        chunks.append(open_tag + "".join(current_chunk) + close_tag)
+    
+    return chunks
+
+
+def _split_table(table: Tag, options: ChunkingOptions) -> List[str]:
+    """
+    Split a table into chunks.
+    
+    Args:
+        table: Table element to split.
+        options: Chunking options.
+        
+    Returns:
+        List of HTML chunks.
+    """
+    chunks = []
+    
+    # Get table components
+    header = table.find('thead')
+    rows = table.find_all('tr')
+    
+    # Skip rows that are in the header
+    if header:
+        header_rows = set(id(row) for row in header.find_all('tr'))
+        body_rows = [row for row in rows if id(row) not in header_rows]
+    else:
+        body_rows = rows
+    
+    # Get table attributes
+    table_attrs = ""
+    for attr, value in table.attrs.items():
+        if isinstance(value, list):
+            value = " ".join(value)
+        table_attrs += f' {attr}="{value}"'
+    
+    # Create the table opening tag
+    table_open = f"<table{table_attrs}>"
+    table_close = "</table>"
+    
+    # Add header to all chunks
+    header_html = str(header) if header else ""
+    
+    # Create chunks by grouping rows
+    current_chunk = []
+    current_html = table_open + header_html
+    current_tokens = count_html_tokens(current_html + table_close, options.count_tag_tokens)
+    
+    for row in body_rows:
+        row_html = str(row)
+        
+        try:
+            row_tokens = count_html_tokens(row_html, options.count_tag_tokens)
+            
+            # If adding this row would exceed limit, create a new chunk
+            if current_chunk and current_tokens + row_tokens > options.max_token_limit:
+                chunks.append(current_html + "".join(current_chunk) + table_close)
+                current_chunk = [row_html]
+                current_html = table_open + header_html
+                current_tokens = count_html_tokens(current_html + row_html + table_close, options.count_tag_tokens)
+            else:
+                # Add to current chunk
+                current_chunk.append(row_html)
+                current_tokens += row_tokens
+        except Exception:
+            # If token counting fails, be conservative
+            if current_chunk:
+                chunks.append(current_html + "".join(current_chunk) + table_close)
+                current_chunk = [row_html]
+                current_html = table_open + header_html
+                current_tokens = 0  # Reset counter since we can't count reliably
+            else:
+                chunks.append(table_open + header_html + row_html + table_close)
+    
+    # Add the last chunk
+    if current_chunk:
+        chunks.append(current_html + "".join(current_chunk) + table_close)
+    
+    return chunks
+
+
+def _split_list(list_element: Tag, options: ChunkingOptions) -> List[str]:
+    """
+    Split a list into chunks.
+    
+    Args:
+        list_element: List element to split.
+        options: Chunking options.
+        
+    Returns:
+        List of HTML chunks.
+    """
+    chunks = []
+    
+    # Get list items
+    items = list_element.find_all('li', recursive=False)
+    
+    # Get list attributes
+    list_attrs = ""
+    for attr, value in list_element.attrs.items():
+        if isinstance(value, list):
+            value = " ".join(value)
+        if attr != "start":  # We'll handle start separately
+            list_attrs += f' {attr}="{value}"'
+    
+    # Create the list opening tag
+    list_open = f"<{list_element.name}{list_attrs}>"
+    list_close = f"</{list_element.name}>"
+    
+    # Create chunks by grouping items
+    current_chunk = []
+    current_tokens = count_html_tokens(list_open + list_close, options.count_tag_tokens)
+    current_item_index = 1
+    
     for item in items:
         item_html = str(item)
-
-        if count_html_tokens(current_chunk + item_html + "</ol>", count_tag_tokens) <= max_token_limit:
-            current_chunk += item_html
+        
+        try:
+            item_tokens = count_html_tokens(item_html, options.count_tag_tokens)
+            
+            # If this item alone exceeds the limit, split it
+            if item_tokens > options.max_token_limit - count_html_tokens(list_open + list_close, options.count_tag_tokens):
+                # First add any accumulated content
+                if current_chunk:
+                    chunks.append(list_open + "".join(current_chunk) + list_close)
+                    current_chunk = []
+                    current_tokens = count_html_tokens(list_open + list_close, options.count_tag_tokens)
+                
+                # Split this item by its content
+                item_chunks = _split_list_item(item, options)
+                
+                # Add each chunk as its own list
+                for i, item_chunk in enumerate(item_chunks):
+                    if list_element.name == 'ol':
+                        # For ordered lists, set the start attribute
+                        list_tag = f"<{list_element.name}{list_attrs} start=\"{current_item_index}\">"
+                    else:
+                        list_tag = list_open
+                        
+                    chunks.append(list_tag + item_chunk + list_close)
+                
+                current_item_index += 1
+                continue
+            
+            # If adding this item would exceed limit, create a new chunk
+            if current_chunk and current_tokens + item_tokens > options.max_token_limit:
+                chunks.append(list_open + "".join(current_chunk) + list_close)
+                current_chunk = [item_html]
+                
+                if list_element.name == 'ol':
+                    # For ordered lists, set the start attribute
+                    list_open = f"<{list_element.name}{list_attrs} start=\"{current_item_index}\">"
+                
+                current_tokens = count_html_tokens(list_open + item_html + list_close, options.count_tag_tokens)
+            else:
+                # Add to current chunk
+                current_chunk.append(item_html)
+                current_tokens += item_tokens
+            
             current_item_index += 1
-        else:
-            current_chunk += "</ol>"
-            chunks.append(current_chunk)
-
-            # Start a new chunk with the correct start index
-            current_chunk = f'<ol start="{current_item_index}">'
-            current_chunk += item_html
+        except Exception:
+            # If token counting fails, be conservative
+            if current_chunk:
+                chunks.append(list_open + "".join(current_chunk) + list_close)
+                current_chunk = [item_html]
+                
+                if list_element.name == 'ol':
+                    # For ordered lists, set the start attribute
+                    list_open = f"<{list_element.name}{list_attrs} start=\"{current_item_index}\">"
+                
+                current_tokens = 0  # Reset counter since we can't count reliably
+            else:
+                if list_element.name == 'ol':
+                    # For ordered lists, set the start attribute
+                    list_tag = f"<{list_element.name}{list_attrs} start=\"{current_item_index}\">"
+                else:
+                    list_tag = list_open
+                    
+                chunks.append(list_tag + item_html + list_close)
+            
             current_item_index += 1
-
-    if current_chunk != "<ol>":
-        current_chunk += "</ol>"
-        chunks.append(current_chunk)
-
+    
+    # Add the last chunk
+    if current_chunk:
+        chunks.append(list_open + "".join(current_chunk) + list_close)
+    
     return chunks
+
+
+def _split_list_item(item: Tag, options: ChunkingOptions) -> List[str]:
+    """
+    Split a list item into chunks.
+    
+    Args:
+        item: List item to split.
+        options: Chunking options.
+        
+    Returns:
+        List of HTML chunks.
+    """
+    # This function splits a single list item into multiple items
+    # Each returned chunk should be a valid list item
+    chunks = []
+    
+    # Get item children
+    children = list(item.children)
+    
+    # If no children, return the item as is
+    if not children:
+        return [str(item)]
+    
+    # Get item attributes
+    item_attrs = ""
+    for attr, value in item.attrs.items():
+        if isinstance(value, list):
+            value = " ".join(value)
+        item_attrs += f' {attr}="{value}"'
+    
+    # Split by paragraphs if possible
+    paragraphs = item.find_all('p')
+    
+    if paragraphs:
+        current_chunk = []
+        current_tokens = count_html_tokens(f"<li{item_attrs}></li>", options.count_tag_tokens)
+        
+        for p in paragraphs:
+            p_html = str(p)
+            
+            try:
+                p_tokens = count_html_tokens(p_html, options.count_tag_tokens)
+                
+                # If adding this paragraph would exceed limit, create a new chunk
+                if current_chunk and current_tokens + p_tokens > options.max_token_limit:
+                    chunks.append(f"<li{item_attrs}>" + "".join(current_chunk) + "</li>")
+                    current_chunk = [p_html]
+                    current_tokens = count_html_tokens(f"<li{item_attrs}>{p_html}</li>", options.count_tag_tokens)
+                else:
+                    # Add to current chunk
+                    current_chunk.append(p_html)
+                    current_tokens += p_tokens
+            except Exception:
+                # If token counting fails, be conservative
+                if current_chunk:
+                    chunks.append(f"<li{item_attrs}>" + "".join(current_chunk) + "</li>")
+                    current_chunk = [p_html]
+                    current_tokens = 0  # Reset counter since we can't count reliably
+                else:
+                    chunks.append(f"<li{item_attrs}>{p_html}</li>")
+        
+        # Add the last chunk
+        if current_chunk:
+            chunks.append(f"<li{item_attrs}>" + "".join(current_chunk) + "</li>")
+    else:
+        # No paragraphs, split by children
+        current_chunk = []
+        current_tokens = count_html_tokens(f"<li{item_attrs}></li>", options.count_tag_tokens)
+        
+        for child in children:
+            # Skip empty elements
+            if (isinstance(child, NavigableString) and not child.strip()) or (hasattr(child, 'is_empty_element') and child.is_empty_element):
+                continue
+                
+            child_html = str(child)
+            
+            try:
+                child_tokens = count_html_tokens(child_html, options.count_tag_tokens)
+                
+                # If adding this child would exceed limit, create a new chunk
+                if current_chunk and current_tokens + child_tokens > options.max_token_limit:
+                    chunks.append(f"<li{item_attrs}>" + "".join(current_chunk) + "</li>")
+                    current_chunk = [child_html]
+                    current_tokens = count_html_tokens(f"<li{item_attrs}>{child_html}</li>", options.count_tag_tokens)
+                else:
+                    # Add to current chunk
+                    current_chunk.append(child_html)
+                    current_tokens += child_tokens
+            except Exception:
+                # If token counting fails, be conservative
+                if current_chunk:
+                    chunks.append(f"<li{item_attrs}>" + "".join(current_chunk) + "</li>")
+                    current_chunk = [child_html]
+                    current_tokens = 0  # Reset counter since we can't count reliably
+                else:
+                    chunks.append(f"<li{item_attrs}>{child_html}</li>")
+        
+        # Add the last chunk
+        if current_chunk:
+            chunks.append(f"<li{item_attrs}>" + "".join(current_chunk) + "</li>")
+    
+    # If no chunks were created, return the item as is
+    if not chunks:
+        return [str(item)]
+    
+    return chunks
+
+
+def _split_code(code_element: Tag, options: ChunkingOptions) -> List[str]:
+    """
+    Split a code element into chunks.
+    
+    Args:
+        code_element: Code element to split.
+        options: Chunking options.
+        
+    Returns:
+        List of HTML chunks.
+    """
+    chunks = []
+    
+    # Get code text
+    code_text = code_element.get_text()
+    
+    # Get element attributes
+    code_attrs = ""
+    for attr, value in code_element.attrs.items():
+        if isinstance(value, list):
+            value = " ".join(value)
+        code_attrs += f' {attr}="{value}"'
+    
+    # Create the code opening tag
+    code_open = f"<{code_element.name}{code_attrs}>"
+    code_close = f"</{code_element.name}>"
+    
+    # Split by lines
+    lines = code_text.split('\n')
+    
+    # Create chunks by grouping lines
+    current_chunk = []
+    current_tokens = count_html_tokens(code_open + code_close, options.count_tag_tokens)
+    
+    for line in lines:
+        line_html = line + '\n'
+        
+        try:
+            line_tokens = count_html_tokens(line_html, options.count_tag_tokens)
+            
+            # If adding this line would exceed limit, create a new chunk
+            if current_chunk and current_tokens + line_tokens > options.max_token_limit:
+                chunks.append(code_open + "".join(current_chunk) + code_close)
+                current_chunk = [line_html]
+                current_tokens = count_html_tokens(code_open + line_html + code_close, options.count_tag_tokens)
+            else:
+                # Add to current chunk
+                current_chunk.append(line_html)
+                current_tokens += line_tokens
+        except Exception:
+            # If token counting fails, be conservative
+            if current_chunk:
+                chunks.append(code_open + "".join(current_chunk) + code_close)
+                current_chunk = [line_html]
+                current_tokens = 0  # Reset counter since we can't count reliably
+            else:
+                chunks.append(code_open + line_html + code_close)
+    
+    # Add the last chunk
+    if current_chunk:
+        chunks.append(code_open + "".join(current_chunk) + code_close)
+    
+    return chunks
+
+
+def _get_element_position(element: Tag) -> int:
+    """
+    Get the position of an element in its parent.
+    
+    Args:
+        element: The element to find position for.
+        
+    Returns:
+        The position index of the element.
+    """
+    if not element or not element.parent:
+        return -1
+        
+    return list(element.parent.children).index(element)

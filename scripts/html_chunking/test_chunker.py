@@ -1,429 +1,388 @@
-#!/usr/bin/env python3
+"""
+Tests for the HTML chunker implementation.
+"""
 
-import os
-import sys
-import time
-import subprocess
-import argparse
-from html_chunking import chunker
+import unittest
+from unittest.mock import patch, MagicMock
 from bs4 import BeautifulSoup
-import tempfile
-import importlib.util
 
-def clean_html(html_content):
-    """Remove unnecessary whitespace and format HTML for comparison."""
-    soup = BeautifulSoup(html_content, 'html.parser')
-    return soup.prettify()
+from .parser import parse_html, HtmlSection
+from .tokenizer import count_html_tokens
+from .chunker import chunk_html, _chunk_by_heading_level, _identify_oversized_chunks
 
-def test_chunking(html_path, txt_path=None, config=None):
-    """
-    Compare new HTML chunking with original text chunking.
-    
-    Args:
-        html_path (str): Path to the HTML file to chunk.
-        txt_path (str, optional): Path to the text file to compare with.
-        config (dict): Configuration options for chunking.
-    
-    Returns:
-        dict: Results of the comparison.
-    """
-    # Default configuration if none provided
-    if config is None:
-        config = {
-            'max_token_limit': 500,
-            'count_tag_tokens': True,
-            'keep_siblings_together': True,
-            'prepend_parent_section_text': True
-        }
-    
-    timestamp = time.strftime("%Y%m%d-%H%M%S")
-    
-    # Create results directory if it doesn't exist
-    if not os.path.exists("results"):
-        os.makedirs("results")
-    
-    # Apply new chunking to HTML
-    with open(html_path, 'r', encoding='utf-8') as f:
-        html_content = f.read()
-    
-    new_chunks = chunker.chunk_html(html_content, **config)
-    
-    new_results_path = f"results/new_chunking_{timestamp}.html"
-    with open(new_results_path, 'w', encoding='utf-8') as f:
-        # Add HTML header
-        f.write("""<!DOCTYPE html>
-<html>
-<head>
-    <meta charset="UTF-8">
-    <title>HTML Chunking Results</title>
-    <style>
-        body { font-family: Arial, sans-serif; margin: 20px; }
-        pre { background-color: #f8f8f8; padding: 10px; overflow: auto; }
-    </style>
-</head>
-<body>
-<h1>HTML Chunking Results</h1>
-""")
-        for i, chunk in enumerate(new_chunks, 1):
-            # Alternate between red and blue colors for chunks
-            color = "red" if i % 2 == 1 else "blue"  # Red for odd, Blue for even
-            
-            f.write(f"<div style='color:{color}; border:1px solid {color}; padding:10px; margin-bottom:10px;'>\n")
-            f.write(f"<h3 style='color:{color}'>CHUNK {i}</h3>\n")
-            f.write(clean_html(chunk))
-            f.write(f"</div>\n\n")
-    
-    # Apply original chunking to TXT if provided
-    if txt_path:
-        with open(txt_path, 'r', encoding='utf-8') as f:
-            txt_content = f.read()
+
+class TestHtmlChunker(unittest.TestCase):
+    """Test cases for the HTML chunker."""
+
+    def setUp(self):
+        """Set up test environment."""
+        # Create a simple mock for token counting to make tests deterministic
+        self.token_counter_patcher = patch('html_chunking.chunker.count_html_tokens')
+        self.mock_count_tokens = self.token_counter_patcher.start()
         
-        # Import the original chunking function dynamically if available
-        try:
-            # Try to import from the original script
-            sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-            
-            # Check if the original script exists
-            script_path = os.path.join(
-                os.path.dirname(os.path.dirname(os.path.abspath(__file__))), 
-                "generate_embeddings_original.py"
-            )
-            
-            if os.path.exists(script_path):
-                # Import using importlib for better error handling
-                spec = importlib.util.spec_from_file_location("generate_embeddings_original", script_path)
-                module = importlib.util.module_from_spec(spec)
-                spec.loader.exec_module(module)
-                
-                # Get the chunking function
-                chunk_text_original = getattr(module, "chunk_text_original", None)
-                
-                if chunk_text_original:
-                    old_chunks = chunk_text_original(txt_content, max_tokens=config['max_token_limit'])
-                    
-                    old_results_path = f"results/old_chunking_{timestamp}.html"
-                    with open(old_results_path, 'w', encoding='utf-8') as f:
-                        # Add HTML header
-                        f.write("""<!DOCTYPE html>
-<html>
-<head>
-    <meta charset="UTF-8">
-    <title>Old Chunking Results</title>
-    <style>
-        body { font-family: Arial, sans-serif; margin: 20px; }
-        pre { background-color: #f8f8f8; padding: 10px; overflow: auto; }
-    </style>
-</head>
-<body>
-<h1>Old Chunking Results</h1>
-""")
-                        for i, chunk in enumerate(old_chunks, 1):
-                            # Alternate between red and blue colors for chunks
-                            color = "red" if i % 2 == 1 else "blue"  # Red for odd, Blue for even
-                            
-                            f.write(f"<div style='color:{color}; border:1px solid {color}; padding:10px; margin-bottom:10px;'>\n")
-                            f.write(f"<h3 style='color:{color}'>CHUNK {i}</h3>\n")
-                            f.write(chunk)
-                            f.write(f"</div>\n\n")
-                    
-                    # Run vimdiff for comparison if available and not skipped
-                    if not args.skip_vimdiff:
-                        try:
-                            subprocess.run(["vimdiff", old_results_path, new_results_path])
-                        except Exception as e:
-                            print(f"Error running vimdiff: {e}")
-                    # Close HTML file
-                    with open(old_results_path, 'a', encoding='utf-8') as f:
-                        f.write("</body>\n</html>")
-                    
-                    print(f"Results saved to {old_results_path} and {new_results_path}")
-                    
-                    return {
-                        'old_chunk_count': len(old_chunks),
-                        'new_chunk_count': len(new_chunks),
-                        'old_results_path': old_results_path,
-                        'new_results_path': new_results_path
-                    }
-                else:
-                    print("Original chunking function 'chunk_text_original' not found in the script.")
+        # By default, make tokens equal to length / 5 (a simple approximation)
+        self.mock_count_tokens.side_effect = lambda text, count_tags: len(text) // 5
+
+    def tearDown(self):
+        """Clean up test environment."""
+        self.token_counter_patcher.stop()
+
+    def test_no_chunk_needed(self):
+        """Test when content is already under token limit."""
+        html = "<h1>Test</h1><p>This is a small test</p>"
+        self.mock_count_tokens.return_value = 10  # Under limit
+        
+        result = chunk_html(html, max_token_limit=20)
+        
+        self.assertEqual(len(result), 1)
+        self.assertEqual(result[0], html)
+
+    def test_chunk_by_h1(self):
+        """Test chunking by h1 headings."""
+        html = """
+        <h1>Section 1</h1>
+        <p>Content 1</p>
+        <h1>Section 2</h1>
+        <p>Content 2</p>
+        <h1>Section 3</h1>
+        <p>Content 3</p>
+        """
+        
+        # First make the whole content exceed the limit
+        self.mock_count_tokens.side_effect = lambda text, count_tags: 100 if text == html else 30
+        
+        result = chunk_html(html, max_token_limit=50, keep_siblings_together=False)
+        
+        self.assertEqual(len(result), 3)  # Three chunks, one for each h1 section
+        self.assertIn("Section 1", result[0])
+        self.assertIn("Content 1", result[0])
+        self.assertIn("Section 2", result[1])
+        self.assertIn("Content 2", result[1])
+        self.assertIn("Section 3", result[2])
+        self.assertIn("Content 3", result[2])
+
+    def test_keep_siblings_together(self):
+        """Test keeping sibling sections together when under the limit."""
+        html = """
+        <h1>Section 1</h1>
+        <p>Content 1</p>
+        <h1>Section 2</h1>
+        <p>Content 2</p>
+        <h1>Section 3</h1>
+        <p>Content 3</p>
+        """
+        
+        # Set up mock to make full content exceed limit, but combinations under limit
+        def count_side_effect(text, count_tags):
+            if text == html:
+                return 100  # Whole document exceeds limit
+            elif "Section 1" in text and "Section 2" in text and "Section 3" in text:
+                return 100  # All three sections exceed limit
+            elif "Section 1" in text and "Section 2" in text:
+                return 40  # First two sections together under limit
+            elif "Section 3" in text:
+                return 30  # Last section under limit
             else:
-                print(f"Original script not found at {script_path}")
-        except Exception as e:
-            print(f"Error importing original chunking function: {e}")
-    
-    # If we can't run the original chunking or comparison, just return the new chunks
-    print(f"Only new chunking results available at {new_results_path}")
-    
-    # Try running the HTML chunks through w3m for a text representation
-    try:
-        text_chunks = []
-        for chunk in new_chunks:
-            with tempfile.NamedTemporaryFile(suffix=".html", mode="w", encoding="utf-8", delete=False) as tmp:
-                tmp.write("<html><body>" + chunk + "</body></html>")
-                tmp_path = tmp.name
-            
-            try:
-                result = subprocess.run(
-                    ["w3m", "-dump", tmp_path], 
-                    capture_output=True, 
-                    text=True, 
-                    check=True
-                )
-                text_chunks.append(result.stdout)
-            except Exception:
-                # Fallback to displaying plain text
-                chunk_soup = BeautifulSoup(chunk, 'html.parser')
-                text_chunks.append(chunk_soup.get_text(separator='\n'))
-            
-            os.unlink(tmp_path)
+                return 20  # Individual sections under limit
         
-        text_results_path = f"results/text_chunking_{timestamp}.html"
-        with open(text_results_path, 'w', encoding='utf-8') as f:
-            # Add HTML header
-            f.write("""<!DOCTYPE html>
-<html>
-<head>
-    <meta charset="UTF-8">
-    <title>Text Chunking Results</title>
-    <style>
-        body { font-family: Arial, sans-serif; margin: 20px; }
-        pre { background-color: #f8f8f8; padding: 10px; overflow: auto; }
-    </style>
-</head>
-<body>
-<h1>Text Representation of Chunks</h1>
-""")
-            for i, chunk in enumerate(text_chunks, 1):
-                # Alternate between red and blue colors for chunks
-                color = "red" if i % 2 == 1 else "blue"  # Red for odd, Blue for even
-                
-                f.write(f"<div style='color:{color}; border:1px solid {color}; padding:10px; margin-bottom:10px;'>\n")
-                f.write(f"<h3 style='color:{color}'>CHUNK {i}</h3>\n")
-                f.write(chunk)
-                f.write(f"</div>\n\n")
+        self.mock_count_tokens.side_effect = count_side_effect
         
-        # Close HTML file
-        with open(text_results_path, 'a', encoding='utf-8') as f:
-            f.write("</body>\n</html>")
-            
-        print(f"Text representation saved to {text_results_path}")
-    except Exception as e:
-        print(f"Error creating text representation: {e}")
-    
-    # Close the HTML file
-    with open(new_results_path, 'a', encoding='utf-8') as f:
-        f.write("</body>\n</html>")
+        result = chunk_html(html, max_token_limit=50, keep_siblings_together=True)
         
-    return {
-        'new_chunk_count': len(new_chunks),
-        'new_results_path': new_results_path
-    }
+        self.assertEqual(len(result), 2)  # Two chunks: sections 1+2, and section 3
+        self.assertIn("Section 1", result[0])
+        self.assertIn("Content 1", result[0])
+        self.assertIn("Section 2", result[0])
+        self.assertIn("Content 2", result[0])
+        self.assertIn("Section 3", result[1])
+        self.assertIn("Content 3", result[1])
 
-def run_tests():
-    """Run a set of predefined tests on the chunking algorithm."""
-    test_cases = [
-        {
-            'description': 'Simple heading structure with no sections combined',
-            'html': """
-            <html>
-              <body>
-                <h1>First Main Section</h1>
-                <p>Text under first main section.</p>
-                
-                <h2>First Subsection</h2>
-                <p>Text under first subsection.</p>
-                
-                <h2>Second Subsection</h2>
-                <p>Text under second subsection.</p>
-                
-                <h1>Second Main Section</h1>
-                <p>Text under second main section.</p>
-              </body>
-            </html>
-            """,
-            'config': {
-                'max_token_limit': 100,  # Small limit to force splitting
-                'count_tag_tokens': True,
-                'keep_siblings_together': False,
-                'prepend_parent_section_text': True
-            },
-            'expected_chunks': 4  # Each section should be its own chunk
-        },
-        {
-            'description': 'Procedure handling example',
-            'html': """
-            <html>
-              <body>
-                <h3>Installing the Software</h3>
-                <p>This section explains how to install the software on your system.</p>
-                
-                <h4>Prerequisites</h4>
-                <ul>
-                  <li>Administrator access to your system</li>
-                  <li>At least 2GB of free disk space</li>
-                  <li>Internet connection</li>
-                </ul>
-                
-                <p>Procedure</p>
-                <ol>
-                  <li>Download the installer from the website.</li>
-                  <li>Run the installer with administrator privileges.</li>
-                  <li>Follow the on-screen instructions.</li>
-                  <li>Restart your computer when prompted.</li>
-                </ol>
-              </body>
-            </html>
-            """,
-            'config': {
-                'max_token_limit': 500,
-                'count_tag_tokens': True,
-                'keep_siblings_together': True,
-                'prepend_parent_section_text': True
-            },
-            'expected_chunks': 1  # Everything should fit in one chunk
-        },
-        {
-            'description': 'Code block handling example',
-            'html': """
-            <html>
-              <body>
-                <p>To install the package, run the following command:</p>
-                <pre><code>
-pip install my-package
-                </code></pre>
-                <p>This will install the latest version from PyPI.</p>
-              </body>
-            </html>
-            """,
-            'config': {
-                'max_token_limit': 500,
-                'count_tag_tokens': True,
-                'keep_siblings_together': True,
-                'prepend_parent_section_text': True
-            },
-            'expected_chunks': 1  # Everything should fit in one chunk
-        },
-        {
-            'description': 'Table handling example',
-            'html': """
-            <html>
-              <body>
-                <p>The following table shows resource requirements:</p>
-                <table>
-                  <tr>
-                    <th>Component</th>
-                    <th>Minimum</th>
-                    <th>Recommended</th>
-                  </tr>
-                  <tr>
-                    <td>CPU</td>
-                    <td>2 cores</td>
-                    <td>4 cores</td>
-                  </tr>
-                  <tr>
-                    <td>RAM</td>
-                    <td>4 GB</td>
-                    <td>8 GB</td>
-                  </tr>
-                </table>
-              </body>
-            </html>
-            """,
-            'config': {
-                'max_token_limit': 500,
-                'count_tag_tokens': True,
-                'keep_siblings_together': True,
-                'prepend_parent_section_text': True
-            },
-            'expected_chunks': 1  # Everything should fit in one chunk
-        }
-    ]
-    
-    results = {}
-    
-    for i, test in enumerate(test_cases, 1):
-        print(f"Running test {i}: {test['description']}")
+    def test_prepend_parent_text(self):
+        """Test prepending parent section text to child sections."""
+        html = """
+        <h1>Parent Section</h1>
+        <p>Parent content</p>
+        <h2>Child Section 1</h2>
+        <p>Child content 1</p>
+        <h2>Child Section 2</h2>
+        <p>Child content 2</p>
+        """
         
-        # Create a temporary HTML file
-        with tempfile.NamedTemporaryFile(suffix=".html", mode="w", encoding="utf-8", delete=False) as tmp:
-            tmp.write(test['html'])
-            html_path = tmp.name
+        # Make the whole content exceed the limit, but h2 sections with parent text under limit
+        def count_side_effect(text, count_tags):
+            if text == html or "Parent Section" in text and "Child Section 1" in text and "Child Section 2" in text:
+                return 100  # Whole document or all content exceeds limit
+            elif "Parent Section" in text and "Parent content" in text and "Child Section" in text:
+                return 40  # Parent heading + content + one child section under limit
+            else:
+                return 20  # Individual sections under limit
         
-        # Create a temporary TXT file (empty, just for placeholder)
-        with tempfile.NamedTemporaryFile(suffix=".txt", mode="w", encoding="utf-8", delete=False) as tmp:
-            tmp.write("Test")
-            txt_path = tmp.name
+        self.mock_count_tokens.side_effect = count_side_effect
         
-        try:
-            # Run the chunking with the test configuration
-            chunks = chunker.chunk_html(test['html'], **test['config'])
-            
-            # Verify the results
-            success = len(chunks) == test['expected_chunks']
-            status = "PASS" if success else "FAIL"
-            
-            print(f"Test {i}: {status}")
-            print(f"  Expected: {test['expected_chunks']} chunks")
-            print(f"  Actual:   {len(chunks)} chunks")
-            
-            if not success:
-                print("  Chunks:")
-                for j, chunk in enumerate(chunks, 1):
-                    # Use different text for odd vs even chunks for terminal display
-                    chunk_label = "RED CHUNK" if j % 2 == 1 else "BLUE CHUNK"
-                    
-                    print(f"  --- {chunk_label} {j} ---")
-                    print("  " + (clean_html(chunk)[:100] + "..." if len(chunk) > 100 else clean_html(chunk)))
-            
-            results[i] = {
-                'description': test['description'],
-                'status': status,
-                'expected': test['expected_chunks'],
-                'actual': len(chunks)
-            }
+        result = chunk_html(
+            html, max_token_limit=50, keep_siblings_together=False, prepend_parent_section_text=True
+        )
         
-        finally:
-            # Clean up temporary files
-            os.unlink(html_path)
-            os.unlink(txt_path)
-    
-    # Print summary
-    print("\nTest Summary:")
-    for test_id, result in results.items():
-        print(f"Test {test_id}: {result['status']} - {result['description']}")
-    
-    passes = sum(1 for result in results.values() if result['status'] == "PASS")
-    print(f"\n{passes}/{len(results)} tests passed")
+        self.assertEqual(len(result), 2)  # Two chunks
+        self.assertIn("Parent Section", result[0])
+        self.assertIn("Parent content", result[0])
+        self.assertIn("Child Section 1", result[0])
+        self.assertIn("Child content 1", result[0])
+        self.assertIn("Parent Section", result[1])
+        self.assertIn("Parent content", result[1])
+        self.assertIn("Child Section 2", result[1])
+        self.assertIn("Child content 2", result[1])
+
+    def test_deep_section_hierarchy(self):
+        """Test chunking with a deep hierarchy of sections."""
+        html = """
+        <h1>Level 1</h1>
+        <p>Level 1 content</p>
+        <h2>Level 2</h2>
+        <p>Level 2 content</p>
+        <h3>Level 3</h3>
+        <p>Level 3 content</p>
+        <h4>Level 4</h4>
+        <p>Level 4 content</p>
+        <h5>Level 5</h5>
+        <p>Level 5 content</p>
+        <h6>Level 6</h6>
+        <p>Level 6 content</p>
+        """
+        
+        # Make the whole content and each level exceed the limit
+        def count_side_effect(text, count_tags):
+            if len(text) > 100:  # Rough proxy for detecting larger chunks
+                return 100  # Exceeds limit
+            else:
+                return 30  # Individual sections under limit
+        
+        self.mock_count_tokens.side_effect = count_side_effect
+        
+        result = chunk_html(
+            html, max_token_limit=50, keep_siblings_together=False, prepend_parent_section_text=False
+        )
+        
+        # We should get multiple chunks broken down by heading levels
+        self.assertGreater(len(result), 1)
+        self.assertTrue(any("Level 1" in chunk for chunk in result))
+        self.assertTrue(any("Level 6" in chunk for chunk in result))
+
+    def test_procedure_handling(self):
+        """Test handling of procedures in chunking."""
+        html = """
+        <h3>Installing Software</h3>
+        <p>Follow these steps to install the software:</p>
+        <p>Procedure</p>
+        <ol>
+            <li>Download the installer from the website.</li>
+            <li>Run the installer with administrator privileges.</li>
+            <li>Follow the on-screen instructions.</li>
+            <li>Restart your computer when prompted.</li>
+        </ol>
+        """
+        
+        # Setup token counting to make procedures split if needed
+        def count_side_effect(text, count_tags):
+            if "Procedure" in text and all([
+                "Download the installer" in text,
+                "Run the installer" in text, 
+                "Follow the on-screen" in text,
+                "Restart your computer" in text
+            ]):
+                return 60  # Whole procedure exceeds limit
+            elif "Procedure" in text:
+                return 30  # Procedure marker under limit
+            elif "<ol" in text:
+                return 40  # Just the ordered list exceeds limit
+            elif "Download the installer" in text and "Run the installer" in text:
+                return 30  # First two steps under limit
+            elif "Follow the on-screen" in text and "Restart your computer" in text:
+                return 30  # Last two steps under limit
+            else:
+                return 10  # Individual elements under limit
+        
+        self.mock_count_tokens.side_effect = count_side_effect
+        
+        result = chunk_html(html, max_token_limit=50)
+        
+        # The procedure should be split appropriately
+        self.assertGreater(len(result), 1)
+        self.assertTrue(any("Installing Software" in chunk for chunk in result))
+        self.assertTrue(any("Procedure" in chunk for chunk in result))
+        self.assertTrue(any("Download the installer" in chunk for chunk in result))
+
+    def test_code_block_handling(self):
+        """Test handling of code blocks in chunking."""
+        html = """
+        <h2>Code Example</h2>
+        <p>Here is an example of Python code:</p>
+        <pre><code>
+        def hello_world():
+            print("Hello, world!")
+            
+        if __name__ == "__main__":
+            hello_world()
+        </code></pre>
+        <p>This is a simple hello world program.</p>
+        """
+        
+        # Setup token counting to make code blocks split if needed
+        def count_side_effect(text, count_tags):
+            if "Code Example" in text and "hello_world" in text and "simple hello world program" in text:
+                return 100  # Whole example exceeds limit
+            elif "Here is an example" in text and "hello_world" in text:
+                return 60  # Intro + code exceeds limit
+            elif "hello_world" in text and "simple hello world program" in text:
+                return 60  # Code + outro exceeds limit
+            elif "hello_world" in text:
+                return 40  # Just code under limit
+            else:
+                return 20  # Individual elements under limit
+        
+        self.mock_count_tokens.side_effect = count_side_effect
+        
+        result = chunk_html(html, max_token_limit=50)
+        
+        # Code should be split appropriately
+        self.assertGreater(len(result), 1)
+        self.assertTrue(any("Code Example" in chunk for chunk in result))
+        self.assertTrue(any("example of Python code" in chunk for chunk in result))
+        self.assertTrue(any("hello_world" in chunk for chunk in result))
+        self.assertTrue(any("simple hello world program" in chunk for chunk in result))
+
+    def test_table_handling(self):
+        """Test handling of tables in chunking."""
+        html = """
+        <h2>Data Table</h2>
+        <p>Here is a sample data table:</p>
+        <table>
+            <thead>
+                <tr>
+                    <th>Name</th>
+                    <th>Age</th>
+                    <th>Occupation</th>
+                </tr>
+            </thead>
+            <tbody>
+                <tr>
+                    <td>John Doe</td>
+                    <td>30</td>
+                    <td>Engineer</td>
+                </tr>
+                <tr>
+                    <td>Jane Smith</td>
+                    <td>28</td>
+                    <td>Doctor</td>
+                </tr>
+                <tr>
+                    <td>Bob Johnson</td>
+                    <td>45</td>
+                    <td>Teacher</td>
+                </tr>
+            </tbody>
+        </table>
+        <p>This table shows sample employee data.</p>
+        """
+        
+        # Setup token counting to make tables split if needed
+        def count_side_effect(text, count_tags):
+            if "Data Table" in text and "John Doe" in text and "sample employee data" in text:
+                return 100  # Whole example exceeds limit
+            elif "sample data table" in text and "John Doe" in text:
+                return 60  # Intro + table exceeds limit
+            elif "John Doe" in text and "sample employee data" in text:
+                return 60  # Table + outro exceeds limit
+            elif "<table>" in text and "</table>" in text:
+                return 70  # Whole table exceeds limit
+            elif "John Doe" in text and "Jane Smith" in text and "Bob Johnson" in text:
+                return 60  # All rows exceed limit
+            elif "John Doe" in text:
+                return 20  # First row under limit
+            elif "Jane Smith" in text:
+                return 20  # Second row under limit
+            elif "Bob Johnson" in text:
+                return 20  # Third row under limit
+            else:
+                return 10  # Individual elements under limit
+        
+        self.mock_count_tokens.side_effect = count_side_effect
+        
+        result = chunk_html(html, max_token_limit=50)
+        
+        # Table should be split appropriately
+        self.assertGreater(len(result), 1)
+        self.assertTrue(any("Data Table" in chunk for chunk in result))
+        self.assertTrue(any("sample data table" in chunk for chunk in result))
+        self.assertTrue(any("John Doe" in chunk for chunk in result))
+        self.assertTrue(any("sample employee data" in chunk for chunk in result))
+
+    def test_identify_oversized_chunks(self):
+        """Test that oversized chunks are correctly identified."""
+        chunks = ["Small chunk", "Medium chunk", "Very large chunk that exceeds the token limit"]
+        
+        # Set up the mock to make only the third chunk oversized
+        def count_side_effect(text, count_tags):
+            if text == "Very large chunk that exceeds the token limit":
+                return 60  # Exceeds limit
+            else:
+                return 20  # Under limit
+        
+        self.mock_count_tokens.side_effect = count_side_effect
+        
+        options = MagicMock()
+        options.max_token_limit = 50
+        options.count_tag_tokens = True
+        
+        oversized = _identify_oversized_chunks(chunks, options)
+        
+        self.assertEqual(len(oversized), 1)
+        self.assertEqual(list(oversized)[0], 2)  # The third chunk (index 2) is oversized
+
+    def test_mixed_content(self):
+        """Test chunking with mixed content types."""
+        html = """
+        <h1>Mixed Content</h1>
+        <p>This section contains mixed content.</p>
+        <h2>Code Example</h2>
+        <pre><code>print("Hello world")</code></pre>
+        <h2>Procedure</h2>
+        <p>Procedure</p>
+        <ol>
+            <li>Step 1</li>
+            <li>Step 2</li>
+        </ol>
+        <h2>Table</h2>
+        <table>
+            <tr><th>Header</th></tr>
+            <tr><td>Data</td></tr>
+        </table>
+        """
+        
+        # Make the whole content and each major section exceed the limit
+        def count_side_effect(text, count_tags):
+            if len(text) > 100:  # Rough proxy for detecting larger chunks
+                return 100  # Exceeds limit
+            elif "Code Example" in text and "print" in text:
+                return 60  # Code section exceeds limit
+            elif "Procedure" in text and "Step 1" in text and "Step 2" in text:
+                return 60  # Procedure section exceeds limit
+            elif "Table" in text and "<table>" in text:
+                return 60  # Table section exceeds limit
+            else:
+                return 30  # Individual elements under limit
+        
+        self.mock_count_tokens.side_effect = count_side_effect
+        
+        result = chunk_html(html, max_token_limit=50)
+        
+        # Mixed content should be split appropriately
+        self.assertGreater(len(result), 1)
+        self.assertTrue(any("Mixed Content" in chunk for chunk in result))
+        self.assertTrue(any("Code Example" in chunk for chunk in result))
+        self.assertTrue(any("Procedure" in chunk for chunk in result))
+        self.assertTrue(any("Table" in chunk for chunk in result))
+
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description="Test HTML chunking against original text chunking")
-    parser.add_argument('--html', help="Path to the HTML file to chunk")
-    parser.add_argument('--txt', help="Path to the text file to compare with")
-    parser.add_argument('--max-tokens', type=int, default=500, help="Maximum token limit per chunk")
-    parser.add_argument('--count-tags', action='store_true', help="Whether to count HTML tags as tokens")
-    parser.add_argument('--keep-siblings', action='store_true', default=True, help="Keep adjacent heading sections together if under token limit")
-    parser.add_argument('--prepend-parent', action='store_true', default=True, help="Include parent heading text in child section chunks")
-    parser.add_argument('--run-tests', action='store_true', help="Run predefined tests instead of comparing files")
-    parser.add_argument('--skip-vimdiff', action='store_true', help="Skip running vimdiff and just output results to files")
-    
-    args = parser.parse_args()
-    
-    if args.run_tests:
-        run_tests()
-    elif args.html:
-        config = {
-            'max_token_limit': args.max_tokens,
-            'count_tag_tokens': args.count_tags,
-            'keep_siblings_together': args.keep_siblings,
-            'prepend_parent_section_text': args.prepend_parent
-        }
-        
-        results = test_chunking(args.html, args.txt if args.txt else None, config)
-        
-        if 'old_chunk_count' in results:
-            print(f"Old chunking: {results['old_chunk_count']} chunks")
-        print(f"New chunking: {results['new_chunk_count']} chunks")
-        print(f"Results saved to {results.get('old_results_path', '')} and {results['new_results_path']}")
-    else:
-        print("Please provide at least the HTML file path, or use --run-tests")
-        parser.print_help()
+    unittest.main()
