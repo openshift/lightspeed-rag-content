@@ -12,6 +12,7 @@ import datetime
 import json
 import logging
 import sqlite3
+import sys
 import time
 from pathlib import Path
 from typing import Optional, Union
@@ -196,42 +197,42 @@ def init_database(db_path: str) -> str:
     """Initialize SQLite database to track downloaded files"""
     Path(db_path).parent.mkdir(parents=True, exist_ok=True)
 
-    conn = sqlite3.connect(db_path)
-    cursor = conn.cursor()
+    with sqlite3.connect(db_path) as conn:
+        cursor = conn.cursor()
 
-    # Main downloads table
-    cursor.execute(
+        # Main downloads table
+        cursor.execute(
+            """
+        CREATE TABLE IF NOT EXISTS downloads (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            url TEXT UNIQUE NOT NULL,
+            local_path TEXT NOT NULL,
+            status TEXT NOT NULL,
+            etag TEXT,
+            last_modified TEXT,
+            timestamp DATETIME DEFAULT CURRENT_TIMESTAMP
+        )
         """
-    CREATE TABLE IF NOT EXISTS downloads (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        url TEXT UNIQUE,
-        local_path TEXT,
-        status TEXT,
-        etag TEXT,
-        last_modified TEXT,
-        timestamp DATETIME DEFAULT CURRENT_TIMESTAMP
-    )
-    """
-    )
+        )
 
-    # History table to track changes
-    cursor.execute(
+        # History table to track changes
+        cursor.execute(
+            """
+        CREATE TABLE IF NOT EXISTS download_history (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            url TEXT NOT NULL,
+            local_path TEXT NOT NULL,
+            status TEXT NOT NULL,
+            etag TEXT,
+            last_modified TEXT,
+            timestamp DATETIME DEFAULT CURRENT_TIMESTAMP,
+            change_type TEXT NOT NULL
+        )
         """
-    CREATE TABLE IF NOT EXISTS download_history (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        url TEXT,
-        local_path TEXT,
-        status TEXT,
-        etag TEXT,
-        last_modified TEXT,
-        timestamp DATETIME DEFAULT CURRENT_TIMESTAMP,
-        change_type TEXT
-    )
-    """
-    )
+        )
 
-    conn.commit()
-    conn.close()
+        conn.commit()
+
     logger.info(f"Database initialized at {db_path}")
 
     return db_path
@@ -257,29 +258,29 @@ def record_download(
         last_modified (str): Last-Modified header from the response, if available
         change_type (str): Type of change (new, updated, unchanged, error)
     """
-    conn = sqlite3.connect(db_path)
-    cursor = conn.cursor()
     local_path_str = str(local_path)
 
-    try:
-        # Record in main downloads table
-        cursor.execute(
-            "INSERT OR REPLACE INTO downloads (url, local_path, status, etag, last_modified, timestamp) VALUES (?, ?, ?, ?, ?, datetime('now'))",
-            (url, local_path_str, status, etag, last_modified),
-        )
+    with sqlite3.connect(db_path) as conn:
+        cursor = conn.cursor()
 
-        # Record in history table
-        if change_type:
+        try:
+            # Record in main downloads table
             cursor.execute(
-                "INSERT INTO download_history (url, local_path, status, etag, last_modified, change_type) VALUES (?, ?, ?, ?, ?, ?)",
-                (url, local_path_str, status, etag, last_modified, change_type),
+                "INSERT OR REPLACE INTO downloads (url, local_path, status, etag, last_modified, timestamp) VALUES (?, ?, ?, ?, ?, datetime('now'))",
+                (url, local_path_str, status, etag, last_modified),
             )
 
-        conn.commit()
-    except Exception as e:
-        logger.error(f"Database error: {e}")
-    finally:
-        conn.close()
+            # Record in history table
+            if change_type:
+                cursor.execute(
+                    "INSERT INTO download_history (url, local_path, status, etag, last_modified, change_type) VALUES (?, ?, ?, ?, ?, ?)",
+                    (url, local_path_str, status, etag, last_modified, change_type),
+                )
+
+            conn.commit()
+        except Exception as e:
+            logger.error(f"Database error: {e}")
+            conn.rollback()
 
     return url
 
@@ -294,16 +295,14 @@ def get_download_status(db_path: str, url: str) -> dict:
     Returns:
         tuple: (etag, last_modified)
     """
-    conn = sqlite3.connect(db_path)
-    cursor = conn.cursor()
+    with sqlite3.connect(db_path) as conn:
+        cursor = conn.cursor()
 
-    cursor.execute(
-        "SELECT etag, last_modified FROM downloads WHERE url = ? AND status = 'success'",
-        (url,),
-    )
-    result = cursor.fetchone()
-
-    conn.close()
+        cursor.execute(
+            "SELECT etag, last_modified FROM downloads WHERE url = ? AND status = 'success'",
+            (url,),
+        )
+        result = cursor.fetchone()
 
     existing_etag = result[0] if result else None
     existing_last_modified = result[1] if result else None
@@ -320,18 +319,16 @@ def get_download_results(db_path: str) -> tuple[set[str], set[str]]:
     Returns:
         tuple: (successful_urls, failed_urls)
     """
-    conn = sqlite3.connect(db_path)
-    cursor = conn.cursor()
+    with sqlite3.connect(db_path) as conn:
+        cursor = conn.cursor()
 
-    # Get all successful downloads
-    cursor.execute("SELECT url FROM downloads WHERE status = 'success'")
-    successful_urls = {row[0] for row in cursor.fetchall()}
+        # Get all successful downloads
+        cursor.execute("SELECT url FROM downloads WHERE status = 'success'")
+        successful_urls = {row[0] for row in cursor.fetchall()}
 
-    # Get all failed downloads
-    cursor.execute("SELECT url FROM downloads WHERE status != 'success'")
-    failed_urls = {row[0] for row in cursor.fetchall()}
-
-    conn.close()
+        # Get all failed downloads
+        cursor.execute("SELECT url FROM downloads WHERE status != 'success'")
+        failed_urls = {row[0] for row in cursor.fetchall()}
 
     return (successful_urls, failed_urls)
 
@@ -345,13 +342,11 @@ def get_url_mapping(db_path: str) -> dict[str, str]:
     Returns:
         dict: {local_path: url}
     """
-    conn = sqlite3.connect(db_path)
-    cursor = conn.cursor()
+    with sqlite3.connect(db_path) as conn:
+        cursor = conn.cursor()
 
-    cursor.execute("SELECT local_path, url FROM downloads WHERE status = 'success'")
-    mapping = {row[0]: row[1] for row in cursor.fetchall()}
-
-    conn.close()
+        cursor.execute("SELECT local_path, url FROM downloads WHERE status = 'success'")
+        mapping = {row[0]: row[1] for row in cursor.fetchall()}
 
     return mapping
 
@@ -365,58 +360,56 @@ def get_change_report(db_path: str) -> dict:
     Returns:
         dict: Report data
     """
-    conn = sqlite3.connect(db_path)
-    cursor = conn.cursor()
+    with sqlite3.connect(db_path) as conn:
+        cursor = conn.cursor()
 
-    # Get counts by change type
-    cursor.execute(
+        # Get counts by change type
+        cursor.execute(
+            """
+            SELECT change_type, COUNT(*)
+            FROM download_history
+            WHERE timestamp > datetime('now', '-1 hour')
+            GROUP BY change_type
         """
-        SELECT change_type, COUNT(*) 
-        FROM download_history 
-        WHERE timestamp > datetime('now', '-1 hour')
-        GROUP BY change_type
-    """
-    )
-    change_counts = {row[0]: row[1] for row in cursor.fetchall()}
+        )
+        change_counts = {row[0]: row[1] for row in cursor.fetchall()}
 
-    # Get list of updated files with timestamps
-    cursor.execute(
+        # Get list of updated files with timestamps
+        cursor.execute(
+            """
+            SELECT h.url, h.timestamp, d.timestamp
+            FROM download_history h
+            JOIN downloads d ON h.url = d.url
+            WHERE h.change_type = 'updated'
+            AND h.timestamp > datetime('now', '-1 hour')
         """
-        SELECT h.url, h.timestamp, d.timestamp
-        FROM download_history h
-        JOIN downloads d ON h.url = d.url
-        WHERE h.change_type = 'updated'
-        AND h.timestamp > datetime('now', '-1 hour')
-    """
-    )
-    updated_files = [
-        {"url": row[0], "previous_timestamp": row[1], "current_timestamp": row[2]}
-        for row in cursor.fetchall()
-    ]
+        )
+        updated_files = [
+            {"url": row[0], "previous_timestamp": row[1], "current_timestamp": row[2]}
+            for row in cursor.fetchall()
+        ]
 
-    # Get list of new files
-    cursor.execute(
+        # Get list of new files
+        cursor.execute(
+            """
+            SELECT url
+            FROM download_history
+            WHERE change_type = 'new'
+            AND timestamp > datetime('now', '-1 hour')
         """
-        SELECT url
-        FROM download_history
-        WHERE change_type = 'new'
-        AND timestamp > datetime('now', '-1 hour')
-    """
-    )
-    new_files = [row[0] for row in cursor.fetchall()]
+        )
+        new_files = [row[0] for row in cursor.fetchall()]
 
-    # Get list of errors
-    cursor.execute(
+        # Get list of errors
+        cursor.execute(
+            """
+            SELECT url
+            FROM download_history
+            WHERE change_type = 'error'
+            AND timestamp > datetime('now', '-1 hour')
         """
-        SELECT url
-        FROM download_history
-        WHERE change_type = 'error'
-        AND timestamp > datetime('now', '-1 hour')
-    """
-    )
-    error_files = [row[0] for row in cursor.fetchall()]
-
-    conn.close()
+        )
+        error_files = [row[0] for row in cursor.fetchall()]
 
     # Create the report
     report = {
