@@ -64,7 +64,7 @@ if __name__ == "__main__":
         attributes = os.path.normpath(os.path.join(os.getcwd(), args.attributes))
         with open(attributes, "r") as fin:
             attributes = yaml.safe_load(fin)
-        for key, value in attributes.items():
+        for key, value in attributes.items():  # type: ignore
             attribute_list = [*attribute_list, "-a", key + "=%s" % value]
 
     topic_map = os.path.normpath(os.path.join(os.getcwd(), args.topic_map))
