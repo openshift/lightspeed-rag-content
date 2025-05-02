@@ -164,13 +164,10 @@ def get_local_path(url: str, output_dir: Path) -> Path:
             doc_name = path_parts[doc_type_index + 1]
 
             # Create the simplified path
-            simple_path = f"{doc_name}"
-            if path.endswith("/") or not path_parts[-1]:
-                simple_path = f"{simple_path}/index.html"
-            elif not path.endswith(".html"):
-                simple_path = f"{simple_path}/index.html"
-
-            local_path = output_dir / simple_path
+            if path.endswith("/") or not path_parts[-1] or not path.endswith(".html"):
+                local_path = output_dir / doc_name / "index.html"
+            else:
+                local_path = output_dir / doc_name
         else:
             # Fallback if structure is unexpected
             if path.endswith("/"):
