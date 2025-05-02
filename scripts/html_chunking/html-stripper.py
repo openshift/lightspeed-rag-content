@@ -11,17 +11,19 @@ import argparse
 import os
 import sys
 from pathlib import Path
-from typing import List, Optional
+from typing import List, Optional, Tuple
 from bs4 import BeautifulSoup
 
 
-def strip_html_content(input_file_path: str, output_dir: str) -> Optional[str]:
+def strip_html_content(input_file_path: str, output_dir: str, preserve_path: bool = True) -> Optional[str]:
     """
     Extract the main content from an HTML file and save it to the output directory.
 
     Args:
         input_file_path: Path to the HTML file to process
         output_dir: Directory to save the cleaned HTML file
+        preserve_path: Whether to preserve the directory structure (True for directory processing,
+                      False for single file processing)
 
     Returns:
         Path to the cleaned HTML file or None if processing failed
@@ -49,10 +51,15 @@ def strip_html_content(input_file_path: str, output_dir: str) -> Optional[str]:
         for chapter in chapters:
             new_soup.body.append(chapter)
 
-        # Create output path
-        rel_path = os.path.relpath(input_file_path)
-        output_file_path = os.path.join(output_dir, rel_path)
-        os.makedirs(os.path.dirname(output_file_path), exist_ok=True)
+        # Create output path based on whether we're preserving directory structure
+        if preserve_path:
+            rel_path = os.path.relpath(input_file_path)
+            output_file_path = os.path.join(output_dir, rel_path)
+            os.makedirs(os.path.dirname(output_file_path), exist_ok=True)
+        else:
+            filename = os.path.basename(input_file_path)
+            output_file_path = os.path.join(output_dir, filename)
+            os.makedirs(output_dir, exist_ok=True)
 
         with open(output_file_path, "w", encoding="utf-8") as file:
             file.write(str(new_soup))
@@ -92,7 +99,7 @@ def process_directory(
                     skipped_files += 1
                     continue
 
-                result = strip_html_content(file_path, output_dir)
+                result = strip_html_content(file_path, output_dir, preserve_path=True)
                 if result:
                     processed_files += 1
 
@@ -135,7 +142,7 @@ def main() -> None:
         if not input_path.name.endswith(".html"):
             print(f"Error: Input file {args.input} is not an HTML file.")
             sys.exit(1)
-        strip_html_content(str(input_path), args.output_dir)
+        strip_html_content(str(input_path), args.output_dir, preserve_path=False)
     else:
         process_directory(str(input_path), args.output_dir, args.exclude)
 
