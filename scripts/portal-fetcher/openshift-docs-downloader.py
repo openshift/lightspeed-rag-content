@@ -84,15 +84,7 @@ def is_likely_external_link(url: str) -> bool:
     ]
 
     # Check if the path contains any domain-like patterns
-    for pattern in domain_patterns:
-        if pattern in path:
-            return True
-
-    # Check for unusual path length which might indicate a malformed URL
-    if len(path.split("/")) > 10:  # Unusually deep path
-        return True
-
-    return False
+    return any(pattern in path for pattern in domain_patterns)
 
 
 def is_html_single_url(url: str) -> bool:
@@ -125,22 +117,16 @@ def is_in_scope(url: str, base_url: str) -> bool:
     # But also handle the case where the base URL doesn't include the actual page
     if "/html-single/" in base_path:
         # If this is a specific doc, make sure it's within that doc's URL path
-        # Check if url_path starts with base_path or is the exact doc index
-        is_in_scope = url_path.startswith(base_path) or url_path == base_path.removesuffix("/index")
+        return url_path.startswith(base_path) or url_path == base_path.removesuffix("/index")
     else:
         # For entire docs, anything with openshift_container_platform/VERSION in scope
         try:
-            base_parts = base_url.split("openshift_container_platform/")
-            if len(base_parts) > 1:
-                version = base_parts[1].split("/")[0]
-                version_part = f"openshift_container_platform/{version}"
-                is_in_scope = version_part in url and is_html_single_url(url)
-            else:
-                is_in_scope = False
+            version_part = f"openshift_container_platform/{base_url.split('openshift_container_platform/')[1].split('/')[0]}"
+            is_in_scope = version_part in url and is_html_single_url(url)
         except IndexError:
             is_in_scope = False
 
-    return is_in_scope
+        return is_in_scope
 
 
 def get_local_path(url: str, output_dir: Path) -> Path:
