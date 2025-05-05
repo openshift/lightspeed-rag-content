@@ -60,3 +60,11 @@ help: ## Show this help screen
 	@grep -E '^[ a-zA-Z0-9_-]+:.*?## .*$$' $(MAKEFILE_LIST) | \
 		awk 'BEGIN {FS = ":.*?## "}; {printf "\033[36m%-25s\033[0m %s\n", $$1, $$2}'
 	@echo ''
+	
+model-safetensors: ## Download model.safetensors to embeddings_model
+	@if [ ! -f embeddings_model/model.safetensors ]; then \
+		echo "Downloading model.safetensors..."; \
+		wget "https://huggingface.co/sentence-transformers/all-mpnet-base-v2/resolve/9a3225965996d404b775526de6dbfe85d3368642/model.safetensors" -O embeddings_model/model.safetensors; \
+	else \
+		echo "model.safetensors already exists. Skipping download."; \
+	fi
