@@ -13,8 +13,8 @@ RUN dnf install -y buildah python3.11 python3.11-pip
 USER 0
 WORKDIR /workdir
 
-COPY requirements.cpu.txt .
-RUN pip3.11 install --upgrade pip && pip3.11 install --no-cache-dir -r requirements.cpu.txt
+COPY requirements.gpu.txt .
+RUN pip3.11 install --no-cache-dir --no-deps -r requirements.gpu.txt
 
 COPY embeddings_model ./embeddings_model
 RUN cd embeddings_model; if [ "$HERMETIC" == "true" ] && [ ! -f embeddings_model/model.safetensors ]; then \
