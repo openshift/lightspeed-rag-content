@@ -15,6 +15,15 @@ for resulting image containing the RAG database.
 
 Use for your experimentation. Once released, MY_BYOK_TOOL_IMAGE will be an image tag under registry.redhat.io/openshift-lightspeed-tech-preview.
 
+### Download a copy of the embedding model weights
+```bash
+$ cd embeddings_model
+$ grep download_url ../artifacts.lock.yaml | awk '{print $3}' | sed 's/\"//g' | wget -i -
+$ ls -l model.safetensors
+-rw-r--r--. 1 joe joe 437971872 May  9 15:37 model.safetensors
+$
+```
+
 ### Build and push the BYOK tool image.
 
 ```bash

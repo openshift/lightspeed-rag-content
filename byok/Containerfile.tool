@@ -11,7 +11,7 @@ USER 0
 WORKDIR /workdir
 
 COPY requirements.cpu.txt .
-RUN pip3.11 install --no-cache-dir -r requirements.cpu.txt
+RUN pip3.11 install --upgrade pip && pip3.11 install --no-cache-dir -r requirements.cpu.txt
 
 COPY embeddings_model ./embeddings_model
 COPY byok/generate_embeddings_tool.py byok/Containerfile.output .
