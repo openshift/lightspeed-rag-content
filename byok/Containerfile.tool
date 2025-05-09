@@ -5,15 +5,18 @@ ARG LOG_LEVEL=info
 ARG OUT_IMAGE_TAG=byok-image
 ARG BYOK_TOOL_IMAGE
 ARG UBI_BASE_IMAGE
-RUN dnf install -y buildah python3.11 python3.11-pip
+RUN dnf install -y buildah python3.11 python3.11-pip wget
 
 USER 0
 WORKDIR /workdir
 
 COPY requirements.cpu.txt .
-RUN pip3.11 install --no-cache-dir -r requirements.cpu.txt
+RUN pip3.11 install --upgrade pip && pip3.11 install --no-cache-dir -r requirements.cpu.txt
 
 COPY embeddings_model ./embeddings_model
+RUN cd embeddings_model && if [ ! -f embeddings_model/model.safetensors ]; then \
+        wget -q https://huggingface.co/sentence-transformers/all-mpnet-base-v2/resolve/9a3225965996d404b775526de6dbfe85d3368642/model.safetensors; \
+    fi
 COPY byok/generate_embeddings_tool.py byok/Containerfile.output .
 
 ENV _BUILDAH_STARTED_IN_USERNS=""

@@ -92,7 +92,11 @@ if __name__ == "__main__":
 
     # Load documents
     documents = SimpleDirectoryReader(
-        args.input_dir, recursive=True, file_metadata=file_metadata_func
+        args.input_dir,
+        recursive=True,
+        required_exts=[".md"],
+        file_extractor={".md": FlatReader()},
+        file_metadata=file_metadata_func
     ).load_data()
 
     # Create chunks/nodes
