@@ -3,6 +3,7 @@ ARG UBI_BASE_IMAGE=registry.access.redhat.com/ubi9/ubi:latest
 FROM ${UBI_BASE_IMAGE}
 ARG LOG_LEVEL=info
 ARG OUT_IMAGE_TAG=byok-image
+ARG VECTOR_DB_INDEX=vector_db_index
 ARG BYOK_TOOL_IMAGE
 ARG UBI_BASE_IMAGE
 RUN dnf install -y buildah python3.11 python3.11-pip wget
@@ -25,7 +26,9 @@ ENV OUT_IMAGE_TAG=$OUT_IMAGE_TAG
 ENV BYOK_TOOL_IMAGE=$BYOK_TOOL_IMAGE
 ENV UBI_BASE_IMAGE=$UBI_BASE_IMAGE
 ENV LOG_LEVEL=$LOG_LEVEL
+ENV VECTOR_DB_INDEX=$VECTOR_DB_INDEX
 CMD buildah --log-level $LOG_LEVEL build --build-arg BYOK_TOOL_IMAGE=$BYOK_TOOL_IMAGE \
-    --build-arg UBI_BASE_IMAGE=$UBI_BASE_IMAGE -t $OUT_IMAGE_TAG -f Containerfile.output \
+    --build-arg UBI_BASE_IMAGE=$UBI_BASE_IMAGE --env VECTOR_DB_INDEX=$VECTOR_DB_INDEX \
+    -t $OUT_IMAGE_TAG -f Containerfile.output \
     -v /markdown:/markdown:Z . && rm -f /output/$OUT_IMAGE_TAG.tar && \
     buildah push $OUT_IMAGE_TAG docker-archive:/output/$OUT_IMAGE_TAG.tar
