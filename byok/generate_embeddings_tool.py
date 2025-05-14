@@ -7,6 +7,7 @@ import time
 from typing import Callable, Dict
 
 import faiss
+import frontmatter
 import requests
 from llama_index.core import Settings, SimpleDirectoryReader, VectorStoreIndex
 from llama_index.core.llms.utils import resolve_llm
@@ -17,25 +18,27 @@ from llama_index.embeddings.huggingface import HuggingFaceEmbedding
 from llama_index.readers.file.flat.base import FlatReader
 from llama_index.vector_stores.faiss import FaissVectorStore
 
-def get_file_title(file_path: str) -> str:
-    """Extract title from the plaintext doc file."""
-    title = ""
-    try:
-        with open(file_path, "r") as file:
-            title = file.readline().rstrip("\n").lstrip("# ")
-    except Exception:  # noqa: S110
-        pass
-    return title
-
-
 def file_metadata_func(file_path: str) -> Dict:
     """Populate the docs_url and title metadata elements with docs URL and the page's title.
 
     Args:
         file_path: str: file path in str
     """
+    title = file_path
     docs_url = file_path
-    title = get_file_title(file_path)
+    try:
+        with open(file_path, "r") as file:
+            first_line = file.readline()
+            if first_line.startswith("#"):
+                title = first_line.rstrip("\n").lstrip("# ")
+                docs_url = file_path
+            elif first_line.startswith("---"):
+                file.close()
+                post = frontmatter.load(file_path)
+                title = post['title']
+                docs_url = post['url']
+    except Exception:  # noqa: S110
+        pass
     msg = f"file_path: {file_path}, title: {title}, docs_url: {docs_url}"
     print(msg)
     return {"file_path": file_path, "title": title, "docs_url": docs_url}
