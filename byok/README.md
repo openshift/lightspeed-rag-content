@@ -27,7 +27,10 @@ $ podman push $MY_BYOK_TOOL_IMAGE
 
 ```bash
 $ MY_BYOK_TOOL_IMAGE=quay.io/$USERNAME/byok_tool:0.0.1
-$ podman run -e OUT_IMAGE_TAG=my-byok-image -it --rm --device=/dev/fuse -v <dir_tree_with_markdown_files>:/markdown:Z -v <dir_for_image_tar>:/output:Z $MY_BYOK_TOOL_IMAGE
+$ podman run -e OUT_IMAGE_TAG=my-byok-image -it --rm --device=/dev/fuse \
+  -v <dir_tree_with_markdown_files>:/markdown:Z \
+  -v <dir_for_image_tar>:/output:Z \
+  $MY_BYOK_TOOL_IMAGE
 ```
 
 The tool runs on CPUs, not GPUs.
@@ -71,4 +74,8 @@ total 1408
 $ podman run --rm localhost/byok-image-foobar:latest cat /rag/vector_db/metadata.json
 {"execution-time": 82.21773672103882, "llm": "None", "embedding-model-name": "sentence-transformers/all-mpnet-base-v2", "index-id": "vector_db_index", "vector-db": "faiss.IndexFlatIP", "embedding-dimension": 768, "chunk": 380, "overlap": 0, "total-embedded-files": 29}
 ```
-The database is located at /rag/vector_db and the Faiss index id is "vector_db_index".
+The database is located at /rag/vector_db and by default the Faiss index id is "vector_db_index". The VECTOR_DB_INDEX environment variable can be used to override this default:
+
+```bash
+$ podman run -e VECTOR_DB_INDEX=acme_openshift_sop ...
+```
