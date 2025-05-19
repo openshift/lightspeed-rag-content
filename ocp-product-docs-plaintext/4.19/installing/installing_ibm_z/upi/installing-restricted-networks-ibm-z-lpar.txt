@@ -480,7 +480,83 @@ Ignition config files are created for the bootstrap, control plane, and compute 
 ```
 
 
-# Configuring NBDE with static IP in an IBM Z or IBM LinuxONE environment
+# Configuring boot volume encryption in an IBM Z or IBM LinuxONE environment
+
+You can choose between two methods to optionally encrypt the boot volumes of your Red Hat OpenShift Container Platform control plane and compute nodes on IBM Z&#174; or IBM&#174; LinuxONE:
+
+* Linux Unified Key Setup (LUKS) encryption via IBM(R) Crypto Express (CEX)
+* Network Bound Disk Encryption (NBDE)
+
+## LUKS encryption via CEX in an IBM Z or IBM LinuxONE environment
+
+Enabling hardware-based Linux Unified Key Setup (LUKS) encryption via IBM&#174; Crypto Express (CEX) in an IBM Z&#174; or IBM&#174; LinuxONE environment requires additional steps, which are described in detail in this section.
+
+* You have installed the butane utility.
+* You have reviewed the instructions for how to create machine configs with Butane.
+
+1. Create Butane configuration files for the control plane and compute nodes.
+
+The following example of a Butane configuration for a control plane node creates a file named main-storage.bu for disk encryption:
+
+```yaml
+variant: openshift
+version: 4.19.0
+metadata:
+  name: main-storage
+  labels:
+    machineconfiguration.openshift.io/role: master
+storage:
+  luks:
+    - cex:
+        enabled: true
+        options: 1
+           - --pbkdf
+           - pbkdf2
+      device: /dev/disk/by-partlabel/root 2
+      label: luks-root
+      name: root
+      wipe_volume: true
+  filesystems:
+    - device: /dev/mapper/root
+      format: xfs
+      label: root
+      wipe_filesystem: true
+openshift:
+  fips: true 3
+  kernel_arguments: 4
+    - rd.luks.key=/etc/luks/cex.key
+```
+
+The pbkdf option is only required if FIPS mode is enabled. Omit the entry if FIPS is disabled.
+For installations on DASD-type disks, replace with device: /dev/disk/by-label/root.
+Specifies whether to enable or disable FIPS mode. By default, FIPS mode is not enabled. If FIPS mode is enabled, the Red Hat Enterprise Linux CoreOS (RHCOS) machines that Red Hat OpenShift Container Platform runs on bypass the default Kubernetes cryptography suite and use the cryptography modules that are provided with RHCOS instead.
+Specifies the location of the pass key that is required to decrypt the device.
+2. Create a parameter file that includes ignition.platform.id=metal and ignition.firstboot.
+Example kernel parameter file for the control plane machine
+
+```terminal
+cio_ignore=all,!condev rd.neednet=1 \
+console=ttysclp0 \
+coreos.inst.install_dev=/dev/disk/by-id/scsi-<serial_number> \1
+ignition.firstboot ignition.platform.id=metal \
+coreos.inst.ignition_url=http://<http_server>/master.ign \2
+coreos.live.rootfs_url=http://<http_server>/rhcos-<version>-live-rootfs.<architecture>.img \3
+ip=<ip_address>::<gateway>:<netmask>:<hostname>::none nameserver=<dns> \
+rd.znet=qeth,0.0.bdd0,0.0.bdd1,0.0.bdd2,layer2=1 \
+rd.zfcp=0.0.5677,0x600606680g7f0056,0x034F000000000000 4
+```
+
+Specifies a unique fully qualified path depending on disk type. This can be DASD-type, FCP-type, or NVMe-type disks.
+Specifies the location of the Ignition config file. Use master.ign or worker.ign. Only HTTP and HTTPS protocols are supported.
+Specifies the location of the rootfs artifact for the kernel and initramfs you are booting. Only HTTP and HTTPS protocols are supported.
+Specifies the root device. For installations on DASD-type disks, replace with rd.dasd=0.0.xxxx to specify the DASD device.
+
+[NOTE]
+----
+Write all options in the parameter file as a single line and make sure you have no newline characters.
+----
+
+## Configuring NBDE with static IP in an IBM Z or IBM LinuxONE environment
 
 Enabling NBDE disk encryption in an IBM Z&#174; or IBM&#174; LinuxONE environment requires additional steps, which are described in detail in this section.
 
@@ -610,7 +686,7 @@ The rootfs image is the same for FCP and DASD.
 * For coreos.live.rootfs_url=, specify the matching rootfs artifact for the kernel and initramfs you are booting. Only HTTP and HTTPS protocols are supported.
 * Optional: To enable secure boot, add coreos.inst.secure_ipl
 * For installations on DASD-type disks, complete the following tasks:
-1. For coreos.inst.install_dev=, specify /dev/dasda.
+1. For coreos.inst.install_dev=, specify /dev/disk/by-path/ccw-<device_id>. For <device_id> specify, for example, 0.0.1000.
 2. Use rd.dasd= to specify the DASD where RHCOS is to be installed.
 3. Leave all other parameters unchanged.
 
@@ -619,17 +695,16 @@ Example parameter file, bootstrap-0.parm, for the bootstrap machine:
 ```terminal
 cio_ignore=all,!condev rd.neednet=1 \
 console=ttysclp0 \
-coreos.inst.install_dev=/dev/<block_device> \1
+coreos.inst.install_dev=/dev/disk/by-id/scsi-<serial_number> \1
 coreos.inst.ignition_url=http://<http_server>/bootstrap.ign \2
 coreos.live.rootfs_url=http://<http_server>/rhcos-<version>-live-rootfs.<architecture>.img \3
 coreos.inst.secure_ipl \4
 ip=<ip>::<gateway>:<netmask>:<hostname>::none nameserver=<dns> \
 rd.znet=qeth,0.0.bdf0,0.0.bdf1,0.0.bdf2,layer2=1,portno=0 \
-rd.dasd=0.0.3490 \
-zfcp.allow_lun_scan=0
+rd.dasd=0.0.3490
 ```
 
-Specify the block device type. For installations on DASD-type disks, specify /dev/dasda. For installations on FCP-type disks, specify /dev/sda. For installations on NVMe-type disks, specify /dev/nvme0n1.
+Specify a unique fully qualified path depending on disk type. This can be either DASD-type, FCP-type, or NVMe-type disks.
 Specify the location of the Ignition config file. Use bootstrap.ign, master.ign, or worker.ign. Only HTTP and HTTPS protocols are supported.
 Specify the location of the rootfs artifact for the kernel and initramfs you are booting. Only HTTP and HTTPS protocols are supported.
 Optional: To enable secure boot, add coreos.inst.secure_ipl.
@@ -643,16 +718,23 @@ Write all options in the parameter file as a single line and make sure you have 
 When you install with multiple paths, you must enable multipathing directly after the installation, not at a later point in time, as this can cause problems.
 ----
 2. Set the install device as: coreos.inst.install_dev=/dev/disk/by-id/scsi-<serial_number>.
+4. Optional: Create a generic.ins file:
 
-[NOTE]
-----
-If additional LUNs are configured with NPIV, FCP requires zfcp.allow_lun_scan=0. If you must enable zfcp.allow_lun_scan=1 because you use a CSI driver, for example, you must configure your NPIV so that each node cannot access the boot partition of another node.
-----
-3. Leave all other parameters unchanged.
+Some installation methods also require a generic.ins file with a mapping of the location of the installation data in the file system of the Hardware Management Console (HMC), the DVD, or the FTP server and the memory locations where the data is to be copied. A sample generic.ins file is provided with the RHEL installation media. The file contains file names for the initial RAM disk (initrd.img), the kernel image (kernel.img), and the parameter (generic.prm) files and a memory location for each file.
+Example generic.ins file
+
+```terminal
+images/kernel.img 0x00000000
+images/initrd.img 0x02000000
+images/genericdvd.prm 0x00010480
+images/initrd.addrsize 0x00010408
+```
+
+5. Leave all other parameters unchanged.
 
 [IMPORTANT]
 ----
-Additional postinstallation steps are required to fully enable multipathing. For more information, see “Enabling multipathing with kernel arguments on RHCOS" in Postinstallation machine configuration tasks.
+Additional postinstallation steps are required to fully enable multipathing. For more information, see “Enabling multipathing with kernel arguments on RHCOS" in Machine configuration.
 ----
 
 The following is an example parameter file worker-1.parm for a compute node with multipathing:
@@ -668,15 +750,14 @@ rd.znet=qeth,0.0.bdf0,0.0.bdf1,0.0.bdf2,layer2=1,portno=0 \
 rd.zfcp=0.0.1987,0x50050763070bc5e3,0x4008400B00000000 \
 rd.zfcp=0.0.19C7,0x50050763070bc5e3,0x4008400B00000000 \
 rd.zfcp=0.0.1987,0x50050763071bc5e3,0x4008400B00000000 \
-rd.zfcp=0.0.19C7,0x50050763071bc5e3,0x4008400B00000000 \
-zfcp.allow_lun_scan=0
+rd.zfcp=0.0.19C7,0x50050763071bc5e3,0x4008400B00000000
 ```
 
 
 Write all options in the parameter file as a single line and make sure you have no newline characters.
-4. Transfer the initramfs, kernel, parameter files, and RHCOS images to the LPAR, for example with FTP. For details about how to transfer the files with FTP and boot, see Booting the installation on IBM Z(R) to install RHEL in an LPAR.
-5. Boot the machine
-6. Repeat this procedure for the other machines in the cluster.
+6. Transfer the initramfs, kernel, parameter files, and RHCOS images to the LPAR, for example with FTP. For details about how to transfer the files with FTP and boot, see Booting the installation on IBM Z(R) to install RHEL in an LPAR.
+7. Boot the machine
+8. Repeat this procedure for the other machines in the cluster.
 
 ## Advanced RHCOS installation reference
 
@@ -1474,10 +1555,9 @@ sudo shutdown -h
 6. When the node is back, check the secure boot status again.
 
 * How to generate SOSREPORT within Red Hat OpenShift Container Platform version 4 nodes without SSH
+* Image configuration resources (Classic)
+* Opting out of remote health reporting
 
 # Next steps
 
-* Customize your cluster.
-* If the mirror registry that you used to install your cluster has a trusted CA, add it to the cluster by configuring additional trust stores.
-* If necessary, you can opt out of remote health reporting.
-* If necessary, see Registering your disconnected cluster
+* Customize your cluster
