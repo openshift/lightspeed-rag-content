@@ -1,4 +1,4 @@
-ARG BYOK_TOOL_IMAGE=quay.io/$USERNAME/tool:latest
+ARG BYOK_TOOL_IMAGE=registry.redhat.io/lightspeed-rag-tool-tech-preview/lightspeed-rag-tool-rhel9:latest
 ARG UBI_BASE_IMAGE=registry.access.redhat.com/ubi9/ubi:latest
 ARG HERMETIC=false
 FROM ${UBI_BASE_IMAGE}
@@ -17,12 +17,36 @@ COPY requirements.gpu.txt .
 RUN pip3.11 install --no-cache-dir --no-deps -r requirements.gpu.txt
 
 COPY embeddings_model ./embeddings_model
-RUN cd embeddings_model; if [ "$HERMETIC" == "true" ] && [ ! -f embeddings_model/model.safetensors ]; then \
-        cp /cachi2/output/deps/generic/model.safetensors model.safetensors; \
-    elif [ ! -f embeddings_model/model.safetensors ]; then \
-        curl -L -O https://huggingface.co/sentence-transformers/all-mpnet-base-v2/resolve/9a3225965996d404b775526de6dbfe85d3368642/model.safetensors; \
+ENV HERMETIC=$HERMETIC
+RUN cd embeddings_model; \
+    if [ ! -f embeddings_model/model.safetensors ]; then \
+        if [ "$HERMETIC" == "true" ]; then \
+            cp /cachi2/output/deps/generic/model.safetensors model.safetensors; \
+        else \
+            curl -L -O https://huggingface.co/sentence-transformers/all-mpnet-base-v2/resolve/9a3225965996d404b775526de6dbfe85d3368642/model.safetensors; \
+        fi \
     fi
 COPY byok/generate_embeddings_tool.py byok/Containerfile.output ./
+
+# this directory is checked by ecosystem-cert-preflight-checks task in Konflux
+RUN mkdir /licenses
+COPY LICENSE /licenses/
+
+# Labels for enterprise contract
+LABEL com.redhat.component=openshift-lightspeed-rag-content
+LABEL description="Red Hat OpenShift Lightspeed BYO Knowledge Tools"
+LABEL distribution-scope=private
+LABEL io.k8s.description="Red Hat OpenShift Lightspeed BYO Knowledge Tools"
+LABEL io.k8s.display-name="Openshift Lightspeed BYO Knowledge Tools"
+LABEL io.openshift.tags="openshift,lightspeed,ai,assistant,rag"
+LABEL name=openshift-lightspeed-rag-content
+LABEL release=0.0.1
+LABEL url="https://github.com/openshift/lightspeed-rag-content"
+LABEL vendor="Red Hat, Inc."
+LABEL version=0.0.1
+LABEL summary="Red Hat OpenShift Lightspeed BYO Knowledge Tools"
+
+USER 65532:65532
 
 ENV _BUILDAH_STARTED_IN_USERNS=""
 ENV BUILDAH_ISOLATION=chroot
