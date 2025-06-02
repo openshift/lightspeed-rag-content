@@ -95,161 +95,6 @@ Pull From: quay.io/openshift-release-dev/ocp-release@sha256:69d1292f64a2b67227c5
 ```
 
 
-# Configuring the hypervisor for a disconnected installation of hosted control planes
-
-The following information applies to virtual machine environments only.
-
-1. To deploy a virtual management cluster, access the required packages by entering the following command:
-
-```terminal
-$ sudo dnf install dnsmasq radvd vim golang podman bind-utils \
-  net-tools httpd-tools tree htop strace tmux -y
-```
-
-2. Enable and start the Podman service by entering the following command:
-
-```terminal
-$ systemctl enable --now podman
-```
-
-3. To use kcli to deploy the management cluster and other virtual components, install and configure the hypervisor by entering the following commands:
-
-```terminal
-$ sudo yum -y install libvirt libvirt-daemon-driver-qemu qemu-kvm
-```
-
-
-```terminal
-$ sudo usermod -aG qemu,libvirt $(id -un)
-```
-
-
-```terminal
-$ sudo newgrp libvirt
-```
-
-
-```terminal
-$ sudo systemctl enable --now libvirtd
-```
-
-
-```terminal
-$ sudo dnf -y copr enable karmab/kcli
-```
-
-
-```terminal
-$ sudo dnf -y install kcli
-```
-
-
-```terminal
-$ sudo kcli create pool -p /var/lib/libvirt/images default
-```
-
-
-```terminal
-$ kcli create host kvm -H 127.0.0.1 local
-```
-
-
-```terminal
-$ sudo setfacl -m u:$(id -un):rwx /var/lib/libvirt/images
-```
-
-
-```terminal
-$ kcli create network  -c 192.168.122.0/24 default
-```
-
-4. Enable the network manager dispatcher to ensure that virtual machines can resolve the required domains, routes, and registries. To enable the network manager dispatcher, in the /etc/NetworkManager/dispatcher.d/ directory, create a script named forcedns that contains the following content:
-
-```bash
-#!/bin/bash
-
-export IP="192.168.126.1" 1
-export BASE_RESOLV_CONF="/run/NetworkManager/resolv.conf"
-
-if ! [[ `grep -q "$IP" /etc/resolv.conf` ]]; then
-export TMP_FILE=$(mktemp /etc/forcedns_resolv.conf.XXXXXX)
-cp $BASE_RESOLV_CONF $TMP_FILE
-chmod --reference=$BASE_RESOLV_CONF $TMP_FILE
-sed -i -e "s/dns.base.domain.name//" \
-       -e "s/search /& dns.base.domain.name /" \
-       -e "0,/nameserver/s/nameserver/& $IP\n&/" $TMP_FILE 2
-mv $TMP_FILE /etc/resolv.conf
-fi
-echo "ok"
-```
-
-Modify the IP variable to point to the IP address of the hypervisor interface that hosts the Red Hat OpenShift Container Platform management cluster.
-Replace dns.base.domain.name with the DNS base domain name.
-5. After you create the file, add permissions by entering the following command:
-
-```terminal
-$ chmod 755 /etc/NetworkManager/dispatcher.d/forcedns
-```
-
-6. Run the script and verify that the output returns ok.
-7. Configure ksushy to simulate baseboard management controllers (BMCs) for the virtual machines. Enter the following commands:
-
-```terminal
-$ sudo dnf install python3-pyOpenSSL.noarch python3-cherrypy -y
-```
-
-
-```terminal
-$ kcli create sushy-service --ssl --ipv6 --port 9000
-```
-
-
-```terminal
-$ sudo systemctl daemon-reload
-```
-
-
-```terminal
-$ systemctl enable --now ksushy
-```
-
-8. Test whether the service is correctly functioning by entering the following command:
-
-```terminal
-$ systemctl status ksushy
-```
-
-9. If you are working in a development environment, configure the hypervisor system to allow various types of connections through different virtual networks within the environment.
-
-[NOTE]
-----
-If you are working in a production environment, you must establish proper rules for the firewalld service and configure SELinux policies to maintain a secure environment.
-----
-* For SELinux, enter the following command:
-
-```terminal
-$ sed -i s/^SELINUX=.*$/SELINUX=permissive/ /etc/selinux/config; \
-  setenforce 0
-```
-
-* For firewalld, enter the following command:
-
-```terminal
-$ systemctl disable --now firewalld
-```
-
-* For libvirtd, enter the following commands:
-
-```terminal
-$ systemctl restart libvirtd
-```
-
-
-```terminal
-$ systemctl enable --now libvirtd
-```
-
-
 # DNS configurations on bare metal
 
 The API Server for the hosted cluster is exposed as a NodePort service. A DNS entry must exist for api.<hosted_cluster_name>.<base_domain> that points to destination where the API Server can be reached.
@@ -416,134 +261,24 @@ The root folder for the registry is in the /opt/registry directory and contains 
 
 # Setting up a management cluster for hosted control planes in a disconnected environment
 
-To set up an Red Hat OpenShift Container Platform management cluster, you can use dev-scripts, or if you are based on virtual machines, you can use the kcli tool. The following instructions are specific to the kcli tool.
+To set up an Red Hat OpenShift Container Platform management cluster, you need to ensure that the multicluster engine for Kubernetes Operator is installed. The multicluster engine Operator plays a crucial role in deploying clusters across providers.
 
-1. Ensure that the right networks are prepared for use in the hypervisor. The networks will host both the management and hosted clusters. Enter the following kcli command:
+* There must be bidirectional connectivity between the management cluster and the Baseboard Management Controller (BMC) of the target Bare Metal Host (BMH). As an alternative, you follow a Boot It Yourself approach through the Agent provider.
+* The hosted cluster must be able to resolve and reach the API hostname of the management cluster hostname and *.apps hostname. Here is an example of the API hostname of the management cluster and *.apps hostname:
+* api.management-cluster.internal.domain.com
+* console-openshift-console.apps.management-cluster.internal.domain.com
+* The management cluster must be able to resolve and reach the API and *.apps hostname of the hosted cluster. Here is an example of the API hostname of the hosted cluster and *.apps hostname:
+* api.sno-hosted-cluster-1.internal.domain.com
+* console-openshift-console.apps.sno-hosted-cluster-1.internal.domain.com
 
-```terminal
-$ kcli create network -c 192.168.126.0/24 -P dhcp=false -P dns=false \
-  -d 2620:52:0:1306::0/64 --domain dns.base.domain.name --nodhcp dual
-```
-
-
-where:
-* -c specifies the CIDR for the network.
-* -P dhcp=false configures the network to disable the DHCP, which is handled by the dnsmasq that you configured.
-* -P dns=false configures the network to disable the DNS, which is also handled by the dnsmasq that you configured.
-* --domain sets the domain to search.
-* dns.base.domain.name is the DNS base domain name.
-* dual is the name of the network that you are creating.
-2. After the network is created, review the following output:
-
-```terminal
-[root@hypershiftbm ~]# kcli list network
-Listing Networks...
-+---------+--------+---------------------+-------+------------------+------+
-| Network |  Type  |         Cidr        |  Dhcp |      Domain      | Mode |
-+---------+--------+---------------------+-------+------------------+------+
-| default | routed |   192.168.122.0/24  |  True |     default      | nat  |
-| ipv4    | routed | 2620:52:0:1306::/64 | False | dns.base.domain.name | nat  |
-| ipv4    | routed |   192.168.125.0/24  | False | dns.base.domain.name | nat  |
-| ipv6    | routed | 2620:52:0:1305::/64 | False | dns.base.domain.name | nat  |
-+---------+--------+---------------------+-------+------------------+------+
-```
-
-
-```terminal
-[root@hypershiftbm ~]# kcli info network ipv6
-Providing information about network ipv6...
-cidr: 2620:52:0:1306::/64
-dhcp: false
-domain: dns.base.domain.name
-mode: nat
-plan: kvirt
-type: routed
-```
-
-3. Ensure that the pull secret and kcli plan files are in place so that you can deploy the Red Hat OpenShift Container Platform management cluster:
-1. Confirm that the pull secret is in the same folder as the kcli plan, and that the pull secret file is named openshift_pull.json.
-2. Add the kcli plan, which contains the Red Hat OpenShift Container Platform definition, in the mgmt-compact-hub-dual.yaml file. Ensure that you update the file contents to match your environment:
-
-```yaml
-plan: hub-dual
-force: true
-version: stable
-tag: "<4.x.y>-x86_64" 1
-cluster: "hub-dual"
-dualstack: true
-domain: dns.base.domain.name
-api_ip: 192.168.126.10
-ingress_ip: 192.168.126.11
-service_networks:
-- 172.30.0.0/16
-- fd02::/112
-cluster_networks:
-- 10.132.0.0/14
-- fd01::/48
-disconnected_url: registry.dns.base.domain.name:5000
-disconnected_update: true
-disconnected_user: dummy
-disconnected_password: dummy
-disconnected_operators_version: v4.14
-disconnected_operators:
-- name: metallb-operator
-- name: lvms-operator
-  channels:
-  - name: stable-4.14
-disconnected_extra_images:
-- quay.io/user-name/trbsht:latest
-- quay.io/user-name/hypershift:BMSelfManage-v4.14-rc-v3
-- registry.redhat.io/openshift4/ose-kube-rbac-proxy:v4.10
-dualstack: true
-disk_size: 200
-extra_disks: [200]
-memory: 48000
-numcpus: 16
-ctlplanes: 3
-workers: 0
-manifests: extra-manifests
-metal3: true
-network: dual
-users_dev: developer
-users_devpassword: developer
-users_admin: admin
-users_adminpassword: admin
-metallb_pool: dual-virtual-network
-metallb_ranges:
-- 192.168.126.150-192.168.126.190
-metallb_autoassign: true
-apps:
-- users
-- lvms-operator
-- metallb-operator
-vmrules:
-- hub-bootstrap:
-    nets:
-    - name: ipv6
-      mac: aa:aa:aa:aa:10:07
-- hub-ctlplane-0:
-    nets:
-    - name: ipv6
-      mac: aa:aa:aa:aa:10:01
-- hub-ctlplane-1:
-    nets:
-    - name: ipv6
-      mac: aa:aa:aa:aa:10:02
-- hub-ctlplane-2:
-    nets:
-    - name: ipv6
-      mac: aa:aa:aa:aa:10:03
-```
-
-Replace <4.x.y> with the supported Red Hat OpenShift Container Platform version you want to use.
-4. To provision the management cluster, enter the following command:
-
-```terminal
-$ kcli create cluster openshift --pf mgmt-compact-hub-dual.yaml
-```
-
+1. Install multicluster engine Operator 2.4 or later on an Red Hat OpenShift Container Platform cluster. You can install multicluster engine Operator as an Operator from the Red Hat OpenShift Container Platform OperatorHub. The HyperShift Operator is included with multicluster engine Operator. For more information about installing multicluster engine Operator, see "Installing and upgrading multicluster engine operator" in the Red Hat Advanced Cluster Management documentation.
+2. Ensure that the HyperShift Operator is installed. The HyperShift Operator is automatically included with multicluster engine Operator, but if you need to manually install it, follow the steps in "Manually enabling the hypershift-addon managed cluster add-on for local-cluster".
 
 Next, configure the web server.
+
+* Installing and upgrading multicluster engine operator
+* Manually enabling the hypershift-addon managed cluster add-on for local-cluster
+* About cluster lifecycle with multicluster engine operator
 
 # Configuring the web server for hosted control planes in a disconnected environment
 
@@ -614,17 +349,6 @@ mirror:
       type: ocp
     kubeVirtContainer: true 2
     graph: true
-  additionalImages: 3
-  - name: quay.io/karmab/origin-keepalived-ipfailover:latest
-  - name: quay.io/karmab/kubectl:latest
-  - name: quay.io/karmab/haproxy:latest
-  - name: quay.io/karmab/mdns-publisher:latest
-  - name: quay.io/karmab/origin-coredns:latest
-  - name: quay.io/karmab/curl:latest
-  - name: quay.io/karmab/kcli:latest
-  - name: quay.io/user-name/trbsht:latest
-  - name: quay.io/user-name/hypershift:BMSelfManage-v4.17
-  - name: registry.redhat.io/openshift4/ose-kube-rbac-proxy:v4.10
   operators:
   - catalog: registry.redhat.io/redhat/redhat-operator-index:v4.17
     packages:
@@ -635,12 +359,11 @@ mirror:
     - name: mcg-operator
     - name: ocs-operator
     - name: metallb-operator
-    - name: kubevirt-hyperconverged 4
+    - name: kubevirt-hyperconverged 3
 ```
 
 Replace <4.x.y-build> with the supported Red Hat OpenShift Container Platform version you want to use.
 Set this optional flag to true if you want to also mirror the container disk image for the Red Hat Enterprise Linux CoreOS (RHCOS) boot image for the KubeVirt provider. This flag is available with oc-mirror v2 only.
-Images specified in the additionalImages field are examples only and are not strictly needed.
 For deployments that use the KubeVirt provider, include this line.
 3. Start the mirroring process by entering the following command:
 
@@ -742,16 +465,9 @@ In this case, the image stream is not created, and you must update the value of 
 
 Deploy the multicluster engine Operator by completing the steps in Deploying multicluster engine Operator for a disconnected installation of hosted control planes.
 
-* Mirroring images for a disconnected installation using the oc-mirror plugin.
+* Mirroring images for a disconnected installation using the oc-mirror plugin
 
-# Deploying multicluster engine Operator for a disconnected installation of hosted control planes
-
-The multicluster engine for Kubernetes Operator plays a crucial role in deploying clusters across providers. If you do not have multicluster engine Operator installed, review the following documentation to understand the prerequisites and steps to install it:
-
-* About cluster lifecycle with multicluster engine operator
-* Installing and upgrading multicluster engine operator
-
-## Deploying AgentServiceConfig resources
+# Deploying AgentServiceConfig resources
 
 The AgentServiceConfig custom resource is an essential component of the Assisted Service add-on that is part of multicluster engine Operator. It is responsible for bare metal cluster deployment. When the add-on is enabled, you deploy the AgentServiceConfig resource to configure the add-on.
 
@@ -858,7 +574,7 @@ assisted-service-668b49548-9m7xw                       2/2     Running   5      
 The assisted-image-service pod is responsible for creating the Red Hat Enterprise Linux CoreOS (RHCOS) boot image template, which is customized for each cluster that you deploy.
 The assisted-service refers to the Operator.
 
-Configure TLS certificates by completing the steps in Configuring TLS certificates for a disconnected installation of hosted control planes.
+Configure TLS certificates.
 
 # Configuring TLS certificates for a disconnected installation of hosted control planes
 
@@ -1309,113 +1025,16 @@ clusters-hosted-dual   hosted   2023-09-11T15:14:10Z
 ```
 
 
-## Creating worker nodes for the hosted cluster
-
-If you are working on a bare metal platform, creating worker nodes is crucial to ensure that the details in the BareMetalHost are correctly configured.
-
-If you are working with virtual machines, you can complete the following steps to create empty worker nodes for the Metal3 Operator to consume. To do so, you use the kcli tool.
-
-1. If this is not your first attempt to create worker nodes, you must first delete your previous setup. To do so, delete the plan by entering the following command:
-
-```terminal
-$ kcli delete plan <hosted_cluster_name> 1
-```
-
-Replace <hosted_cluster_name> with the name of your hosted cluster.
-1. When you are prompted to confirm whether you want to delete the plan, type y.
-2. Confirm that you see a message stating that the plan was deleted.
-2. Create the virtual machines by entering the following commands:
-1. Enter the following command to create the first virtual machine:
-
-```terminal
-$ kcli create vm \
-  -P start=False \1
-  -P uefi_legacy=true \2
-  -P plan=<hosted_cluster_name> \3
-  -P memory=8192 -P numcpus=16 \4
-  -P disks=[200,200] \5
-  -P nets=["{\"name\": \"<network>\", \"mac\": \"aa:aa:aa:aa:11:01\"}"] \6
-  -P uuid=aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaa1101 \
-  -P name=<hosted_cluster_name>-worker0 7
-```
-
-Include start=False if you do not want the virtual machine (VM) to automatically start upon creation.
-Include uefi_legacy=true to indicate that you will use UEFI legacy boot to ensure compatibility with previous UEFI implementations.
-Replace <hosted_cluster_name> with the name of your hosted cluster. The plan=<hosted_cluster_name> statement indicates the plan name, which identifies a group of machines as a cluster.
-Include the memory=8192 and numcpus=16 parameters to specify the resources for the VM, including the RAM and CPU.
-Include disks=[200,200] to indicate that you are creating two thin-provisioned disks in the VM.
-Include nets=[{"name": "<network>", "mac": "aa:aa:aa:aa:02:13"}] to provide network details, including the network name to connect to, the type of network (ipv4, ipv6, or dual), and the MAC address of the primary interface.
-Replace <hosted_cluster_name> with the name of your hosted cluster.
-2. Enter the following command to create the second virtual machine:
-
-```terminal
-$ kcli create vm \
-  -P start=False \1
-  -P uefi_legacy=true \2
-  -P plan=<hosted_cluster_name> \3
-  -P memory=8192 -P numcpus=16 \4
-  -P disks=[200,200] \5
-  -P nets=["{\"name\": \"<network>\", \"mac\": \"aa:aa:aa:aa:11:02\"}"] \6
-  -P uuid=aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaa1102
-  -P name=<hosted_cluster_name>-worker1 7
-```
-
-Include start=False if you do not want the virtual machine (VM) to automatically start upon creation.
-Include uefi_legacy=true to indicate that you will use UEFI legacy boot to ensure compatibility with previous UEFI implementations.
-Replace <hosted_cluster_name> with the name of your hosted cluster. The plan=<hosted_cluster_name> statement indicates the plan name, which identifies a group of machines as a cluster.
-Include the memory=8192 and numcpus=16 parameters to specify the resources for the VM, including the RAM and CPU.
-Include disks=[200,200] to indicate that you are creating two thin-provisioned disks in the VM.
-Include nets=[{"name": "<network>", "mac": "aa:aa:aa:aa:02:13"}] to provide network details, including the network name to connect to, the type of network (ipv4, ipv6, or dual), and the MAC address of the primary interface.
-Replace <hosted_cluster_name> with the name of your hosted cluster.
-3. Enter the following command to create the third virtual machine:
-
-```terminal
-$ kcli create vm \
-  -P start=False \1
-  -P uefi_legacy=true \2
-  -P plan=<hosted_cluster_name> \3
-  -P memory=8192 -P numcpus=16 \4
-  -P disks=[200,200] \5
-  -P nets=["{\"name\": \"<network>\", \"mac\": \"aa:aa:aa:aa:11:03\"}"] \6
-  -P uuid=aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaa1103
-  -P name=<hosted_cluster_name>-worker2 7
-```
-
-Include start=False if you do not want the virtual machine (VM) to automatically start upon creation.
-Include uefi_legacy=true to indicate that you will use UEFI legacy boot to ensure compatibility with previous UEFI implementations.
-Replace <hosted_cluster_name> with the name of your hosted cluster. The plan=<hosted_cluster_name> statement indicates the plan name, which identifies a group of machines as a cluster.
-Include the memory=8192 and numcpus=16 parameters to specify the resources for the VM, including the RAM and CPU.
-Include disks=[200,200] to indicate that you are creating two thin-provisioned disks in the VM.
-Include nets=[{"name": "<network>", "mac": "aa:aa:aa:aa:02:13"}] to provide network details, including the network name to connect to, the type of network (ipv4, ipv6, or dual), and the MAC address of the primary interface.
-Replace <hosted_cluster_name> with the name of your hosted cluster.
-3. Enter the restart ksushy command to restart the ksushy tool to ensure that the tool detects the VMs that you added:
-
-```terminal
-$ systemctl restart ksushy
-```
-
-Example output
-
-```terminal
-+---------------------+--------+-------------------+----------------------------------------------------+-------------+---------+
-|         Name        | Status |         Ip        |                       Source                       |     Plan    | Profile |
-+---------------------+--------+-------------------+----------------------------------------------------+-------------+---------+
-|    hosted-worker0   |  down  |                   |                                                    | hosted-dual |  kvirt  |
-|    hosted-worker1   |  down  |                   |                                                    | hosted-dual |  kvirt  |
-|    hosted-worker2   |  down  |                   |                                                    | hosted-dual |  kvirt  |
-+---------------------+--------+-------------------+----------------------------------------------------+-------------+---------+
-```
-
-
 ## Creating bare metal hosts for the hosted cluster
 
 A bare metal host is an openshift-machine-api object that encompasses physical and logical details so that it can be identified by a Metal3 Operator. Those details are associated with other Assisted Service objects, known as agents.
 
-Before you create the bare metal host and destination nodes, you must have the destination machines ready.
+* Before you create the bare metal host and destination nodes, you must have the destination machines ready.
+* You have installed a Red Hat Enterprise Linux CoreOS (RHCOS) compute machine on bare-metal infrastructure for use in the cluster.
 
 To create a bare metal host, complete the following steps:
 
-1. Create a YAML file with the following information:
+1. Create a YAML file with the following information. For more information about what details to enter for the bare metal host, see "Provisioning new hosts in a user-provisioned cluster by using the BMO".
 
 Because you have at least one secret that holds the bare metal host credentials, you need to create at least two objects for each worker node.
 
@@ -1423,30 +1042,30 @@ Because you have at least one secret that holds the bare metal host credentials,
 apiVersion: v1
 kind: Secret
 metadata:
-  name: <hosted_cluster_name>-worker0-bmc-secret \1
-  namespace: <hosted_cluster_namespace>-<hosted_cluster_name> \2
+  name: <hosted_cluster_name>-worker0-bmc-secret 1
+  namespace: <hosted_cluster_namespace>-<hosted_cluster_name> 2
 data:
-  password: YWRtaW4= \3
-  username: YWRtaW4= \4
+  password: YWRtaW4= 3
+  username: YWRtaW4= 4
 type: Opaque
 # ...
 apiVersion: metal3.io/v1alpha1
 kind: BareMetalHost
 metadata:
   name: <hosted_cluster_name>-worker0
-  namespace: <hosted_cluster_namespace>-<hosted_cluster_name> \2
+  namespace: <hosted_cluster_namespace>-<hosted_cluster_name> 2
   labels:
-    infraenvs.agent-install.openshift.io: <hosted_cluster_name> \5
+    infraenvs.agent-install.openshift.io: <hosted_cluster_name> 5
   annotations:
     inspect.metal3.io: disabled
-    bmac.agent-install.openshift.io/hostname: <hosted_cluster_name>-worker0 \6
+    bmac.agent-install.openshift.io/hostname: <hosted_cluster_name>-worker0 6
 spec:
-  automatedCleaningMode: disabled \7
+  automatedCleaningMode: disabled 7
   bmc:
-    disableCertificateVerification: true \8
-    address: redfish-virtualmedia://[192.168.126.1]:9000/redfish/v1/Systems/local/<hosted_cluster_name>-worker0 \9
-    credentialsName: <hosted_cluster_name>-worker0-bmc-secret \10
-  bootMACAddress: aa:aa:aa:aa:02:11 \11
+    disableCertificateVerification: true 8
+    address: redfish-virtualmedia://[192.168.126.1]:9000/redfish/v1/Systems/local/<hosted_cluster_name>-worker0 9
+    credentialsName: <hosted_cluster_name>-worker0-bmc-secret 10
+  bootMACAddress: aa:aa:aa:aa:02:11 11
   online: true 12
 ```
 
@@ -1512,6 +1131,8 @@ clusters-hosted   aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaa0413             true       au
 
 
 The agents represent nodes that are available for installation. To assign the nodes to a hosted cluster, scale up the node pool.
+
+* Provisioning new hosts in a user-provisioned cluster by using the BMO
 
 ## Scaling up the node pool
 
