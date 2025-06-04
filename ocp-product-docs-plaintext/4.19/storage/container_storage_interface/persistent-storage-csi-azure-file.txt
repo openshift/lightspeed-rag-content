@@ -20,6 +20,12 @@ Azure File CSI Driver Operator does not support:
 
 For more information about supported features, see Supported CSI drivers and features.
 
+# About CSI
+
+Storage vendors have traditionally provided storage drivers as part of Kubernetes. With the implementation of the Container Storage Interface (CSI), third-party providers can instead deliver storage plugins using a standard interface without ever having to change the core Kubernetes code.
+
+CSI Operators give Red Hat OpenShift Container Platform users storage options, such as volume snapshots, that are not possible with in-tree volume plugins.
+
 # NFS support
 
 Red Hat OpenShift Container Platform 4.14, and later, supports Azure File Container Storage Interface (CSI) Driver Operator with  Network File System (NFS) with the following caveats:
@@ -52,11 +58,203 @@ Storage class name.
 Specifies the Azure File CSI provider.
 Specifies NFS as the storage backend protocol.
 
-# About CSI
+# Azure File cross-subscription support
 
-Storage vendors have traditionally provided storage drivers as part of Kubernetes. With the implementation of the Container Storage Interface (CSI), third-party providers can instead deliver storage plugins using a standard interface without ever having to change the core Kubernetes code.
+Cross-subscription support allows you to have an Red Hat OpenShift Container Platform cluster in one Azure subscription and mount your Azure file share in another Azure subscription by using the Azure File Container Storage Interface (CSI) driver.
 
-CSI Operators give Red Hat OpenShift Container Platform users storage options, such as volume snapshots, that are not possible with in-tree volume plugins.
+
+[IMPORTANT]
+----
+Both the Red Hat OpenShift Container Platform cluster and the Azure File share (pre-provisioning or to be provisioned) should be inside the same tenant.
+----
+
+## Dynamic provisioning across subscriptions for Azure File
+
+* Installed Red Hat OpenShift Container Platform cluster on Azure with the service principal or managed identity as an Azure identity in one subscription (call it Subscription A)
+* Access to another subscription (call it Subscription B) with the storage that is in the same tenant as the cluster
+* Logged in to the Azure CLI
+
+To use Azure File dynamic provisioning across subscriptions:
+
+1. Record the Azure identity (service principal or managed identity) by running the following applicable commands. The Azure identity is needed in a later step:
+* If using the service principal as the Azure identity when installing the cluster:
+
+```terminal
+$ sp_id=$(oc -n openshift-cluster-csi-drivers get secret azure-file-credentials -o jsonpath='{.data.azure_client_id}' | base64 --decode)
+
+$ az ad sp show --id ${sp_id} --query displayName --output tsv
+```
+
+* If using the managed identity as the Azure identity when installing the cluster:
+
+```terminal
+$ mi_id=$(oc -n openshift-cluster-csi-drivers get secret azure-file-credentials -o jsonpath='{.data.azure_client_id}' | base64 --decode)
+
+$ az identity list --query "[?clientId=='${mi_id}'].{Name:name}" --output tsv
+```
+
+2. Grant the Azure identity (service principal or managed identity) permission to access the resource group in another Subscription B where you want to provision the Azure File share by doing one of the following:
+* Run the following Azure CLI command:
+
+```terminal
+az role assignment create \
+  --assignee <object-id-or-app-id> \
+  --role <role-name> \
+  --scope /subscriptions/<subscription-id>/resourceGroups/<resource-group>/providers/Microsoft.Storage/storageAccounts/<storage-account-name>
+```
+
+
+Where:
+
+<object-id-or-app-id>: The service principal or managed identity that you obtained from the previous step, such as sp_id or mi_id.
+
+<role-name>: Role name. Contributor or your own role with required permissions.
+
+<subscription-id>: Subscription B ID.
+
+<resource-group-name>: Subscription B resource group name.
+
+Or
+* Log in to the Azure portal and on the left menu, click Resource groups:
+1. Choose the resource group in Subscription B to which you want to assign a role by clicking resource group -> Access control (IAM) -> Role assignments tab to view current assignments, and then click Add > Add role assignment.
+2. On the Role tab, choose the contributor role to assign, and then click Next. You can also create and choose your own role with required permission.
+3. On the Members tab:
+1. Choose an assignee by selecting the type of assignee: user, group, or service principal (or managed identity).
+2. Click Select members.
+3. Search for, and then select the desired service principal or managed identity recorded in the previous step.
+4. Click Select to confirm.
+4. On the Review + assign tab, review the settings.
+5. To finish the role assignment, click Review + assign.
+
+[NOTE]
+----
+If you only want to use a specific storage account to provision the Azure File share, you can also obtain the Azure identity (service principal or managed identity) permission to access the storage account by using similar steps.
+----
+3. Create an Azure File storage class by using a similar configuration to the following:
+Example Azure File storage class YAML file
+
+```yaml
+allowVolumeExpansion: true
+apiVersion: storage.k8s.io/v1
+kind: StorageClass
+metadata:
+  name: <sc-name> 1
+mount options:
+  - mfsymlinks
+  - cache=strict
+  - nosharesock
+  - actimeo=30
+parameters:
+  subscriptionID: <xxxx-xxxx-xxxx-xxxx-xxxx> 2
+  resourceGroup: <resource group name> 3
+  storageAccount: <storage account> 4
+  skuName: <skuName> 5
+provisioner: file.csi.azure.com
+reclaimPolicy: Delete
+volumeBindingMode: Immediate
+```
+
+The name of the storage class
+The subscription B ID
+The Subscription B resource group name
+The storage account name, if you want to specify your own
+The name of the SKU type
+4. Create a persistent volume claim (PVC) that specifies the Azure File storage class that you created in the previous step by using a similar configuration to the following:
+Example PVC YAML file
+
+```yaml
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: <pvc-name> 1
+spec:
+  storageClassName: <sc-name-cross-sub> 2
+  accessModes:
+    - ReadWriteMany
+  resources:
+    requests:
+      storage: 5Gi
+```
+
+The name of the PVC.
+The name of the storage class that you created in the previous step.
+
+## Static provisioning across subscriptions for Azure File by creating a PV and PVC:
+
+* Installed Red Hat OpenShift Container Platform cluster on Azure with the service principal or managed identity as an Azure identity in one subscription (call it Subscription A)
+* Access to another subscription (call it Subscription B) with the storage that is in the same tenant as the cluster
+* Logged in to the Azure CLI
+
+1. For your Azure File share, record the resource group, storage account, storage account key, and Azure File name. These values are used for the next steps.
+2. Create a secret for the persistent volume parameter spec.csi.nodeStageSecretRef.name by running the following command:
+
+```terminal
+$ oc create secret generic azure-storage-account-<storageaccount-name>-secret --from-literal=azurestorageaccountname="<azure-storage-account-name>" --from-literal azurestorageaccountkey="<azure-storage-account-key>" --type=Opaque
+```
+
+
+Where:
+<azure-storage-account-name> and <azure-storage-account-key> are the Azure storage account name and key respectively that you recorded in Step 1.
+3. Create a persistent volume (PV) by using a similar configuration to the following example file:
+Example PV YAML file
+
+```terminal
+apiVersion: v1
+kind: PersistentVolume
+metadata:
+  annotations:
+    pv.kubernetes.io/provisioned-by: file.csi.azure.com
+  name: <pv-name> 1
+spec:
+  capacity:
+    storage: 10Gi 2
+  accessModes:
+    - ReadWriteMany
+  persistentVolumeReclaimPolicy: Retain
+  storageClassName: <sc-name> 3
+  mountOptions:
+    - cache=strict
+    - nosharesock
+    - actimeo=30
+    - nobrl
+  csi:
+    driver: file.csi.azure.com
+    volumeHandle: "{resource-group-name}#{storage-account-name}#{file-share-name}" 4
+    volumeAttributes:
+      shareName: <existing-file-share-name> 5
+    nodeStageSecretRef:
+      name: <secret-name>  6
+      namespace: <secret-namespace>  7
+```
+
+The name of the PV.
+The size of the PV.
+The storage class name.
+Ensure that volumeHandle is unique for every identical share in the cluster.
+For `<existing-file-share-name>, use only the file share name and not the full path.
+The secret name created in the previous step.
+The namespace where the secret resides.
+4. Create a persistent value claim (PVC) specifying the existing Azure File share referenced in Step 1 using a similar configuration to the following:
+Example PVC YAML file
+
+```yaml
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: <pvc-name> 1
+spec:
+  storageClassName: <sc-name> 2
+  accessModes:
+    - ReadWriteMany
+  resources:
+    requests:
+      storage: 5Gi
+```
+
+The name of the PVC.
+The name of the storage class that you specified for the PV in the previous step.
+
+In the preceding example of static provisioning across subscriptions, the storage class referenced in the PV and PVC is not strictly necessary, as storage classes are not required to accomplish static provisioning. However, it is advisable to use a storage class to avoid cases where a manually created PVC accidentally does not match a manually created PV, and thus potentially triggers dynamic provisioning of a new PV. Other ways to avoid this issue would be to create a storage class with provisioner: kubernetes.io/no-provisioner or reference a non-existing storage class, which in both cases ensures that dynamic provisioning does not occur. When using either of these strategies, if a mis-matched PV and PVC occurs, the PVC stays in a pending state, and you can correct the error.
 
 * Persistent storage using Azure File
 * Configuring CSI volumes

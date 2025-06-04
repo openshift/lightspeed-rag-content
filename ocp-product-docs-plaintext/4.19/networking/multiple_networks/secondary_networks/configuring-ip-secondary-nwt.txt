@@ -110,19 +110,19 @@ The following JSON example describes the configuration p for dynamic IP address 
 
 ## Dynamic IP address assignment configuration with Whereabouts
 
-The Whereabouts CNI plugin allows the dynamic assignment of an IP address to a secondary network without the use of a DHCP server.
+The Whereabouts CNI plugin helps the dynamic assignment of an IP address to a secondary network without the use of a DHCP server.
 
 The Whereabouts CNI plugin also supports overlapping IP address ranges and configuration of the same CIDR range multiple times within separate NetworkAttachmentDefinition CRDs. This provides greater flexibility and management capabilities in multi-tenant environments.
 
-### Dynamic IP address configuration objects
+### Dynamic IP address configuration parameters
 
 The following table describes the configuration objects for dynamic IP address assignment with Whereabouts:
 
 
 
-### Dynamic IP address assignment configuration that uses Whereabouts
+### Dynamic IP address assignment configuration with Whereabouts that excludes IP address ranges
 
-The following example shows a dynamic address assignment configuration that uses Whereabouts:
+The following example shows a dynamic address assignment configuration in a NAD file that uses Whereabouts:
 
 
 ```json
@@ -301,6 +301,160 @@ Example output
 2024-02-02T16:45:00Z [debug] listing IP pools
 2024-02-02T16:45:00Z [debug] no IP addresses to cleanup
 2024-02-02T16:45:00Z [verbose] reconciler success
+```
+
+
+## Fast IPAM configuration for the Whereabouts IPAM CNI plugin
+
+Wherabouts is an IP Address Management (IPAM) Container Network Interface (CNI) plugin that assigns IP addresses at a cluster-wide level. Whereabouts does not require a Dynamic Host Configuration Protocol (DHCP) server.
+
+A typical Wherabouts workflow is described as follows:
+
+1. Whereabouts takes an address range in classless inter-domain routing (CIDR) notation, such as 192.168.2.0/24, and assigns IP addresses within that range, such as 192.168.2.1 to 192.168.2.254.
+2. Whereabouts assigns an IP address, the lowest value address in a CIDR range, to a pod and tracks the IP address in a data store for the lifetime of that pod.
+3. When the pod is removed, Whereabouts frees the address from the pod so that the address is available for assignment.
+
+To improve the performance of Whereabouts, especially if nodes in your cluster run a high amount of pods, you can enable the Fast IPAM feature.
+
+
+[IMPORTANT]
+----
+{FeatureName} is a Technology Preview feature only. Technology Preview features are not supported with Red Hat production service level agreements (SLAs) and might not be functionally complete. Red Hat does not recommend using them in production. These features provide early access to upcoming product features, enabling customers to test functionality and provide feedback during the development process.
+For more information about the support scope of Red Hat Technology Preview features, see Technology Preview Features Support Scope.
+----
+
+The Fast IPAM feature uses nodeslicepools, which are managed by the Whereabouts Controller, to optimize IP allocation for nodes.
+
+* You added the whereabouts-shim configuration to the Network.operator.openshift.io custom resource (CR), so that the Cluster Network Operator (CNO) can deploy the Whereabouts Controller. See "Creating a Whereabouts reconciler daemon set".
+* For the Fast IPAM feature to work, ensure that the NetworkAttachmentDefinition (NAD) and the pod exist in the same openshift-multus namesapace.
+
+1. Confirm that the Whereabouts Controller is running by entering the following command.
+
+```terminal
+$ oc get pods -n openshift-multus | grep controller
+```
+
+Example output
+
+```terminal
+multus-admission-controller-d89bc96f-gbf7s   2/2     Running   0              6h3m
+...
+```
+
+
+[IMPORTANT]
+----
+If the Whereabouts Controller is not running, the Fast IPAM does not work.
+----
+2. Create a NAD file for your cluster and add the Fast IPAM details to the file:
+Example NAD file with a Fast IPAM configuration
+
+```yaml
+apiVersion: "k8s.cni.cncf.io/v1"
+kind: NetworkAttachmentDefinition
+metadata:
+  name: wb-ipam
+  namespace: openshift-multus 1
+spec:
+  config: {
+	"cniVersion": "0.3.0",
+	"name": "wb-ipam-cni-name", 2
+	"type": "bridge",
+	"bridge": "cni0",
+	"ipam": {
+  	"type": "whereabouts", 3
+  	"range": "10.5.0.0/20", 4
+  	"node_slice_size": "/24" 5
+    }
+  }
+# ...
+```
+
+The namespace where CNO deploys the NAD.
+The name of the Whereabouts IPAM CNI plugin.
+The type of IPAM CNI plugin: whereabouts.
+The IP address range for the IP pool that the Whereabouts IPAM CNI plugin uses for allocating IP addresses to pods.
+Sets the slice size of IP addresses available to each node.
+3. Add the Whereabouts IPAM CNI plugin annotation details to the YAML file for the pod:
+
+```yaml
+apiVersion: v1
+kind: Pod
+metadata:
+  name: <pod_name> 1
+  annotations:
+  k8s.v1.cni.cncf.io/networks: openshift-multus/wb-ipam 2
+spec:
+  containers:
+  - name: samplepod 3
+  command: ["/bin/ash", "-c", "trap : TERM INT; sleep infinity & wait"] 4
+  image: alpine
+# ...
+```
+
+The name of the pod.
+The annotation details that references the Whereabouts IPAM CNI plugin name that exists in the openshift-multus namespace.
+The name of the container for the pod.
+Defines the entry point for the container and controls the behavior of the container in the Whereabouts IPAM CNI plugin.
+4. Apply the NAD file configuration to pods that exist on nodes that run in your cluster:
+
+```terminal
+$ oc create -f <NAD_file_name>.yaml
+```
+
+
+1. Show the IP address details of the pod by entering the following command:
+
+```terminal
+$ oc describe pod <pod_name>
+```
+
+Example output
+
+```terminal
+...
+IP:     192.168.2.0
+IPs:
+  IP:   192.168.2.0
+Containers:
+  samplepod:
+    Container ID:   docker://<image_name>
+    Image:          <app_name>:v1
+    Image ID:
+...
+```
+
+2. Access the pod and confirm its interfaces by entering the following command:
+
+```terminal
+$ oc exec <pod_name> -- ip a
+```
+
+Example output
+
+```terminal
+...
+3: net1@if23: <BROADCAST,MULTICAST,UP,LOWER_UP,M-DOWN> mtu 1500 qdisc noqueue
+    link/ether 82:01:98:e5:0c:b7 brd ff:ff:ff:ff:ff:ff
+    inet 192.168.2.0/24 brd 10.10.0.255 scope global net1 1
+       valid_lft forever preferred_lft forever
+    inet6 fe80::8001:98ff:fee5:cb7/64 scope link
+       valid_lft forever preferred_lft forever
+...
+```
+
+Pod is attached to the 192.168.2.1 IP address on the net1 interface as expected.
+3. Check that the node selector pool exists in the openshift-multus namespace by entering the following command:
+
+```terminal
+$ oc get nodeslicepool -n openshift-multus
+```
+
+Example output
+
+```terminal
+NAME            AGE
+nodeslicepool   32m
 ```
 
 
