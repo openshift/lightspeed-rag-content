@@ -1,4 +1,4 @@
-ARG BYOK_TOOL_IMAGE=registry.redhat.io/lightspeed-rag-tool-tech-preview/lightspeed-rag-tool-rhel9:latest
+ARG BYOK_TOOL_IMAGE=registry.redhat.io/openshift-lightspeed-tech-preview/lightspeed-rag-tool-rhel9:latest
 ARG UBI_BASE_IMAGE=registry.access.redhat.com/ubi9/ubi:latest
 ARG HERMETIC=false
 FROM ${UBI_BASE_IMAGE}
