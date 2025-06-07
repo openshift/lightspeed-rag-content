@@ -13,7 +13,7 @@ for resulting image containing the RAG database.
 
 ## These steps will be done during the OLS build:
 
-Use for your experimentation. Once released, MY_BYOK_TOOL_IMAGE will be an image tag under registry.redhat.io/openshift-lightspeed-tech-preview.
+Use for your experimentation. Once released, MY_BYOK_TOOL_IMAGE will be registry.redhat.io/openshift-lightspeed-tech-preview/lightspeed-rag-tool-rhel9:latest.
 
 ### Build and push the BYOK tool image.
 
@@ -23,14 +23,25 @@ $ podman build --build-arg BYOK_TOOL_IMAGE=$MY_BYOK_TOOL_IMAGE -t $MY_BYOK_TOOL_
 $ podman push $MY_BYOK_TOOL_IMAGE
 ```
 
-## This is how the user runs the BYOK tool:
+## This is how to run the BYOK tool you built yourself:
 
 ```bash
 $ MY_BYOK_TOOL_IMAGE=quay.io/$USERNAME/byok_tool:0.0.1
 $ podman run -e OUT_IMAGE_TAG=my-byok-image -it --rm --device=/dev/fuse \
+  -v $XDG_RUNTIME_DIR/containers/auth.json:/run/user/0/containers/auth.json:Z \
   -v <dir_tree_with_markdown_files>:/markdown:Z \
   -v <dir_for_image_tar>:/output:Z \
   $MY_BYOK_TOOL_IMAGE
+```
+
+The released version of the tool can be run as follows:
+
+```bash
+$ podman run -it --rm --device=/dev/fuse \
+  -v $XDG_RUNTIME_DIR/containers/auth.json:/run/user/0/containers/auth.json:Z \
+  -v <dir_tree_with_markdown_files>:/markdown:Z \
+  -v <dir_for_image_tar>:/output:Z \
+  registry.redhat.io/openshift-lightspeed-tech-preview/lightspeed-rag-tool-rhel9:latest
 ```
 
 The tool runs on CPUs, not GPUs.
@@ -41,6 +52,7 @@ There are two mandatory parameters:
 - <dir_for_image_tar> is the directory where the resulting image tar archive will be written. It needs to be writable.
 
 The OUT_IMAGE_TAG environment variable can be used to override the tag of the generated image. It defaults to "byok-image".
+The VECTOR_DB_INDEX environment variable can be used to override the database index. It defaults to "vector_db_index".
 
 The BYOK tool will produce the resulting container image as a tar archive named `<dir_for_image_tar>/my-byok-image.tar`. Existing `<dir_for_image_tar>/my-byok-image.tar` will be overwritten.
 
