@@ -12,90 +12,96 @@ import argparse
 import os
 import sys
 from pathlib import Path
-from typing import List, Optional, Tuple
+from typing import List, Optional
 from bs4 import BeautifulSoup, Tag
 
 
-def _aggressively_strip_tags_and_attributes(soup: BeautifulSoup) -> None:
+def _aggressively_strip_tags_and_attributes(soup: BeautifulSoup, strip_links: bool) -> None:
     """
     Modifies a BeautifulSoup object in-place to strip unwanted tags and attributes.
 
     Args:
         soup: The BeautifulSoup object to modify.
+        strip_links: If True, unwraps <a> tags, keeping only the text.
     """
     # 1. Tags to be unwrapped (content kept, tag removed)
     tags_to_unwrap = [
         'div.titlepage', 'div.itemizedlist', 'div.variablelist',
         'div._additional-resources', 'span.strong', 'span.inlinemediaobject',
-        'rh-table', 'colgroup', 'span.term'
+        'rh-table', 'colgroup', 'span'  # Generalized span removal
     ]
+    if strip_links:
+        tags_to_unwrap.append('a')
+        
     for selector in tags_to_unwrap:
         for tag in soup.select(selector):
-            tag.unwrap()
+            try:
+                tag.unwrap()
+            except ValueError:
+                # Ignore errors from trying to unwrap a tag that's already gone
+                continue
 
     # 2. Special transformation for <rh-alert>
     for rh_alert in soup.find_all('rh-alert'):
-        state = rh_alert.get('state', 'note')  # Default to 'note' if state is missing
-        
-        # Find the main content div (the one without the header)
-        content_div = rh_alert.find('div', slot=None)
-        if not content_div:
-            content_div = rh_alert.find('p') # Fallback to finding the first paragraph
+        state = rh_alert.get('state', 'note')
+        content_div = rh_alert.find('div', slot=None) or rh_alert.find('p')
 
         if content_div:
-            # Create a new, simpler div
             new_div = soup.new_tag('div')
             new_div['class'] = f'alert alert-{state}'
-            new_div.extend(content_div.contents) # Move content
+            new_div.extend(content_div.contents)
             rh_alert.replace_with(new_div)
         else:
-            rh_alert.unwrap() # If structure is unexpected, just unwrap the content
+            try:
+                rh_alert.unwrap()
+            except ValueError:
+                continue
 
     # 3. Strip attributes from all remaining tags
-    # Attributes to keep for specific tags
     attributes_to_keep = {
         'a': ['href', 'title'],
         'section': ['id'],
-        'h1': ['id'],
-        'h2': ['id'],
-        'h3': ['id'],
-        'h4': ['id'],
-        'h5': ['id'],
-        'h6': ['id'],
+        'h1': ['id'], 'h2': ['id'], 'h3': ['id'],
+        'h4': ['id'], 'h5': ['id'], 'h6': ['id'],
         'th': ['scope'],
         'img': ['src', 'alt']
     }
 
     for tag in soup.find_all(True):
-        # Get a list of attributes to remove for this tag
-        attrs_to_remove = []
-        for attr in tag.attrs:
-            # Check if this attribute should be kept for this tag type
-            if tag.name not in attributes_to_keep or attr not in attributes_to_keep[tag.name]:
-                attrs_to_remove.append(attr)
-        
-        # Remove the identified attributes
+        attrs_to_remove = [
+            attr for attr in tag.attrs 
+            if attr not in attributes_to_keep.get(tag.name, [])
+        ]
         for attr in attrs_to_remove:
             del tag[attr]
+
+    # 4. Unwrap nested, attribute-less divs
+    for _ in range(5):  # Run multiple passes to handle deeply nested structures
+        unwrapped_in_pass = False
+        for tag in soup.find_all('div', attrs={}):
+            child_elements = [c for c in tag.children if isinstance(c, Tag)]
+            if len(child_elements) == 1 and not tag.get_text(strip=True):
+                tag.unwrap()
+                unwrapped_in_pass = True
+        if not unwrapped_in_pass:
+            break
+
+    # 5. Remove tags that have become empty after stripping
+    tags_to_check_for_emptiness = ['p', 'div', 'li', 'ul', 'ol', 'h1', 'h2', 'h3', 'h4', 'h5', 'h6', 'section', 'dd', 'dt']
+    for tag in soup.find_all(tags_to_check_for_emptiness):
+        if not tag.get_text(strip=True) and not tag.find_all(recursive=False):
+            tag.decompose()
 
 
 def strip_html_content(
     input_file_path: str,
     output_dir: str,
     strip_mode: str,
+    strip_links: bool,
     preserve_path: bool = True
 ) -> Optional[str]:
     """
     Extract and clean the main content from an HTML file and save it.
-
-    Args:
-        input_file_path: Path to the HTML file to process.
-        output_dir: Directory to save the cleaned HTML file.
-        strip_mode: The stripping mode ('all', 'sections', 'tags').
-        preserve_path: Whether to preserve the directory structure.
-
-    Returns:
-        Path to the cleaned HTML file or None if processing failed.
     """
     try:
         with open(input_file_path, "r", encoding="utf-8") as file:
@@ -103,38 +109,28 @@ def strip_html_content(
 
         soup = BeautifulSoup(html_content, "html.parser")
 
-        # Mode 1: Isolate the main content sections (original functionality)
         if strip_mode in ['sections', 'all']:
             body_content = soup.body or soup
             new_soup = BeautifulSoup("<html><body></body></html>", "html.parser")
 
-            breadcrumb = body_content.find("ol", class_="breadcrumb hide-for-print")
-            if breadcrumb:
-                new_soup.body.append(breadcrumb)
-
             chapters = body_content.find_all("section", class_="chapter")
             if not chapters:
-                # If no chapters, take the whole body as a fallback
                 chapters = [body_content]
 
             for chapter in chapters:
-                new_soup.body.append(chapter)
+                new_soup.body.append(chapter.extract())
             
-            # The new_soup becomes the basis for further stripping
             soup = new_soup
 
-        # Mode 2: Aggressively strip tags and attributes
         if strip_mode in ['tags', 'all']:
-            _aggressively_strip_tags_and_attributes(soup)
+            _aggressively_strip_tags_and_attributes(soup, strip_links)
             
-        # Create output path
         if preserve_path:
-            # Handle potential absolute paths by making them relative
             try:
-                base_input_dir = os.path.commonpath([os.path.dirname(input_file_path), os.getcwd()])
+                # Find a common base to create a sensible relative path
+                base_input_dir = os.path.abspath(os.path.dirname(input_file_path))
                 rel_path = os.path.relpath(input_file_path, start=base_input_dir)
             except ValueError:
-                # Fallback for paths on different drives (e.g., Windows)
                 rel_path = os.path.basename(input_file_path)
 
             output_file_path = os.path.join(output_dir, rel_path)
@@ -145,13 +141,15 @@ def strip_html_content(
             os.makedirs(output_dir, exist_ok=True)
 
         with open(output_file_path, "w", encoding="utf-8") as file:
-            file.write(str(soup))
+            file.write(str(soup.prettify()))
 
-        print(f"Cleaned HTML saved to {output_file_path} (mode: {strip_mode})")
+        print(f"Cleaned HTML saved to {output_file_path} (mode: {strip_mode}, strip-links: {strip_links})")
         return output_file_path
 
     except Exception as e:
         print(f"Error processing {input_file_path}: {str(e)}", file=sys.stderr)
+        import traceback
+        traceback.print_exc()
         return None
 
 
@@ -159,24 +157,21 @@ def process_directory(
     input_dir: str,
     output_dir: str,
     strip_mode: str,
+    strip_links: bool,
     exclusion_list: Optional[List[str]] = None
 ) -> None:
     """
     Process all HTML files in a directory and its subdirectories.
-
-    Args:
-        input_dir: Directory containing HTML files to process.
-        output_dir: Directory to save cleaned HTML files.
-        strip_mode: The stripping mode ('all', 'sections', 'tags').
-        exclusion_list: List of file paths to exclude.
     """
     if exclusion_list is None:
         exclusion_list = []
+    
+    abs_input_dir = os.path.abspath(input_dir)
 
     processed_files = 0
     skipped_files = 0
 
-    for root, _, files in os.walk(input_dir):
+    for root, _, files in os.walk(abs_input_dir):
         for file in files:
             if file.endswith(".html"):
                 file_path = os.path.join(root, file)
@@ -185,8 +180,12 @@ def process_directory(
                     print(f"Skipping excluded file: {file_path}")
                     skipped_files += 1
                     continue
+                
+                # Make a path relative to the input dir to preserve structure in output
+                relative_dir = os.path.relpath(root, abs_input_dir)
+                current_output_dir = os.path.join(output_dir, relative_dir)
 
-                result = strip_html_content(file_path, output_dir, strip_mode, preserve_path=True)
+                result = strip_html_content(file_path, current_output_dir, strip_mode, strip_links, preserve_path=False)
                 if result:
                     processed_files += 1
 
@@ -200,15 +199,8 @@ def main() -> None:
         formatter_class=argparse.RawTextHelpFormatter
     )
 
-    parser.add_argument(
-        "--input", "-i", required=True, help="HTML file or directory to process"
-    )
-    parser.add_argument(
-        "--output-dir",
-        "-o",
-        default="clean_html",
-        help="Directory to save cleaned HTML files (default: 'clean_html')",
-    )
+    parser.add_argument("-i", "--input", required=True, help="HTML file or directory to process")
+    parser.add_argument("-o", "--output-dir", default="clean_html", help="Directory to save cleaned HTML files (default: 'clean_html')")
     parser.add_argument(
         "--strip-mode",
         choices=['all', 'sections', 'tags'],
@@ -219,12 +211,13 @@ def main() -> None:
   'all'      - Performs both 'sections' and 'tags' stripping (default)."""
     )
     parser.add_argument(
-        "--exclude",
-        "-e",
-        nargs="+",
-        default=[],
-        help="Files to exclude from processing",
+        "--no-link-stripping",
+        action="store_false",
+        dest="strip_links",
+        help="Keep <a> tags and their href/title attributes. By default, links are stripped."
     )
+    parser.add_argument("-e", "--exclude", nargs="+", default=[], help="Files to exclude from processing")
+    parser.set_defaults(strip_links=True)
 
     args = parser.parse_args()
 
@@ -237,10 +230,9 @@ def main() -> None:
         if not input_path.name.endswith(".html"):
             print(f"Error: Input file {args.input} is not an HTML file.", file=sys.stderr)
             sys.exit(1)
-        strip_html_content(str(input_path), args.output_dir, args.strip_mode, preserve_path=False)
+        strip_html_content(str(input_path), args.output_dir, args.strip_mode, args.strip_links, preserve_path=False)
     else:
-        process_directory(str(input_path), args.output_dir, args.strip_mode, args.exclude)
-
+        process_directory(str(input_path), args.output_dir, args.strip_mode, args.strip_links, args.exclude)
 
 if __name__ == "__main__":
     main()
