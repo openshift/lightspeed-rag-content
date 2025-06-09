@@ -91,14 +91,14 @@ def main():
     print("HTML Chunking Example\n====================\n")
 
     if not os.path.exists(args.html_file):
-        print(f"Error: Sample document '{args.html_file}' not found.", file=sys.stderr)
+        print("Error: Sample document '%s' not found." % args.html_file, file=sys.stderr)
         return 1
 
     try:
         with open(args.html_file, "r", encoding="utf-8") as f:
             sample_html = f.read()
     except IOError as e:
-        print(f"Error reading HTML file '{args.html_file}': {e}", file=sys.stderr)
+        print("Error reading HTML file '%s': %s" % (args.html_file, e), file=sys.stderr)
         return 1
 
     original_tokens = count_html_tokens(sample_html)
@@ -131,12 +131,12 @@ if __name__ == "__main__":
     try:
         sys.exit(main())
     except ImportError as e:
-        print(f"Error: Failed to import a required module.", file=sys.stderr)
-        print(f"Detail: {e}", file=sys.stderr)
+        print("Error: Failed to import a required module.", file=sys.stderr)
+        print("Detail: %s" % e, file=sys.stderr)
         print("\nSuggestion: Try running this script from the project's root directory using 'python -m html_chunking.example'", file=sys.stderr)
         sys.exit(1)
     except Exception as e:
-        print(f"An unexpected error occurred: {e}", file=sys.stderr)
+        print("An unexpected error occurred: %s" % e, file=sys.stderr)
         import traceback
         traceback.print_exc()
         sys.exit(1)

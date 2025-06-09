@@ -65,14 +65,14 @@ def chunk_html(
         if count_html_tokens(html_content, options.count_tag_tokens) <= options.max_token_limit:
             return [Chunk(text=html_content, metadata={"source": source_url})]
     except Exception as e:
-        warnings.warn(f"Could not pre-calculate total tokens: {e}. Proceeding with chunking.")
+        warnings.warn("Could not pre-calculate total tokens: %s. Proceeding with chunking." % e)
 
     try:
         soup = BeautifulSoup(html_content, 'html.parser')
         body = soup.body or soup
         string_chunks = _split_element_by_children(body, options)
     except Exception as e:
-        warnings.warn(f"A critical error occurred during semantic chunking: {e}. Falling back to linear splitting.")
+        warnings.warn("A critical error occurred during semantic chunking: %s. Falling back to linear splitting." % e)
         string_chunks = _linear_split(html_content, options)
 
     # Post-process string chunks to add stateful anchor metadata
