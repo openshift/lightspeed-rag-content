@@ -4,6 +4,7 @@ Chunk HTML documents semantically using the HTML chunking library.
 
 import json
 import logging
+import re
 import sys
 from pathlib import Path
 from typing import Dict, List, Any, Optional
@@ -201,9 +202,10 @@ def extract_metadata_from_path(file_path: Path) -> Dict[str, Any]:
     doc_id = doc_name.replace(" ", "_").replace("-", "_").lower()
 
     version = None
+    # Regex to find version strings like "4.15" or "1.2.3" in path parts.
+    version_pattern = re.compile(r"^\d+\.\d+(\.\d+)?$")
     for part in parts:
-        # Heuristic to find OpenShift versions like "4.1", "4.12", etc.
-        if part.startswith("4.") and len(part) <= 5:
+        if version_pattern.match(part):
             version = part
             break
 
