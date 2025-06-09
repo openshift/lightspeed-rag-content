@@ -47,6 +47,8 @@ def strip_html_content(
         html_stripper.process_directory(
             input_dir=str(input_dir),
             output_dir=str(output_dir),
+            strip_mode='all',
+            strip_links=True,
             exclusion_list=exclusion_list or [],
         )
 

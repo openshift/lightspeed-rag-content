@@ -12,7 +12,7 @@ from urllib.parse import urlparse
 
 # Import the HTML chunking library
 sys.path.insert(0, str(Path(__file__).parent.parent / "html_chunking"))
-from chunker import chunk_html
+from chunker import chunk_html, Chunk
 from tokenizer import count_html_tokens
 
 
@@ -56,9 +56,18 @@ def chunk_html_documents(
 
         total_chunks = 0
         processed_files = 0
-
+        
+        # --- Start of changes ---
+        # Determine version from the input directory path
+        version = input_dir.parent.name
+        
         for html_file in html_files:
             logger.debug("Processing %s", html_file)
+
+            # Reconstruct the source URL based on the file path
+            relative_doc_path = html_file.relative_to(input_dir)
+            doc_name_from_path = relative_doc_path.parts[0]
+            source_url = f"https://docs.redhat.com/en/documentation/openshift_container_platform/{version}/html-single/{doc_name_from_path}/"
 
             success, chunk_count = chunk_single_html_file(
                 input_file=html_file,
@@ -66,9 +75,12 @@ def chunk_html_documents(
                 input_base_dir=input_dir,
                 max_token_limit=max_token_limit,
                 count_tag_tokens=count_tag_tokens,
+                # These arguments are not used by the new chunker but are kept for signature consistency
                 keep_siblings_together=keep_siblings_together,
                 prepend_parent_section_text=prepend_parent_section_text,
+                source_url=source_url,  # Pass the reconstructed URL
             )
+            # --- End of changes ---
 
             if success:
                 processed_files += 1
@@ -102,15 +114,18 @@ def chunk_html_documents(
         return False
 
 
+# --- Start of changes ---
 def chunk_single_html_file(
     input_file: Path,
     output_dir: Path,
     input_base_dir: Path,
+    source_url: str, # Add source_url parameter
     max_token_limit: int = 380,
     count_tag_tokens: bool = True,
     keep_siblings_together: bool = True,
     prepend_parent_section_text: bool = True,
 ) -> tuple[bool, int]:
+# --- End of changes ---
     """
     Chunk a single HTML file.
 
@@ -118,6 +133,7 @@ def chunk_single_html_file(
         input_file: Path to input HTML file
         output_dir: Directory to save chunks
         input_base_dir: Base directory for input files (for relative path calculation)
+        source_url: The public URL of the source document
         max_token_limit: Maximum tokens per chunk
         count_tag_tokens: Whether to count HTML tags
         keep_siblings_together: Keep sibling sections together
@@ -136,13 +152,15 @@ def chunk_single_html_file(
             logger.warning("Empty file: %s", input_file)
             return True, 0
 
-        chunks = chunk_html(
+        # --- Start of changes ---
+        # Call chunker with the required source_url
+        chunks: List[Chunk] = chunk_html(
             html_content=html_content,
+            source_url=source_url,
             max_token_limit=max_token_limit,
-            count_tag_tokens=count_tag_tokens,
-            keep_siblings_together=keep_siblings_together,
-            prepend_parent_section_text=prepend_parent_section_text,
+            count_tag_tokens=count_tag_tokens
         )
+        # --- End of changes ---
 
         if not chunks:
             logger.warning("No chunks generated for %s", input_file)
@@ -152,20 +170,25 @@ def chunk_single_html_file(
         base_metadata = extract_metadata_from_path(relative_path)
 
         chunk_count = 0
-        for i, chunk_content in enumerate(chunks):
+        # --- Start of changes ---
+        # The loop now iterates over Chunk objects, not strings
+        for i, chunk_obj in enumerate(chunks):
+            # Combine base metadata with metadata from the chunker (which has the source url)
             chunk_metadata = {
                 **base_metadata,
+                **chunk_obj.metadata,
                 "chunk_index": i,
                 "total_chunks": len(chunks),
-                "token_count": count_html_tokens(chunk_content, count_tag_tokens),
+                "token_count": count_html_tokens(chunk_obj.text, count_tag_tokens),
                 "source_file": str(relative_path),
             }
 
             chunk_data = {
                 "id": f"{base_metadata['doc_id']}_chunk_{i:04d}",
-                "content": chunk_content,
+                "content": chunk_obj.text, # Access content via .text attribute
                 "metadata": chunk_metadata,
             }
+        # --- End of changes ---
 
             chunk_filename = f"{base_metadata['doc_id']}_chunk_{i:04d}.json"
             chunk_file_path = output_dir / chunk_filename
