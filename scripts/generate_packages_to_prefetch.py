@@ -73,8 +73,8 @@ def remove_package(
     """Remove package or packages with specified prefix from the requirements file."""
     package_block = False
 
-    with open(join(directory, source)) as fin:
-        with open(join(directory, target), "w") as fout:
+    with open(join(directory, source), encoding="utf-8") as fin:
+        with open(join(directory, target), "w", encoding="utf-8") as fout:
             for line in fin:
                 if line.startswith(package_prefix):
                     print(line)

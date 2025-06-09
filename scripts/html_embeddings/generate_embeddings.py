@@ -156,11 +156,12 @@ def setup_environment(args: argparse.Namespace) -> Dict[str, Any]:
 
     if args.chunk is not None:
         logger.info(
-            f"Using --chunk value {args.chunk} for max-token-limit (backward compatibility)"
+            "Using --chunk value %s for max-token-limit (backward compatibility)",
+            args.chunk,
         )
         args.max_token_limit = args.chunk
 
-    logger.info(f"Using max token limit: {args.max_token_limit}")
+    logger.info("Using max token limit: %s", args.max_token_limit)
 
     paths = create_directory_structure(
         cache_dir=args.cache_dir,
@@ -172,10 +173,10 @@ def setup_environment(args: argparse.Namespace) -> Dict[str, Any]:
     model_path = Path(args.model_dir).resolve()
 
     if not model_path.exists():
-        logger.error(f"Model directory does not exist: {model_path}")
+        logger.error("Model directory does not exist: %s", model_path)
         raise FileNotFoundError(f"Model directory not found: {model_path}")
 
-    logger.info(f"Using model directory: {model_path}")
+    logger.info("Using model directory: %s", model_path)
 
     os.environ["HF_HOME"] = str(model_path)
     os.environ["TRANSFORMERS_OFFLINE"] = "1"
@@ -185,7 +186,7 @@ def setup_environment(args: argparse.Namespace) -> Dict[str, Any]:
     try:
         Settings.embed_model = HuggingFaceEmbedding(model_name=str(model_path))
     except Exception as e:
-        logger.error(f"Failed to load embedding model from {model_path}: {e}")
+        logger.error("Failed to load embedding model from %s: %s", model_path, e)
         logger.info("Try using a Hugging Face model name instead of a local path")
         raise
 
@@ -205,7 +206,7 @@ def run_download_step(args: argparse.Namespace, paths: Dict[str, Path], logger) 
         return True
 
     try:
-        logger.info(f"Downloading OpenShift {args.version} documentation...")
+        logger.info("Downloading OpenShift %s documentation...", args.version)
         success = download_documentation(
             version=args.version,
             specific_doc=args.specific_doc,
@@ -219,7 +220,7 @@ def run_download_step(args: argparse.Namespace, paths: Dict[str, Path], logger) 
             logger.error("Download failed")
             return False
     except Exception as e:
-        logger.error(f"Download step failed: {e}")
+        logger.error("Download step failed: %s", e)
         return False
 
 
@@ -238,7 +239,7 @@ def run_strip_step(args: argparse.Namespace, paths: Dict[str, Path], logger) -> 
             logger.error("HTML stripping failed")
             return False
     except Exception as e:
-        logger.error(f"Strip step failed: {e}")
+        logger.error("Strip step failed: %s", e)
         return False
 
 
@@ -266,7 +267,7 @@ def run_chunk_step(args: argparse.Namespace, paths: Dict[str, Path], logger) -> 
             logger.error("HTML chunking failed")
             return False
     except Exception as e:
-        logger.error(f"Chunk step failed: {e}")
+        logger.error("Chunk step failed: %s", e)
         return False
 
 
@@ -278,7 +279,7 @@ def run_runbooks_step(args: argparse.Namespace, paths: Dict[str, Path], logger) 
 
     runbooks_dir = Path(args.runbooks_dir)
     if not runbooks_dir.exists():
-        logger.warning(f"Runbooks directory {runbooks_dir} does not exist, skipping")
+        logger.warning("Runbooks directory %s does not exist, skipping", runbooks_dir)
         return True
 
     chunks_dir = paths["chunks"]
@@ -297,7 +298,7 @@ def run_runbooks_step(args: argparse.Namespace, paths: Dict[str, Path], logger) 
             logger.error("Runbooks processing failed")
             return False
     except Exception as e:
-        logger.error(f"Runbooks step failed: {e}")
+        logger.error("Runbooks step failed: %s", e)
         return False
 
 
@@ -308,7 +309,7 @@ def load_chunks_as_nodes(chunks_dir: Path, logger) -> List[TextNode]:
     chunk_files = list(chunks_dir.glob("*.json"))
     chunk_files = [f for f in chunk_files if not f.name.endswith("_summary.json")]
 
-    logger.info(f"Found {len(chunk_files)} chunk files to load")
+    logger.info("Found %s chunk files to load", len(chunk_files))
 
     for chunk_file in chunk_files:
         try:
@@ -324,9 +325,9 @@ def load_chunks_as_nodes(chunks_dir: Path, logger) -> List[TextNode]:
             nodes.append(node)
 
         except Exception as e:
-            logger.warning(f"Failed to load chunk {chunk_file}: {e}")
+            logger.warning("Failed to load chunk %s: %s", chunk_file, e)
 
-    logger.info(f"Loaded {len(nodes)} chunks as TextNode objects")
+    logger.info("Loaded %s chunks as TextNode objects", len(nodes))
     return nodes
 
 
@@ -369,16 +370,17 @@ def run_embedding_step(
             "creation_time": time.time(),
         }
 
-        with open(output_dir / "metadata.json", "w") as f:
+        with open(output_dir / "metadata.json", "w", encoding="utf-8") as f:
             json.dump(metadata, f, indent=2)
 
         logger.info(
-            f"Embedding generation completed successfully. {len(nodes)} chunks processed."
+            "Embedding generation completed successfully. %s chunks processed.",
+            len(nodes),
         )
         return True
 
     except Exception as e:
-        logger.error(f"Embedding step failed: {e}")
+        logger.error("Embedding step failed: %s", e)
         return False
 
 
@@ -391,9 +393,11 @@ def main() -> int:
         logger = env["logger"]
         paths = env["paths"]
 
-        logger.info(f"Starting HTML embeddings pipeline for OpenShift {args.version}")
+        logger.info(
+            "Starting HTML embeddings pipeline for OpenShift %s", args.version
+        )
         if args.specific_doc:
-            logger.info(f"Processing specific document: {args.specific_doc}")
+            logger.info("Processing specific document: %s", args.specific_doc)
 
         steps = [
             ("download", run_download_step),
@@ -404,17 +408,18 @@ def main() -> int:
         ]
 
         for step_name, step_func in steps:
-            logger.info(f"Running {step_name} step...")
+            logger.info("Running %s step...", step_name)
 
             success = step_func(args, paths, logger)
 
             if not success:
                 if args.continue_on_error:
                     logger.warning(
-                        f"Step {step_name} failed, but continuing due to --continue-on-error"
+                        "Step %s failed, but continuing due to --continue-on-error",
+                        step_name,
                     )
                 else:
-                    logger.error(f"Step {step_name} failed, stopping pipeline")
+                    logger.error("Step %s failed, stopping pipeline", step_name)
                     return 1
 
         logger.info("HTML embeddings pipeline completed successfully!")

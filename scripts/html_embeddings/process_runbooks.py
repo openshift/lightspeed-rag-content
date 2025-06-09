@@ -70,15 +70,15 @@ def process_runbooks(
     logger = logging.getLogger(__name__)
 
     if not runbooks_dir.exists():
-        logger.error(f"Runbooks directory does not exist: {runbooks_dir}")
+        logger.error("Runbooks directory does not exist: %s", runbooks_dir)
         return False
 
     md_files = list(runbooks_dir.rglob("*.md"))
     if not md_files:
-        logger.warning(f"No markdown files found in {runbooks_dir}")
+        logger.warning("No markdown files found in %s", runbooks_dir)
         return True
 
-    logger.info(f"Found {len(md_files)} runbook files to process")
+    logger.info("Found %s runbook files to process", len(md_files))
 
     try:
         output_dir.mkdir(parents=True, exist_ok=True)
@@ -99,7 +99,7 @@ def process_runbooks(
             logger.warning("No runbook documents loaded")
             return True
 
-        logger.info(f"Loaded {len(runbook_documents)} runbook documents")
+        logger.info("Loaded %s runbook documents", len(runbook_documents))
 
         logger.info("Creating chunks from runbook documents...")
         runbook_nodes = Settings.text_splitter.get_nodes_from_documents(
@@ -111,9 +111,9 @@ def process_runbooks(
             if isinstance(node, TextNode) and has_whitespace(node.text):
                 good_nodes.append(node)
             else:
-                logger.debug(f"Skipping node without whitespace: {node.text[:50]}...")
+                logger.debug("Skipping node without whitespace: %s...", node.text[:50])
 
-        logger.info(f"Generated {len(good_nodes)} runbook chunks")
+        logger.info("Generated %s runbook chunks", len(good_nodes))
 
         chunk_count = 0
         for i, node in enumerate(good_nodes):
@@ -146,16 +146,18 @@ def process_runbooks(
             "processing_type": "markdown_runbooks",
         }
 
-        with open(output_dir / "runbooks_summary.json", "w") as f:
+        with open(output_dir / "runbooks_summary.json", "w", encoding="utf-8") as f:
             json.dump(summary, f, indent=2)
 
         logger.info(
-            f"Successfully processed {len(runbook_documents)} runbooks into {chunk_count} chunks"
+            "Successfully processed %s runbooks into %s chunks",
+            len(runbook_documents),
+            chunk_count,
         )
         return True
 
     except Exception as e:
-        logger.error(f"Runbooks processing failed: {e}")
+        logger.error("Runbooks processing failed: %s", e)
         return False
 
 

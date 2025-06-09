@@ -48,8 +48,8 @@ def download_documentation(
     else:
         base_url = f"https://docs.redhat.com/en/documentation/openshift_container_platform/{version}"
 
-    logger.info(f"Downloading from: {base_url}")
-    logger.info(f"Output directory: {output_dir}")
+    logger.info("Downloading from: %s", base_url)
+    logger.info("Output directory: %s", output_dir)
 
     try:
         verification_passed, toc_verification_passed, elapsed_time = asyncio.run(
@@ -67,7 +67,7 @@ def download_documentation(
 
         if success:
             logger.info(
-                f"Download completed successfully in {elapsed_time:.2f} seconds"
+                "Download completed successfully in %.2f seconds", elapsed_time
             )
         else:
             logger.error("Download completed with verification failures")
@@ -75,7 +75,7 @@ def download_documentation(
         return success
 
     except Exception as e:
-        logger.error(f"Download failed: {e}")
+        logger.error("Download failed: %s", e)
         return False
 
 

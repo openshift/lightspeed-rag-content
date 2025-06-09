@@ -31,15 +31,15 @@ def strip_html_content(
     logger = logging.getLogger(__name__)
 
     if not input_dir.exists():
-        logger.error(f"Input directory does not exist: {input_dir}")
+        logger.error("Input directory does not exist: %s", input_dir)
         return False
 
     html_files = list(input_dir.rglob("*.html"))
     if not html_files:
-        logger.warning(f"No HTML files found in {input_dir}")
+        logger.warning("No HTML files found in %s", input_dir)
         return True
 
-    logger.info(f"Found {len(html_files)} HTML files to process")
+    logger.info("Found %s HTML files to process", len(html_files))
 
     try:
         output_dir.mkdir(parents=True, exist_ok=True)
@@ -51,7 +51,7 @@ def strip_html_content(
         )
 
         output_files = list(output_dir.rglob("*.html"))
-        logger.info(f"Successfully processed {len(output_files)} files")
+        logger.info("Successfully processed %s files", len(output_files))
 
         if len(output_files) < len(html_files) * 0.8:
             logger.warning(
@@ -61,7 +61,7 @@ def strip_html_content(
         return len(output_files) > 0
 
     except Exception as e:
-        logger.error(f"HTML stripping failed: {e}")
+        logger.error("HTML stripping failed: %s", e)
         return False
 
 
@@ -79,7 +79,7 @@ def strip_single_html_file(input_file: Path, output_file: Path) -> bool:
     logger = logging.getLogger(__name__)
 
     if not input_file.exists():
-        logger.error(f"Input file does not exist: {input_file}")
+        logger.error("Input file does not exist: %s", input_file)
         return False
 
     try:
@@ -92,14 +92,14 @@ def strip_single_html_file(input_file: Path, output_file: Path) -> bool:
         )
 
         if result:
-            logger.info(f"Successfully stripped {input_file} -> {output_file}")
+            logger.info("Successfully stripped %s -> %s", input_file, output_file)
             return True
         else:
-            logger.error(f"Failed to strip {input_file}")
+            logger.error("Failed to strip %s", input_file)
             return False
 
     except Exception as e:
-        logger.error(f"Error stripping {input_file}: {e}")
+        logger.error("Error stripping %s: %s", input_file, e)
         return False
 
 

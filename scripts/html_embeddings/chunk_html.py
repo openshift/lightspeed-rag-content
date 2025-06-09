@@ -40,15 +40,15 @@ def chunk_html_documents(
     logger = logging.getLogger(__name__)
 
     if not input_dir.exists():
-        logger.error(f"Input directory does not exist: {input_dir}")
+        logger.error("Input directory does not exist: %s", input_dir)
         return False
 
     html_files = list(input_dir.rglob("*.html"))
     if not html_files:
-        logger.warning(f"No HTML files found in {input_dir}")
+        logger.warning("No HTML files found in %s", input_dir)
         return True
 
-    logger.info(f"Found {len(html_files)} HTML files to chunk")
+    logger.info("Found %s HTML files to chunk", len(html_files))
 
     try:
         output_dir.mkdir(parents=True, exist_ok=True)
@@ -57,7 +57,7 @@ def chunk_html_documents(
         processed_files = 0
 
         for html_file in html_files:
-            logger.debug(f"Processing {html_file}")
+            logger.debug("Processing %s", html_file)
 
             success, chunk_count = chunk_single_html_file(
                 input_file=html_file,
@@ -72,12 +72,12 @@ def chunk_html_documents(
             if success:
                 processed_files += 1
                 total_chunks += chunk_count
-                logger.debug(f"Processed {html_file}: {chunk_count} chunks")
+                logger.debug("Processed %s: %s chunks", html_file, chunk_count)
             else:
-                logger.warning(f"Failed to process {html_file}")
+                logger.warning("Failed to process %s", html_file)
 
-        logger.info(f"Successfully processed {processed_files}/{len(html_files)} files")
-        logger.info(f"Generated {total_chunks} total chunks")
+        logger.info("Successfully processed %s/%s files", processed_files, len(html_files))
+        logger.info("Generated %s total chunks", total_chunks)
 
         summary = {
             "total_files": len(html_files),
@@ -91,13 +91,13 @@ def chunk_html_documents(
             },
         }
 
-        with open(output_dir / "chunking_summary.json", "w") as f:
+        with open(output_dir / "chunking_summary.json", "w", encoding="utf-8") as f:
             json.dump(summary, f, indent=2)
 
         return processed_files > 0
 
     except Exception as e:
-        logger.error(f"HTML chunking failed: {e}")
+        logger.error("HTML chunking failed: %s", e)
         return False
 
 
@@ -132,7 +132,7 @@ def chunk_single_html_file(
             html_content = f.read()
 
         if not html_content.strip():
-            logger.warning(f"Empty file: {input_file}")
+            logger.warning("Empty file: %s", input_file)
             return True, 0
 
         chunks = chunk_html(
@@ -144,7 +144,7 @@ def chunk_single_html_file(
         )
 
         if not chunks:
-            logger.warning(f"No chunks generated for {input_file}")
+            logger.warning("No chunks generated for %s", input_file)
             return True, 0
 
         relative_path = input_file.relative_to(input_base_dir)
@@ -177,7 +177,7 @@ def chunk_single_html_file(
         return True, chunk_count
 
     except Exception as e:
-        logger.error(f"Error chunking {input_file}: {e}")
+        logger.error("Error chunking %s: %s", input_file, e)
         return False, 0
 
 
@@ -202,6 +202,7 @@ def extract_metadata_from_path(file_path: Path) -> Dict[str, Any]:
 
     version = None
     for part in parts:
+        # Heuristic to find OpenShift versions like "4.1", "4.12", etc.
         if part.startswith("4.") and len(part) <= 5:
             version = part
             break
@@ -258,6 +259,7 @@ def validate_chunks(output_dir: Path, max_token_limit: int) -> Dict[str, Any]:
                 validation_results["empty_chunks"] += 1
                 continue
 
+            # Allow for a 10% tolerance on the max token limit for oversized chunks
             if token_count > max_token_limit * 1.1:
                 validation_results["oversized_chunks"] += 1
             elif token_count < max_token_limit * 0.1:
@@ -269,9 +271,9 @@ def validate_chunks(output_dir: Path, max_token_limit: int) -> Dict[str, Any]:
 
         except json.JSONDecodeError:
             validation_results["invalid_json"] += 1
-            logger.warning(f"Invalid JSON in {chunk_file}")
+            logger.warning("Invalid JSON in %s", chunk_file)
         except Exception as e:
-            logger.warning(f"Error validating {chunk_file}: {e}")
+            logger.warning("Error validating %s: %s", chunk_file, e)
 
     if token_counts:
         validation_results["token_stats"] = {
@@ -388,23 +390,24 @@ def main():
     if args.validate and success:
         print("\nValidating chunks...")
         validation = validate_chunks(output_dir, args.max_token_limit)
-        print(f"Validation: {'PASSED' if validation['valid'] else 'FAILED'}")
-        print(f"  Total chunks: {validation['total_chunks']}")
-        print(f"  Valid chunks: {validation['valid_chunks']}")
-        print(f"  Oversized chunks: {validation['oversized_chunks']}")
-        print(f"  Undersized chunks: {validation['undersized_chunks']}")
-        print(f"  Empty chunks: {validation['empty_chunks']}")
+        print("Validation: %s" % ('PASSED' if validation['valid'] else 'FAILED'))
+        print("  Total chunks: %s" % validation['total_chunks'])
+        print("  Valid chunks: %s" % validation['valid_chunks'])
+        print("  Oversized chunks: %s" % validation['oversized_chunks'])
+        print("  Undersized chunks: %s" % validation['undersized_chunks'])
+        print("  Empty chunks: %s" % validation['empty_chunks'])
 
     if args.stats and success:
         print("\nChunking Statistics:")
         stats = get_chunking_stats(output_dir)
-        print(f"  Total chunks: {stats['total_chunks']}")
-        print(f"  Documents: {stats['documents']}")
-        print(f"  Avg chunks per doc: {stats['avg_chunks_per_doc']:.1f}")
+        print("  Total chunks: %s" % stats['total_chunks'])
+        print("  Documents: %s" % stats['documents'])
+        print("  Avg chunks per doc: %.1f" % stats['avg_chunks_per_doc'])
         if "token_stats" in stats:
             ts = stats["token_stats"]
             print(
-                f"  Token stats - Min: {ts['min']}, Max: {ts['max']}, Avg: {ts['avg']:.1f}"
+                "  Token stats - Min: %s, Max: %s, Avg: %.1f"
+                % (ts['min'], ts['max'], ts['avg'])
             )
 
     sys.exit(0 if success else 1)

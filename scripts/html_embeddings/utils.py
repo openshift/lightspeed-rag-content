@@ -18,7 +18,7 @@ def setup_logging(verbose: bool = False) -> logging.Logger:
         format="%(asctime)s - %(levelname)s - %(message)s",
         handlers=[
             logging.StreamHandler(sys.stdout),
-            logging.FileHandler("html_embeddings.log"),
+            logging.FileHandler("html_embeddings.log", encoding="utf-8"),
         ],
     )
 
@@ -43,7 +43,7 @@ def validate_dependencies() -> None:
             missing_packages.append(package_name)
 
     if missing_packages:
-        raise ImportError(f"Missing required packages: {', '.join(missing_packages)}")
+        raise ImportError("Missing required packages: %s" % ', '.join(missing_packages))
 
 
 def create_directory_structure(
@@ -113,13 +113,13 @@ def estimate_processing_time(file_count: int, base_time_per_file: float = 0.5) -
 def format_duration(seconds: float) -> str:
     """Format duration in seconds to human readable format."""
     if seconds < 60:
-        return f"{seconds:.1f} seconds"
+        return "%.1f seconds" % seconds
     elif seconds < 3600:
         minutes = seconds / 60
-        return f"{minutes:.1f} minutes"
+        return "%.1f minutes" % minutes
     else:
         hours = seconds / 3600
-        return f"{hours:.1f} hours"
+        return "%.1f hours" % hours
 
 
 def get_cache_info(
@@ -184,7 +184,7 @@ def verify_model_directory(model_dir: str) -> bool:
             missing_files.append(file_name)
 
     if missing_files:
-        logging.warning(f"Model directory missing files: {missing_files}")
+        logging.warning("Model directory missing files: %s", missing_files)
         return False
 
     return True
@@ -213,7 +213,7 @@ def get_output_summary(output_dir: Path) -> Dict[str, any]:
         try:
             import json
 
-            with open(metadata_file, "r") as f:
+            with open(metadata_file, "r", encoding="utf-8") as f:
                 summary["metadata"] = json.load(f)
         except Exception:
             pass

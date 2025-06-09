@@ -233,7 +233,7 @@ def init_database(db_path: str) -> str:
 
         conn.commit()
 
-    logger.info(f"Database initialized at {db_path}")
+    logger.info("Database initialized at %s", db_path)
 
     return db_path
 
@@ -279,7 +279,7 @@ def record_download(
 
             conn.commit()
         except Exception as e:
-            logger.error(f"Database error: {e}")
+            logger.error("Database error: %s", e)
             conn.rollback()
 
     return url
@@ -445,10 +445,10 @@ async def fetch_page(
                 if response.status == 200:
                     return await response.text()
                 else:
-                    logger.warning(f"Failed to fetch {url}: HTTP {response.status}")
+                    logger.warning("Failed to fetch %s: HTTP %s", url, response.status)
                     return None
     except Exception as e:
-        logger.error(f"Error fetching {url}: {e}")
+        logger.error("Error fetching %s: %s", url, e)
         return None
 
 
@@ -501,7 +501,7 @@ async def check_if_modified(
                 # Otherwise, we need to download
                 return True, current_etag, current_last_modified
     except Exception as e:
-        logger.warning(f"Error checking if modified for {url}: {e}")
+        logger.warning("Error checking if modified for %s: %s", url, e)
         # If we can't check, assume we need to download
         return True, None, None
 
@@ -532,7 +532,7 @@ async def download_page(
     # Check if this is likely an external link incorrectly formatted as internal
     if is_likely_external_link(url):
         logger.info(
-            f"Skipping likely external URL incorrectly formatted as internal: {url}"
+            "Skipping likely external URL incorrectly formatted as internal: %s", url
         )
         record_download(
             db_path, url, "N/A", status="skipped", change_type="skipped_external"
@@ -547,7 +547,7 @@ async def download_page(
             session, url, db_path, semaphore
         )
         if not needs_download:
-            logger.info(f"Skipping {url} (not modified)")
+            logger.info("Skipping %s (not modified)", url)
             record_download(
                 db_path,
                 url,
@@ -562,9 +562,9 @@ async def download_page(
         try:
             async with semaphore:
                 retry_msg = (
-                    f" (attempt {attempt+1}/{max_retries})" if attempt > 0 else ""
+                    " (attempt %s/%s)" % (attempt + 1, max_retries) if attempt > 0 else ""
                 )
-                logger.info(f"Downloading {url}{retry_msg}")
+                logger.info("Downloading %s%s", url, retry_msg)
                 async with session.get(url, timeout=30) as response:
                     if response.status == 200:
                         content = await response.text()
@@ -598,12 +598,12 @@ async def download_page(
                             last_modified=last_modified,
                             change_type=change_type,
                         )
-                        logger.info(f"Downloaded {url} -> {local_path} ({change_type})")
+                        logger.info("Downloaded %s -> %s (%s)", url, local_path, change_type)
                         return (url, True, set())
                     elif response.status == 404:
                         # Check if this might be an expected 404 for an external link
                         if is_likely_external_link(url):
-                            logger.info(f"Skipping 404 for likely external URL: {url}")
+                            logger.info("Skipping 404 for likely external URL: %s", url)
                             record_download(
                                 db_path,
                                 url,
@@ -614,7 +614,7 @@ async def download_page(
                             return (url, True, set())
                         elif attempt == max_retries - 1:
                             # It's a real 404 for a document that should exist, and we've tried max times
-                            logger.warning(f"Failed to download {url}: HTTP 404")
+                            logger.warning("Failed to download %s: HTTP 404", url)
                             record_download(
                                 db_path,
                                 url,
@@ -627,7 +627,7 @@ async def download_page(
                         if attempt == max_retries - 1:
                             # Final attempt failed with a non-404 error
                             logger.warning(
-                                f"Failed to download {url}: HTTP {response.status}"
+                                "Failed to download %s: HTTP %s", url, response.status
                             )
                             record_download(
                                 db_path,
@@ -641,16 +641,16 @@ async def download_page(
                 # If we got here and it's not the last attempt, continue to next try
                 if attempt < max_retries - 1:
                     logger.warning(
-                        f"Retrying download for {url} after unsuccessful attempt"
+                        "Retrying download for %s after unsuccessful attempt", url
                     )
                     await asyncio.sleep(1)  # Small delay before retry
 
         except Exception as e:
             if attempt < max_retries - 1:
-                logger.warning(f"Error downloading {url}: {e}. Retrying...")
+                logger.warning("Error downloading %s: %s. Retrying...", url, e)
                 await asyncio.sleep(1)  # Small delay before retry
             else:
-                logger.error(f"Error downloading {url}: {e}. Max retries reached.")
+                logger.error("Error downloading %s: %s. Max retries reached.", url, e)
                 record_download(
                     db_path, url, local_path, status="error", change_type="error"
                 )
@@ -723,7 +723,7 @@ async def extract_root_guides(
     Returns:
         set: Set of guide URLs
     """
-    logger.info(f"Processing root documentation page: {url}")
+    logger.info("Processing root documentation page: %s", url)
     content = await fetch_page(session, url, semaphore)
     if not content:
         return set()
@@ -741,7 +741,7 @@ async def extract_root_guides(
             absolute_url = urljoin(url, href)
             guide_links.add(absolute_url)
 
-    logger.info(f"Found {len(guide_links)} documentation guides on main page")
+    logger.info("Found %s documentation guides on main page", len(guide_links))
 
     # For each guide, convert to html-single version and add to the collection
     for html_url in guide_links:
@@ -749,7 +749,7 @@ async def extract_root_guides(
         html_single_url = html_url.replace("/html/", "/html-single/")
         normalized_url = normalize_url(html_single_url)
         html_single_urls.add(normalized_url)
-        logger.info(f"Added guide to download queue: {normalized_url}")
+        logger.info("Added guide to download queue: %s", normalized_url)
 
     return html_single_urls
 
@@ -804,7 +804,7 @@ async def crawl(
             continue
 
         visited_urls.add(normalized_url)
-        logger.info(f"Crawling {normalized_url}")
+        logger.info("Crawling %s", normalized_url)
 
         new_links, new_html_single_urls = await extract_links(
             session, normalized_url, base_url, visited_urls, semaphore
@@ -812,7 +812,7 @@ async def crawl(
         to_visit.update({link for link in new_links if link not in visited_urls})
         html_single_urls.update(new_html_single_urls)
 
-    logger.info(f"Crawling completed. Found {len(html_single_urls)} html-single pages.")
+    logger.info("Crawling completed. Found %s html-single pages.", len(html_single_urls))
 
     return (visited_urls, html_single_urls)
 
@@ -845,7 +845,10 @@ async def download_all(
         return (0, 0, set())
 
     logger.info(
-        f"Starting download of {len(urls)} pages (force={force}, max_retries={max_retries})..."
+        "Starting download of %s pages (force=%s, max_retries=%s)...",
+        len(urls),
+        force,
+        max_retries,
     )
 
     # Create tasks for all downloads
@@ -863,10 +866,10 @@ async def download_all(
         if not success:
             failed_downloads.update(fails)
 
-    logger.info(f"Download completed: {successes} successful, {failures} failed.")
+    logger.info("Download completed: %s successful, %s failed.", successes, failures)
 
     if failures > 0:
-        logger.warning(f"Failed to download {failures} pages. See log for details.")
+        logger.warning("Failed to download %s pages. See log for details.", failures)
         # Record failed downloads for retry
         with open(output_dir / "failed_downloads.json", "w") as f:
             json.dump(list(failed_downloads), f, indent=2)
@@ -897,14 +900,14 @@ async def verify_downloads(
 
     if missing_urls:
         logger.warning(
-            f"Found {len(missing_urls)} pages that were not attempted for download."
+            "Found %s pages that were not attempted for download.", len(missing_urls)
         )
         with open(output_dir / "missing_urls.json", "w") as f:
             json.dump(list(missing_urls), f, indent=2)
         return False
 
     if failed_urls:
-        logger.warning(f"Found {len(failed_urls)} pages that failed to download.")
+        logger.warning("Found %s pages that failed to download.", len(failed_urls))
         return False
 
     logger.info("Verification completed successfully.")
@@ -942,12 +945,12 @@ async def extract_toc_structure(
     if main_index not in toc_candidates:
         toc_candidates.add(main_index)
 
-    logger.info(f"Found {len(toc_candidates)} potential TOC pages to analyze")
+    logger.info("Found %s potential TOC pages to analyze", len(toc_candidates))
 
     # Extract links from TOC pages
     expected_urls = set()
     for url in toc_candidates:
-        logger.info(f"Analyzing TOC page: {url}")
+        logger.info("Analyzing TOC page: %s", url)
         content = await fetch_page(session, url, semaphore)
         if not content:
             continue
@@ -998,7 +1001,7 @@ async def extract_toc_structure(
                     normalized_url = normalize_url(absolute_url)
                     expected_urls.add(normalized_url)
 
-    logger.info(f"Extracted {len(expected_urls)} expected URLs from TOC analysis")
+    logger.info("Extracted %s expected URLs from TOC analysis", len(expected_urls))
     return expected_urls
 
 
@@ -1043,7 +1046,7 @@ async def verify_against_toc(
 
     if missing_urls:
         logger.warning(
-            f"Found {len(missing_urls)} pages listed in TOC that were not downloaded."
+            "Found %s pages listed in TOC that were not downloaded.", len(missing_urls)
         )
         with open(output_dir / "missing_toc_urls.json", "w") as f:
             json.dump(list(missing_urls), f, indent=2)
@@ -1067,7 +1070,7 @@ def export_url_mapping(db_path: str, output_dir: Path) -> dict[str, str]:
     with open(output_dir / "url_mapping.json", "w") as f:
         json.dump(mapping, f, indent=2)
 
-    logger.info(f"Exported mapping for {len(mapping)} files.")
+    logger.info("Exported mapping for %s files.", len(mapping))
 
     return mapping
 
@@ -1112,10 +1115,10 @@ async def run_downloader(
     Returns:
         tuple: (verification_passed, toc_verification_passed, elapsed_time)
     """
-    logger.info(f"Starting OpenShift Documentation download for {base_url}")
-    logger.info(f"Output directory: {output_dir}")
-    logger.info(f"Force download: {force}")
-    logger.info(f"Max retries: {max_retries}")
+    logger.info("Starting OpenShift Documentation download for %s", base_url)
+    logger.info("Output directory: %s", output_dir)
+    logger.info("Force download: %s", force)
+    logger.info("Max retries: %s", max_retries)
 
     # Normalize base URL
     if base_url.endswith("/"):
@@ -1177,7 +1180,7 @@ async def run_downloader(
                     semaphore,
                 )
             except Exception as e:
-                logger.warning(f"TOC verification failed with error: {e}")
+                logger.warning("TOC verification failed with error: %s", e)
                 logger.warning("Continuing without TOC verification")
                 toc_verification_passed = False
 
@@ -1189,11 +1192,12 @@ async def run_downloader(
 
     if verification_passed and toc_verification_passed:
         logger.info(
-            f"Download process completed successfully in {elapsed_time:.2f} seconds!"
+            "Download process completed successfully in %.2f seconds!", elapsed_time
         )
     else:
         logger.warning(
-            f"Download completed with issues in {elapsed_time:.2f} seconds. See logs for details."
+            "Download completed with issues in %.2f seconds. See logs for details.",
+            elapsed_time,
         )
 
     return (verification_passed, toc_verification_passed, elapsed_time)
@@ -1209,7 +1213,7 @@ def apply_rate_limiting(rate_limit: float) -> None:
     # we'll implement rate limiting in the functions that use the semaphore instead.
     # This is a simpler approach that avoids monkey-patching.
     if rate_limit > 0:
-        logger.info(f"Rate limiting enabled: {rate_limit} seconds between requests")
+        logger.info("Rate limiting enabled: %s seconds between requests", rate_limit)
 
         # We'll use this opportunity to add a sleep before each semaphore usage
         # in the download and crawl functions
@@ -1282,8 +1286,8 @@ async def main_async(args: argparse.Namespace) -> bool:
         else:
             output_dir = f"{args.output_dir}/{args.version}"
 
-    logger.info(f"Base URL: {base_url}")
-    logger.info(f"Output directory: {output_dir}")
+    logger.info("Base URL: %s", base_url)
+    logger.info("Output directory: %s", output_dir)
 
     # Run the downloader
     verification_passed, toc_verification_passed, elapsed_time = await run_downloader(

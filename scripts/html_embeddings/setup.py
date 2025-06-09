@@ -149,7 +149,7 @@ def create_example_config(base_dir: Path) -> None:
 
     # Create example run script
     example_script = config_dir / "run_example.sh"
-    with open(example_script, "w") as f:
+    with open(example_script, "w", encoding="utf-8") as f:
         f.write(
             """#!/bin/bash
 
@@ -197,7 +197,7 @@ echo "Pipeline completed. Check $OUTPUT_DIR for results."
 
     import json
 
-    with open(config_file, "w") as f:
+    with open(config_file, "w", encoding="utf-8") as f:
         json.dump(config_content, f, indent=2)
 
     print(f"Created example config: {config_file}")
