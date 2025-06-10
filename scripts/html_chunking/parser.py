@@ -7,6 +7,13 @@ from bs4 import BeautifulSoup, Tag, NavigableString
 import re
 from dataclasses import dataclass, field
 
+# Constants
+MAX_SEARCH_DEPTH = 10
+MAX_PROCEDURE_SEARCH_DEPTH = 5
+MAX_CODE_BLOCKS = 100
+MAX_TABLES = 50
+MAX_TABLE_ROWS = 100
+
 
 @dataclass
 class HtmlSection:
@@ -85,7 +92,6 @@ def parse_html(html_content: str) -> Tuple[BeautifulSoup, HtmlSection]:
         section_stack = [root_section]
         current_section = root_section
         
-        # Find the body or use the soup itself if no body
         body = soup.body or soup
         
         # First pass: identify all headings
@@ -99,7 +105,7 @@ def parse_html(html_content: str) -> Tuple[BeautifulSoup, HtmlSection]:
         all_headings.sort(key=lambda x: _get_element_position(soup, x[0]))
         
         # Initialize section map to keep track of hierarchy
-        section_map = {0: root_section}  # Level 0 is the root
+        section_map = {0: root_section}
         
         # Create section hierarchy based on heading levels
         for heading, level in all_headings:
@@ -141,13 +147,11 @@ def parse_html(html_content: str) -> Tuple[BeautifulSoup, HtmlSection]:
                 if not element or (isinstance(element, str) and not element.strip()):
                     continue
                     
-                # Check if this element is a heading that starts a new section
                 is_section_start = False
                 new_level = None
                 
                 if isinstance(element, Tag) and element.name and re.match(r'h[1-6]$', element.name):
                     level = int(element.name[1])
-                    # Find corresponding section
                     for section in _flatten_sections(root_section):
                         if section.heading_tag and section.heading_tag == element:
                             is_section_start = True
@@ -156,10 +160,8 @@ def parse_html(html_content: str) -> Tuple[BeautifulSoup, HtmlSection]:
                             break
                 
                 if not is_section_start:
-                    # Add content to current section
                     current_section.add_content(element)
         else:
-            # No headings found, add all content to root section
             for element in body.children:
                 if element:
                     root_section.add_content(element)
@@ -170,7 +172,6 @@ def parse_html(html_content: str) -> Tuple[BeautifulSoup, HtmlSection]:
         soup = BeautifulSoup(html_content, 'html.parser')
         root_section = HtmlSection()
         
-        # Simple fallback: just add all content to the root section
         for element in soup.children:
             if element:
                 root_section.add_content(element)
@@ -230,7 +231,6 @@ def identify_special_sections(soup: BeautifulSoup) -> Dict[str, List[Dict]]:
         
         return special_sections
     except Exception as e:
-        # Return empty sections if identification fails
         return {
             'procedures': [],
             'code_blocks': [],
@@ -259,57 +259,46 @@ def identify_procedure_sections(soup: BeautifulSoup) -> List[Dict]:
     
     try:
         # Multiple ways to identify procedures
-        # 1. Look for elements containing the word "Procedure"
         procedure_markers = []
         for element in soup.find_all(string=lambda text: text and "Procedure" in text):
             if element.parent and element.parent.name not in ('script', 'style'):
                 procedure_markers.append(element)
                 
-        # 2. Look for ordered lists that might be procedures
         ordered_lists = soup.find_all('ol')
         
-        # Track processed lists to avoid duplicates
         processed_lists = set()
         
-        # Process explicit procedure markers first
         for marker in procedure_markers:
             if not marker or not marker.parent:
                 continue
                 
-            # Find the nearest ordered list after the marker
             ol = None
             current = marker.parent
             search_depth = 0
             
-            # Search forward for an ordered list
-            while current and search_depth < 5:
+            while current and search_depth < MAX_PROCEDURE_SEARCH_DEPTH:
                 search_depth += 1
                 if current.name == 'ol':
                     ol = current
                     break
                 
-                # Check next siblings
                 next_sibling = current.find_next_sibling()
                 if next_sibling and next_sibling.name == 'ol':
                     ol = next_sibling
                     break
                     
-                # Check children
                 ol_in_children = current.find('ol')
                 if ol_in_children:
                     ol = ol_in_children
                     break
                     
-                # Move to next element
                 current = current.find_next()
             
             if not ol or id(ol) in processed_lists:
                 continue
                 
-            # Find heading for this procedure
             heading = _find_closest_heading(marker.parent)
             
-            # Find elements between heading and procedure
             intro = []
             if heading:
                 current = heading.find_next()
@@ -318,14 +307,12 @@ def identify_procedure_sections(soup: BeautifulSoup) -> List[Dict]:
                         intro.append(current)
                     current = current.find_next()
             
-            # Check for prerequisites section
             prerequisites = None
             for element in intro:
                 if isinstance(element, Tag) and element.get_text() and "Prerequisites" in element.get_text():
                     prerequisites = element
                     break
             
-            # Add to procedures
             procedures.append({
                 'heading': heading,
                 'intro': intro,
@@ -334,16 +321,13 @@ def identify_procedure_sections(soup: BeautifulSoup) -> List[Dict]:
                 'steps': ol
             })
             
-            # Mark as processed
             processed_lists.add(id(ol))
         
-        # Process remaining ordered lists that might be procedures
         for ol in ordered_lists:
             if id(ol) in processed_lists:
                 continue
                 
-            # Check if this has procedure-like structure:
-            # 1. Has list items with paragraphs or code blocks
+            # Check if this has procedure-like structure
             has_structure = False
             for li in ol.find_all('li', recursive=False):
                 if li.find('p') or li.find('pre') or li.find('code'):
@@ -415,7 +399,7 @@ def _find_closest_heading(element: Tag) -> Optional[Tag]:
     current = element
     search_depth = 0
     
-    while current and search_depth < 10:
+    while current and search_depth < MAX_SEARCH_DEPTH:
         search_depth += 1
         current = current.previous_sibling
         
@@ -445,8 +429,8 @@ def identify_code_blocks(soup: BeautifulSoup) -> List[Dict]:
     
     try:
         # Find all code blocks
-        pre_tags = soup.find_all('pre', limit=100)  # Limit to prevent excessive processing
-        code_tags = soup.find_all('code', limit=100)
+        pre_tags = soup.find_all('pre', limit=MAX_CODE_BLOCKS)  # Limit to prevent excessive processing
+        code_tags = soup.find_all('code', limit=MAX_CODE_BLOCKS)
         
         # Process pre tags
         processed_tags = set()
@@ -518,7 +502,7 @@ def identify_tables(soup: BeautifulSoup) -> List[Dict]:
     
     try:
         # Find all tables, including those in custom components like rh-table
-        table_tags = soup.find_all(['table', 'rh-table'], limit=50)
+        table_tags = soup.find_all(['table', 'rh-table'], limit=MAX_TABLES)
         
         # For custom table components, extract the actual table
         expanded_tables = []
@@ -552,10 +536,10 @@ def identify_tables(soup: BeautifulSoup) -> List[Dict]:
                 # Get rows not in header
                 if header:
                     header_rows = set(id(row) for row in header.find_all('tr'))
-                    all_rows = table.find_all('tr', limit=100)
+                    all_rows = table.find_all('tr', limit=MAX_TABLE_ROWS)
                     rows = [row for row in all_rows if id(row) not in header_rows]
                 else:
-                    rows = table.find_all('tr', limit=100)
+                    rows = table.find_all('tr', limit=MAX_TABLE_ROWS)
             except Exception:
                 pass
             

@@ -2,7 +2,6 @@
 HTML chunker module.
 
 This module splits HTML content into chunks based on semantic boundaries.
-This version includes stateful anchor tracking for metadata generation.
 """
 
 from typing import List, Dict, Any, Optional
@@ -10,8 +9,10 @@ from dataclasses import dataclass
 from bs4 import BeautifulSoup, Tag, NavigableString
 import warnings
 
-# This code assumes tokenizer.py is in the same directory or accessible in the path.
 from tokenizer import count_html_tokens
+
+# Constants
+DEFAULT_CHARS_PER_TOKEN_RATIO = 3.5
 
 @dataclass
 class ChunkingOptions:
@@ -96,8 +97,6 @@ def chunk_html(
 
     return final_chunks if final_chunks else [Chunk(text=html_content, metadata={"source": source_url})]
 
-# --- HELPER FUNCTIONS ---
-# (The functions below are the same as the previous correct version)
 
 def _split_element_by_children(element: Tag, options: ChunkingOptions) -> List[str]:
     chunks, current_chunk_elements, current_tokens = [], [], 0
@@ -285,5 +284,5 @@ def _split_code(pre_element: Tag, options: ChunkingOptions) -> List[str]:
 
 def _linear_split(html_content: str, options: ChunkingOptions) -> List[str]:
     warnings.warn("Using linear character split as a fallback for an oversized, indivisible chunk.")
-    chars_per_chunk = int(options.max_token_limit * 3.5)
+    chars_per_chunk = int(options.max_token_limit * DEFAULT_CHARS_PER_TOKEN_RATIO)
     return [html_content[i:i + chars_per_chunk] for i in range(0, len(html_content), chars_per_chunk)]

@@ -13,26 +13,24 @@ Example:
     chunks = chunk_html(
         html_content,
         max_token_limit=500,
-        count_tag_tokens=True,
-        keep_siblings_together=True,
-        prepend_parent_section_text=True
+        count_tag_tokens=True
     )
 """
 
-from .parser import parse_html, HtmlSection, identify_special_sections
-from .tokenizer import count_tokens, count_html_tokens, set_custom_tokenizer, TokenCounter
-from .chunker import chunk_html, ChunkingOptions
+from .parser import HtmlSection, parse_html, identify_special_sections
+from .tokenizer import TokenCounter, count_html_tokens, count_tokens, set_custom_tokenizer
+from .chunker import ChunkingOptions, chunk_html
 
 __all__ = [
-    'chunk_html',
-    'parse_html',
-    'HtmlSection',
-    'count_tokens',
-    'count_html_tokens',
-    'set_custom_tokenizer',
-    'TokenCounter',
-    'ChunkingOptions',
-    'identify_special_sections'
+    "chunk_html",
+    "parse_html",
+    "HtmlSection",
+    "count_tokens",
+    "count_html_tokens",
+    "set_custom_tokenizer",
+    "TokenCounter",
+    "ChunkingOptions",
+    "identify_special_sections",
 ]
 
 __version__ = '1.0.0'

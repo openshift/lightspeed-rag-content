@@ -1,388 +1,190 @@
-"""
-Tests for the HTML chunker implementation.
-"""
-
 import unittest
-from unittest.mock import patch, MagicMock
+from unittest.mock import patch
 from bs4 import BeautifulSoup
 
-from .parser import parse_html, HtmlSection
-from .tokenizer import count_html_tokens
-from .chunker import chunk_html, _chunk_by_heading_level, _identify_oversized_chunks
+# Add the parent directory to the path to allow direct import of html_chunking
+import sys
+import os
+sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 
+from html_chunking.chunker import chunk_html
 
+# --- Mock Tokenizer ---
+# This mock tokenizer provides predictable token counts for testing purposes.
+def mock_count_html_tokens(html_string, count_tag_tokens=True):
+    """
+    A mock token counting function.
+    Counts 1 token per word and 10 tokens per tag for consistent testing.
+    """
+    if not isinstance(html_string, str):
+        html_string = str(html_string)
+    soup = BeautifulSoup(html_string, 'html.parser')
+    text = soup.get_text()
+    words = text.split()
+    word_tokens = len(words)
+    tag_tokens = 0
+    if count_tag_tokens:
+        tags = soup.find_all(True)
+        tag_tokens = len(tags) * 10
+    return word_tokens + tag_tokens
+
+@patch('html_chunking.chunker.count_html_tokens', new=mock_count_html_tokens)
 class TestHtmlChunker(unittest.TestCase):
-    """Test cases for the HTML chunker."""
 
-    def setUp(self):
-        """Set up test environment."""
-        # Create a simple mock for token counting to make tests deterministic
-        self.token_counter_patcher = patch('html_chunking.chunker.count_html_tokens')
-        self.mock_count_tokens = self.token_counter_patcher.start()
-        
-        # By default, make tokens equal to length / 5 (a simple approximation)
-        self.mock_count_tokens.side_effect = lambda text, count_tags: len(text) // 5
+    def test_chunk_html_small_input(self):
+        """Tests that HTML smaller than the max_token_limit is not chunked."""
+        html = "<html><body><p>This is a small test.</p></body></html>"
+        chunks = chunk_html(html, "http://example.com/small", max_token_limit=100)
+        self.assertEqual(len(chunks), 1)
+        self.assertEqual(chunks[0].text, html)
+        self.assertEqual(chunks[0].metadata["source"], "http://example.com/small")
 
-    def tearDown(self):
-        """Clean up test environment."""
-        self.token_counter_patcher.stop()
+    def test_basic_splitting(self):
+        """Tests basic splitting of multiple paragraphs."""
+        html = "<html><body>"
+        for i in range(10):
+            html += f"<p>This is paragraph {i}. It contains several words to simulate content.</p>"
+        html += "</body></html>"
+        chunks = chunk_html(html, "http://example.com/basic", max_token_limit=100)
+        self.assertEqual(len(chunks), 3)
+        self.assertTrue(all(mock_count_html_tokens(c.text) <= 110 for c in chunks))
+        self.assertIn("paragraph 0", chunks[0].text)
+        self.assertIn("paragraph 9", chunks[-1].text)
 
-    def test_no_chunk_needed(self):
-        """Test when content is already under token limit."""
-        html = "<h1>Test</h1><p>This is a small test</p>"
-        self.mock_count_tokens.return_value = 10  # Under limit
-        
-        result = chunk_html(html, max_token_limit=20)
-        
-        self.assertEqual(len(result), 1)
-        self.assertEqual(result[0], html)
+    def test_oversized_element_splitting(self):
+        """Tests that a single element larger than the limit is recursively split."""
+        long_text = "word " * 200
+        html = f"<html><body><div>{long_text}</div></body></html>"
+        chunks = chunk_html(html, "http://example.com/oversized", max_token_limit=100)
+        self.assertGreater(len(chunks), 1)
+        full_text = "".join(BeautifulSoup(c.text, 'html.parser').get_text() for c in chunks)
+        self.assertIn("word", full_text)
+        self.assertGreater(len(full_text), 500)
 
-    def test_chunk_by_h1(self):
-        """Test chunking by h1 headings."""
+    def test_table_splitting(self):
+        """Tests that large tables are split, preserving the header in each chunk."""
+        header = "<thead><tr><th>Header 1</th><th>Header 2</th></tr></thead>"
+        rows = "".join([f"<tr><td>Row {i} Col 1</td><td>Row {i} Col 2</td></tr>" for i in range(20)])
+        html = f"<html><body><table>{header}<tbody>{rows}</tbody></table></body></html>"
+        chunks = chunk_html(html, "http://example.com/table", max_token_limit=100)
+        self.assertGreater(len(chunks), 1)
+        for chunk in chunks:
+            self.assertIn("<thead>", chunk.text)
+            self.assertIn("Header 1", chunk.text)
+            self.assertIn("</table>", chunk.text)
+        self.assertIn("Row 0", chunks[0].text)
+        self.assertNotIn("Row 19", chunks[0].text)
+        self.assertIn("Row 19", chunks[-1].text)
+
+    def test_list_splitting(self):
+        """Tests that large lists are split correctly."""
+        items = "".join([f"<li>Item {i} is here.</li>" for i in range(30)])
+        html = f"<html><body><ul>{items}</ul></body></html>"
+        chunks = chunk_html(html, "http://example.com/list", max_token_limit=100)
+        self.assertGreater(len(chunks), 1)
+        for chunk in chunks:
+            self.assertIn("<ul ", chunk.text)
+            self.assertIn("</ul>", chunk.text)
+        self.assertIn("Item 0", chunks[0].text)
+        self.assertIn("Item 29", chunks[-1].text)
+
+    def test_definition_list_splitting(self):
+        """Tests splitting of a definition list."""
+        items = "".join([f"<dt>Term {i}</dt><dd>Definition {i} is quite long and elaborate.</dd>" for i in range(15)])
+        html = f"<html><body><div class='variablelist'><dl>{items}</dl></div></body></html>"
+        chunks = chunk_html(html, "http://example.com/dl", max_token_limit=100)
+        self.assertGreater(len(chunks), 1)
+        for chunk in chunks:
+            self.assertIn("<dl>", chunk.text)
+            self.assertIn("</dl>", chunk.text)
+        self.assertIn("Term 0", chunks[0].text)
+        self.assertIn("Term 14", chunks[-1].text)
+
+    def test_code_splitting(self):
+        """Tests that preformatted code blocks are split by lines."""
+        code_lines = "\n".join([f"line_{i} = 'some code here';" for i in range(50)])
+        html = f"<html><body><pre>{code_lines}</pre></body></html>"
+        chunks = chunk_html(html, "http://example.com/code", max_token_limit=50)
+        self.assertGreater(len(chunks), 1)
+        for chunk in chunks:
+            self.assertIn("<pre ", chunk.text)
+            self.assertIn("</pre>", chunk.text)
+        self.assertIn("line_0", chunks[0].text)
+        self.assertIn("line_49", chunks[-1].text)
+        self.assertNotIn("line_49", chunks[0].text)
+
+    def test_heading_grouping(self):
+        """Tests that headings are grouped with the following element."""
+        html = "<html><body>"
+        for i in range(5):
+            html += f"<h2>Title {i}</h2><p>This is paragraph for title {i}. It has text.</p>"
+        html += "</body></html>"
+        chunks = chunk_html(html, "http://example.com/headings", max_token_limit=50)
+        self.assertEqual(len(chunks), 5)
+        for i, chunk in enumerate(chunks):
+            self.assertIn(f"Title {i}", chunk.text)
+            self.assertIn(f"paragraph for title {i}", chunk.text)
+
+    def test_paragraph_ending_with_colon_grouping(self):
+        """Tests grouping of a paragraph ending with a colon with the next list/table."""
+        html = ("<html><body><p>Here are the items:</p>"
+                "<ul><li>Item 1</li><li>Item 2</li></ul></body></html>")
+        chunks = chunk_html(html, "http://example.com/colon", max_token_limit=100)
+        self.assertEqual(len(chunks), 1)
+        self.assertIn("Here are the items:", chunks[0].text)
+        self.assertIn("<li>Item 1</li>", chunks[0].text)
+
+    def test_metadata_anchor_handling(self):
+        """Tests the generation of source metadata with correct anchors."""
         html = """
-        <h1>Section 1</h1>
-        <p>Content 1</p>
-        <h1>Section 2</h1>
-        <p>Content 2</p>
-        <h1>Section 3</h1>
-        <p>Content 3</p>
+        <html><body>
+            <section id="intro"><h1>Intro</h1><p>Text</p></section>
+            <div id="main-content">
+                <h2 id="topic1">Topic 1</h2><p>Content 1</p>
+                <p>More content 1</p>
+            </div>
+            <section id="conclusion">
+                <p>Conclusion text</p>
+                <h3 id="final-thoughts">Final Thoughts</h3><p>Final words.</p>
+            </section>
+        </body></html>
         """
+        chunks = chunk_html(html, "http://example.com/meta", max_token_limit=25)
         
-        # First make the whole content exceed the limit
-        self.mock_count_tokens.side_effect = lambda text, count_tags: 100 if text == html else 30
-        
-        result = chunk_html(html, max_token_limit=50, keep_siblings_together=False)
-        
-        self.assertEqual(len(result), 3)  # Three chunks, one for each h1 section
-        self.assertIn("Section 1", result[0])
-        self.assertIn("Content 1", result[0])
-        self.assertIn("Section 2", result[1])
-        self.assertIn("Content 2", result[1])
-        self.assertIn("Section 3", result[2])
-        self.assertIn("Content 3", result[2])
+        self.assertGreaterEqual(len(chunks), 3)
 
-    def test_keep_siblings_together(self):
-        """Test keeping sibling sections together when under the limit."""
-        html = """
-        <h1>Section 1</h1>
-        <p>Content 1</p>
-        <h1>Section 2</h1>
-        <p>Content 2</p>
-        <h1>Section 3</h1>
-        <p>Content 3</p>
-        """
-        
-        # Set up mock to make full content exceed limit, but combinations under limit
-        def count_side_effect(text, count_tags):
-            if text == html:
-                return 100  # Whole document exceeds limit
-            elif "Section 1" in text and "Section 2" in text and "Section 3" in text:
-                return 100  # All three sections exceed limit
-            elif "Section 1" in text and "Section 2" in text:
-                return 40  # First two sections together under limit
-            elif "Section 3" in text:
-                return 30  # Last section under limit
-            else:
-                return 20  # Individual sections under limit
-        
-        self.mock_count_tokens.side_effect = count_side_effect
-        
-        result = chunk_html(html, max_token_limit=50, keep_siblings_together=True)
-        
-        self.assertEqual(len(result), 2)  # Two chunks: sections 1+2, and section 3
-        self.assertIn("Section 1", result[0])
-        self.assertIn("Content 1", result[0])
-        self.assertIn("Section 2", result[0])
-        self.assertIn("Content 2", result[0])
-        self.assertIn("Section 3", result[1])
-        self.assertIn("Content 3", result[1])
+        self.assertEqual(chunks[0].metadata["source"], "http://example.com/meta")
 
-    def test_prepend_parent_text(self):
-        """Test prepending parent section text to child sections."""
-        html = """
-        <h1>Parent Section</h1>
-        <p>Parent content</p>
-        <h2>Child Section 1</h2>
-        <p>Child content 1</p>
-        <h2>Child Section 2</h2>
-        <p>Child content 2</p>
-        """
+        topic1_chunks = [c for c in chunks if "Topic 1" in c.text or "Content 1" in c.text or "More content 1" in c.text]
+        self.assertTrue(all(c.metadata["source"] == "http://example.com/meta#topic1" for c in topic1_chunks))
         
-        # Make the whole content exceed the limit, but h2 sections with parent text under limit
-        def count_side_effect(text, count_tags):
-            if text == html or "Parent Section" in text and "Child Section 1" in text and "Child Section 2" in text:
-                return 100  # Whole document or all content exceeds limit
-            elif "Parent Section" in text and "Parent content" in text and "Child Section" in text:
-                return 40  # Parent heading + content + one child section under limit
-            else:
-                return 20  # Individual sections under limit
+        final_thoughts_chunk = next((c for c in chunks if "Final words" in c.text), None)
         
-        self.mock_count_tokens.side_effect = count_side_effect
+        self.assertIsNotNone(final_thoughts_chunk, "Final thoughts chunk not found")
         
-        result = chunk_html(
-            html, max_token_limit=50, keep_siblings_together=False, prepend_parent_section_text=True
-        )
-        
-        self.assertEqual(len(result), 2)  # Two chunks
-        self.assertIn("Parent Section", result[0])
-        self.assertIn("Parent content", result[0])
-        self.assertIn("Child Section 1", result[0])
-        self.assertIn("Child content 1", result[0])
-        self.assertIn("Parent Section", result[1])
-        self.assertIn("Parent content", result[1])
-        self.assertIn("Child Section 2", result[1])
-        self.assertIn("Child content 2", result[1])
+        self.assertEqual(final_thoughts_chunk.metadata["source"], "http://example.com/meta#final-thoughts")
 
-    def test_deep_section_hierarchy(self):
-        """Test chunking with a deep hierarchy of sections."""
-        html = """
-        <h1>Level 1</h1>
-        <p>Level 1 content</p>
-        <h2>Level 2</h2>
-        <p>Level 2 content</p>
-        <h3>Level 3</h3>
-        <p>Level 3 content</p>
-        <h4>Level 4</h4>
-        <p>Level 4 content</p>
-        <h5>Level 5</h5>
-        <p>Level 5 content</p>
-        <h6>Level 6</h6>
-        <p>Level 6 content</p>
-        """
-        
-        # Make the whole content and each level exceed the limit
-        def count_side_effect(text, count_tags):
-            if len(text) > 100:  # Rough proxy for detecting larger chunks
-                return 100  # Exceeds limit
-            else:
-                return 30  # Individual sections under limit
-        
-        self.mock_count_tokens.side_effect = count_side_effect
-        
-        result = chunk_html(
-            html, max_token_limit=50, keep_siblings_together=False, prepend_parent_section_text=False
-        )
-        
-        # We should get multiple chunks broken down by heading levels
-        self.assertGreater(len(result), 1)
-        self.assertTrue(any("Level 1" in chunk for chunk in result))
-        self.assertTrue(any("Level 6" in chunk for chunk in result))
+    def test_no_anchor_found(self):
+        """Tests that the source URL has no anchor if no IDs are present."""
+        html = "<html><body><p>Paragraph 1.</p><p>Paragraph 2.</p></body></html>"
+        chunks = chunk_html(html, "http://example.com/no-anchor", max_token_limit=15)
+        self.assertEqual(len(chunks), 2)
+        self.assertEqual(chunks[0].metadata["source"], "http://example.com/no-anchor")
+        self.assertEqual(chunks[1].metadata["source"], "http://example.com/no-anchor")
 
-    def test_procedure_handling(self):
-        """Test handling of procedures in chunking."""
-        html = """
-        <h3>Installing Software</h3>
-        <p>Follow these steps to install the software:</p>
-        <p>Procedure</p>
-        <ol>
-            <li>Download the installer from the website.</li>
-            <li>Run the installer with administrator privileges.</li>
-            <li>Follow the on-screen instructions.</li>
-            <li>Restart your computer when prompted.</li>
-        </ol>
-        """
-        
-        # Setup token counting to make procedures split if needed
-        def count_side_effect(text, count_tags):
-            if "Procedure" in text and all([
-                "Download the installer" in text,
-                "Run the installer" in text, 
-                "Follow the on-screen" in text,
-                "Restart your computer" in text
-            ]):
-                return 60  # Whole procedure exceeds limit
-            elif "Procedure" in text:
-                return 30  # Procedure marker under limit
-            elif "<ol" in text:
-                return 40  # Just the ordered list exceeds limit
-            elif "Download the installer" in text and "Run the installer" in text:
-                return 30  # First two steps under limit
-            elif "Follow the on-screen" in text and "Restart your computer" in text:
-                return 30  # Last two steps under limit
-            else:
-                return 10  # Individual elements under limit
-        
-        self.mock_count_tokens.side_effect = count_side_effect
-        
-        result = chunk_html(html, max_token_limit=50)
-        
-        # The procedure should be split appropriately
-        self.assertGreater(len(result), 1)
-        self.assertTrue(any("Installing Software" in chunk for chunk in result))
-        self.assertTrue(any("Procedure" in chunk for chunk in result))
-        self.assertTrue(any("Download the installer" in chunk for chunk in result))
+    def test_empty_html(self):
+        """Tests that empty or minimal HTML does not cause errors."""
+        chunks_empty = chunk_html("", "http://example.com/empty")
+        self.assertEqual(len(chunks_empty), 1)
+        self.assertEqual(chunks_empty[0].text, "")
 
-    def test_code_block_handling(self):
-        """Test handling of code blocks in chunking."""
-        html = """
-        <h2>Code Example</h2>
-        <p>Here is an example of Python code:</p>
-        <pre><code>
-        def hello_world():
-            print("Hello, world!")
-            
-        if __name__ == "__main__":
-            hello_world()
-        </code></pre>
-        <p>This is a simple hello world program.</p>
-        """
+        chunks_html = chunk_html("<html></html>", "http://example.com/empty")
+        self.assertEqual(len(chunks_html), 1)
+        self.assertEqual(chunks_html[0].text, "<html></html>")
         
-        # Setup token counting to make code blocks split if needed
-        def count_side_effect(text, count_tags):
-            if "Code Example" in text and "hello_world" in text and "simple hello world program" in text:
-                return 100  # Whole example exceeds limit
-            elif "Here is an example" in text and "hello_world" in text:
-                return 60  # Intro + code exceeds limit
-            elif "hello_world" in text and "simple hello world program" in text:
-                return 60  # Code + outro exceeds limit
-            elif "hello_world" in text:
-                return 40  # Just code under limit
-            else:
-                return 20  # Individual elements under limit
-        
-        self.mock_count_tokens.side_effect = count_side_effect
-        
-        result = chunk_html(html, max_token_limit=50)
-        
-        # Code should be split appropriately
-        self.assertGreater(len(result), 1)
-        self.assertTrue(any("Code Example" in chunk for chunk in result))
-        self.assertTrue(any("example of Python code" in chunk for chunk in result))
-        self.assertTrue(any("hello_world" in chunk for chunk in result))
-        self.assertTrue(any("simple hello world program" in chunk for chunk in result))
+        chunks_body = chunk_html("<body></body>", "http://example.com/empty")
+        self.assertEqual(len(chunks_body), 1)
+        self.assertEqual(chunks_body[0].text, "<body></body>")
 
-    def test_table_handling(self):
-        """Test handling of tables in chunking."""
-        html = """
-        <h2>Data Table</h2>
-        <p>Here is a sample data table:</p>
-        <table>
-            <thead>
-                <tr>
-                    <th>Name</th>
-                    <th>Age</th>
-                    <th>Occupation</th>
-                </tr>
-            </thead>
-            <tbody>
-                <tr>
-                    <td>John Doe</td>
-                    <td>30</td>
-                    <td>Engineer</td>
-                </tr>
-                <tr>
-                    <td>Jane Smith</td>
-                    <td>28</td>
-                    <td>Doctor</td>
-                </tr>
-                <tr>
-                    <td>Bob Johnson</td>
-                    <td>45</td>
-                    <td>Teacher</td>
-                </tr>
-            </tbody>
-        </table>
-        <p>This table shows sample employee data.</p>
-        """
-        
-        # Setup token counting to make tables split if needed
-        def count_side_effect(text, count_tags):
-            if "Data Table" in text and "John Doe" in text and "sample employee data" in text:
-                return 100  # Whole example exceeds limit
-            elif "sample data table" in text and "John Doe" in text:
-                return 60  # Intro + table exceeds limit
-            elif "John Doe" in text and "sample employee data" in text:
-                return 60  # Table + outro exceeds limit
-            elif "<table>" in text and "</table>" in text:
-                return 70  # Whole table exceeds limit
-            elif "John Doe" in text and "Jane Smith" in text and "Bob Johnson" in text:
-                return 60  # All rows exceed limit
-            elif "John Doe" in text:
-                return 20  # First row under limit
-            elif "Jane Smith" in text:
-                return 20  # Second row under limit
-            elif "Bob Johnson" in text:
-                return 20  # Third row under limit
-            else:
-                return 10  # Individual elements under limit
-        
-        self.mock_count_tokens.side_effect = count_side_effect
-        
-        result = chunk_html(html, max_token_limit=50)
-        
-        # Table should be split appropriately
-        self.assertGreater(len(result), 1)
-        self.assertTrue(any("Data Table" in chunk for chunk in result))
-        self.assertTrue(any("sample data table" in chunk for chunk in result))
-        self.assertTrue(any("John Doe" in chunk for chunk in result))
-        self.assertTrue(any("sample employee data" in chunk for chunk in result))
-
-    def test_identify_oversized_chunks(self):
-        """Test that oversized chunks are correctly identified."""
-        chunks = ["Small chunk", "Medium chunk", "Very large chunk that exceeds the token limit"]
-        
-        # Set up the mock to make only the third chunk oversized
-        def count_side_effect(text, count_tags):
-            if text == "Very large chunk that exceeds the token limit":
-                return 60  # Exceeds limit
-            else:
-                return 20  # Under limit
-        
-        self.mock_count_tokens.side_effect = count_side_effect
-        
-        options = MagicMock()
-        options.max_token_limit = 50
-        options.count_tag_tokens = True
-        
-        oversized = _identify_oversized_chunks(chunks, options)
-        
-        self.assertEqual(len(oversized), 1)
-        self.assertEqual(list(oversized)[0], 2)  # The third chunk (index 2) is oversized
-
-    def test_mixed_content(self):
-        """Test chunking with mixed content types."""
-        html = """
-        <h1>Mixed Content</h1>
-        <p>This section contains mixed content.</p>
-        <h2>Code Example</h2>
-        <pre><code>print("Hello world")</code></pre>
-        <h2>Procedure</h2>
-        <p>Procedure</p>
-        <ol>
-            <li>Step 1</li>
-            <li>Step 2</li>
-        </ol>
-        <h2>Table</h2>
-        <table>
-            <tr><th>Header</th></tr>
-            <tr><td>Data</td></tr>
-        </table>
-        """
-        
-        # Make the whole content and each major section exceed the limit
-        def count_side_effect(text, count_tags):
-            if len(text) > 100:  # Rough proxy for detecting larger chunks
-                return 100  # Exceeds limit
-            elif "Code Example" in text and "print" in text:
-                return 60  # Code section exceeds limit
-            elif "Procedure" in text and "Step 1" in text and "Step 2" in text:
-                return 60  # Procedure section exceeds limit
-            elif "Table" in text and "<table>" in text:
-                return 60  # Table section exceeds limit
-            else:
-                return 30  # Individual elements under limit
-        
-        self.mock_count_tokens.side_effect = count_side_effect
-        
-        result = chunk_html(html, max_token_limit=50)
-        
-        # Mixed content should be split appropriately
-        self.assertGreater(len(result), 1)
-        self.assertTrue(any("Mixed Content" in chunk for chunk in result))
-        self.assertTrue(any("Code Example" in chunk for chunk in result))
-        self.assertTrue(any("Procedure" in chunk for chunk in result))
-        self.assertTrue(any("Table" in chunk for chunk in result))
-
-
-if __name__ == "__main__":
-    unittest.main()
+if __name__ == '__main__':
+    unittest.main(argv=['first-arg-is-ignored'], exit=False)
