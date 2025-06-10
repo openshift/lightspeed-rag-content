@@ -321,10 +321,12 @@ def load_chunks_as_nodes(chunks_dir: Path, logger) -> List[TextNode]:
     """Load all chunks as TextNode objects."""
     nodes = []
 
-    chunk_files = list(chunks_dir.glob("*.json"))
+    # Use a recursive glob to find chunk files in their document-specific subdirectories.
+    chunk_files = list(chunks_dir.glob("**/*.json"))
+    # Filter out the summary files that might be at various levels.
     chunk_files = [f for f in chunk_files if not f.name.endswith("_summary.json")]
 
-    logger.info("Found %s chunk files to load", len(chunk_files))
+    logger.info("Found %s chunk files to load from %s", len(chunk_files), chunks_dir)
 
     for chunk_file in chunk_files:
         try:
@@ -350,8 +352,13 @@ def run_embedding_step(
     args: argparse.Namespace, paths: Dict[str, Path], logger
 ) -> bool:
     """Run the embedding generation step."""
+    # Start with the base chunks directory (e.g., cache/chunks/4.18)
     chunks_dir = paths["chunks"]
     output_dir = Path(args.output_dir)
+
+    # If a specific document was processed, look for chunks inside its dedicated subdirectory.
+    if args.specific_doc:
+        chunks_dir = chunks_dir / args.specific_doc
 
     try:
         logger.info("Loading chunks...")

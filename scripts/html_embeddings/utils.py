@@ -60,7 +60,6 @@ def create_directory_structure(
     if specific_doc:
         downloads_dir = downloads_dir / specific_doc
         stripped_dir = stripped_dir / specific_doc
-        chunks_dir = chunks_dir / specific_doc
 
     directories = {
         "cache": cache_path,

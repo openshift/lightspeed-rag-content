@@ -140,53 +140,34 @@ def get_local_path(url: str, output_dir: Path) -> Path:
     Returns:
         Path: Local path where the file will be saved
     """
-    # Normalize the URL first to remove any fragments
     url = normalize_url(url)
-
     parsed_url = urlparse(url)
-
-    # Remove the domain part
     path = parsed_url.path
-
-    # Extract the document name from the path
-    # Examples: /en/documentation/openshift_container_platform/4.18/html-single/monitoring/
     path_parts = path.strip("/").split("/")
 
-    # Find the position of html-single or html
     try:
-        doc_type_index = -1
-        if "html-single" in path_parts:
-            doc_type_index = path_parts.index("html-single")
-        elif "html" in path_parts:
-            doc_type_index = path_parts.index("html")
-
+        doc_type_index = path_parts.index("html-single") if "html-single" in path_parts else path_parts.index("html")
+        
         if doc_type_index + 1 < len(path_parts):
-            # The document name is the part after html-single or html
             doc_name = path_parts[doc_type_index + 1]
 
-            # Create the simplified path
-            if path.endswith("/") or not path_parts[-1] or not path.endswith(".html"):
-                local_path = output_dir / doc_name / "index.html"
-            else:
-                local_path = output_dir / doc_name
+            # If the output directory is already the doc-specific folder, don't nest further.
+            target_dir = output_dir if output_dir.name == doc_name else output_dir / doc_name
+            
+            local_path = target_dir / "index.html"
         else:
-            # Fallback if structure is unexpected
-            if path.endswith("/"):
-                path = path + "index.html"
-            elif not path.endswith(".html"):
-                path = path + "/index.html"
-            local_path = output_dir / path.lstrip("/")
+            # Fallback for unexpected URL structures
+            local_path = output_dir / "index.html"
+
     except (ValueError, IndexError):
         # Fallback if html-single not in path
         if path.endswith("/"):
-            path = path + "index.html"
+            path += "index.html"
         elif not path.endswith(".html"):
-            path = path + "/index.html"
+            path += "/index.html"
         local_path = output_dir / path.lstrip("/")
 
-    # Ensure parent directory exists
     local_path.parent.mkdir(parents=True, exist_ok=True)
-
     return local_path
 
 

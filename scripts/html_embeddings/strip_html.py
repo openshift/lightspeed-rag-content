@@ -8,6 +8,7 @@ import importlib.util
 from pathlib import Path
 from typing import List, Optional
 
+# Load the html-stripper utility dynamically
 html_stripper_path = Path(__file__).parent.parent / "html_chunking" / "html-stripper.py"
 spec = importlib.util.spec_from_file_location("html_stripper", html_stripper_path)
 html_stripper = importlib.util.module_from_spec(spec)
@@ -42,25 +43,43 @@ def strip_html_content(
     logger.info("Found %s HTML files to process", len(html_files))
 
     try:
-        output_dir.mkdir(parents=True, exist_ok=True)
+        processed_files = 0
+        # This logic is now more direct to avoid path ambiguities.
+        # It iterates through found files and constructs a precise output path.
+        for input_file in html_files:
+            if exclusion_list and str(input_file) in exclusion_list:
+                logger.debug("Skipping excluded file: %s", input_file)
+                continue
 
-        html_stripper.process_directory(
-            input_dir=str(input_dir),
-            output_dir=str(output_dir),
-            strip_mode='all',
-            strip_links=True,
-            exclusion_list=exclusion_list or [],
-        )
+            # Calculate the output path by replacing the input base dir with the output base dir.
+            relative_path = input_file.relative_to(input_dir)
+            output_file_path = output_dir / relative_path
 
-        output_files = list(output_dir.rglob("*.html"))
-        logger.info("Successfully processed %s files", len(output_files))
+            # Ensure the parent directory for the output file exists.
+            output_file_path.parent.mkdir(parents=True, exist_ok=True)
 
-        if len(output_files) < len(html_files) * 0.8:
+            # Call the single-file stripper from the utility script.
+            # We pass the direct parent of the target file as the output directory
+            # and tell the utility not to handle path preservation itself.
+            result_path_str = html_stripper.strip_html_content(
+                input_file_path=str(input_file),
+                output_dir=str(output_file_path.parent),
+                strip_mode='all',
+                strip_links=True,
+                preserve_path=False,
+            )
+
+            if result_path_str:
+                processed_files += 1
+
+        logger.info("Successfully processed %s files", processed_files)
+
+        if processed_files < len(html_files) * 0.8:
             logger.warning(
                 "Fewer output files than expected - some processing may have failed"
             )
 
-        return len(output_files) > 0
+        return processed_files > 0
 
     except Exception as e:
         logger.error("HTML stripping failed: %s", e)
@@ -90,6 +109,8 @@ def strip_single_html_file(input_file: Path, output_file: Path) -> bool:
         result = html_stripper.strip_html_content(
             input_file_path=str(input_file),
             output_dir=str(output_file.parent),
+            strip_mode='all',
+            strip_links=True,
             preserve_path=False,
         )
 

@@ -57,30 +57,44 @@ def chunk_html_documents(
         total_chunks = 0
         processed_files = 0
         
-        # --- Start of changes ---
-        # Determine version from the input directory path
-        version = input_dir.parent.name
+        # The base directory for calculating relative paths should consistently
+        # be the version directory (e.g., '.../stripped/4.18').
+        base_dir_for_relative_paths = input_dir
+        if 'stripped' in input_dir.parts:
+            # Find the path up to and including the version folder
+            # e.g. from ".../stripped/4.18/monitoring" get ".../stripped/4.18"
+            path_parts = input_dir.resolve().parts
+            try:
+                stripped_index = path_parts.index('stripped')
+                base_dir_for_relative_paths = Path(*path_parts[:stripped_index+2])
+            except (ValueError, IndexError):
+                logger.warning("Could not determine base directory from 'stripped' in path.")
         
         for html_file in html_files:
             logger.debug("Processing %s", html_file)
 
-            # Reconstruct the source URL based on the file path
-            relative_doc_path = html_file.relative_to(input_dir)
-            doc_name_from_path = relative_doc_path.parts[0]
-            source_url = f"https://docs.redhat.com/en/documentation/openshift_container_platform/{version}/html-single/{doc_name_from_path}/"
+            # The doc name is the parent directory of the html file.
+            # The version is the parent of that directory.
+            doc_name = html_file.parent.name
+            version = html_file.parent.parent.name
+            
+            # The main output_dir is the version dir, e.g., '.../chunks/4.18'.
+            # We create the doc-specific subdirectory here.
+            doc_specific_output_dir = output_dir / doc_name
+
+            # Construct the source URL, which will be passed to the chunker.
+            source_url = f"https://docs.redhat.com/en/documentation/openshift_container_platform/{version}/html-single/{doc_name}/"
 
             success, chunk_count = chunk_single_html_file(
-                input_file=html_file,
-                output_dir=output_dir,
-                input_base_dir=input_dir,
+                input_file=html_file.resolve(),
+                output_dir=doc_specific_output_dir, # Pass the new doc-specific dir
+                input_base_dir=base_dir_for_relative_paths, # Pass the consistent version-level base path
+                source_url=source_url,
                 max_token_limit=max_token_limit,
                 count_tag_tokens=count_tag_tokens,
-                # These arguments are not used by the new chunker but are kept for signature consistency
                 keep_siblings_together=keep_siblings_together,
                 prepend_parent_section_text=prepend_parent_section_text,
-                source_url=source_url,  # Pass the reconstructed URL
             )
-            # --- End of changes ---
 
             if success:
                 processed_files += 1
@@ -114,7 +128,6 @@ def chunk_html_documents(
         return False
 
 
-# --- Start of changes ---
 def chunk_single_html_file(
     input_file: Path,
     output_dir: Path,
@@ -125,7 +138,6 @@ def chunk_single_html_file(
     keep_siblings_together: bool = True,
     prepend_parent_section_text: bool = True,
 ) -> tuple[bool, int]:
-# --- End of changes ---
     """
     Chunk a single HTML file.
 
@@ -145,6 +157,8 @@ def chunk_single_html_file(
     logger = logging.getLogger(__name__)
 
     try:
+        output_dir.mkdir(parents=True, exist_ok=True)
+
         with open(input_file, "r", encoding="utf-8") as f:
             html_content = f.read()
 
@@ -152,15 +166,12 @@ def chunk_single_html_file(
             logger.warning("Empty file: %s", input_file)
             return True, 0
 
-        # --- Start of changes ---
-        # Call chunker with the required source_url
         chunks: List[Chunk] = chunk_html(
             html_content=html_content,
             source_url=source_url,
             max_token_limit=max_token_limit,
             count_tag_tokens=count_tag_tokens
         )
-        # --- End of changes ---
 
         if not chunks:
             logger.warning("No chunks generated for %s", input_file)
@@ -170,10 +181,7 @@ def chunk_single_html_file(
         base_metadata = extract_metadata_from_path(relative_path)
 
         chunk_count = 0
-        # --- Start of changes ---
-        # The loop now iterates over Chunk objects, not strings
         for i, chunk_obj in enumerate(chunks):
-            # Combine base metadata with metadata from the chunker (which has the source url)
             chunk_metadata = {
                 **base_metadata,
                 **chunk_obj.metadata,
@@ -185,10 +193,9 @@ def chunk_single_html_file(
 
             chunk_data = {
                 "id": f"{base_metadata['doc_id']}_chunk_{i:04d}",
-                "content": chunk_obj.text, # Access content via .text attribute
+                "content": chunk_obj.text,
                 "metadata": chunk_metadata,
             }
-        # --- End of changes ---
 
             chunk_filename = f"{base_metadata['doc_id']}_chunk_{i:04d}.json"
             chunk_file_path = output_dir / chunk_filename
@@ -202,6 +209,8 @@ def chunk_single_html_file(
 
     except Exception as e:
         logger.error("Error chunking %s: %s", input_file, e)
+        import traceback
+        traceback.print_exc()
         return False, 0
 
 
