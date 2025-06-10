@@ -20,13 +20,17 @@ try:
 except ImportError:
     raise ImportError("HuggingFace transformers is required for token counting. Install with 'pip install transformers'")
 
+# Constants
+MAX_CHUNK_SIZE = 5000
+WORDS_PER_BATCH = 100
+
 
 class TokenCounter:
     """
     A class that counts tokens in text using LlamaIndex or HuggingFace tokenizers.
     """
     
-    def __init__(self, custom_tokenizer: Optional[Callable[[str], List[str]]] = None):
+    def __init__(self, custom_tokenizer: Optional[Callable[[str], List[str]]] = None) -> None:
         """
         Initialize the TokenCounter.
         
@@ -41,28 +45,23 @@ class TokenCounter:
     def _initialize_tokenizer(self) -> None:
         """Initialize the tokenizer."""
         if self.tokenizer is not None:
-            # User provided a custom tokenizer
             return
             
-        # Try to use LlamaIndex tokenizer
         try:
             embed_model = LlamaIndexSettings.embed_model
             if hasattr(embed_model, 'tokenizer'):
                 self.tokenizer = lambda text: embed_model.tokenizer.encode(text)
                 return
-        except (AttributeError, ValueError, Exception):
+        except (AttributeError, ValueError, ImportError, RuntimeError):
             pass
         
-        # Try to use HuggingFace tokenizer
         try:
-            # Initialize once and reuse to avoid overhead
             self.hf_tokenizer = AutoTokenizer.from_pretrained("gpt2")
             self.tokenizer = lambda text: self.hf_tokenizer.encode(text, add_special_tokens=False)
             return
-        except (AttributeError, ValueError, Exception):
+        except (AttributeError, ValueError, ImportError, RuntimeError):
             pass
         
-        # If we get here, no tokenizer was successfully initialized
         raise RuntimeError(
             "Failed to initialize a tokenizer. Either provide a custom tokenizer, "
             "configure LlamaIndex Settings.embed_model with a tokenizer, "
@@ -82,11 +81,9 @@ class TokenCounter:
         if not text:
             return 0
 
-        # Process text in smaller chunks to avoid tokenizer limitations
         try:
-            if len(text) > 5000:
-                # Split text into manageable chunks
-                chunks = [text[i:i+5000] for i in range(0, len(text), 5000)]
+            if len(text) > MAX_CHUNK_SIZE:
+                chunks = [text[i:i+MAX_CHUNK_SIZE] for i in range(0, len(text), MAX_CHUNK_SIZE)]
                 token_count = 0
                 for chunk in chunks:
                     tokens = self.tokenizer(chunk)
@@ -96,19 +93,16 @@ class TokenCounter:
                 tokens = self.tokenizer(text)
                 return len(tokens)
         except Exception as e:
-            # If using HuggingFace tokenizer and getting context length issues, try a different approach
             if "sequence length is longer than the specified maximum" in str(e) and self.hf_tokenizer:
                 warnings.warn(f"Token counting using full text failed: {e}. Using manual chunking approach.")
-                # Alternative chunk-by-chunk approach
                 words = re.findall(r'\b\w+\b|[^\w\s]', text)
-                chunks = [' '.join(words[i:i+100]) for i in range(0, len(words), 100)]
+                chunks = [' '.join(words[i:i+WORDS_PER_BATCH]) for i in range(0, len(words), WORDS_PER_BATCH)]
                 token_count = 0
                 for chunk in chunks:
                     try:
                         tokens = self.hf_tokenizer.encode(chunk, add_special_tokens=False)
                         token_count += len(tokens)
                     except Exception:
-                        # Last resort - approximate
                         token_count += len(chunk.split())
                 return token_count
             else:
@@ -130,17 +124,13 @@ class TokenCounter:
             
         try:
             if not count_tag_tokens:
-                # Strip HTML tags before counting
                 soup = BeautifulSoup(html_text, 'html.parser')
                 text = soup.get_text(separator=' ')
                 return self.count_tokens(text)
             else:
-                # Count tokens including HTML tags
                 return self.count_tokens(html_text)
         except Exception as e:
-            # Fallback to approximate count based on word count
             if not count_tag_tokens:
-                # Try to strip tags with regex as a fallback
                 text = re.sub(r'<[^>]+>', ' ', html_text)
                 return len(text.split())
             else:

@@ -15,6 +15,9 @@ from pathlib import Path
 from typing import List, Optional
 from bs4 import BeautifulSoup, Tag
 
+# Constants
+MAX_UNWRAP_PASSES = 5
+
 
 def _aggressively_strip_tags_and_attributes(soup: BeautifulSoup, strip_links: bool) -> None:
     """
@@ -28,7 +31,7 @@ def _aggressively_strip_tags_and_attributes(soup: BeautifulSoup, strip_links: bo
     tags_to_unwrap = [
         'div.titlepage', 'div.itemizedlist', 'div.variablelist',
         'div._additional-resources', 'span.strong', 'span.inlinemediaobject',
-        'rh-table', 'colgroup', 'span'  # Generalized span removal
+        'rh-table', 'colgroup', 'span'
     ]
     if strip_links:
         tags_to_unwrap.append('a')
@@ -38,7 +41,6 @@ def _aggressively_strip_tags_and_attributes(soup: BeautifulSoup, strip_links: bo
             try:
                 tag.unwrap()
             except ValueError:
-                # Ignore errors from trying to unwrap a tag that's already gone
                 continue
 
     # 2. Special transformation for <rh-alert>
@@ -76,7 +78,7 @@ def _aggressively_strip_tags_and_attributes(soup: BeautifulSoup, strip_links: bo
             del tag[attr]
 
     # 4. Unwrap nested, attribute-less divs
-    for _ in range(5):  # Run multiple passes to handle deeply nested structures
+    for _ in range(MAX_UNWRAP_PASSES):  # Run multiple passes to handle deeply nested structures
         unwrapped_in_pass = False
         for tag in soup.find_all('div', attrs={}):
             child_elements = [c for c in tag.children if isinstance(c, Tag)]
@@ -127,7 +129,6 @@ def strip_html_content(
             
         if preserve_path:
             try:
-                # Find a common base to create a sensible relative path
                 base_input_dir = os.path.abspath(os.path.dirname(input_file_path))
                 rel_path = os.path.relpath(input_file_path, start=base_input_dir)
             except ValueError:
