@@ -44,7 +44,7 @@ python scripts/html_embeddings/generate_embeddings.py \
   --model-dir ./embeddings_model
 ```
 
-Process only specific document (good for quick testing):
+Process only specific document and skip runbooks (good for quick testing):
 
 ```bash
 # Process only monitoring documentation
@@ -52,7 +52,8 @@ python scripts/html_embeddings/generate_embeddings.py \
   --version 4.18 \
   --specific-doc observability_overview \
   --output-dir ./vector_db \
-  --model-dir ./embeddings_model
+  --model-dir ./embeddings_model \
+  --skip-runbooks
 ```
 
 Use cached downloads:
