@@ -27,32 +27,40 @@ Standard:
 
 ```bash
 # Generate embeddings for OpenShift 4.18
-python generate_embeddings.py \
+python scripts/html_embeddings/generate_embeddings.py \
   --version 4.18 \
-  --index ocp-4.18 \
   --output-dir ./vector_db \
   --model-dir ./embeddings_model
 ```
 
-Only specific document (good for quick testing):
+Specify custom index name instead of the auto-generated one:
+
+```bash
+# Generate embeddings for OpenShift 4.18
+python scripts/html_embeddings/generate_embeddings.py \
+  --version 4.18 \
+  --output-dir ./vector_db \
+  --index ocp-4.18 \
+  --model-dir ./embeddings_model
+```
+
+Process only specific document (good for quick testing):
 
 ```bash
 # Process only monitoring documentation
-python generate_embeddings.py \
+python scripts/html_embeddings/generate_embeddings.py \
   --version 4.18 \
-  --specific-doc monitoring \
-  --index ocp-4.18-monitoring \
+  --specific-doc observability_overview \
   --output-dir ./vector_db \
   --model-dir ./embeddings_model
 ```
 
-Using cached downloads:
+Use cached downloads:
 
 ```bash
 # Use previously downloaded files
-python generate_embeddings.py \
+python scripts/html_embeddings/generate_embeddings.py \
   --version 4.18 \
-  --index ocp-4.18 \
   --use-cached-downloads \
   --output-dir ./vector_db \
   --model-dir ./embeddings_model
@@ -64,7 +72,6 @@ Set a custom token limit (default is the same 380 as in Markdown-based chunking)
 # Set the token limit
 python generate_embeddings.py \
   --version 4.18 \
-  --index ocp-4.18 \
   --chunk 380 \
   --output-dir ./vector_db \
   --model-dir ./embeddings_model
@@ -75,13 +82,13 @@ python generate_embeddings.py \
 ### Main arguments
 
 - `--version` - OpenShift version (required, e.g., "4.18")
-- `--index` - Product index name (required, e.g., "ocp-4.18")
+- `--index` - Index name (optional, e.g., "ocp-4.18")
 - `--output-dir` - Vector DB output directory (default: "./vector_db")
 - `--model-dir` - Embedding model directory (default: "./embeddings_model")
 
 ### Pipeline control
 
-- `--specific-doc` - Process only specific document (e.g., "monitoring")
+- `--specific-doc` - Process only specific document (e.g., "monitoring_apis")
 - `--use-cached-downloads` - Use existing downloads instead of re-fetching
 - `--skip-runbooks` - Skip runbooks processing
 - `--cache-dir` - Directory for intermediate files (default: "./cache")
@@ -91,8 +98,6 @@ python generate_embeddings.py \
 
 - `--max-token-limit` - Maximum tokens per chunk (default: 380)
 - `--count-tag-tokens` / `--no-count-tag-tokens` - Include/exclude HTML tags in token count
-- `--keep-siblings-together` / `--no-keep-siblings-together` - Keep sibling sections together
-- `--prepend-parent-text` / `--no-prepend-parent-text` - Prepend parent section text
 
 ### Other options
 
@@ -109,7 +114,7 @@ Downloads HTML documentation from Red Hat's portal using the portal fetcher.
 
 **Standalone usage:**
 ```bash
-python download_docs.py --version 4.18 --output-dir ./downloads
+python scripts/html_embeddings/download_docs.py --version 4.18 --output-dir ./downloads
 ```
 
 ### 2. Strip stage
@@ -118,7 +123,7 @@ Removes navigation, headers, footers, and other non-content elements from HTML.
 
 **Standalone usage:**
 ```bash
-python strip_html.py --input-dir ./downloads --output-dir ./stripped
+python scripts/html_embeddings/strip_html.py --input-dir ./downloads --output-dir ./stripped
 ```
 
 ### 3. Chunk stage
@@ -127,7 +132,7 @@ Semantically chunks HTML documents while preserving structure and context.
 
 **Standalone usage:**
 ```bash
-python chunk_html.py --input-dir ./stripped --output-dir ./chunks --max-token-limit 380
+python scripts/html_embeddings/chunk_html.py --input-dir ./stripped --output-dir ./chunks --max-token-limit 380
 ```
 
 ### 4. Runbooks stage
@@ -136,7 +141,7 @@ Processes runbooks using the existing Markdown chunking logic.
 
 **Standalone usage:**
 ```bash
-python process_runbooks.py --runbooks-dir ./runbooks --output-dir ./chunks
+python scripts/html_embeddings/process_runbooks.py --runbooks-dir ./runbooks --output-dir ./chunks
 ```
 
 ### 5. Embedding stage
@@ -149,9 +154,9 @@ The pipeline creates a structured cache to avoid re-processing:
 
 ```
 cache/
-├── downloads/4.18/           # Raw HTML downloads
-├── stripped/4.18/            # Stripped HTML
-└── chunks/4.18/              # JSON chunk files
+├── downloads/           # Raw HTML downloads
+├── stripped/            # Stripped HTML
+└── chunks/              # JSON chunk files
 ```
 
 ## Output Format
@@ -166,11 +171,13 @@ Chunks are saved as JSON files with the following structure:
     "doc_name": "monitoring",
     "doc_id": "monitoring",
     "version": "4.18",
+    "file_path": "monitoring/index.html",
+    "doc_type": "openshift_documentation",
+    "source": "https://docs.redhat.com/en/documentation/openshift_container_platform/4.18/html-single/monitoring/",
     "chunk_index": 1,
     "total_chunks": 45,
     "token_count": 375,
     "source_file": "monitoring/index.html",
-    "doc_type": "openshift_documentation"
   }
 }
 ```
