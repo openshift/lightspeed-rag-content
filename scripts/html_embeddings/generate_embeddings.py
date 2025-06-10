@@ -352,17 +352,55 @@ def run_embedding_step(
     args: argparse.Namespace, paths: Dict[str, Path], logger
 ) -> bool:
     """Run the embedding generation step."""
-    # Start with the base chunks directory (e.g., cache/chunks/4.18)
-    chunks_dir = paths["chunks"]
+    base_chunks_dir = paths["chunks"]
     output_dir = Path(args.output_dir)
-
-    # If a specific document was processed, look for chunks inside its dedicated subdirectory.
-    if args.specific_doc:
-        chunks_dir = chunks_dir / args.specific_doc
+    nodes = []
 
     try:
-        logger.info("Loading chunks...")
-        nodes = load_chunks_as_nodes(chunks_dir, logger)
+        if args.specific_doc:
+            logger.info("Loading chunks for specific document and runbooks.")
+            # 1. Load chunks from the specific document's directory.
+            doc_chunks_dir = base_chunks_dir / args.specific_doc
+            if doc_chunks_dir.exists():
+                logger.info("Loading from specific doc directory: %s", doc_chunks_dir)
+                nodes.extend(load_chunks_as_nodes(doc_chunks_dir, logger))
+            else:
+                logger.warning(
+                    "Chunk directory for specific doc not found: %s", doc_chunks_dir
+                )
+
+            # 2. Load runbook chunks (which are in the base directory).
+            if not args.skip_runbooks:
+                # Find JSON files directly in base_chunks_dir, not subdirectories.
+                runbook_files = [
+                    f for f in base_chunks_dir.glob("*.json") if f.is_file()
+                ]
+                runbook_files = [
+                    f for f in runbook_files if not f.name.endswith("_summary.json")
+                ]
+
+                logger.info(
+                    "Found %s potential runbook chunk files to load from %s",
+                    len(runbook_files),
+                    base_chunks_dir,
+                )
+
+                for chunk_file in runbook_files:
+                    try:
+                        with open(chunk_file, "r", encoding="utf-8") as f:
+                            chunk_data = json.load(f)
+                        node = TextNode(
+                            text=chunk_data["content"],
+                            metadata=chunk_data.get("metadata", {}),
+                            id_=chunk_data.get("id", str(chunk_file.stem)),
+                        )
+                        nodes.append(node)
+                    except Exception as e:
+                        logger.warning("Failed to load chunk %s: %s", chunk_file, e)
+        else:
+            # No specific doc, so load everything from the base directory recursively.
+            logger.info("Loading all chunks recursively from %s", base_chunks_dir)
+            nodes = load_chunks_as_nodes(base_chunks_dir, logger)
 
         if not nodes:
             logger.error("No chunks found to embed")
@@ -374,7 +412,7 @@ def run_embedding_step(
         vector_store = FaissVectorStore(faiss_index=faiss_index)
         storage_context = StorageContext.from_defaults(vector_store=vector_store)
 
-        logger.info("Generating embeddings...")
+        logger.info("Generating embeddings for %s nodes...", len(nodes))
         index = VectorStoreIndex(nodes, storage_context=storage_context)
         index.set_index_id(args.index)
 
