@@ -547,7 +547,7 @@ async def download_page(
             session, url, db_path, semaphore
         )
         if not needs_download:
-            logger.info("Skipping %s (not modified)", url)
+            logger.debug("Skipping %s (not modified)", url)
             record_download(
                 db_path,
                 url,
@@ -564,7 +564,7 @@ async def download_page(
                 retry_msg = (
                     " (attempt %s/%s)" % (attempt + 1, max_retries) if attempt > 0 else ""
                 )
-                logger.info("Downloading %s%s", url, retry_msg)
+                logger.debug("Downloading %s%s", url, retry_msg)
                 async with session.get(url, timeout=30) as response:
                     if response.status == 200:
                         content = await response.text()
@@ -749,7 +749,7 @@ async def extract_root_guides(
         html_single_url = html_url.replace("/html/", "/html-single/")
         normalized_url = normalize_url(html_single_url)
         html_single_urls.add(normalized_url)
-        logger.info("Added guide to download queue: %s", normalized_url)
+        logger.debug("Added guide to download queue: %s", normalized_url)
 
     return html_single_urls
 
@@ -804,7 +804,7 @@ async def crawl(
             continue
 
         visited_urls.add(normalized_url)
-        logger.info("Crawling %s", normalized_url)
+        logger.debug("Crawling %s", normalized_url)
 
         new_links, new_html_single_urls = await extract_links(
             session, normalized_url, base_url, visited_urls, semaphore
@@ -878,7 +878,7 @@ async def download_all(
 
 
 async def verify_downloads(
-    html_single_urls: set[str], db_path: str, output_dir: Path
+    html_single_urls: set[str], db_path: str, output_dir: Path, fail_on_error: bool = False
 ) -> bool:
     """Verify that all html-single pages were downloaded successfully
 
@@ -886,7 +886,7 @@ async def verify_downloads(
         html_single_urls (set): Set of all discovered URLs
         db_path (Path): Path to SQLite database
         output_dir (Path): Base output directory
-
+        fail_on_error: Stop the pipeline if any document fails to download
     Returns:
         bool: True if verification passed
     """
@@ -895,22 +895,30 @@ async def verify_downloads(
     # Get download results from database
     successful_urls, failed_urls = get_download_results(db_path)
 
-    # Check if all html-single URLs were downloaded
+    # Check for any URLs that were discovered but never attempted
     missing_urls = html_single_urls - successful_urls - failed_urls
+    total_failed = len(failed_urls) + len(missing_urls)
 
-    if missing_urls:
+    if total_failed > 0:
         logger.warning(
-            "Found %s pages that were not attempted for download.", len(missing_urls)
+            "Verification issues found: %s failed or missing URLs.", total_failed
         )
-        with open(output_dir / "missing_urls.json", "w") as f:
-            json.dump(list(missing_urls), f, indent=2)
-        return False
+        # Log the details of failures regardless of the flag
+        if missing_urls:
+            logger.warning("Missing URLs (never attempted): %s", len(missing_urls))
+            with open(output_dir / "missing_urls.json", "w") as f:
+                json.dump(list(missing_urls), f, indent=2)
+        if failed_urls:
+             logger.warning("Failed URLs (download error): %s", len(failed_urls))
 
-    if failed_urls:
-        logger.warning("Found %s pages that failed to download.", len(failed_urls))
-        return False
+        # Only halt the pipeline if the flag is set
+        if fail_on_error:
+            logger.error(
+                "Failures detected and --fail-on-download-error is set. Halting."
+            )
+            return False
 
-    logger.info("Verification completed successfully.")
+    logger.info("Verification completed. Proceeding with successfully downloaded content.")
     return True
 
 
@@ -950,7 +958,7 @@ async def extract_toc_structure(
     # Extract links from TOC pages
     expected_urls = set()
     for url in toc_candidates:
-        logger.info("Analyzing TOC page: %s", url)
+        logger.debug("Analyzing TOC page: %s", url)
         content = await fetch_page(session, url, semaphore)
         if not content:
             continue
@@ -1101,6 +1109,7 @@ async def run_downloader(
     force: bool = False,
     skip_toc: bool = False,
     max_retries: int = 3,
+    fail_on_error: bool = False,
 ) -> tuple[bool, bool, float]:
     """Run the complete download process
 
@@ -1111,6 +1120,7 @@ async def run_downloader(
         force (bool): Force download even if files haven't changed
         skip_toc (bool): Skip TOC verification
         max_retries (int): Maximum number of retry attempts for failed downloads
+        fail_on_error: Stop the pipeline if any document fails to download
 
     Returns:
         tuple: (verification_passed, toc_verification_passed, elapsed_time)
@@ -1163,7 +1173,7 @@ async def run_downloader(
 
         # Step 4: Verify downloads
         verification_passed = await verify_downloads(
-            html_single_urls, db_path, output_dir_path
+            html_single_urls, db_path, output_dir_path, fail_on_error
         )
 
         # Step 5: Verify against TOC structure if not skipped

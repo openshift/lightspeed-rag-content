@@ -26,6 +26,7 @@ def download_documentation(
     cache_existing: bool = True,
     concurrency: int = 5,
     max_retries: int = 3,
+    fail_on_error: bool = False,
 ) -> bool:
     """
     Download OpenShift documentation.
@@ -37,6 +38,7 @@ def download_documentation(
         cache_existing: Whether to use cached downloads
         concurrency: Number of concurrent downloads
         max_retries: Maximum retry attempts
+        fail_on_error: Stop the pipeline if any document fails to download
 
     Returns:
         True if download was successful
@@ -60,6 +62,7 @@ def download_documentation(
                 force=not cache_existing,
                 skip_toc=False,
                 max_retries=max_retries,
+                fail_on_error=fail_on_error,
             )
         )
 

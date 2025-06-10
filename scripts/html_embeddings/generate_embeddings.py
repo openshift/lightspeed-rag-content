@@ -79,6 +79,11 @@ def parse_arguments() -> argparse.Namespace:
         action="store_true",
         help="Continue with cached data if a step fails",
     )
+    parser.add_argument(
+        "--fail-on-download-error",
+        action="store_true",
+        help="Stop the pipeline if any document fails to download. Default is to continue.",
+    )
 
     parser.add_argument(
         "--max-token-limit", type=int, default=380, help="Maximum tokens per chunk"
@@ -164,8 +169,7 @@ def setup_environment(args: argparse.Namespace) -> Dict[str, Any]:
         args.max_token_limit = args.chunk
 
     logger.info("Using max token limit: %s", args.max_token_limit)
-
-    # Auto-generate index name if not provided
+    
     if not args.index:
         if args.specific_doc:
             args.index = f"ocp-{args.version}-{args.specific_doc}"
@@ -222,6 +226,7 @@ def run_download_step(args: argparse.Namespace, paths: Dict[str, Path], logger) 
             specific_doc=args.specific_doc,
             output_dir=downloads_dir,
             cache_existing=(not args.use_cached_downloads),
+            fail_on_error=args.fail_on_download_error,
         )
         if success:
             logger.info("Download completed successfully")
