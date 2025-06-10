@@ -59,7 +59,9 @@ def parse_arguments() -> argparse.Namespace:
         default="./embeddings_model",
         help="Directory containing the embedding model",
     )
-    parser.add_argument("--index", "-i", required=True, help="Product index name")
+    parser.add_argument(
+        "--index", "-i", help="Product index name (auto-generated if not provided)"
+    )
 
     parser.add_argument(
         "--use-cached-downloads",
@@ -162,6 +164,14 @@ def setup_environment(args: argparse.Namespace) -> Dict[str, Any]:
         args.max_token_limit = args.chunk
 
     logger.info("Using max token limit: %s", args.max_token_limit)
+
+    # Auto-generate index name if not provided
+    if not args.index:
+        if args.specific_doc:
+            args.index = f"ocp-{args.version}-{args.specific_doc}"
+        else:
+            args.index = f"ocp-{args.version}"
+        logger.info("Auto-generated index name: %s", args.index)
 
     paths = create_directory_structure(
         cache_dir=args.cache_dir,
