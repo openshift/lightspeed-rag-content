@@ -38,7 +38,7 @@ def get_file_title(file_path: str) -> str:
     """Extract title from the plaintext doc file."""
     title = ""
     try:
-        with open(file_path, "r") as file:
+        with open(file_path, "r", encoding="utf-8") as file:
             title = file.readline().rstrip("\n").lstrip("# ")
     except Exception:  # noqa: S110
         pass
@@ -219,13 +219,13 @@ if __name__ == "__main__":
     metadata["overlap"] = args.overlap
     metadata["total-embedded-files"] = len(documents)
 
-    with open(os.path.join(PERSIST_FOLDER, "metadata.json"), "w") as file:
+    with open(os.path.join(PERSIST_FOLDER, "metadata.json"), "w", encoding="utf-8") as file:
         file.write(json.dumps(metadata))
 
     if UNREACHABLE_DOCS > 0:
         print(
             "WARNING:\n"
-            f"There were documents with {UNREACHABLE_DOCS} unreachable URLs, "
+            "There were documents with %s unreachable URLs, "
             "grep the log for UNREACHABLE.\n"
-            "Please update the plain text."
+            "Please update the plain text." % UNREACHABLE_DOCS
         )
