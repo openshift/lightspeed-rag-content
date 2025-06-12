@@ -1,4 +1,4 @@
-ARG BYOK_TOOL_IMAGE=registry.redhat.io/lightspeed-rag-tool-tech-preview/lightspeed-rag-tool-rhel9:latest
+ARG BYOK_TOOL_IMAGE=registry.redhat.io/openshift-lightspeed-tech-preview/lightspeed-rag-tool-rhel9:latest
 ARG UBI_BASE_IMAGE=registry.access.redhat.com/ubi9/ubi:latest
 ARG HERMETIC=false
 FROM ${UBI_BASE_IMAGE}
@@ -8,13 +8,13 @@ ARG VECTOR_DB_INDEX=vector_db_index
 ARG BYOK_TOOL_IMAGE
 ARG UBI_BASE_IMAGE
 ARG HERMETIC
-RUN dnf install -y buildah python3.11 python3.11-pip
+RUN dnf install -y buildah python3.11 python3.11-pip && dnf clean all
 
 USER 0
 WORKDIR /workdir
 
-COPY requirements.gpu.txt .
-RUN pip3.11 install --no-cache-dir --no-deps -r requirements.gpu.txt
+COPY requirements.cpu.txt .
+RUN pip3.11 install --no-cache-dir --no-deps -r requirements.cpu.txt
 
 COPY embeddings_model ./embeddings_model
 ENV HERMETIC=$HERMETIC
@@ -45,8 +45,6 @@ LABEL url="https://github.com/openshift/lightspeed-rag-content"
 LABEL vendor="Red Hat, Inc."
 LABEL version=0.0.1
 LABEL summary="Red Hat OpenShift Lightspeed BYO Knowledge Tools"
-
-USER 65532:65532
 
 ENV _BUILDAH_STARTED_IN_USERNS=""
 ENV BUILDAH_ISOLATION=chroot
