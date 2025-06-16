@@ -4,6 +4,12 @@
 After you install the Kubernetes NMState Operator, you can use the Operator to observe and update your cluster's node network state and network configuration.
 For more information about how to install the NMState Operator, see Kubernetes NMState Operator.
 
+[IMPORTANT]
+----
+You cannot provide any configuration that modifies the br-ex bridge, an OVN-Kubernetes-managed Open vSwitch bridge. However, you can configure a customized br-ex bridge.
+For more information, see "Creating a manifest object that includes a customized br-ex bridge" in the Deploying installer-provisioned clusters on bare metal document or the Installing a user-provisioned cluster on bare metal document.
+----
+
 # Viewing the network state of a node by using the CLI
 
 Node network state is the network configuration for all nodes in the cluster. A NodeNetworkState object exists on every node in the cluster. This object is periodically updated and captures the state of the network for that node.
@@ -58,7 +64,7 @@ In the NodeNetworkState page, you can view the list of NodeNetworkState resource
 
 A NodeNetworkConfigurationPolicy (NNCP) manifest file defines policies that the Kubernetes NMState Operator uses to configure networking for nodes that exist in an Red Hat OpenShift Container Platform cluster.
 
-After you apply a node network policy to a node, the Kubernetes NMState Operator creates an interface on the node. A node network policy includes your requested network configuration and the status of execution for the policy on the cluster as a whole.
+After you apply a node network policy to a node, the Kubernetes NMState Operator configures the networking configuration for nodes according to the node network policy details.
 
 You can create an NNCP by using either the OpenShift CLI (`oc`) or the Red Hat OpenShift Container Platform web console. As a postinstallation task you can create an NNCP or edit an existing NNCP.
 
@@ -68,77 +74,21 @@ You can create an NNCP by using either the OpenShift CLI (`oc`) or the Red Hat O
 Before you create an NNCP, ensure that you read the "Example policy configurations for different interfaces" document.
 ----
 
-If you want to delete an NNCP, you can use the oc delete nncp command to complete this action. However, this command does not delete any created objects, such as a bridge interface.
+If you want to delete an NNCP, you can use the oc delete nncp command to complete this action. However, this command does not delete any objects, such as a bridge interface.
 
-Deleting the node network policy that added an interface to a node does not change the configuration of the policy on the node. Similarly, removing an interface does not delete the policy, because the Kubernetes NMState Operator recreates the removed interface whenever a pod or a node is restarted.
+Deleting the node network policy that added an interface to a node does not change the configuration of the policy on the node. Similarly, removing an interface does not delete the policy, because the Kubernetes NMState Operator re-adds the removed interface whenever a pod or a node is restarted.
 
-To effectively delete the NNCP, the node network policy, and any created interfaces would typically require the following actions:
+To effectively delete the NNCP, the node network policy, and any interfaces would typically require the following actions:
 
 1. Edit the NNCP and remove interface details from the file. Ensure that you do not remove name, state, and type parameters from the file.
 2. Add state: absent under the interfaces.state section of the NNCP.
-3. Run oc apply -f <nncp_file_name>. After the Kubernetes NMState Operator applies the node network policy to each node in your cluster, the interface that was previously created on each node is now marked absent.
+3. Run oc apply -f <nncp_file_name>. After the Kubernetes NMState Operator applies the node network policy to each node in your cluster, any interface that exists on each node is now marked as absent.
 4. Run oc delete nncp to delete the NNCP.
 
 ## Additional resources
 
 * Example policy configurations for different interfaces
 * Removing an interface from nodes
-
-# Creating an IP over InfiniBand interface on nodes
-
-On the Red Hat OpenShift Container Platform web console, you can install a Red&#160;Hat certified third-party Operator, such as the NVIDIA Network Operator, that supports InfiniBand (IPoIB) mode. Typically, you would use the third-party Operator with other vendor infrastructure to manage resources in an Red Hat OpenShift Container Platform cluster. To create an IPoIB interface on nodes in your cluster, you must define an InfiniBand (IPoIB) interface in a NodeNetworkConfigurationPolicy (NNCP) manifest file.
-
-
-[IMPORTANT]
-----
-The Red Hat OpenShift Container Platform documentation describes defining only the IPoIB interface configuration in a NodeNetworkConfigurationPolicy (NNCP) manifest file. You must refer to the NVIDIA and other third-party vendor documentation for the majority of the configuring steps. Red Hat support does not extend to anything external to the NNCP configuration.
-For more information about the NVIDIA Operator, see Getting Started with Red Hat OpenShift (NVIDIA Docs Hub).
-----
-
-* You installed a Red Hat certified third-party Operator that supports an IPoIB interface.
-
-1. Create or edit a NodeNetworkConfigurationPolicy (NNCP) manifest file, and then specify an IPoIB interface in the file.
-
-```yaml
-apiVersion: nmstate.io/v1
-kind: NodeNetworkConfigurationPolicy
-metadata:
-  name: worker-0-ipoib
-spec:
-# ...
-    interfaces:
-    - description: ""
-      infiniband:
-        mode: datagram 1
-        pkey: "0xffff" 2
-      ipv4:
-        address:
-        - ip: 100.125.3.4
-          prefix-length: 16
-        dhcp: false
-        enabled: true
-      ipv6:
-        enabled: false
-      name: ibp27s0
-      state: up
-      identifier: mac-address 3
-      mac-address: 20:00:55:04:01:FE:80:00:00:00:00:00:00:00:02:C9:02:00:23:13:92 4
-      type: infiniband 5
-# ...
-```
-
-datagram is the default mode for an IPoIB interface, and this mode improves optimizes performance and latency. connected mode is a supported mode but consider only using this mode when you need to adjust the maximum transmission unit (MTU) value to improve node connectivity with surrounding network devices.
-Supports a string or an integer value. The parameter defines the protection key, or P-key, for the interface for the purposes of authentication and encrypted communications with a third-party vendor, such as NVIDIA. Values None and 0xffff indicate the protection key for the base interface in an InfiniBand system.
-Supported values include name, the default value, and mac-address. The name value applies a configuration to an interface that holds a specified interface name.
-Holds the MAC address of an interface. For an IP-over-InfiniBand (IPoIB) interface, the address is a 20-byte string.
-Sets the type of interface to infiniband.
-2. Apply the NNCP configuration to each node in your cluster by running the following command. The Kubernetes NMState Operator can then create an IPoIB interface on each node.
-
-```yaml
-$ oc apply -f <nncp_file_name> 1
-```
-
-Replace <nncp_file_name> with the name of your NNCP file.
 
 # Managing policy from the web console
 
@@ -228,11 +178,17 @@ Addition of a VLAN interface using the form is not supported. To add a VLAN inte
 
 ## Creating an interface on nodes
 
-Create an interface on nodes in the cluster by applying a NodeNetworkConfigurationPolicy manifest to the cluster. The manifest details the requested configuration for the interface.
+Create an interface on nodes in the cluster by applying a NodeNetworkConfigurationPolicy (NNCP) manifest to the cluster. The manifest details the requested configuration for the interface.
 
 By default, the manifest applies to all nodes in the cluster. To add the interface to specific nodes, add the spec: nodeSelector parameter and the appropriate <key>:<value> for your node selector.
 
-You can configure multiple nmstate-enabled nodes concurrently. The configuration applies to 50% of the nodes in parallel. This strategy prevents the entire cluster from being unavailable if the network connection fails. To apply the policy configuration in parallel to a specific portion of the cluster, use the maxUnavailable field.
+You can configure multiple nmstate-enabled nodes concurrently. The configuration applies to 50% of the nodes in parallel. This strategy prevents the entire cluster from being unavailable if the network connection fails. To apply the policy configuration in parallel to a specific portion of the cluster, use the maxUnavailable parameter in the NodeNetworkConfigurationPolicy manifest configuration file.
+
+
+[NOTE]
+----
+If you have two nodes and you apply an NNCP manifest with the maxUnavailable parameter set to 50% to these nodes, one node at a time receives the NNCP configuration. If you then introduce an additional NNCP manifest file with the maxUnavailable parameter set to 50%, this NCCP is independent of the initial NNCP; this means that if both NNCP manifests apply a bad configuration to nodes, you can no longer guarantee that half of your cluster is functional.
+----
 
 1. Create the NodeNetworkConfigurationPolicy manifest. The following example configures a Linux bridge on all worker nodes and configures the DNS resolver:
 
@@ -377,10 +333,49 @@ File name of the policy manifest.
 
 Before you read the different example NodeNetworkConfigurationPolicy (NNCP) manifest configurations, consider the following factors when you apply a policy to nodes so that your cluster runs under its best performance conditions:
 
-* When you need to apply a policy to more than one node, create a NodeNetworkConfigurationPolicy manifest for each target node. The Kubernetes NMState Operator applies the policy to each node with a defined NNCP in an unspecified order. Scoping a policy with this approach reduces the length of time for policy application but risks a cluster-wide outage if an error exists in the cluster's configuration. To avoid this type of error, initially apply an NNCP to some nodes, confirm the NNCP is configured correctly for these nodes, and then proceed with applying the policy to the remaining nodes.
+* When you need to apply a policy to more than one node, create a NodeNetworkConfigurationPolicy manifest for each target node. The Kubernetes NMState Operator applies the policy to each node with a defined NNCP in an unspecified order. Scoping a policy with this approach reduces the length of time for policy application but risks a cluster-wide outage if an error exists in the configuration of the cluster. To avoid this type of error, initially apply an NNCP to some nodes, confirm the NNCP is configured correctly for these nodes, and then proceed with applying the policy to the remaining nodes.
 * When you need to apply a policy to many nodes but you only want to create a single NNCP for all the nodes, the Kubernetes NMState Operator applies the policy to each node in sequence. You can set the speed and coverage of policy application for target nodes with the maxUnavailable parameter in the cluster's configuration file. By setting a lower percentage value for the parameter, you can reduce the risk of a cluster-wide outage if the outage impacts the small percentage of nodes that are receiving the policy application.
-* Consider specifying all related network configurations in a single policy.
+* If you set the maxUnavailable parameter to 50% in two NNCP manifests, the policy configuration coverage applies to 100% of the nodes in your cluster.
 * When a node restarts, the Kubernetes NMState Operator cannot control the order to which it applies policies to nodes. The Kubernetes NMState Operator might apply interdependent policies in a sequence that results in a degraded network object.
+* Consider specifying all related network configurations in a single policy.
+
+## Example: Ethernet interface node network configuration policy
+
+Configure an Ethernet interface on nodes in the cluster by applying a NodeNetworkConfigurationPolicy manifest to the cluster.
+
+The following YAML file is an example of a manifest for an Ethernet interface.
+It includes sample values that you must replace with your own information.
+
+
+```yaml
+apiVersion: nmstate.io/v1
+kind: NodeNetworkConfigurationPolicy
+metadata:
+  name: eth1-policy 1
+spec:
+  nodeSelector: 2
+    kubernetes.io/hostname: <node01> 3
+  desiredState:
+    interfaces:
+    - name: eth1 4
+      description: Configuring eth1 on node01 5
+      type: ethernet 6
+      state: up 7
+      ipv4:
+        dhcp: true 8
+        enabled: true 9
+```
+
+
+Name of the policy.
+Optional: If you do not include the nodeSelector parameter, the policy applies to all nodes in the cluster.
+This example uses a hostname node selector.
+Name of the interface.
+Optional: Human-readable description of the interface.
+The type of interface. This example creates an Ethernet networking interface.
+The requested state for the interface after creation.
+Optional: If you do not use dhcp, you can either set a static IP or leave the interface without an IP address.
+Enables ipv4 in this example.
 
 ## Example: Linux bridge interface node network configuration policy
 
@@ -473,6 +468,125 @@ The type of interface. This example creates a VLAN.
 The requested state for the interface after creation.
 The node NIC to which the VLAN is attached.
 The VLAN tag.
+
+* Configuring an SR-IOV network device
+
+## Example: Bond interface node network configuration policy
+
+Create a bond interface on nodes in the cluster by applying a NodeNetworkConfigurationPolicy manifest
+to the cluster.
+
+
+[NOTE]
+----
+OpenShift Virtualization only supports the following bond modes:
+* mode=1 active-backup
+* mode=2 balance-xor
+* mode=4 802.3ad
+Other bond modes are not supported.
+----
+
+The following YAML file is an example of a manifest for a bond interface.
+It includes samples values that you must replace with your own information.
+
+
+```yaml
+apiVersion: nmstate.io/v1
+kind: NodeNetworkConfigurationPolicy
+metadata:
+  name: bond0-eth1-eth2-policy 1
+spec:
+  nodeSelector: 2
+    kubernetes.io/hostname: <node01> 3
+  desiredState:
+    interfaces:
+    - name: bond0 4
+      description: Bond with ports eth1 and eth2 5
+      type: bond 6
+      state: up 7
+      ipv4:
+        dhcp: true 8
+        enabled: true 9
+      link-aggregation:
+        mode: active-backup 10
+        options:
+          miimon: '140' 11
+        port: 12
+        - eth1
+        - eth2
+      mtu: 1450 13
+```
+
+
+Name of the policy.
+Optional: If you do not include the nodeSelector parameter, the policy applies to all nodes in the cluster.
+This example uses a hostname node selector.
+Name of the interface.
+Optional: Human-readable description of the interface.
+The type of interface. This example creates a bond.
+The requested state for the interface after creation.
+Optional: If you do not use dhcp, you can either set a static IP or leave the interface without an IP address.
+Enables ipv4 in this example.
+The driver mode for the bond. This example uses an active backup mode.
+Optional: This example uses miimon to inspect the bond link every 140ms.
+The subordinate node NICs in the bond.
+Optional: The maximum transmission unit (MTU) for the bond. If not specified, this value is set to 1500 by default.
+
+## Example: Multiple interfaces in the same node network configuration policy
+
+You can create multiple interfaces in the same node network configuration policy. These interfaces can reference each other, allowing you to build and deploy a network configuration by using a single policy manifest.
+
+The following example YAML file creates a bond that is named bond10 across two NICs and VLAN that is named bond10.103 that connects to the bond.
+
+
+```yaml
+apiVersion: nmstate.io/v1
+kind: NodeNetworkConfigurationPolicy
+metadata:
+  name: bond-vlan 1
+spec:
+  nodeSelector: 2
+    kubernetes.io/hostname: <node01> 3
+  desiredState:
+    interfaces:
+    - name: bond10 4
+      description: Bonding eth2 and eth3 5
+      type: bond 6
+      state: up 7
+      link-aggregation:
+        mode: balance-xor 8
+        options:
+          miimon: '140' 9
+        port: 10
+        - eth2
+        - eth3
+    - name: bond10.103 4
+      description: vlan using bond10 5
+      type: vlan 6
+      state: up 7
+      vlan:
+         base-iface: bond10 11
+         id: 103 12
+      ipv4:
+        dhcp: true 13
+        enabled: true 14
+```
+
+
+Name of the policy.
+Optional: If you do not include the nodeSelector parameter, the policy applies to all nodes in the cluster.
+This example uses hostname node selector.
+Name of the interface.
+Optional: Human-readable description of the interface.
+The type of interface.
+The requested state for the interface after creation.
+The driver mode for the bond.
+Optional: This example uses miimon to inspect the bond link every 140ms.
+The subordinate node NICs in the bond.
+The node NIC to which the VLAN is attached.
+The VLAN tag.
+Optional: If you do not use dhcp, you can either set a static IP or leave the interface without an IP address.
+Enables ipv4 in this example.
 
 ## Example: Node network configuration policy for virtual functions (Technology Preview)
 
@@ -589,163 +703,6 @@ The primary attached bonding port.
 The ports for the bonded network interface.
 In this example, this VLAN network interface is added as an additional interface to the bonded network interface.
 
-* Configuring an SR-IOV network device
-
-## Example: Bond interface node network configuration policy
-
-Create a bond interface on nodes in the cluster by applying a NodeNetworkConfigurationPolicy manifest
-to the cluster.
-
-
-[NOTE]
-----
-OpenShift Virtualization only supports the following bond modes:
-* mode=1 active-backup
-* mode=2 balance-xor
-* mode=4 802.3ad
-Other bond modes are not supported.
-----
-
-The following YAML file is an example of a manifest for a bond interface.
-It includes samples values that you must replace with your own information.
-
-
-```yaml
-apiVersion: nmstate.io/v1
-kind: NodeNetworkConfigurationPolicy
-metadata:
-  name: bond0-eth1-eth2-policy 1
-spec:
-  nodeSelector: 2
-    kubernetes.io/hostname: <node01> 3
-  desiredState:
-    interfaces:
-    - name: bond0 4
-      description: Bond with ports eth1 and eth2 5
-      type: bond 6
-      state: up 7
-      ipv4:
-        dhcp: true 8
-        enabled: true 9
-      link-aggregation:
-        mode: active-backup 10
-        options:
-          miimon: '140' 11
-        port: 12
-        - eth1
-        - eth2
-      mtu: 1450 13
-```
-
-
-Name of the policy.
-Optional: If you do not include the nodeSelector parameter, the policy applies to all nodes in the cluster.
-This example uses a hostname node selector.
-Name of the interface.
-Optional: Human-readable description of the interface.
-The type of interface. This example creates a bond.
-The requested state for the interface after creation.
-Optional: If you do not use dhcp, you can either set a static IP or leave the interface without an IP address.
-Enables ipv4 in this example.
-The driver mode for the bond. This example uses an active backup mode.
-Optional: This example uses miimon to inspect the bond link every 140ms.
-The subordinate node NICs in the bond.
-Optional: The maximum transmission unit (MTU) for the bond. If not specified, this value is set to 1500 by default.
-
-## Example: Ethernet interface node network configuration policy
-
-Configure an Ethernet interface on nodes in the cluster by applying a NodeNetworkConfigurationPolicy manifest to the cluster.
-
-The following YAML file is an example of a manifest for an Ethernet interface.
-It includes sample values that you must replace with your own information.
-
-
-```yaml
-apiVersion: nmstate.io/v1
-kind: NodeNetworkConfigurationPolicy
-metadata:
-  name: eth1-policy 1
-spec:
-  nodeSelector: 2
-    kubernetes.io/hostname: <node01> 3
-  desiredState:
-    interfaces:
-    - name: eth1 4
-      description: Configuring eth1 on node01 5
-      type: ethernet 6
-      state: up 7
-      ipv4:
-        dhcp: true 8
-        enabled: true 9
-```
-
-
-Name of the policy.
-Optional: If you do not include the nodeSelector parameter, the policy applies to all nodes in the cluster.
-This example uses a hostname node selector.
-Name of the interface.
-Optional: Human-readable description of the interface.
-The type of interface. This example creates an Ethernet networking interface.
-The requested state for the interface after creation.
-Optional: If you do not use dhcp, you can either set a static IP or leave the interface without an IP address.
-Enables ipv4 in this example.
-
-## Example: Multiple interfaces in the same node network configuration policy
-
-You can create multiple interfaces in the same node network configuration policy. These interfaces can reference each other, allowing you to build and deploy a network configuration by using a single policy manifest.
-
-The following example YAML file creates a bond that is named bond10 across two NICs and VLAN that is named bond10.103 that connects to the bond.
-
-
-```yaml
-apiVersion: nmstate.io/v1
-kind: NodeNetworkConfigurationPolicy
-metadata:
-  name: bond-vlan 1
-spec:
-  nodeSelector: 2
-    kubernetes.io/hostname: <node01> 3
-  desiredState:
-    interfaces:
-    - name: bond10 4
-      description: Bonding eth2 and eth3 5
-      type: bond 6
-      state: up 7
-      link-aggregation:
-        mode: balance-xor 8
-        options:
-          miimon: '140' 9
-        port: 10
-        - eth2
-        - eth3
-    - name: bond10.103 4
-      description: vlan using bond10 5
-      type: vlan 6
-      state: up 7
-      vlan:
-         base-iface: bond10 11
-         id: 103 12
-      ipv4:
-        dhcp: true 13
-        enabled: true 14
-```
-
-
-Name of the policy.
-Optional: If you do not include the nodeSelector parameter, the policy applies to all nodes in the cluster.
-This example uses hostname node selector.
-Name of the interface.
-Optional: Human-readable description of the interface.
-The type of interface.
-The requested state for the interface after creation.
-The driver mode for the bond.
-Optional: This example uses miimon to inspect the bond link every 140ms.
-The subordinate node NICs in the bond.
-The node NIC to which the VLAN is attached.
-The VLAN tag.
-Optional: If you do not use dhcp, you can either set a static IP or leave the interface without an IP address.
-Enables ipv4 in this example.
-
 ## Example: Network interface with a VRF instance node network configuration policy
 
 Associate a Virtual Routing and Forwarding (VRF) instance with a network interface by applying a NodeNetworkConfigurationPolicy custom resource (CR).
@@ -758,6 +715,12 @@ For more information about the support scope of Red Hat Technology Preview featu
 ----
 
 By associating a VRF instance with a network interface, you can support traffic isolation, independent routing decisions, and the logical separation of network resources.
+
+
+[WARNING]
+----
+When configuring Virtual Route Forwarding (VRF), you must change the VRF value to a table ID lower than 1000 because a value higher than 1000 is reserved for Red Hat OpenShift Container Platform.
+----
 
 In a bare-metal environment, you can announce load balancer services through interfaces belonging to a VRF instance by using MetalLB. For more information, see the Additional resources section.
 
@@ -795,6 +758,62 @@ The name of the route table ID for the VRF.
 
 * About virtual routing and forwarding
 * Exposing a service through a network VRF
+
+# Creating an IP over InfiniBand interface on nodes
+
+On the Red Hat OpenShift Container Platform web console, you can install a Red&#160;Hat certified third-party Operator, such as the NVIDIA Network Operator, that supports InfiniBand (IPoIB) mode. Typically, you would use the third-party Operator with other vendor infrastructure to manage resources in an Red Hat OpenShift Container Platform cluster. To create an IPoIB interface on nodes in your cluster, you must define an InfiniBand (IPoIB) interface in a NodeNetworkConfigurationPolicy (NNCP) manifest file.
+
+
+[IMPORTANT]
+----
+The Red Hat OpenShift Container Platform documentation describes defining only the IPoIB interface configuration in a NodeNetworkConfigurationPolicy (NNCP) manifest file. You must refer to the NVIDIA and other third-party vendor documentation for the majority of the configuring steps. Red Hat support does not extend to anything external to the NNCP configuration.
+For more information about the NVIDIA Operator, see Getting Started with Red Hat OpenShift (NVIDIA Docs Hub).
+----
+
+* You installed a Red Hat certified third-party Operator that supports an IPoIB interface.
+
+1. Create or edit a NodeNetworkConfigurationPolicy (NNCP) manifest file, and then specify an IPoIB interface in the file.
+
+```yaml
+apiVersion: nmstate.io/v1
+kind: NodeNetworkConfigurationPolicy
+metadata:
+  name: worker-0-ipoib
+spec:
+# ...
+    interfaces:
+    - description: ""
+      infiniband:
+        mode: datagram 1
+        pkey: "0xffff" 2
+      ipv4:
+        address:
+        - ip: 100.125.3.4
+          prefix-length: 16
+        dhcp: false
+        enabled: true
+      ipv6:
+        enabled: false
+      name: ibp27s0
+      state: up
+      identifier: mac-address 3
+      mac-address: 20:00:55:04:01:FE:80:00:00:00:00:00:00:00:02:C9:02:00:23:13:92 4
+      type: infiniband 5
+# ...
+```
+
+datagram is the default mode for an IPoIB interface, and this mode improves optimizes performance and latency. connected mode is a supported mode but consider only using this mode when you need to adjust the maximum transmission unit (MTU) value to improve node connectivity with surrounding network devices.
+Supports a string or an integer value. The parameter defines the protection key, or P-key, for the interface for the purposes of authentication and encrypted communications with a third-party vendor, such as NVIDIA. Values None and 0xffff indicate the protection key for the base interface in an InfiniBand system.
+Supported values include name, the default value, and mac-address. The name value applies a configuration to an interface that holds a specified interface name.
+Holds the MAC address of an interface. For an IP-over-InfiniBand (IPoIB) interface, the address is a 20-byte string.
+Sets the type of interface to infiniband.
+2. Apply the NNCP configuration to each node in your cluster by running the following command. The Kubernetes NMState Operator can then create an IPoIB interface on each node.
+
+```yaml
+$ oc apply -f <nncp_file_name> 1
+```
+
+Replace <nncp_file_name> with the name of your NNCP file.
 
 # Capturing the static IP of a NIC attached to a bridge
 
@@ -977,13 +996,6 @@ Setting a DNS configuration is comparable to modifying the /etc/resolv.conf file
 ----
 
 To define a DNS configuration for a network interface, you must initially specify the dns-resolver section in the network interface&#8217;s YAML configuration file. To apply an NNCP configuration to your network interface, you need to run the oc apply -f <nncp_file_name> command.
-
-
-[IMPORTANT]
-----
-You cannot use the br-ex bridge, an OVN-Kubernetes-managed Open vSwitch bridge, as the interface when configuring DNS resolvers unless you manually configured a customized br-ex bridge.
-For more information, see "Creating a manifest object that includes a customized br-ex bridge" in the Deploying installer-provisioned clusters on bare metal document or the Installing a user-provisioned cluster on bare metal document.
-----
 
 The following example shows a default situation that stores DNS values globally:
 

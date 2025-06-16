@@ -1,0 +1,180 @@
+# Connecting a virtual machine to a secondary localnet user-defined network
+
+
+You can connect a virtual machine (VM) to an OVN-Kubernetes localnet secondary network by using the CLI. Cluster administrators can use the ClusterUserDefinedNetwork (CUDN) custom resource definition (CRD) to create a shared OVN-Kubernetes network across multiple namespaces.
+An OVN-Kubernetes secondary network is compatible with the multi-network policy API which provides the MultiNetworkPolicy custom resource definition (CRD) to control traffic flow to and from VMs.
+
+[IMPORTANT]
+----
+You must use the ipBlock attribute to define network policy ingress and egress rules for specific CIDR blocks. Using pod or namespace selector policy peers is not supported.
+----
+A localnet topology connects the secondary network to the physical underlay. This enables both east-west cluster traffic and access to services running outside the cluster, but it requires additional configuration of the underlying Open vSwitch (OVS) system on cluster nodes.
+
+# Creating a user-defined-network for localnet topology by using the CLI
+
+You can create a secondary cluster-scoped user-defined-network (CUDN) for the localnet network topology by using the CLI.
+
+* You are logged in to the cluster as a user with cluster-admin privileges.
+* You have installed the OpenShift CLI (`oc`).
+* You installed the Kubernetes NMState Operator.
+
+1. Create a NodeNetworkConfigurationPolicy object to map the OVN-Kubernetes secondary network to an Open vSwitch (OVS) bridge:
+Example NodeNetworkConfigurationPolicy manifest
+
+```yaml
+apiVersion: nmstate.io/v1
+kind: NodeNetworkConfigurationPolicy
+metadata:
+  name: mapping 1
+spec:
+  nodeSelector:
+    node-role.kubernetes.io/worker: '' 2
+  desiredState:
+    ovn:
+      bridge-mappings:
+      - localnet: tenantblue 3
+        bridge: br-ex 4
+        state: present 5
+```
+
+The name of the configuration object.
+Specifies the nodes to which the node network configuration policy is applied. The recommended node selector value is node-role.kubernetes.io/worker: ''.
+The name of the additional network from which traffic is forwarded to the OVS bridge. This attribute must match the value of the spec.network.localnet.physicalNetworkName field of the ClusterUserDefinedNetwork object that defines the OVN-Kubernetes additional network. This example uses the name tenantblue.
+The name of the OVS bridge on the node. This value is required if the state attribute is present or not specified.
+The state of the mapping. Must be either present to add the mapping or absent to remove the mapping. The default value is present.
+
+[IMPORTANT]
+----
+OpenShift Virtualization does not support Linux bridge bonding modes 0, 5, and 6. For more information, see Which bonding modes work when used with a bridge that virtual machine guests or containers connect to?.
+----
+2. Apply the NodeNetworkConfigurationPolicy manifest by running the following command:
+
+```terminal
+$ oc apply -f <filename>.yaml
+```
+
+
+where:
+<filename>:: Specifies the name of your NodeNetworkConfigurationPolicy manifest YAML file.
+3. Create a ClusterUserDefinedNetwork object to create a localnet secondary network:
+Example ClusterUserDefinedNetwork manifest
+
+```yaml
+apiVersion: k8s.ovn.org/v1
+kind: ClusterUserDefinedNetwork
+metadata:
+  name: cudn-localnet 1
+spec:
+  namespaceSelector: 2
+    matchExpressions: 3
+    - key: kubernetes.io/metadata.name
+      operator: In 4
+      values: ["red", "blue"]
+  network:
+    topology: Localnet 5
+    localnet:
+        role: Secondary 6
+        physicalNetworkName: tenantblue 7
+        ipam:
+          mode: Disabled 8
+# ...
+```
+
+The name of the ClusterUserDefinedNetwork custom resource.
+The set of namespaces that the cluster UDN applies to. The namespace selector must not point to the following values: default; an openshift-* namespace; or any global namespaces that are defined by the Cluster Network Operator (CNO).
+The type of selector. In this example, the matchExpressions selector selects objects that have the label kubernetes.io/metadata.name with the value red or blue.
+The type of operator. Possible values are In, NotIn, and Exists.
+The topological configuration of the network. A Localnet topology connects the logical network to the physical underlay.
+Specifies whether the UDN is primary or secondary. The required value is Secondary for topology: Localnet.
+The name of the OVN-Kubernetes bridge mapping that is configured on the node. This value must match the spec.desiredState.ovn.bridge-mappings.localnet field in the NodeNetworkConfigurationPolicy manifest that you previously created. This ensures that you are bridging to the intended segment of your physical network.
+Specifies whether IP address management (IPAM) is enabled or disabled. The required value is Disabled. OpenShift Virtualization does not support configuring IPAM for virtual machines.
+4. Apply the ClusterUserDefinedNetwork manifest by running the following command:
+
+```terminal
+$ oc apply -f <filename>.yaml
+```
+
+
+where:
+<filename>:: Specifies the name of your ClusterUserDefinedNetwork manifest YAML file.
+
+# Creating a namespace for secondary user-defined networks by using the CLI
+
+You can create a namespace to be used with an existing secondary cluster-scoped user-defined network (CUDN) by using the CLI.
+
+* You are logged in to the cluster as a user with cluster-admin permissions.
+* You have installed the OpenShift CLI (`oc`).
+
+1. Create a Namespace object similar to the following example:
+Example Namespace manifest
+
+```yaml
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: cudn_namespace
+# ...
+```
+
+2. Apply the Namespace manifest by running the following command:
+
+```terminal
+oc apply -f <filename>.yaml
+```
+
+
+where:
+<filename>:: Specifies the name of your Namespace manifest YAML file.
+
+# Attaching a virtual machine to secondary user-defined networks by using the CLI
+
+You can connect a virtual machine (VM) to multiple secondary cluster-scoped user-defined networks (CUDNs) by configuring the interface binding.
+
+* You have installed the OpenShift CLI (`oc`).
+
+1. Edit the VirtualMachine manifest to add the CUDN interface details, as in the following example:
+Example VirtualMachine manifest
+
+```yaml
+apiVersion: kubevirt.io/v1
+kind: VirtualMachine
+metadata:
+  name: example-vm
+  namespace: my-namespace 1
+spec:
+  template:
+    spec:
+      domain:
+        devices:
+          interfaces:
+            - name: secondary_localnet 2
+              bridge: {}
+        machine:
+          type: ""
+        resources:
+          requests:
+            memory: 2048M
+      networks:
+      - name: secondary_localnet 3
+        multus:
+          networkName: <localnet_cudn_name> 4
+# ...
+```
+
+The namespace in which the VM is located. This value must match a namespace that is associated with the secondary CUDN.
+The name of the secondary user-defined network interface.
+The name of the network. This must match the value of the spec.template.spec.domain.devices.interfaces.name field.
+The name of the localnet ClusterUserDefinedNetwork object that you previously created.
+2. Apply the VirtualMachine manifest by running the following command:
+
+```terminal
+$ oc apply -f <filename>.yaml
+```
+
+
+where:
+<filename>:: Specifies the name of your VirtualMachine manifest YAML file.
+
+# Additional resources
+
+* About the ClusterUserDefinedNetwork CR
