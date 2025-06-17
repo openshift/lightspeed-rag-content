@@ -48,7 +48,7 @@ The tool runs on CPUs, not GPUs.
 
 There are two mandatory parameters:
 
-- <dir_tree_with_markdown_files> is the root of the directory tree containing the content to be included in the BYOK RAG database, in Markdown. It is accessed for reading.
+- <dir_tree_with_markdown_files> is the root of the directory tree containing the content to be included in the BYOK RAG database, in Markdown. It is accessed for reading. File extensions are expected to be `.md`.
 - <dir_for_image_tar> is the directory where the resulting image tar archive will be written. It needs to be writable.
 
 The OUT_IMAGE_TAG environment variable can be used to override the tag of the generated image. It defaults to "byok-image".
