@@ -148,3 +148,355 @@ catalog-operator-6cd867cc7-phb2q                 2/2     Running   0          2m
 certified-operators-catalog-884c756c4-zdt64      1/1     Running   0          2m51s
 cluster-api-f75d86f8c-56wfz                      1/1     Running   0          4m32s
 ```
+
+
+# Creating heterogeneous node pools on agent hosted clusters
+
+On the agent platform, you can create heterogeneous node pools so that your clusters can run diverse machine types, such as x86_64 or ppc64le, within a single hosted cluster.
+
+## About creating heterogeneous node pools on agent hosted clusters
+
+A node pool is a group of nodes within a cluster that share the same configuration. Heterogeneous node pools are pools that have different configurations, allowing you to create pools optimized for various workloads.
+
+You can create heterogeneous node pools on the agent platform. It enables clusters to run diverse machine types, for example, x86_64 or ppc64le, within a single hosted cluster.
+
+To create a heterogeneous node pool, perform the following general steps, as described in the following sections:
+
+* Create an AgentServiceConfig custom resource (CR) that informs the Operator how much storage is needed for components such as the database and filesystem. The CR also defines which Red Hat OpenShift Container Platform versions to maintain.
+* Create an agent cluster.
+* Create the heterogeneous node pool.
+* Configure DNS for hosted control planes
+* Create an InfraEnv custom resource (CR) for each architecture.
+* Add agents to the heterogeneous cluster.
+
+## Creating the AgentServiceConfig custom resource
+
+To create heterogeneous node pools on an agent hosted cluster, you first need to create the AgentServiceConfig CR with two heterogeneous architecture operating system (OS) images.
+
+* Run the following command:
+
+```terminal
+$ envsubst <<"EOF" | oc apply -f -
+apiVersion: agent-install.openshift.io/v1beta1
+kind: AgentServiceConfig
+metadata:
+ name: agent
+spec:
+  databaseStorage:
+    accessModes:
+    - ReadWriteOnce
+    resources:
+      requests:
+        storage: <db_volume_name> 1
+  filesystemStorage:
+    accessModes:
+    - ReadWriteOnce
+    resources:
+      requests:
+        storage: <fs_volume_name> 2
+  osImages:
+    - openshiftVersion: <ocp_version> 3
+      version: <ocp_release_version_x86> 4
+      url: <iso_url_x86> 5
+      rootFSUrl: <root_fs_url_x8> 6
+      cpuArchitecture: <arch_x86> 7
+    - openshiftVersion: <ocp_version> 8
+      version: <ocp_release_version_ppc64le> 9
+      url: <iso_url_ppc64le> 10
+      rootFSUrl: <root_fs_url_ppc64le> 11
+      cpuArchitecture: <arch_ppc64le> 12
+EOF
+```
+
+Specify the multicluster engine for Kubernetes Operator agentserviceconfig config, database volume name.
+Specify the multicluster engine Operator agentserviceconfig config, filesystem volume name.
+Specify the current version of Red Hat OpenShift Container Platform.
+Specify the current Red Hat OpenShift Container Platform release version for x86.
+Specify the ISO URL for x86.
+Specify the root filesystem URL for X86.
+Specify the CPU architecture for x86.
+Specify the current Red Hat OpenShift Container Platform version.
+Specify the Red Hat OpenShift Container Platform release version for ppc64le.
+Specify the ISO URL for ppc64le.
+Specify the root filesystem URL for ppc64le.
+Specify the CPU architecture for ppc64le.
+
+## Create an agent cluster
+
+An agent cluster is a cluster that is managed and provisioned using an agent-based approach. An agent cluster can utilize heterogeneous node pools, allowing for different types of worker nodes to be used within the same cluster.
+
+* You used a multi-architecture release image to enable support for heterogeneous node pools when creating a hosted cluster. Find the latest multi-architecture images on the Multi-arch release images page.
+
+1. Create an environment variable for the cluster namespace by running the following command:
+
+```terminal
+$ export CLUSTERS_NAMESPACE=<hosted_cluster_namespace>
+```
+
+2. Create an environment variable for the machine classless inter-domain routing (CIDR) notation by running the following command:
+
+```terminal
+$ export MACHINE_CIDR=192.168.122.0/24
+```
+
+3. Create the hosted control namespace by running the following command:
+
+```terminal
+$ oc create ns <hosted_control_plane_namespace>
+```
+
+4. Create the cluster by running the following command:
+
+```terminal
+$ hcp create cluster agent \
+    --name=<hosted_cluster_name> \1
+    --pull-secret=<pull_secret_file> \2
+    --agent-namespace=<hosted_control_plane_namespace> \3
+    --base-domain=<basedomain> \4
+    --api-server-address=api.<hosted_cluster_name>.<basedomain> \
+    --release-image=quay.io/openshift-release-dev/ocp-release:<ocp_release> 5
+```
+
+Specify the hosted cluster name.
+Specify the pull secret file path.
+Specify the namespace for the hosted control plane.
+Specify the base domain for the hosted cluster.
+Specify the current Red Hat OpenShift Container Platform release version.
+
+## Creating heterogeneous node pools
+
+You create heterogeneous node pools by using the NodePool custom resource (CR).
+
+* To define a NodePool CR, create a YAML file similar to the following example:
+
+```yaml
+envsubst <<"EOF" | oc apply -f -
+apiVersion:apiVersion: hypershift.openshift.io/v1beta1
+kind: NodePool
+metadata:
+  name: <hosted_cluster_name>
+  namespace: <clusters_namespace>
+spec:
+  arch: <arch_ppc64le>
+  clusterName: <hosted_cluster_name>
+  management:
+    autoRepair: false
+    upgradeType: InPlace
+  nodeDrainTimeout: 0s
+  nodeVolumeDetachTimeout: 0s
+  platform:
+    agent:
+      agentLabelSelector:
+        matchLabels:
+          inventory.agent-install.openshift.io/cpu-architecture: <arch_ppc64le> 1
+    type: Agent
+  release:
+    image: quay.io/openshift-release-dev/ocp-release:<ocp_release>
+  replicas: 0
+EOF
+```
+
+This selector block is selects the agents that match the specified label. To create a node pool of architecture ppc64le with zero replicas, specify ppc64le. This ensures that it selects only agents from ppc64le architecture when it scales.
+
+## DNS configuration for hosted control planes
+
+Domain Name Service (DNS) configuration for hosted control planes enables external clients to reach ingress controllers so that they can route traffic to internal components. Configuring this setting ensures that traffic is routed to either ppc64le or x86_64 compute node.
+
+You can point an *.apps.<cluster_name> record to either of the compute nodes where the ingress application is hosted. Or, if you are able to set up a load balancer on top of the compute nodes, point this record to this load balancer. When you are creating a heterogeneous node pool, make sure the compute nodes can reach each other or keep them in the same network.
+
+## Creating infrastructure environment resources
+
+For heterogeneous node pools, you must create an infraEnv custom resource (CR) for each architecture. For example, for node pools with x86_64 and ppc64le architectures, create an InfraEnv CR for x86_64 and ppc64le.
+
+
+[NOTE]
+----
+Before proceeding, make sure that the operating system (OS) images for both x86_64 and ppc64le architectures are added to the AgentServiceConfig resource. After this, you can use the InfraEnv resources to get the minimal ISO image.
+----
+
+1. Create the InfraEnv resource with x86_64 architecture for heterogeneous node pools by running the following command:
+
+```yaml
+$ envsubst <<"EOF" | oc apply -f -
+apiVersion: agent-install.openshift.io/v1beta1
+kind: InfraEnv
+metadata:
+  name: <hosted_cluster_name>-<arch_x86> 1 2
+  namespace: <hosted_control_plane_namespace> 3
+spec:
+  cpuArchitecture: <arch_x86>
+  pullSecretRef:
+    name: pull-secret
+  sshAuthorizedKey: <ssh_pub_key> 4
+EOF
+```
+
+The hosted cluster name.
+The x86_64 architecture.
+The hosted control plane namespace.
+The ssh public key.
+2. Create the InfraEnv resource with ppc64le architecture for heterogeneous node pools by running the following command:
+
+```yaml
+envsubst <<"EOF" | oc apply -f -
+apiVersion: agent-install.openshift.io/v1beta1
+kind: InfraEnv
+metadata:
+  name: <hosted_cluster_name>-<arch_ppc64le> 1 2
+  namespace: <hosted_control_plane_namespace> 3
+spec:
+  cpuArchitecture: <arch_ppc64le>
+  pullSecretRef:
+    name: pull-secret
+  sshAuthorizedKey: <ssh_pub_key> 4
+EOF
+```
+
+The hosted cluster name.
+The ppc64le architecture.
+The hosted control plane namespace.
+The ssh public key.
+3. To verify that the InfraEnv resources are created successfully run the following commands:
+* Verify that the x86_64 InfraEnv resource is created successfully:
+
+```terminal
+$ oc describe InfraEnv <hosted_cluster_name>-<arch_x86>
+```
+
+* Verify that the ppc64le InfraEnv resource is created successfully:
+
+```terminal
+$ oc describe InfraEnv <hosted_cluster_name>-<arch_ppc64le>
+```
+
+4. Generate a live ISO that allows either a virtual machine or a bare-metal machine to join as agents by running the following commands:
+1. Generate a live ISO for x86_64:
+
+```terminal
+$ oc -n <hosted_control_plane_namespace> get InfraEnv <hosted_cluster_name>-<arch_x86> -ojsonpath="{.status.isoDownloadURL}"
+```
+
+2. Generate a live ISO for ppc64le:
+
+```terminal
+$ oc -n <hosted_control_plane_namespace> get InfraEnv <hosted_cluster_name>-<arch_ppc64le> -ojsonpath="{.status.isoDownloadURL}"
+```
+
+
+## Adding agents to the heterogeneous cluster
+
+You add agents by manually configuring the machine to boot with a live ISO. You can download the live ISO and use it to boot a bare-metal node or a virtual machine. On boot, the node communicates with the assisted-service and registers as an agent in the same namespace as the InfraEnv resource. When each agent is created, you can optionally set its installation_disk_id and hostname parameters in the specifications. When you are done, approve it to indicate that the agent is ready for use.
+
+1. Obtain a list of agents by running the following command:
+
+```terminal
+oc -n <hosted_control_plane_namespace> get agents
+```
+
+Example output
+
+```
+NAME                                   CLUSTER   APPROVED   ROLE          STAGE
+86f7ac75-4fc4-4b36-8130-40fa12602218                        auto-assign
+e57a637f-745b-496e-971d-1abbf03341ba                        auto-assign
+```
+
+2. Patch an agent by running the following command:
+
+```terminal
+oc -n <hosted_control_plane_namespace> patch agent 86f7ac75-4fc4-4b36-8130-40fa12602218 -p '{"spec":{"installation_disk_id":"/dev/sda","approved":true,"hostname":"worker-0.example.krnl.es"}}' --type merge
+```
+
+3. Patch the second agent by running the following command:
+
+```terminal
+oc -n <hosted_control_plane_namespace> patch agent 23d0c614-2caa-43f5-b7d3-0b3564688baa -p '{"spec":{"installation_disk_id":"/dev/sda","approved":true,"hostname":"worker-1.example.krnl.es"}}' --type merge
+```
+
+4. Check the agent approval status by running the following command:
+
+```terminal
+oc -n <hosted_control_plane_namespace> get agents
+```
+
+Example output
+
+```
+NAME                                   CLUSTER   APPROVED   ROLE          STAGE
+86f7ac75-4fc4-4b36-8130-40fa12602218             true       auto-assign
+e57a637f-745b-496e-971d-1abbf03341ba             true       auto-assign
+```
+
+
+## Scaling the node pool
+
+After your agents are approved, you can scale the node pools. The agentLabelSelector value that is configured in the node pool ensures that only matching agents are added to the cluster. This also helps scale down the node pool. To remove specific architecture nodes from the cluster, scale down the corresponding node pool.
+
+* Scale the node pool by running the following command:
+
+```terminal
+$ oc -n <clusters_namespace> scale nodepool <nodepool_name> --replicas 2
+```
+
+
+[NOTE]
+----
+The Cluster API agent provider picks two agents randomly to assign to the hosted cluster. These agents pass through different states and then join the hosted cluster as Red Hat OpenShift Container Platform nodes. The various agent states are binding, discovering, insufficient, installing, installing-in-progress, and added-to-existing-cluster.
+----
+
+1. List the agents by running the following command:
+
+```terminal
+$ oc -n <hosted_control_plane_namespace> get agent
+```
+
+Example output
+
+```
+NAME                                   CLUSTER         APPROVED   ROLE          STAGE
+4dac1ab2-7dd5-4894-a220-6a3473b67ee6   hypercluster1   true       auto-assign
+d9198891-39f4-4930-a679-65fb142b108b                   true       auto-assign
+da503cf1-a347-44f2-875c-4960ddb04091   hypercluster1   true       auto-assign
+```
+
+2. Check the status of a specific scaled agent by running the following command:
+
+```terminal
+$ oc -n <hosted_control_plane_namespace> get agent -o jsonpath='{range .items[*]}BMH: {@.metadata.labels.agent-install\.openshift\.io/bmh} Agent: {@.metadata.name} State: {@.status.debugInfo.state}{"\n"}{end}'
+```
+
+Example output
+
+```
+BMH: ocp-worker-2 Agent: 4dac1ab2-7dd5-4894-a220-6a3473b67ee6 State: binding
+BMH: ocp-worker-0 Agent: d9198891-39f4-4930-a679-65fb142b108b State: known-unbound
+BMH: ocp-worker-1 Agent: da503cf1-a347-44f2-875c-4960ddb04091 State: insufficient
+```
+
+3. Once the agents reach the added-to-existing-cluster state, verify that the Red Hat OpenShift Container Platform nodes are ready by running the following command:
+
+```terminal
+$ oc --kubeconfig <hosted_cluster_name>.kubeconfig get nodes
+```
+
+Example output
+
+```
+NAME           STATUS   ROLES    AGE     VERSION
+ocp-worker-1   Ready    worker   5m41s   v1.24.0+3882f8f
+ocp-worker-2   Ready    worker   6m3s    v1.24.0+3882f8f
+```
+
+4. Adding workloads to the nodes can reconcile some cluster operators. The following command displays that two machines are created after scaling up the node pool:
+
+```terminal
+$ oc -n <hosted_control_plane_namespace> get machines
+```
+
+Example output
+
+```
+NAME                            CLUSTER               NODENAME       PROVIDERID                                     PHASE     AGE   VERSION
+hypercluster1-c96b6f675-m5vch   hypercluster1-b2qhl   ocp-worker-1   agent://da503cf1-a347-44f2-875c-4960ddb04091   Running   15m   4.11.5
+hypercluster1-c96b6f675-tl42p   hypercluster1-b2qhl   ocp-worker-2   agent://4dac1ab2-7dd5-4894-a220-6a3473b67ee6   Running   15m   4.11.5
+```

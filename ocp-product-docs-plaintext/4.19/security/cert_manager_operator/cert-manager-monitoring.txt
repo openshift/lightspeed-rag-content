@@ -1,107 +1,159 @@
 # Monitoring cert-manager Operator for Red Hat OpenShift
 
 
-You can expose controller metrics for the cert-manager Operator for Red Hat OpenShift in the format provided by the Prometheus Operator.
+By default, the cert-manager Operator for Red Hat OpenShift exposes metrics for the three core components: controller, cainjector, and webhook. You can configure OpenShift Monitoring to collect these metrics by using the Prometheus Operator format.
 
-# Enabling monitoring by using a service monitor for the cert-manager Operator for Red Hat OpenShift
+# Enabling user workload monitoring
 
-You can enable monitoring and metrics collection for the cert-manager Operator for Red Hat OpenShift by using a service monitor to perform the custom metrics scraping.
+You can enable monitoring for user-defined projects by configuring user workload monitoring in the cluster. For more information, see "Setting up metrics collection for user-defined projects".
 
-* You have access to the cluster with cluster-admin privileges.
-* The cert-manager Operator for Red Hat OpenShift is installed.
+* You have access to the cluster as a user with the cluster-admin role.
 
-1. Add the label to enable cluster monitoring by running the following command:
-
-```terminal
-$ oc label namespace cert-manager openshift.io/cluster-monitoring=true
-```
-
-2. Create a service monitor:
-1. Create a YAML file that defines the Role, RoleBinding, and ServiceMonitor objects:
-Example monitoring.yaml file
+1. Create the cluster-monitoring-config.yaml YAML file:
 
 ```yaml
-apiVersion: rbac.authorization.k8s.io/v1
-kind: Role
+apiVersion: v1
+kind: ConfigMap
 metadata:
-  name: prometheus-k8s
-  namespace: cert-manager
-rules:
-- apiGroups:
-  - ""
-  resources:
-  - services
-  - endpoints
-  - pods
-  verbs:
-  - get
-  - list
-  - watch
----
-apiVersion: rbac.authorization.k8s.io/v1
-kind: RoleBinding
-metadata:
-  name: prometheus-k8s
-  namespace: cert-manager
-roleRef:
-  apiGroup: rbac.authorization.k8s.io
-  kind: Role
-  name: prometheus-k8s
-subjects:
-- kind: ServiceAccount
-  name: prometheus-k8s
+  name: cluster-monitoring-config
   namespace: openshift-monitoring
----
+data:
+  config.yaml: |
+    enableUserWorkload: true
+```
+
+2. Apply the ConfigMap by running the following command:
+
+```terminal
+$ oc apply -f cluster-monitoring-config.yaml
+```
+
+
+1. Verify that the monitoring components for user workloads are running in the openshift-user-workload-monitoring namespace by running the following command:
+
+```terminal
+$ oc -n openshift-user-workload-monitoring get pod
+```
+
+Example output
+
+```terminal
+NAME                                   READY   STATUS    RESTARTS   AGE
+prometheus-operator-6cb6bd9588-dtzxq   2/2     Running   0          50s
+prometheus-user-workload-0             6/6     Running   0          48s
+prometheus-user-workload-1             6/6     Running   0          48s
+thanos-ruler-user-workload-0           4/4     Running   0          42s
+thanos-ruler-user-workload-1           4/4     Running   0          42s
+```
+
+
+The status of the pods such as prometheus-operator, prometheus-user-workload, and thanos-ruler-user-workload must be Running.
+
+* Setting up metrics collection for user-defined projects
+
+# Configuring metrics collection for cert-manager Operator for Red Hat OpenShift operands by using a ServiceMonitor
+
+The cert-manager Operator for Red Hat OpenShift operands exposes metrics by default on port 9402 at the /metrics service endpoint. You can configure metrics collection for the cert-manager operands by creating a ServiceMonitor custom resource (CR) that enables Prometheus Operator to collect custom metrics. For more information, see "Configuring user workload monitoring".
+
+* You have access to the cluster as a user with the cluster-admin role.
+* You have installed the cert-manager Operator for Red Hat OpenShift.
+* You have enabled the user workload monitoring.
+
+1. Create the ServiceMonitor CR:
+1. Create the YAML file that defines the ServiceMonitor CR:
+Example servicemonitor-cert-manager.yaml file
+
+```yaml
 apiVersion: monitoring.coreos.com/v1
 kind: ServiceMonitor
 metadata:
   labels:
     app: cert-manager
-    app.kubernetes.io/component: controller
     app.kubernetes.io/instance: cert-manager
     app.kubernetes.io/name: cert-manager
   name: cert-manager
   namespace: cert-manager
 spec:
   endpoints:
-  - interval: 30s
-    port: tcp-prometheus-servicemonitor
-    scheme: http
+    - honorLabels: false
+      interval: 60s
+      path: /metrics
+      scrapeTimeout: 30s
+      targetPort: 9402
   selector:
-    matchLabels:
-      app.kubernetes.io/component: controller
-      app.kubernetes.io/instance: cert-manager
-      app.kubernetes.io/name: cert-manager
+    matchExpressions:
+      - key: app.kubernetes.io/name
+        operator: In
+        values:
+          - cainjector
+          - cert-manager
+          - webhook
+      - key: app.kubernetes.io/instance
+        operator: In
+        values:
+          - cert-manager
+      - key: app.kubernetes.io/component
+        operator: In
+        values:
+          - cainjector
+          - controller
+          - webhook
 ```
 
-2. Create the Role, RoleBinding, and ServiceMonitor objects by running the following command:
+2. Create the ServiceMonitor CR by running the following command:
 
 ```terminal
-$ oc create -f monitoring.yaml
+$ oc apply -f servicemonitor-cert-manager.yaml
 ```
 
 
-* Setting up metrics collection for user-defined projects
+After the ServiceMonitor CR is created, the user workload Prometheus instance begins metrics collection from the cert-manager Operator for Red Hat OpenShift operands. The collected metrics are labeled with job="cert-manager",job="cert-manager-cainjector", and job="cert-manager-webhook".
 
-# Querying metrics for the cert-manager Operator for Red Hat OpenShift
+1. In the Red Hat OpenShift Container Platform web console, navigate to Observe → Targets.
+2. In the Label filter field, enter the following labels to filter the metrics targets for each operand:
 
-After you have enabled monitoring for the cert-manager Operator for Red Hat OpenShift, you can query its metrics by using the Red Hat OpenShift Container Platform web console.
+```terminal
+$ service=cert-manager
+```
+
+
+```terminal
+$ service=cert-manager-webhook
+```
+
+
+```terminal
+$ service=cert-manager-cainjector
+```
+
+3. Confirm that the Status column shows Up for the cert-manager, cert-manager-webhook, and cert-manager-cainjector entries.
+
+* Configuring user workload monitoring
+
+# Querying metrics for the cert-manager Operator for Red Hat OpenShift operands
+
+As a cluster administrator, or as a user with view access to all namespaces, you can query cert-manager Operator for Red Hat OpenShift operands metrics by using the Red Hat OpenShift Container Platform web console or the command-line interface (CLI). For more information, see "Accessing metrics".
 
 * You have access to the cluster as a user with the cluster-admin role.
 * You have installed the cert-manager Operator for Red Hat OpenShift.
-* You have enabled monitoring and metrics collection for the cert-manager Operator for Red Hat OpenShift.
+* You have enabled monitoring and metrics collection by creating ServiceMonitor object.
 
-1. From the Red Hat OpenShift Container Platform web console, navigate to Observe -> Metrics.
-2. Add a query by using one of the following formats:
-* Specify the endpoints:
-
-```promql
-{instance="<endpoint>"} 1
-```
-
-Replace <endpoint> with the value of the endpoint for the cert-manager service. You can find the endpoint value by running the following command: oc describe service cert-manager -n cert-manager.
-* Specify the tcp-prometheus-servicemonitor port:
+1. In the Red Hat OpenShift Container Platform web console, navigate to Observe → Metrics.
+2. In the query field, enter the following PromQL expressions to query the cert-manager Operator for Red Hat OpenShift operands metric for each operand:
 
 ```promql
-{endpoint="tcp-prometheus-servicemonitor"}
+{job="cert-manager"}
 ```
+
+
+```promql
+{job="cert-manager-webhook"}
+```
+
+
+```promql
+{job="cert-manager-cainjector"}
+```
+
+
+* Accessing metrics
