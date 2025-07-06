@@ -3,8 +3,9 @@
 
 As a cluster administrator, you can migrate to the OVN-Kubernetes network plugin from the OpenShift software-defined networking (SDN) plugin.
 The following methods exist for migrating from the OpenShift SDN network plugin to the OVN-Kubernetes plugin:
-Limited live migration (preferred method):: This is an automated process that migrates your cluster from OpenShift SDN to OVN-Kubernetes.
+Ansible playbook:: The Ansible playbook method automates the offline migration method steps. This method has the same usage scenarios as the manual offline migration method.
 Offline migration:: This is a manual process that includes some downtime. This method is primarily used for self-managed Red Hat OpenShift Container Platform deployments, and consider using this method when you cannot perform a limited live migration to the OVN-Kubernetes network plugin.
+Limited live migration (Preferred method):: This is an automated process that migrates your cluster from OpenShift SDN to OVN-Kubernetes.
 
 [WARNING]
 ----
@@ -623,7 +624,7 @@ The following table shows you the available metrics and the label values populat
 
 # Offline migration to the OVN-Kubernetes network plugin overview
 
-The offline migration method is a manual process that includes some downtime, during which your cluster is unreachable. This method is primarily used for self-managed Red Hat OpenShift Container Platform deployments, and is an alternative to the limited live migration procedure. It should be used in the event that you cannot perform a limited live migration to the OVN-Kubernetes network plugin.
+The offline migration method is a manual process that includes some downtime, during which your cluster is unreachable. You can use an Ansible playbook that automates the offline migration steps so that you can save time. These methods are primarily used for self-managed Red Hat OpenShift Container Platform deployments, and are an alternative to the limited live migration procedure. Use these methods only when you cannot perform a limited live migration to the OVN-Kubernetes network plugin.
 
 Although a rollback procedure is provided, the offline migration is intended to be a one-way process.
 
@@ -635,13 +636,13 @@ OpenShift SDN CNI is deprecated as of Red Hat OpenShift Container Platform 4.14.
 
 The following sections provide more information about the offline migration method.
 
-## Supported platforms when using the offline migration method
+## Supported platforms when using the offline migration methods
 
-The following table provides information about the supported platforms for the offline migration type.
+The following table provides information about the supported platforms for the manual offline migration type.
 
 
 
-## Considerations for offline migration to the OVN-Kubernetes network plugin
+## Considerations for the offline migration methods to the OVN-Kubernetes network plugin
 
 If you have more than 150 nodes in your Red Hat OpenShift Container Platform cluster, then open a support case for consultation on your migration to the OVN-Kubernetes network plugin.
 
@@ -731,6 +732,101 @@ OVN-Kubernetes fully supports the Kubernetes NetworkPolicy API in the networking
 The following table summarizes the migration process by segmenting between the user-initiated steps in the process and the actions that the migration performs in response.
 
 
+
+## Using an Ansible playbook to migrate to the OVN-Kubernetes network plugin
+
+As a cluster administrator, you can use an Ansible collection, network.offline_migration_sdn_to_ovnk, to migrate from the OpenShift SDN Container Network Interface (CNI) network plugin to the OVN-Kubernetes plugin for your cluster. The Ansible collection includes the following playbooks:
+
+* playbooks/playbook-migration.yml: Includes playbooks that execute in a sequence where each playbook represents a step in the migration process.
+* playbooks/playbook-rollback.yml: Includes playbooks that execute in a sequence where each playbook represents a step in the rollback process.
+
+* You installed the python3 package, minimum version 3.10.
+* You installed the jmespath and jq packages.
+* You logged in to the Red Hat Hybrid Cloud Console and opened the Ansible Automation Platform web console.
+* You created a security group rule that allows User Datagram Protocol (UDP) packets on port 6081 for all nodes on all cloud platforms. If you do not do this task, your cluster might fail to schedule pods.
+* If the OpenShift-SDN plugin uses the 100.64.0.0/16 and 100.88.0.0/16 address ranges, you patched the address ranges. For more information, see "Patching OVN-Kubernetes address ranges" in the Additional resources section.
+
+1. Install the ansible-core package, minimum version 2.15. The following example command shows how to install the ansible-core package on Red Hat Enterprise Linux (RHEL):
+
+```terminal
+$ sudo dnf install -y ansible-core
+```
+
+2. Create an ansible.cfg file and add information similar to the following example to the file. Ensure that file exists in the same directory as where the ansible-galaxy commands and the playbooks run.
+
+```ini
+$ cat << EOF >> ansible.cfg
+[galaxy]
+server_list = automation_hub, validated
+
+[galaxy_server.automation_hub]
+url=https://console.redhat.com/api/automation-hub/content/published/
+auth_url=https://sso.redhat.com/auth/realms/redhat-external/protocol/openid-connect/token
+token=
+
+#[galaxy_server.release_galaxy]
+#url=https://galaxy.ansible.com/
+
+[galaxy_server.validated]
+url=https://console.redhat.com/api/automation-hub/content/validated/
+auth_url=https://sso.redhat.com/auth/realms/redhat-external/protocol/openid-connect/token
+token=
+EOF
+```
+
+3. From the Ansible Automation Platform web console, go to the Connect to Hub page and complete the following steps:
+1. In the Offline token section of the page, click the Load token button.
+2. After the token loads, click the Copy to clipboard icon.
+3. Open the ansible.cfg file and paste the API token in the token= parameter. The API token is required for authenticating against the server URL specified in the ansible.cfg file.
+4. Install the network.offline_migration_sdn_to_ovnk Ansible collection by entering the following ansible-galaxy command:
+
+```terminal
+$ ansible-galaxy collection install network.offline_migration_sdn_to_ovnk
+```
+
+5. Verify that the network.offline_migration_sdn_to_ovnk Ansible collection is installed on your system:
+
+```terminal
+$ ansible-galaxy collection list | grep network.offline_migration_sdn_to_ovnk
+```
+
+Example output
+
+```terminal
+network.offline_migration_sdn_to_ovnk   1.0.2
+```
+
+
+The network.offline_migration_sdn_to_ovnk Ansible collection is saved in the default path of ~/.ansible/collections/ansible_collections/network/offline_migration_sdn_to_ovnk/.
+6. Configure migration features in the playbooks/playbook-migration.yml file:
+
+```yaml
+# ...
+    migration_interface_name: eth0
+    migration_disable_auto_migration: true
+    migration_egress_ip: false
+    migration_egress_firewall: false
+    migration_multicast: false
+    migration_mtu: 1400
+    migration_geneve_port: 6081
+    migration_ipv4_subnet: "100.64.0.0/16"
+# ...
+```
+
+migration_interface_name:: If you use an NodeNetworkConfigurationPolicy (NNCP) resource on a primary interface, specify the interface name in the migration-playbook.yml file so that the NNCP resource gets deleted on the primary interface during the migration process.
+migration_disable_auto_migration:: Disables the auto-migration of OpenShift SDN CNI plug-in features to the OVN-Kubernetes plugin. If you disable auto-migration of features, you must also set the migration_egress_ip, migration_egress_firewall, and migration_multicast parameters to false. If you need to enable auto-migration of features, set the parameter to false.
+migration_mtu:: Optional parameter that sets a specific maximum transmission unit (MTU) to your cluster network after the migration process.
+migration_geneve_port:: Optional parameter that sets a Geneve port for OVN-Kubernetes. The default port is 6081.
+migration_ipv4_subnet:: Optional parameter that sets an IPv4 address range for internal use by OVN-Kubernetes. The default value for the parameter is 100.64.0.0/16.
+7. To run the playbooks/playbook-migration.yml file, enter the following command:
+
+```terminal
+$ ansible-playbook -v playbooks/playbook-migration.yml
+```
+
+
+* Patching OVN-Kubernetes address ranges
+* Getting started with playbooks (Red Hat Ansible Automation Platform documentation)
 
 ## Migrating to the OVN-Kubernetes network plugin by using the offline migration method
 
@@ -891,7 +987,8 @@ $ oc patch Network.operator.openshift.io cluster --type=merge \
         "ovnKubernetesConfig":{
           "mtu":<mtu>,
           "genevePort":<port>,
-          "v4InternalSubnet":"<ipv4_subnet>"
+          "ipv4":
+            "InternalJoinSubnet": "<ipv4_subnet>"
     }}}}'
 ```
 
