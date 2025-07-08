@@ -38,6 +38,12 @@ def find_first_anchor(chunk_soup: BeautifulSoup) -> Optional[str]:
     return None
 
 
+def get_document_title(soup: BeautifulSoup) -> str:
+    """Extracts the document title from the <h1> tag."""
+    h1_tag = soup.find('h1')
+    return h1_tag.get_text(strip=True) if h1_tag else "Untitled"
+
+
 def chunk_html(
     html_content: str,
     source_url: str,
@@ -63,13 +69,17 @@ def chunk_html(
     )
 
     try:
+        soup = BeautifulSoup(html_content, 'html.parser')
+        doc_title = get_document_title(soup)
+
         if count_html_tokens(html_content, options.count_tag_tokens) <= options.max_token_limit:
-            return [Chunk(text=html_content, metadata={"source": source_url})]
+            metadata = {"docs_url": source_url, "title": doc_title}
+            return [Chunk(text=html_content, metadata=metadata)]
     except Exception as e:
         warnings.warn("Could not pre-calculate total tokens: %s. Proceeding with chunking." % e)
+        doc_title = "Untitled"
 
     try:
-        soup = BeautifulSoup(html_content, 'html.parser')
         body = soup.body or soup
         string_chunks = _split_element_by_children(body, options)
     except Exception as e:
@@ -92,10 +102,10 @@ def chunk_html(
         final_anchor = last_seen_anchor
         
         full_source_url = f"{source_url}#{final_anchor}" if final_anchor else source_url
-        metadata = {"source": full_source_url}
+        metadata = {"docs_url": full_source_url, "title": doc_title}
         final_chunks.append(Chunk(text=s_chunk, metadata=metadata))
 
-    return final_chunks if final_chunks else [Chunk(text=html_content, metadata={"source": source_url})]
+    return final_chunks if final_chunks else [Chunk(text=html_content, metadata={"docs_url": source_url, "title": doc_title})]
 
 
 def _split_element_by_children(element: Tag, options: ChunkingOptions) -> List[str]:

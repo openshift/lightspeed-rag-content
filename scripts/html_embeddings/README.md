@@ -174,11 +174,12 @@ Chunks are saved as JSON files with the following structure:
     "version": "4.18",
     "file_path": "monitoring/index.html",
     "doc_type": "openshift_documentation",
-    "source": "https://docs.redhat.com/en/documentation/openshift_container_platform/4.18/html-single/monitoring/",
+    "title": "Monitoring Guide",
+    "docs_url": "https://docs.redhat.com/en/documentation/openshift_container_platform/4.18/html-single/monitoring/",
     "chunk_index": 1,
     "total_chunks": 45,
     "token_count": 375,
-    "source_file": "monitoring/index.html",
+    "source_file": "monitoring/index.html"
   }
 }
 ```
