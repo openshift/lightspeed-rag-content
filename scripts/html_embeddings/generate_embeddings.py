@@ -18,6 +18,10 @@ import time
 from pathlib import Path
 from typing import Optional, Dict, Any, List
 
+import re
+import yaml
+from urllib.parse import urlparse
+
 sys.path.insert(0, str(Path(__file__).parent))
 
 from download_docs import download_documentation
@@ -38,17 +42,38 @@ from llama_index.vector_stores.faiss import FaissVectorStore
 def parse_arguments() -> argparse.Namespace:
     """Parse command line arguments."""
     parser = argparse.ArgumentParser(
-        description="Generate embeddings from OpenShift HTML documentation",
+        description="Generate embeddings from documentation.",
         formatter_class=argparse.ArgumentDefaultsHelpFormatter,
     )
 
+    # Input source group
+    source_group = parser.add_argument_group(
+        "Input Source", "Specify the documentation source (choose one method)"
+    )
+    source_exclusive_group = source_group.add_mutually_exclusive_group(required=True)
+    source_exclusive_group.add_argument(
+        "--doc-url",
+        help="The full URL to the documentation's page.",
+    )
+    source_exclusive_group.add_argument(
+        "--doc-url-slug",
+        help="The product's documentation slug (e.g., 'openshift_container_platform').",
+    )
+    source_exclusive_group.add_argument(
+        "--config-file",
+        type=Path,
+        help="Path to a YAML or JSON configuration file specifying products to process.",
+    )
+
     parser.add_argument(
-        "--version", "-v", required=True, help="OpenShift version (e.g., 4.18)"
+        "--doc-url-version",
+        default="latest",
+        help="The product version. Defaults to 'latest'. Used with --doc-url-slug.",
     )
     parser.add_argument(
         "--specific-doc",
         "-d",
-        help="Optional specific document to download (e.g., 'monitoring')",
+        help="Optional specific document to download (e.g., 'monitoring').",
     )
     parser.add_argument(
         "--output-dir", "-o", default="./vector_db", help="Vector DB output directory"
@@ -155,7 +180,7 @@ def parse_arguments() -> argparse.Namespace:
     return parser.parse_args()
 
 
-def setup_environment(args: argparse.Namespace) -> Dict[str, Any]:
+def setup_environment(args: argparse.Namespace, product: Dict[str, Any]) -> tuple[Dict[str, Any], Dict[str, Path]]:
     """Setup environment and validate dependencies."""
     logger = setup_logging(verbose=args.verbose)
 
@@ -169,20 +194,23 @@ def setup_environment(args: argparse.Namespace) -> Dict[str, Any]:
         args.max_token_limit = args.chunk
 
     logger.info("Using max token limit: %s", args.max_token_limit)
-    
-    if not args.index:
-        if args.specific_doc:
-            args.index = f"ocp-{args.version}-{args.specific_doc}"
-        else:
-            args.index = f"ocp-{args.version}"
-        logger.info("Auto-generated index name: %s", args.index)
 
-    paths = create_directory_structure(
+    paths, product = create_directory_structure(
         cache_dir=args.cache_dir,
         output_dir=args.output_dir,
-        version=args.version,
+        product=product,
         specific_doc=args.specific_doc,
     )
+
+    product_slug = product.get("slug", "default")
+    product_version = product.get("version", "latest")
+
+    if not args.index:
+        if args.specific_doc:
+            args.index = f"{product_slug}-{product_version}-{args.specific_doc}"
+        else:
+            args.index = f"{product_slug}-{product_version}"
+        logger.info("Auto-generated index name: %s", args.index)
 
     model_path = Path(args.model_dir).resolve()
 
@@ -204,10 +232,15 @@ def setup_environment(args: argparse.Namespace) -> Dict[str, Any]:
         logger.info("Try using a Hugging Face model name instead of a local path")
         raise
 
-    return {"logger": logger, "paths": paths}
+    return {"logger": logger, "paths": paths}, product
 
 
-def run_download_step(args: argparse.Namespace, paths: Dict[str, Path], logger) -> bool:
+def run_download_step(
+    args: argparse.Namespace,
+    paths: Dict[str, Path],
+    product: Dict[str, Any],
+    logger,
+) -> bool:
     """Run the documentation download step."""
     downloads_dir = paths["downloads"]
 
@@ -220,9 +253,15 @@ def run_download_step(args: argparse.Namespace, paths: Dict[str, Path], logger) 
         return True
 
     try:
-        logger.info("Downloading OpenShift %s documentation...", args.version)
+        logger.info(
+            "Downloading %s %s documentation...",
+            product.get("slug"),
+            product.get("version"),
+        )
         success = download_documentation(
-            version=args.version,
+            version=product.get("version"),
+            product_slug=product.get("slug"),
+            doc_url=product.get("url"),
             specific_doc=args.specific_doc,
             output_dir=downloads_dir,
             cache_existing=(not args.use_cached_downloads),
@@ -258,7 +297,12 @@ def run_strip_step(args: argparse.Namespace, paths: Dict[str, Path], logger) -> 
         return False
 
 
-def run_chunk_step(args: argparse.Namespace, paths: Dict[str, Path], logger) -> bool:
+def run_chunk_step(
+    args: argparse.Namespace,
+    paths: Dict[str, Path],
+    product: Dict[str, Any],
+    logger,
+) -> bool:
     """Run the HTML chunking step."""
     stripped_dir = paths["stripped"]
     chunks_dir = paths["chunks"]
@@ -273,7 +317,12 @@ def run_chunk_step(args: argparse.Namespace, paths: Dict[str, Path], logger) -> 
     try:
         logger.info("Chunking HTML documents...")
         success = chunk_html_documents(
-            input_dir=stripped_dir, output_dir=chunks_dir, **chunking_options
+            input_dir=stripped_dir,
+            output_dir=chunks_dir,
+            product_slug=product.get("slug"),
+            product_version=product.get("version"),
+            doc_url=product.get("url"),
+            **chunking_options,
         )
         if success:
             logger.info("HTML chunking completed successfully")
@@ -349,7 +398,10 @@ def load_chunks_as_nodes(chunks_dir: Path, logger) -> List[TextNode]:
 
 
 def run_embedding_step(
-    args: argparse.Namespace, paths: Dict[str, Path], logger
+    args: argparse.Namespace,
+    paths: Dict[str, Path],
+    product: Dict[str, Any],
+    logger,
 ) -> bool:
     """Run the embedding generation step."""
     base_chunks_dir = paths["chunks"]
@@ -420,7 +472,8 @@ def run_embedding_step(
         index.storage_context.persist(persist_dir=output_dir)
 
         metadata = {
-            "version": args.version,
+            "product_slug": product.get("slug"),
+            "version": product.get("version"),
             "specific_doc": args.specific_doc,
             "index_id": args.index,
             "embedding_model": args.model_name or args.model_dir,
@@ -447,47 +500,158 @@ def run_embedding_step(
 def main() -> int:
     """Main execution function."""
     args = parse_arguments()
+    logger = setup_logging(verbose=args.verbose)
 
-    try:
-        env = setup_environment(args)
-        logger = env["logger"]
-        paths = env["paths"]
-
-        logger.info(
-            "Starting HTML embeddings pipeline for OpenShift %s", args.version
-        )
-        if args.specific_doc:
-            logger.info("Processing specific document: %s", args.specific_doc)
-
-        steps = [
-            ("download", run_download_step),
-            ("strip", run_strip_step),
-            ("chunk", run_chunk_step),
-            ("runbooks", run_runbooks_step),
-            ("embed", run_embedding_step),
-        ]
-
-        for step_name, step_func in steps:
-            logger.info("Running %s step...", step_name)
-
-            success = step_func(args, paths, logger)
-
-            if not success:
-                if args.continue_on_error:
-                    logger.warning(
-                        "Step %s failed, but continuing due to --continue-on-error",
-                        step_name,
-                    )
-                else:
-                    logger.error("Step %s failed, stopping pipeline", step_name)
-                    return 1
-
-        logger.info("HTML embeddings pipeline completed successfully!")
-        return 0
-
-    except Exception as e:
-        print(f"Pipeline failed with error: {e}")
+    if args.specific_doc and not args.doc_url_slug:
+        logger.error("--specific-doc can only be used with --doc-url-slug.")
         return 1
+
+    products_to_process = []
+
+    # Determine source of products
+    if args.config_file:
+        if args.specific_doc:
+            logger.error("--specific-doc cannot be used with --config-file.")
+            return 1
+        logger.info("Loading products from config file: %s", args.config_file)
+        try:
+            with open(args.config_file, "r") as f:
+                if args.config_file.suffix in [".yaml", ".yml"]:
+                    config = yaml.safe_load(f)
+                elif args.config_file.suffix == ".json":
+                    config = json.load(f)
+                else:
+                    logger.error(
+                        "Unsupported config file format: %s. Use .yaml, .yml, or .json.",
+                        args.config_file.suffix,
+                    )
+                    return 1
+            products_to_process = config.get("products", [])
+        except Exception as e:
+            logger.error(
+                "Failed to load or parse config file %s: %s", args.config_file, e
+            )
+            return 1
+
+    elif args.doc_url:
+        if args.specific_doc:
+            logger.error("--specific-doc cannot be used with --doc-url.")
+            return 1
+        logger.info("Processing single product from URL: %s", args.doc_url)
+        products_to_process.append({"url": args.doc_url})
+
+    elif args.doc_url_slug:
+        logger.info(
+            "Processing single product from slug: %s, version: %s",
+            args.doc_url_slug,
+            args.doc_url_version,
+        )
+        slug = args.doc_url_slug
+        if slug.startswith("http"):
+            logger.warning(
+                "Warning: --doc-url-slug was provided a full URL. Attempting to parse slug from it."
+            )
+            path_parts = urlparse(slug).path.strip("/").split("/")
+            slug = path_parts[-1] if path_parts and path_parts[-1] else (path_parts[-2] if len(path_parts) > 1 else "unknown")
+            logger.info("Parsed slug as: %s", slug)
+
+        products_to_process.append({"slug": slug, "version": args.doc_url_version})
+
+    if not products_to_process:
+        logger.error("No products to process. Please check your input source.")
+        return 1
+
+    # Pre-process the list to parse URLs and fill in missing data
+    for product in products_to_process:
+        if "url" in product and "slug" not in product:
+            parsed_url = urlparse(product["url"])
+            path_parts = parsed_url.path.strip("/").split("/")
+            slug = "unknown"
+            version = "unknown"
+            try:
+                doc_index = path_parts.index("documentation")
+                # Path format: /documentation/{lang}/{slug}/{version}/...
+                if re.match(r"^[a-z]{2}(-[a-z]{2})?$", path_parts[doc_index + 1]):
+                    slug = path_parts[doc_index + 2]
+                    version = path_parts[doc_index + 3]
+                else: # Path format: /documentation/{slug}/{version}/...
+                    slug = path_parts[doc_index + 1]
+                    version = path_parts[doc_index + 2]
+            except (ValueError, IndexError):
+                logger.warning(
+                    "URL %s does not match standard Red Hat documentation format. Using fallback for slug and version.", product["url"]
+                )
+                slug = (
+                    parsed_url.hostname.replace(".", "_")
+                    if parsed_url.hostname
+                    else "localdoc"
+                )
+                version = "latest"
+            product["slug"] = slug
+            product["version"] = version
+
+
+    for product in products_to_process:
+        try:
+            # Set up environment for each product
+            env, product = setup_environment(args, product)
+            paths = env["paths"]
+
+            logger.info(
+                "Starting HTML embeddings pipeline for %s version %s",
+                product.get("slug"),
+                product.get("version"),
+            )
+            if args.specific_doc:
+                logger.info("Processing specific document: %s", args.specific_doc)
+
+            steps = [
+                ("download", run_download_step),
+                ("strip", run_strip_step),
+                ("chunk", run_chunk_step),
+                ("runbooks", run_runbooks_step),
+                ("embed", run_embedding_step),
+            ]
+
+            for step_name, step_func in steps:
+                logger.info(
+                    "Running %s step for %s...", step_name, product.get("slug")
+                )
+
+                # Pass product info to steps that need it
+                if step_name in ["download", "chunk", "embed"]:
+                    success = step_func(args, paths, product, logger)
+                else:
+                    success = step_func(args, paths, logger)
+
+                if not success:
+                    if args.continue_on_error:
+                        logger.warning(
+                            "Step %s failed for %s, but continuing due to --continue-on-error",
+                            step_name,
+                            product.get("slug"),
+                        )
+                    else:
+                        logger.error(
+                            "Step %s failed for %s, stopping pipeline",
+                            step_name,
+                            product.get("slug"),
+                        )
+                        return 1
+
+            logger.info(
+                "HTML embeddings pipeline completed successfully for %s!",
+                product.get("slug"),
+            )
+
+        except Exception as e:
+            logger.error(
+                "Pipeline failed for product %s with error: %s", product.get("slug"), e
+            )
+            if not args.continue_on_error:
+                return 1
+
+    return 0
 
 
 if __name__ == "__main__":
