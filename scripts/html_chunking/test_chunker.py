@@ -33,11 +33,12 @@ class TestHtmlChunker(unittest.TestCase):
 
     def test_chunk_html_small_input(self):
         """Tests that HTML smaller than the max_token_limit is not chunked."""
-        html = "<html><body><p>This is a small test.</p></body></html>"
+        html = "<html><body><h1>My Title</h1><p>This is a small test.</p></body></html>"
         chunks = chunk_html(html, "http://example.com/small", max_token_limit=100)
         self.assertEqual(len(chunks), 1)
         self.assertEqual(chunks[0].text, html)
-        self.assertEqual(chunks[0].metadata["source"], "http://example.com/small")
+        self.assertEqual(chunks[0].metadata["docs_url"], "http://example.com/small")
+        self.assertEqual(chunks[0].metadata["title"], "My Title")
 
     def test_basic_splitting(self):
         """Tests basic splitting of multiple paragraphs."""
@@ -153,24 +154,28 @@ class TestHtmlChunker(unittest.TestCase):
         
         self.assertGreaterEqual(len(chunks), 3)
 
-        self.assertEqual(chunks[0].metadata["source"], "http://example.com/meta")
+        # The first chunk might not have a specific anchor if it's just the title
+        self.assertIn(chunks[0].metadata["docs_url"], ["http://example.com/meta", "http://example.com/meta#intro"])
+        self.assertEqual(chunks[0].metadata["title"], "Intro")
 
         topic1_chunks = [c for c in chunks if "Topic 1" in c.text or "Content 1" in c.text or "More content 1" in c.text]
-        self.assertTrue(all(c.metadata["source"] == "http://example.com/meta#topic1" for c in topic1_chunks))
+        self.assertTrue(all(c.metadata["docs_url"] == "http://example.com/meta#topic1" for c in topic1_chunks))
         
         final_thoughts_chunk = next((c for c in chunks if "Final words" in c.text), None)
         
         self.assertIsNotNone(final_thoughts_chunk, "Final thoughts chunk not found")
         
-        self.assertEqual(final_thoughts_chunk.metadata["source"], "http://example.com/meta#final-thoughts")
+        self.assertEqual(final_thoughts_chunk.metadata["docs_url"], "http://example.com/meta#final-thoughts")
+        self.assertEqual(final_thoughts_chunk.metadata["title"], "Intro")
 
     def test_no_anchor_found(self):
         """Tests that the source URL has no anchor if no IDs are present."""
-        html = "<html><body><p>Paragraph 1.</p><p>Paragraph 2.</p></body></html>"
+        html = "<html><body><h1>No Anchor Title</h1><p>Paragraph 1.</p><p>Paragraph 2.</p></body></html>"
         chunks = chunk_html(html, "http://example.com/no-anchor", max_token_limit=15)
         self.assertEqual(len(chunks), 2)
-        self.assertEqual(chunks[0].metadata["source"], "http://example.com/no-anchor")
-        self.assertEqual(chunks[1].metadata["source"], "http://example.com/no-anchor")
+        self.assertEqual(chunks[0].metadata["docs_url"], "http://example.com/no-anchor")
+        self.assertEqual(chunks[1].metadata["docs_url"], "http://example.com/no-anchor")
+        self.assertEqual(chunks[0].metadata["title"], "No Anchor Title")
 
     def test_empty_html(self):
         """Tests that empty or minimal HTML does not cause errors."""

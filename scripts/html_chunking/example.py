@@ -72,7 +72,7 @@ def generate_html_report(output_path: str, chunks: List['Chunk'], original_token
             
             style = " style='background-color:#FFE0E0;'" if token_count > max_token_limit else ""
             f.write(f'<div class="chunk-header"{style}>Chunk {i} ({token_count} tokens)</div>\n')
-            f.write(f'<div class="chunk-meta"><strong>Source:</strong> {chunk.metadata.get("source", "N/A")}</div>\n')
+            f.write(f'<div class="chunk-meta"><strong>Title:</strong> {chunk.metadata.get("title", "N/A")}<br><strong>Source:</strong> {chunk.metadata.get("docs_url", "N/A")}</div>\n')
             f.write('<div class="chunk-content">\n')
             f.write(chunk.text)
             f.write('\n</div>\n')
