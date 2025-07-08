@@ -21,6 +21,8 @@ spec.loader.exec_module(openshift_docs_downloader)
 
 def download_documentation(
     version: str,
+    product_slug: str,
+    doc_url: Optional[str] = None,
     specific_doc: Optional[str] = None,
     output_dir: Path = Path("./downloads"),
     cache_existing: bool = True,
@@ -29,10 +31,12 @@ def download_documentation(
     fail_on_error: bool = False,
 ) -> bool:
     """
-    Download OpenShift documentation.
+    Download documentation.
 
     Args:
-        version: OpenShift version (e.g., "4.18")
+        version: Product version (e.g., "4.18")
+        product_slug: Product URL slug (e.g., "openshift_container_platform")
+        doc_url: The full URL to the documentation page.
         specific_doc: Optional specific document to download
         output_dir: Directory to save downloaded files
         cache_existing: Whether to use cached downloads
@@ -45,10 +49,12 @@ def download_documentation(
     """
     logger = logging.getLogger(__name__)
 
-    if specific_doc:
-        base_url = f"https://docs.redhat.com/en/documentation/openshift_container_platform/{version}/html-single/{specific_doc}"
+    if doc_url:
+        base_url = doc_url
+    elif specific_doc:
+        base_url = f"https://docs.redhat.com/en/documentation/{product_slug}/{version}/html-single/{specific_doc}"
     else:
-        base_url = f"https://docs.redhat.com/en/documentation/openshift_container_platform/{version}"
+        base_url = f"https://docs.redhat.com/en/documentation/{product_slug}/{version}"
 
     logger.info("Downloading from: %s", base_url)
     logger.info("Output directory: %s", output_dir)

@@ -33,6 +33,7 @@ def check_dependencies() -> Tuple[List[str], List[str]]:
         "faiss",
         "aiohttp",
         "beautifulsoup4",
+        "PyYAML",
         "sqlite3",  # Built-in but check anyway
     ]
 
@@ -47,6 +48,8 @@ def check_dependencies() -> Tuple[List[str], List[str]]:
                 import llama_index
             elif package == "beautifulsoup4":
                 import bs4
+            elif package == "PyYAML":
+                import yaml
             else:
                 __import__(package.replace("-", "_"))
             installed.append(package)
@@ -71,6 +74,7 @@ def install_missing_packages(packages: List[str]) -> bool:
         "aiohttp": "aiohttp",
         "transformers": "transformers",
         "faiss": "faiss-cpu",
+        "PyYAML": "PyYAML",
     }
 
     for package in packages:
