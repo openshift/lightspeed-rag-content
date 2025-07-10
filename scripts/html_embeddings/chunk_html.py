@@ -6,6 +6,7 @@ import json
 import logging
 import re
 import sys
+from bs4 import BeautifulSoup
 from pathlib import Path
 from typing import Dict, List, Any, Optional
 from urllib.parse import urlparse
@@ -88,7 +89,7 @@ def chunk_html_documents(
             success, chunk_count = chunk_single_html_file(
                 input_file=html_file.resolve(),
                 output_dir=doc_specific_output_dir, # Pass the new doc-specific dir
-                input_base_dir=base_dir_for_relative_paths, # Pass the consistent version-level base path
+                input_base_dir=base_dir_for_relative_paths.resolve(), # Pass the consistent version-level base path
                 source_url=source_url,
                 max_token_limit=max_token_limit,
                 count_tag_tokens=count_tag_tokens,
@@ -182,14 +183,20 @@ def chunk_single_html_file(
 
         chunk_count = 0
         for i, chunk_obj in enumerate(chunks):
+            chunker_metadata = chunk_obj.metadata or {}
             chunk_metadata = {
                 **base_metadata,
-                **chunk_obj.metadata,
+                "docs_url": chunker_metadata.get("docs_url"),
+                "title": chunker_metadata.get("title"),
+                "section_title": chunker_metadata.get("section_title"),
                 "chunk_index": i,
                 "total_chunks": len(chunks),
                 "token_count": count_html_tokens(chunk_obj.text, count_tag_tokens),
                 "source_file": str(relative_path),
             }
+
+            # Filter out any keys that have None values to keep the JSON clean
+            chunk_metadata = {k: v for k, v in chunk_metadata.items() if v is not None}
 
             chunk_data = {
                 "id": f"{base_metadata['doc_id']}_chunk_{i:04d}",

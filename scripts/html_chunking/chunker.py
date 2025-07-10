@@ -9,7 +9,7 @@ from dataclasses import dataclass
 from bs4 import BeautifulSoup, Tag, NavigableString
 import warnings
 
-from tokenizer import count_html_tokens
+from .tokenizer import count_html_tokens
 
 # Constants
 DEFAULT_CHARS_PER_TOKEN_RATIO = 3.5
@@ -39,9 +39,9 @@ def find_first_anchor(chunk_soup: BeautifulSoup) -> Optional[str]:
 
 
 def get_document_title(soup: BeautifulSoup) -> str:
-    """Extracts the document title from the <h1> tag."""
-    h1_tag = soup.find('h1')
-    return h1_tag.get_text(strip=True) if h1_tag else "Untitled"
+    """Extracts the document title from the <title> tag."""
+    title_tag = soup.find('title')
+    return title_tag.get_text(strip=True) if title_tag else "Untitled"
 
 
 def chunk_html(
@@ -70,14 +70,18 @@ def chunk_html(
 
     try:
         soup = BeautifulSoup(html_content, 'html.parser')
-        doc_title = get_document_title(soup)
+        document_title = get_document_title(soup)
 
         if count_html_tokens(html_content, options.count_tag_tokens) <= options.max_token_limit:
-            metadata = {"docs_url": source_url, "title": doc_title}
+            metadata = {
+                "docs_url": source_url,
+                "title": document_title,
+                "section_title": document_title
+            }
             return [Chunk(text=html_content, metadata=metadata)]
     except Exception as e:
         warnings.warn("Could not pre-calculate total tokens: %s. Proceeding with chunking." % e)
-        doc_title = "Untitled"
+        document_title = "Untitled"
 
     try:
         body = soup.body or soup
@@ -86,9 +90,11 @@ def chunk_html(
         warnings.warn("A critical error occurred during semantic chunking: %s. Falling back to linear splitting." % e)
         string_chunks = _linear_split(html_content, options)
 
-    # Post-process string chunks to add stateful anchor metadata
+    # Post-process string chunks to add stateful anchor and title metadata
     final_chunks = []
     last_seen_anchor = None
+    last_heading_text = document_title
+
     for s_chunk in string_chunks:
         if not s_chunk.strip():
             continue
@@ -101,11 +107,29 @@ def chunk_html(
             
         final_anchor = last_seen_anchor
         
+        chunk_headings = chunk_soup.find_all(['h1', 'h2', 'h3', 'h4', 'h5', 'h6'])
+        if chunk_headings:
+            last_heading_text = chunk_headings[-1].get_text(strip=True)
+
+        section_title = last_heading_text
+
         full_source_url = f"{source_url}#{final_anchor}" if final_anchor else source_url
-        metadata = {"docs_url": full_source_url, "title": doc_title}
+        metadata = {
+            "docs_url": full_source_url,
+            "title": document_title,
+            "section_title": section_title
+        }
         final_chunks.append(Chunk(text=s_chunk, metadata=metadata))
 
-    return final_chunks if final_chunks else [Chunk(text=html_content, metadata={"docs_url": source_url, "title": doc_title})]
+    if not final_chunks:
+        metadata = {
+            "docs_url": source_url,
+            "title": document_title,
+            "section_title": document_title
+        }
+        return [Chunk(text=html_content, metadata=metadata)]
+
+    return final_chunks
 
 
 def _split_element_by_children(element: Tag, options: ChunkingOptions) -> List[str]:
