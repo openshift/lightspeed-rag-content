@@ -12,7 +12,7 @@ import argparse
 import os
 import sys
 from pathlib import Path
-from typing import List, Optional
+from typing import Optional
 from bs4 import BeautifulSoup, Tag
 
 # Constants
@@ -168,7 +168,7 @@ def process_directory(
     output_dir: str,
     strip_mode: str,
     strip_links: bool,
-    exclusion_list: Optional[List[str]] = None
+    exclusion_list: Optional[list[str]] = None
 ) -> None:
     """
     Process all HTML files in a directory and its subdirectories.

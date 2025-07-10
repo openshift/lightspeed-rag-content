@@ -2,7 +2,7 @@
 Tokenizer module for HTML content.
 """
 
-from typing import Optional, List, Union, Callable
+from typing import Optional, Union, Callable
 from bs4 import BeautifulSoup
 import re
 import sys
@@ -30,7 +30,7 @@ class TokenCounter:
     A class that counts tokens in text using LlamaIndex or HuggingFace tokenizers.
     """
     
-    def __init__(self, custom_tokenizer: Optional[Callable[[str], List[str]]] = None) -> None:
+    def __init__(self, custom_tokenizer: Optional[Callable[[str], list[str]]] = None) -> None:
         """
         Initialize the TokenCounter.
         
@@ -168,7 +168,7 @@ def count_html_tokens(html_text: str, count_tag_tokens: bool = True) -> int:
     return token_counter.count_html_tokens(html_text, count_tag_tokens)
 
 
-def set_custom_tokenizer(tokenizer_func: Callable[[str], List[str]]) -> None:
+def set_custom_tokenizer(tokenizer_func: Callable[[str], list[str]]) -> None:
     """
     Set a custom tokenizer function for the global TokenCounter instance.
     

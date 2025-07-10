@@ -8,7 +8,7 @@ import re
 import sys
 from bs4 import BeautifulSoup
 from pathlib import Path
-from typing import Dict, List, Any, Optional
+from typing import Any, Optional
 from urllib.parse import urlparse
 
 # Import the HTML chunking library
@@ -177,7 +177,7 @@ def chunk_single_html_file(
             logger.warning("Empty file: %s", input_file)
             return True, 0
 
-        chunks: List[Chunk] = chunk_html(
+        chunks: list[Chunk] = chunk_html(
             html_content=html_content,
             source_url=source_url,
             max_token_limit=max_token_limit,
@@ -231,7 +231,7 @@ def chunk_single_html_file(
         return False, 0
 
 
-def extract_metadata_from_path(file_path: Path, product_slug: str) -> Dict[str, Any]:
+def extract_metadata_from_path(file_path: Path, product_slug: str) -> dict[str, Any]:
     """
     Extract metadata from file path.
 
@@ -268,7 +268,7 @@ def extract_metadata_from_path(file_path: Path, product_slug: str) -> Dict[str, 
     }
 
 
-def validate_chunks(output_dir: Path, max_token_limit: int) -> Dict[str, Any]:
+def validate_chunks(output_dir: Path, max_token_limit: int) -> dict[str, Any]:
     """
     Validate generated chunks.
 
@@ -344,7 +344,7 @@ def validate_chunks(output_dir: Path, max_token_limit: int) -> Dict[str, Any]:
     return validation_results
 
 
-def get_chunking_stats(output_dir: Path) -> Dict[str, Any]:
+def get_chunking_stats(output_dir: Path) -> dict[str, Any]:
     """
     Get statistics about chunked documents.
 

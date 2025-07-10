@@ -2,7 +2,7 @@
 HTML parser module for identifying document structure.
 """
 
-from typing import List, Dict, Tuple, Optional, Union, Set, Any
+from typing import Tuple, Optional, Union, Set, Any
 from bs4 import BeautifulSoup, Tag, NavigableString
 import re
 from dataclasses import dataclass, field
@@ -26,8 +26,8 @@ class HtmlSection:
     heading_tag: Optional[Tag] = None
     level: int = 0
     parent: Optional['HtmlSection'] = None
-    content: List[Union[Tag, NavigableString, 'HtmlSection']] = field(default_factory=list)
-    children: List['HtmlSection'] = field(default_factory=list)
+    content: list[Union[Tag, NavigableString, 'HtmlSection']] = field(default_factory=list)
+    children: list['HtmlSection'] = field(default_factory=list)
     html: str = ""
     
     def add_content(self, content: Union[Tag, NavigableString, 'HtmlSection']) -> None:
@@ -196,7 +196,7 @@ def _get_element_position(soup: BeautifulSoup, element: Tag) -> int:
     return -1
 
 
-def _flatten_sections(section: HtmlSection) -> List[HtmlSection]:
+def _flatten_sections(section: HtmlSection) -> list[HtmlSection]:
     """
     Flatten a section hierarchy into a list.
     
@@ -212,7 +212,7 @@ def _flatten_sections(section: HtmlSection) -> List[HtmlSection]:
     return result
 
 
-def identify_special_sections(soup: BeautifulSoup) -> Dict[str, List[Dict]]:
+def identify_special_sections(soup: BeautifulSoup) -> dict[str, list[dict]]:
     """
     Identify special sections in the HTML that need special handling during chunking.
     
@@ -238,7 +238,7 @@ def identify_special_sections(soup: BeautifulSoup) -> Dict[str, List[Dict]]:
         }
 
 
-def identify_procedure_sections(soup: BeautifulSoup) -> List[Dict]:
+def identify_procedure_sections(soup: BeautifulSoup) -> list[dict]:
     """
     Identify procedure sections in the HTML.
     
@@ -413,7 +413,7 @@ def _find_closest_heading(element: Tag) -> Optional[Tag]:
     return None
 
 
-def identify_code_blocks(soup: BeautifulSoup) -> List[Dict]:
+def identify_code_blocks(soup: BeautifulSoup) -> list[dict]:
     """
     Identify code blocks in the HTML.
     
@@ -488,7 +488,7 @@ def identify_code_blocks(soup: BeautifulSoup) -> List[Dict]:
         return []
 
 
-def identify_tables(soup: BeautifulSoup) -> List[Dict]:
+def identify_tables(soup: BeautifulSoup) -> list[dict]:
     """
     Identify tables in the HTML.
     

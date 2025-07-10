@@ -6,7 +6,7 @@ import logging
 import sys
 import importlib.util
 from pathlib import Path
-from typing import List, Optional
+from typing import Optional
 
 # Load the html-stripper utility dynamically
 html_stripper_path = Path(__file__).parent.parent / "html_chunking" / "html-stripper.py"
@@ -16,7 +16,7 @@ spec.loader.exec_module(html_stripper)
 
 
 def strip_html_content(
-    input_dir: Path, output_dir: Path, exclusion_list: Optional[List[str]] = None
+    input_dir: Path, output_dir: Path, exclusion_list: Optional[list[str]] = None
 ) -> bool:
     """
     Strip HTML ballast from all files in input directory.
