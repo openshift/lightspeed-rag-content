@@ -9,7 +9,6 @@ and generates a report for visual inspection.
 import argparse
 import os
 import sys
-from typing import List
 
 # Imports are deferred into main() to support running the script
 # from within its directory, which requires a sys.path modification first.
@@ -39,7 +38,7 @@ def create_argument_parser() -> argparse.ArgumentParser:
     )
     return parser
 
-def generate_html_report(output_path: str, chunks: List['Chunk'], original_tokens: int, max_token_limit: int, count_html_tokens_func) -> None:
+def generate_html_report(output_path: str, chunks: list['Chunk'], original_tokens: int, max_token_limit: int, count_html_tokens_func) -> None:
     """Generates a single HTML file containing all chunks for review."""
     print(f"\nSaving all chunks to a single file: {output_path}...")
     

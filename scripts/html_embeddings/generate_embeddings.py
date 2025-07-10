@@ -16,7 +16,7 @@ import os
 import sys
 import time
 from pathlib import Path
-from typing import Optional, Dict, Any, List
+from typing import Optional, Any
 
 import re
 import yaml
@@ -180,7 +180,7 @@ def parse_arguments() -> argparse.Namespace:
     return parser.parse_args()
 
 
-def setup_environment(args: argparse.Namespace, product: Dict[str, Any]) -> tuple[Dict[str, Any], Dict[str, Path]]:
+def setup_environment(args: argparse.Namespace, product: dict[str, Any]) -> tuple[dict[str, Any], dict[str, Path]]:
     """Setup environment and validate dependencies."""
     logger = setup_logging(verbose=args.verbose)
 
@@ -237,8 +237,8 @@ def setup_environment(args: argparse.Namespace, product: Dict[str, Any]) -> tupl
 
 def run_download_step(
     args: argparse.Namespace,
-    paths: Dict[str, Path],
-    product: Dict[str, Any],
+    paths: dict[str, Path],
+    product: dict[str, Any],
     logger,
 ) -> bool:
     """Run the documentation download step."""
@@ -278,7 +278,7 @@ def run_download_step(
         return False
 
 
-def run_strip_step(args: argparse.Namespace, paths: Dict[str, Path], logger) -> bool:
+def run_strip_step(args: argparse.Namespace, paths: dict[str, Path], logger) -> bool:
     """Run the HTML stripping step."""
     downloads_dir = paths["downloads"]
     stripped_dir = paths["stripped"]
@@ -299,8 +299,8 @@ def run_strip_step(args: argparse.Namespace, paths: Dict[str, Path], logger) -> 
 
 def run_chunk_step(
     args: argparse.Namespace,
-    paths: Dict[str, Path],
-    product: Dict[str, Any],
+    paths: dict[str, Path],
+    product: dict[str, Any],
     logger,
 ) -> bool:
     """Run the HTML chunking step."""
@@ -335,7 +335,7 @@ def run_chunk_step(
         return False
 
 
-def run_runbooks_step(args: argparse.Namespace, paths: Dict[str, Path], logger) -> bool:
+def run_runbooks_step(args: argparse.Namespace, paths: dict[str, Path], logger) -> bool:
     """Run the runbooks processing step."""
     if args.skip_runbooks:
         logger.info("Skipping runbooks processing")
@@ -366,7 +366,7 @@ def run_runbooks_step(args: argparse.Namespace, paths: Dict[str, Path], logger) 
         return False
 
 
-def load_chunks_as_nodes(chunks_dir: Path, logger) -> List[TextNode]:
+def load_chunks_as_nodes(chunks_dir: Path, logger) -> list[TextNode]:
     """Load all chunks as TextNode objects."""
     nodes = []
 
@@ -399,8 +399,8 @@ def load_chunks_as_nodes(chunks_dir: Path, logger) -> List[TextNode]:
 
 def run_embedding_step(
     args: argparse.Namespace,
-    paths: Dict[str, Path],
-    product: Dict[str, Any],
+    paths: dict[str, Path],
+    product: dict[str, Any],
     logger,
 ) -> bool:
     """Run the embedding generation step."""

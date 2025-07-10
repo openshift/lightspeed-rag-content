@@ -6,7 +6,7 @@ import logging
 import os
 import sys
 from pathlib import Path
-from typing import Dict, Optional, Any
+from typing import Optional, Any
 
 
 import re
@@ -54,9 +54,9 @@ def validate_dependencies() -> None:
 def create_directory_structure(
     cache_dir: str,
     output_dir: str,
-    product: Dict[str, Any],
+    product: dict[str, Any],
     specific_doc: Optional[str] = None,
-) -> tuple[Dict[str, Path], Dict[str, Any]]:
+) -> tuple[dict[str, Path], dict[str, Any]]:
     """Create directory structure for pipeline and return paths and updated product info."""
     logger = logging.getLogger(__name__)
 
@@ -166,7 +166,7 @@ def format_duration(seconds: float) -> str:
 
 def get_cache_info(
     cache_dir: Path, version: str, specific_doc: Optional[str] = None
-) -> Dict[str, int]:
+) -> dict[str, int]:
     """Get information about cached files."""
     base_path = cache_dir / "downloads" / version
     if specific_doc:
@@ -240,7 +240,7 @@ def validate_version_format(version: str) -> bool:
     return bool(re.match(pattern, version))
 
 
-def get_output_summary(output_dir: Path) -> Dict[str, any]:
+def get_output_summary(output_dir: Path) -> dict[str, any]:
     """Get summary of output files."""
     metadata_file = output_dir / "metadata.json"
 

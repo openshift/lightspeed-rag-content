@@ -10,13 +10,13 @@ from pathlib import Path
 from typing import Optional
 
 portal_fetcher_path = (
-    Path(__file__).parent.parent / "portal-fetcher" / "openshift-docs-downloader.py"
+    Path(__file__).parent.parent / "doc_downloader" / "downloader.py"
 )
 spec = importlib.util.spec_from_file_location(
-    "openshift_docs_downloader", portal_fetcher_path
+    "downloader", portal_fetcher_path
 )
-openshift_docs_downloader = importlib.util.module_from_spec(spec)
-spec.loader.exec_module(openshift_docs_downloader)
+downloader = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(downloader)
 
 
 def download_documentation(
@@ -61,7 +61,7 @@ def download_documentation(
 
     try:
         verification_passed, toc_verification_passed, elapsed_time = asyncio.run(
-            openshift_docs_downloader.run_downloader(
+            downloader.run_downloader(
                 base_url=base_url,
                 output_dir=str(output_dir),
                 concurrency=concurrency,
