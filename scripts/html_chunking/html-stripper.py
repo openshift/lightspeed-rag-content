@@ -111,9 +111,18 @@ def strip_html_content(
 
         soup = BeautifulSoup(html_content, "html.parser")
 
+        # Extract title from the original document's <title> tag.
+        title_tag = soup.find('title')
+        title_text = title_tag.get_text(strip=True) if title_tag else "Untitled"
+
         if strip_mode in ['sections', 'all']:
             body_content = soup.body or soup
-            new_soup = BeautifulSoup("<html><body></body></html>", "html.parser")
+            new_soup = BeautifulSoup("<html><head></head><body></body></html>", "html.parser")
+
+            if new_soup.head:
+                new_title_tag = new_soup.new_tag("title")
+                new_title_tag.string = title_text
+                new_soup.head.append(new_title_tag)
 
             chapters = body_content.find_all("section", class_="chapter")
             if not chapters:
