@@ -10,17 +10,19 @@ from pathlib import Path
 from typing import Optional
 
 portal_fetcher_path = (
-    Path(__file__).parent.parent / "portal-fetcher" / "openshift-docs-downloader.py"
+    Path(__file__).parent.parent / "doc_downloader" / "downloader.py"
 )
 spec = importlib.util.spec_from_file_location(
-    "openshift_docs_downloader", portal_fetcher_path
+    "downloader", portal_fetcher_path
 )
-openshift_docs_downloader = importlib.util.module_from_spec(spec)
-spec.loader.exec_module(openshift_docs_downloader)
+downloader = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(downloader)
 
 
 def download_documentation(
     version: str,
+    product_slug: str,
+    doc_url: Optional[str] = None,
     specific_doc: Optional[str] = None,
     output_dir: Path = Path("./downloads"),
     cache_existing: bool = True,
@@ -29,10 +31,12 @@ def download_documentation(
     fail_on_error: bool = False,
 ) -> bool:
     """
-    Download OpenShift documentation.
+    Download documentation.
 
     Args:
-        version: OpenShift version (e.g., "4.18")
+        version: Product version (e.g., "4.18")
+        product_slug: Product URL slug (e.g., "openshift_container_platform")
+        doc_url: The full URL to the documentation page.
         specific_doc: Optional specific document to download
         output_dir: Directory to save downloaded files
         cache_existing: Whether to use cached downloads
@@ -45,24 +49,24 @@ def download_documentation(
     """
     logger = logging.getLogger(__name__)
 
-    if specific_doc:
-        base_url = f"https://docs.redhat.com/en/documentation/openshift_container_platform/{version}/html-single/{specific_doc}"
+    if doc_url is not None:
+        base_url = doc_url
+    elif specific_doc:
+        base_url = f"https://docs.redhat.com/en/documentation/{product_slug}/{version}/html-single/{specific_doc}"
     else:
-        base_url = f"https://docs.redhat.com/en/documentation/openshift_container_platform/{version}"
+        base_url = f"https://docs.redhat.com/en/documentation/{product_slug}/{version}"
 
     logger.info("Downloading from: %s", base_url)
     logger.info("Output directory: %s", output_dir)
 
     try:
         verification_passed, toc_verification_passed, elapsed_time = asyncio.run(
-            openshift_docs_downloader.run_downloader(
+            downloader.run_downloader(
                 base_url=base_url,
                 output_dir=str(output_dir),
                 concurrency=concurrency,
                 force=not cache_existing,
-                skip_toc=False,
                 max_retries=max_retries,
-                fail_on_error=fail_on_error,
             )
         )
 

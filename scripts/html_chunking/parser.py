@@ -2,7 +2,7 @@
 HTML parser module for identifying document structure.
 """
 
-from typing import List, Dict, Tuple, Optional, Union, Set, Any
+from typing import Tuple, Optional, Union, Set, Any
 from bs4 import BeautifulSoup, Tag, NavigableString
 import re
 from dataclasses import dataclass, field
@@ -26,8 +26,8 @@ class HtmlSection:
     heading_tag: Optional[Tag] = None
     level: int = 0
     parent: Optional['HtmlSection'] = None
-    content: List[Union[Tag, NavigableString, 'HtmlSection']] = field(default_factory=list)
-    children: List['HtmlSection'] = field(default_factory=list)
+    content: list[Union[Tag, NavigableString, 'HtmlSection']] = field(default_factory=list)
+    children: list['HtmlSection'] = field(default_factory=list)
     html: str = ""
     
     def add_content(self, content: Union[Tag, NavigableString, 'HtmlSection']) -> None:
@@ -41,7 +41,7 @@ class HtmlSection:
     
     def get_heading_text(self) -> str:
         """Get the text of the heading for this section."""
-        if self.heading_tag:
+        if self.heading_tag is not None:
             try:
                 return self.heading_tag.get_text(strip=True)
             except Exception:
@@ -56,7 +56,7 @@ class HtmlSection:
         
         try:
             result = []
-            if self.heading_tag:
+            if self.heading_tag is not None:
                 result.append(str(self.heading_tag))
             
             for item in self.content:
@@ -69,7 +69,7 @@ class HtmlSection:
             return self.html
         except Exception as e:
             # Fallback in case of error
-            if self.heading_tag:
+            if self.heading_tag is not None:
                 return str(self.heading_tag)
             return ""
 
@@ -97,7 +97,7 @@ def parse_html(html_content: str) -> Tuple[BeautifulSoup, HtmlSection]:
         # First pass: identify all headings
         all_headings = []
         for element in body.find_all(['h1', 'h2', 'h3', 'h4', 'h5', 'h6']):
-            if element.name and re.match(r'h[1-6]$', element.name):
+            if element.name is not None and re.match(r'h[1-6]$', element.name):
                 level = int(element.name[1])
                 all_headings.append((element, level))
         
@@ -144,16 +144,16 @@ def parse_html(html_content: str) -> Tuple[BeautifulSoup, HtmlSection]:
             current_section = root_section
             
             for element in body.children:
-                if not element or (isinstance(element, str) and not element.strip()):
+                if element is None or (isinstance(element, str) and not element.strip()):
                     continue
                     
                 is_section_start = False
                 new_level = None
                 
-                if isinstance(element, Tag) and element.name and re.match(r'h[1-6]$', element.name):
+                if isinstance(element, Tag) and element.name is not None and re.match(r'h[1-6]$', element.name):
                     level = int(element.name[1])
                     for section in _flatten_sections(root_section):
-                        if section.heading_tag and section.heading_tag == element:
+                        if section.heading_tag is not None and section.heading_tag == element:
                             is_section_start = True
                             new_level = level
                             current_section = section
@@ -163,7 +163,7 @@ def parse_html(html_content: str) -> Tuple[BeautifulSoup, HtmlSection]:
                     current_section.add_content(element)
         else:
             for element in body.children:
-                if element:
+                if element is not None:
                     root_section.add_content(element)
         
         return soup, root_section
@@ -173,7 +173,7 @@ def parse_html(html_content: str) -> Tuple[BeautifulSoup, HtmlSection]:
         root_section = HtmlSection()
         
         for element in soup.children:
-            if element:
+            if element is not None:
                 root_section.add_content(element)
                 
         return soup, root_section
@@ -196,7 +196,7 @@ def _get_element_position(soup: BeautifulSoup, element: Tag) -> int:
     return -1
 
 
-def _flatten_sections(section: HtmlSection) -> List[HtmlSection]:
+def _flatten_sections(section: HtmlSection) -> list[HtmlSection]:
     """
     Flatten a section hierarchy into a list.
     
@@ -212,7 +212,7 @@ def _flatten_sections(section: HtmlSection) -> List[HtmlSection]:
     return result
 
 
-def identify_special_sections(soup: BeautifulSoup) -> Dict[str, List[Dict]]:
+def identify_special_sections(soup: BeautifulSoup) -> dict[str, list[dict]]:
     """
     Identify special sections in the HTML that need special handling during chunking.
     
@@ -238,7 +238,7 @@ def identify_special_sections(soup: BeautifulSoup) -> Dict[str, List[Dict]]:
         }
 
 
-def identify_procedure_sections(soup: BeautifulSoup) -> List[Dict]:
+def identify_procedure_sections(soup: BeautifulSoup) -> list[dict]:
     """
     Identify procedure sections in the HTML.
     
@@ -261,7 +261,7 @@ def identify_procedure_sections(soup: BeautifulSoup) -> List[Dict]:
         # Multiple ways to identify procedures
         procedure_markers = []
         for element in soup.find_all(string=lambda text: text and "Procedure" in text):
-            if element.parent and element.parent.name not in ('script', 'style'):
+            if element.parent is not None and element.parent.name not in ('script', 'style'):
                 procedure_markers.append(element)
                 
         ordered_lists = soup.find_all('ol')
@@ -269,7 +269,7 @@ def identify_procedure_sections(soup: BeautifulSoup) -> List[Dict]:
         processed_lists = set()
         
         for marker in procedure_markers:
-            if not marker or not marker.parent:
+            if marker is None or marker.parent is None:
                 continue
                 
             ol = None
@@ -283,24 +283,24 @@ def identify_procedure_sections(soup: BeautifulSoup) -> List[Dict]:
                     break
                 
                 next_sibling = current.find_next_sibling()
-                if next_sibling and next_sibling.name == 'ol':
+                if next_sibling is not None and next_sibling.name == 'ol':
                     ol = next_sibling
                     break
                     
                 ol_in_children = current.find('ol')
-                if ol_in_children:
+                if ol_in_children is not None:
                     ol = ol_in_children
                     break
                     
                 current = current.find_next()
             
-            if not ol or id(ol) in processed_lists:
+            if ol is None or id(ol) in processed_lists:
                 continue
                 
             heading = _find_closest_heading(marker.parent)
             
             intro = []
-            if heading:
+            if heading is not None:
                 current = heading.find_next()
                 while current and current != marker.parent and current != ol:
                     if current.name not in ('script', 'style'):
@@ -342,7 +342,7 @@ def identify_procedure_sections(soup: BeautifulSoup) -> List[Dict]:
             
             # Find introduction elements
             intro = []
-            if heading:
+            if heading is not None:
                 current = heading.find_next()
                 while current and current != ol:
                     if current.name not in ('script', 'style'):
@@ -364,7 +364,7 @@ def identify_procedure_sections(soup: BeautifulSoup) -> List[Dict]:
                     break
             
             # Add to procedures if it looks like a procedure
-            if heading or marker or prerequisites:
+            if heading is not None or marker is not None or prerequisites is not None:
                 procedures.append({
                     'heading': heading,
                     'intro': intro,
@@ -392,7 +392,7 @@ def _find_closest_heading(element: Tag) -> Optional[Tag]:
     Returns:
         The closest heading, or None if not found.
     """
-    if not element:
+    if element is None:
         return None
         
     # Check previous siblings
@@ -407,13 +407,13 @@ def _find_closest_heading(element: Tag) -> Optional[Tag]:
             return current
     
     # Check parent's previous siblings
-    if element.parent:
+    if element.parent is not None:
         return _find_closest_heading(element.parent)
         
     return None
 
 
-def identify_code_blocks(soup: BeautifulSoup) -> List[Dict]:
+def identify_code_blocks(soup: BeautifulSoup) -> list[dict]:
     """
     Identify code blocks in the HTML.
     
@@ -443,7 +443,7 @@ def identify_code_blocks(soup: BeautifulSoup) -> List[Dict]:
             processed_tags.add(id(pre))
             
             # Skip if this pre tag is inside a code tag that we'll process later
-            if pre.parent and pre.parent.name == 'code' and pre.parent in code_tags:
+            if pre.parent is not None and pre.parent.name == 'code' and pre.parent in code_tags:
                 continue
                 
             # Find the previous paragraph for context
@@ -467,7 +467,7 @@ def identify_code_blocks(soup: BeautifulSoup) -> List[Dict]:
             processed_tags.add(id(code))
             
             # Skip if this code tag is inside a pre tag that we've already processed
-            if code.parent and code.parent.name == 'pre' and id(code.parent) in processed_tags:
+            if code.parent is not None and code.parent.name == 'pre' and id(code.parent) in processed_tags:
                 continue
                 
             # Find the previous paragraph for context
@@ -488,7 +488,7 @@ def identify_code_blocks(soup: BeautifulSoup) -> List[Dict]:
         return []
 
 
-def identify_tables(soup: BeautifulSoup) -> List[Dict]:
+def identify_tables(soup: BeautifulSoup) -> list[dict]:
     """
     Identify tables in the HTML.
     
@@ -510,7 +510,7 @@ def identify_tables(soup: BeautifulSoup) -> List[Dict]:
             if tag.name == 'rh-table':
                 # Look for nested table
                 nested_table = tag.find('table')
-                if nested_table:
+                if nested_table is not None:
                     expanded_tables.append(nested_table)
                 else:
                     expanded_tables.append(tag)
@@ -534,7 +534,7 @@ def identify_tables(soup: BeautifulSoup) -> List[Dict]:
             rows = []
             try:
                 # Get rows not in header
-                if header:
+                if header is not None:
                     header_rows = set(id(row) for row in header.find_all('tr'))
                     all_rows = table.find_all('tr', limit=MAX_TABLE_ROWS)
                     rows = [row for row in all_rows if id(row) not in header_rows]

@@ -12,7 +12,7 @@ import argparse
 import os
 import sys
 from pathlib import Path
-from typing import List, Optional
+from typing import Optional
 from bs4 import BeautifulSoup, Tag
 
 # Constants
@@ -48,7 +48,7 @@ def _aggressively_strip_tags_and_attributes(soup: BeautifulSoup, strip_links: bo
         state = rh_alert.get('state', 'note')
         content_div = rh_alert.find('div', slot=None) or rh_alert.find('p')
 
-        if content_div:
+        if content_div is not None:
             new_div = soup.new_tag('div')
             new_div['class'] = f'alert alert-{state}'
             new_div.extend(content_div.contents)
@@ -168,7 +168,7 @@ def process_directory(
     output_dir: str,
     strip_mode: str,
     strip_links: bool,
-    exclusion_list: Optional[List[str]] = None
+    exclusion_list: Optional[list[str]] = None
 ) -> None:
     """
     Process all HTML files in a directory and its subdirectories.

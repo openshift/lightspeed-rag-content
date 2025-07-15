@@ -11,7 +11,7 @@ import os
 import sys
 import subprocess
 from pathlib import Path
-from typing import List, Tuple, Dict
+from typing import Tuple
 
 
 def check_python_version() -> bool:
@@ -25,7 +25,7 @@ def check_python_version() -> bool:
     return True
 
 
-def check_dependencies() -> Tuple[List[str], List[str]]:
+def check_dependencies() -> tuple[list[str], list[str]]:
     """Check if required dependencies are installed."""
     required_packages = [
         "llama_index",
@@ -33,6 +33,7 @@ def check_dependencies() -> Tuple[List[str], List[str]]:
         "faiss",
         "aiohttp",
         "beautifulsoup4",
+        "PyYAML",
         "sqlite3",  # Built-in but check anyway
     ]
 
@@ -41,14 +42,17 @@ def check_dependencies() -> Tuple[List[str], List[str]]:
 
     for package in required_packages:
         try:
-            if package == "sqlite3":
-                import sqlite3
-            elif package == "llama_index":
-                import llama_index
-            elif package == "beautifulsoup4":
-                import bs4
-            else:
-                __import__(package.replace("-", "_"))
+            match package:
+                case "sqlite3":
+                    import sqlite3
+                case "llama_index":
+                    import llama_index
+                case "beautifulsoup4":
+                    import bs4
+                case "PyYAML":
+                    import yaml
+                case _:
+                    __import__(package.replace("-", "_"))
             installed.append(package)
             print(f"  {package}: installed")
         except ImportError:
@@ -58,7 +62,7 @@ def check_dependencies() -> Tuple[List[str], List[str]]:
     return installed, missing
 
 
-def install_missing_packages(packages: List[str]) -> bool:
+def install_missing_packages(packages: list[str]) -> bool:
     """Install missing packages using pip."""
     if not packages:
         return True
@@ -71,6 +75,7 @@ def install_missing_packages(packages: List[str]) -> bool:
         "aiohttp": "aiohttp",
         "transformers": "transformers",
         "faiss": "faiss-cpu",
+        "PyYAML": "PyYAML",
     }
 
     for package in packages:
@@ -95,7 +100,7 @@ def install_missing_packages(packages: List[str]) -> bool:
     return True
 
 
-def create_directory_structure(base_dir: Path) -> Dict[str, Path]:
+def create_directory_structure(base_dir: Path) -> dict[str, Path]:
     """Create the recommended directory structure."""
     directories = {
         "scripts": base_dir / "scripts" / "html_embeddings",
@@ -113,7 +118,7 @@ def create_directory_structure(base_dir: Path) -> Dict[str, Path]:
     return directories
 
 
-def validate_existing_components(base_dir: Path) -> Dict[str, bool]:
+def validate_existing_components(base_dir: Path) -> dict[str, bool]:
     """Validate existing components like model directory."""
     validations = {}
 
@@ -203,7 +208,7 @@ echo "Pipeline completed. Check $OUTPUT_DIR for results."
     print(f"Created example config: {config_file}")
 
 
-def print_next_steps(validations: Dict[str, bool], base_dir: Path) -> None:
+def print_next_steps(validations: dict[str, bool], base_dir: Path) -> None:
     """Print next steps for the user."""
     print("\nSETUP COMPLETE - NEXT STEPS")
 

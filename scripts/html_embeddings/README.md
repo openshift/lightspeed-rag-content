@@ -28,9 +28,38 @@ Standard:
 ```bash
 # Generate embeddings for OpenShift 4.18
 python scripts/html_embeddings/generate_embeddings.py \
-  --version 4.18 \
+  --doc-url-slug "openshift_container_platform" \
+  --doc-url-version "4.18" \
   --output-dir ./vector_db \
   --model-dir ./embeddings_model
+```
+
+Specify a full custom URL:
+
+```bash
+# Generate embeddings for RHEL 10
+python scripts/html_embeddings/generate_embeddings.py \
+  --doc-url "https://docs.redhat.com/en/documentation/red_hat_enterprise_linux/10" \
+  --output-dir ./vector_db \
+  --model-dir ./embeddings_model
+```
+
+Use a configuration file:
+
+```bash
+# Generate embeddings for multiple products
+python scripts/html_embeddings/generate_embeddings.py \
+  --config-file ./docs_config.yaml
+```
+
+Example `docs_config.yaml`:
+```yaml
+products:
+  - slug: "openshift_container_platform"
+    version: "4.18"
+  - slug: "red_hat_enterprise_linux"
+    version: "9"
+  - url: "https://access.redhat.com/documentation/en-us/red_hat_ansible_automation_platform/2.4/html-single/red_hat_ansible_automation_platform_installation_guide"
 ```
 
 Specify custom index name instead of the auto-generated one:
@@ -38,7 +67,8 @@ Specify custom index name instead of the auto-generated one:
 ```bash
 # Generate embeddings for OpenShift 4.18
 python scripts/html_embeddings/generate_embeddings.py \
-  --version 4.18 \
+  --doc-url-slug "openshift_container_platform" \
+  --doc-url-version "4.18" \
   --output-dir ./vector_db \
   --index ocp-4.18 \
   --model-dir ./embeddings_model
@@ -47,9 +77,10 @@ python scripts/html_embeddings/generate_embeddings.py \
 Process only specific document and skip runbooks (good for quick testing):
 
 ```bash
-# Process only monitoring documentation
+# Process only observability documentation
 python scripts/html_embeddings/generate_embeddings.py \
-  --version 4.18 \
+  --doc-url-slug "openshift_container_platform" \
+  --doc-url-version "4.18" \
   --specific-doc observability_overview \
   --output-dir ./vector_db \
   --model-dir ./embeddings_model \
@@ -61,7 +92,8 @@ Use cached downloads:
 ```bash
 # Use previously downloaded files
 python scripts/html_embeddings/generate_embeddings.py \
-  --version 4.18 \
+  --doc-url-slug "openshift_container_platform" \
+  --doc-url-version "4.18" \
   --use-cached-downloads \
   --output-dir ./vector_db \
   --model-dir ./embeddings_model
@@ -72,7 +104,8 @@ Set a custom token limit (default is the same 380 as in Markdown-based chunking)
 ```bash
 # Set the token limit
 python generate_embeddings.py \
-  --version 4.18 \
+  --doc-url-slug "openshift_container_platform" \
+  --doc-url-version "4.18" \
   --chunk 380 \
   --output-dir ./vector_db \
   --model-dir ./embeddings_model
@@ -82,7 +115,10 @@ python generate_embeddings.py \
 
 ### Main arguments
 
-- `--version` - OpenShift version (required, e.g., "4.18")
+- `--doc-url`: The full URL to the documentation's html-single page.
+- `--doc-url-slug`: The product's documentation slug (e.g., 'openshift_container_platform').
+- `--doc-url-version`: The product version. Defaults to 'latest'. Used with --doc-url-slug.
+- `--config-file`: Path to a YAML or JSON configuration file specifying products to process.
 - `--index` - Index name (optional, e.g., "ocp-4.18")
 - `--output-dir` - Vector DB output directory (default: "./vector_db")
 - `--model-dir` - Embedding model directory (default: "./embeddings_model")

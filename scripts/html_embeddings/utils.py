@@ -6,7 +6,11 @@ import logging
 import os
 import sys
 from pathlib import Path
-from typing import Dict, Optional
+from typing import Optional, Any
+
+
+import re
+from urllib.parse import urlparse
 
 
 def setup_logging(verbose: bool = False) -> logging.Logger:
@@ -33,6 +37,7 @@ def validate_dependencies() -> None:
         "faiss": "faiss",
         "aiohttp": "aiohttp",
         "beautifulsoup4": "bs4",
+        "PyYAML": "yaml",
     }
 
     missing_packages = []
@@ -47,17 +52,55 @@ def validate_dependencies() -> None:
 
 
 def create_directory_structure(
-    cache_dir: str, output_dir: str, version: str, specific_doc: Optional[str] = None
-) -> Dict[str, Path]:
-    """Create directory structure for pipeline."""
+    cache_dir: str,
+    output_dir: str,
+    product: dict[str, Any],
+    specific_doc: Optional[str] = None,
+) -> tuple[dict[str, Path], dict[str, Any]]:
+    """Create directory structure for pipeline and return paths and updated product info."""
+    logger = logging.getLogger(__name__)
+
+    product_slug = product.get("slug")
+    product_version = product.get("version")
+    doc_url = product.get("url")
+
+    if doc_url and not product_slug:
+        parsed_url = urlparse(doc_url)
+        path_parts = parsed_url.path.strip("/").split("/")
+
+        if "redhat.com" in parsed_url.hostname:
+            try:
+                doc_index = path_parts.index("documentation")
+                # Path: /documentation/{lang}/{slug}/{version}/...
+                if re.match(r'^[a-z]{2}(-[a-z]{2})?$', path_parts[doc_index + 1]):
+                    product_slug = path_parts[doc_index + 2]
+                    product_version = path_parts[doc_index + 3]
+                else: # Path: /documentation/{slug}/{version}/...
+                    product_slug = path_parts[doc_index + 1]
+                    product_version = path_parts[doc_index + 2]
+            except (ValueError, IndexError):
+                logger.warning("Could not parse Red Hat doc URL format for %s", doc_url)
+                product_slug = parsed_url.hostname.replace(".", "_")
+                product_version = "latest"
+        else:
+            # Sanitize the full URL to use as a directory path for non-redhat sites
+            sanitized_url = re.sub(r'https?://', '', doc_url).replace('/', '_')
+            product_slug = sanitized_url
+            product_version = ""
+
+    product['slug'] = product_slug
+    product['version'] = product_version if product_version is not None else "latest"
+
     cache_path = Path(cache_dir)
     output_path = Path(output_dir)
 
-    downloads_dir = cache_path / "downloads" / version
-    stripped_dir = cache_path / "stripped" / version
-    chunks_dir = cache_path / "chunks" / version
+    base_cache_path = cache_path / product_slug / product_version if product_version is not None else cache_path / product_slug
 
-    if specific_doc:
+    downloads_dir = base_cache_path / "downloads"
+    stripped_dir = base_cache_path / "stripped"
+    chunks_dir = base_cache_path / "chunks"
+
+    if specific_doc is not None:
         downloads_dir = downloads_dir / specific_doc
         stripped_dir = stripped_dir / specific_doc
 
@@ -72,7 +115,7 @@ def create_directory_structure(
     for dir_path in directories.values():
         dir_path.mkdir(parents=True, exist_ok=True)
 
-    return directories
+    return directories, product
 
 
 def sanitize_directory_path(path: str) -> str:
@@ -123,22 +166,22 @@ def format_duration(seconds: float) -> str:
 
 def get_cache_info(
     cache_dir: Path, version: str, specific_doc: Optional[str] = None
-) -> Dict[str, int]:
+) -> dict[str, int]:
     """Get information about cached files."""
     base_path = cache_dir / "downloads" / version
-    if specific_doc:
+    if specific_doc is not None:
         base_path = base_path / specific_doc
 
     downloads_count = get_file_count(base_path, "*.html")
 
     base_path = cache_dir / "stripped" / version
-    if specific_doc:
+    if specific_doc is not None:
         base_path = base_path / specific_doc
 
     stripped_count = get_file_count(base_path, "*.html")
 
     base_path = cache_dir / "chunks" / version
-    if specific_doc:
+    if specific_doc is not None:
         base_path = base_path / specific_doc
 
     chunks_count = get_file_count(base_path, "*.json")
@@ -197,7 +240,7 @@ def validate_version_format(version: str) -> bool:
     return bool(re.match(pattern, version))
 
 
-def get_output_summary(output_dir: Path) -> Dict[str, any]:
+def get_output_summary(output_dir: Path) -> dict[str, any]:
     """Get summary of output files."""
     metadata_file = output_dir / "metadata.json"
 

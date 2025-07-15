@@ -8,7 +8,7 @@ import re
 import sys
 from bs4 import BeautifulSoup
 from pathlib import Path
-from typing import Dict, List, Any, Optional
+from typing import Any, Optional
 from urllib.parse import urlparse
 
 # Import the HTML chunking library
@@ -20,6 +20,9 @@ from tokenizer import count_html_tokens
 def chunk_html_documents(
     input_dir: Path,
     output_dir: Path,
+    product_slug: str,
+    product_version: str,
+    doc_url: Optional[str] = None,
     max_token_limit: int = 380,
     count_tag_tokens: bool = True,
     keep_siblings_together: bool = True,
@@ -31,6 +34,9 @@ def chunk_html_documents(
     Args:
         input_dir: Directory containing stripped HTML files
         output_dir: Directory to save chunked content
+        product_slug: Product URL slug
+        product_version: Product version
+        doc_url: The full URL to the documentation.
         max_token_limit: Maximum tokens per chunk
         count_tag_tokens: Whether to count HTML tags in token count
         keep_siblings_together: Keep sibling sections together when possible
@@ -75,22 +81,24 @@ def chunk_html_documents(
             logger.debug("Processing %s", html_file)
 
             # The doc name is the parent directory of the html file.
-            # The version is the parent of that directory.
             doc_name = html_file.parent.name
-            version = html_file.parent.parent.name
             
             # The main output_dir is the version dir, e.g., '.../chunks/4.18'.
             # We create the doc-specific subdirectory here.
             doc_specific_output_dir = output_dir / doc_name
 
             # Construct the source URL, which will be passed to the chunker.
-            source_url = f"https://docs.redhat.com/en/documentation/openshift_container_platform/{version}/html-single/{doc_name}/"
+            if doc_url is not None:
+                source_url = doc_url
+            else:
+                source_url = f"https://docs.redhat.com/en/documentation/{product_slug}/{product_version}/html-single/{doc_name}/"
 
             success, chunk_count = chunk_single_html_file(
                 input_file=html_file.resolve(),
-                output_dir=doc_specific_output_dir, # Pass the new doc-specific dir
-                input_base_dir=base_dir_for_relative_paths.resolve(), # Pass the consistent version-level base path
+                output_dir=doc_specific_output_dir,
+                input_base_dir=base_dir_for_relative_paths.resolve(),
                 source_url=source_url,
+                product_slug=product_slug,
                 max_token_limit=max_token_limit,
                 count_tag_tokens=count_tag_tokens,
                 keep_siblings_together=keep_siblings_together,
@@ -133,7 +141,8 @@ def chunk_single_html_file(
     input_file: Path,
     output_dir: Path,
     input_base_dir: Path,
-    source_url: str, # Add source_url parameter
+    source_url: str,
+    product_slug: str,
     max_token_limit: int = 380,
     count_tag_tokens: bool = True,
     keep_siblings_together: bool = True,
@@ -147,6 +156,7 @@ def chunk_single_html_file(
         output_dir: Directory to save chunks
         input_base_dir: Base directory for input files (for relative path calculation)
         source_url: The public URL of the source document
+        product_slug: Product URL slug
         max_token_limit: Maximum tokens per chunk
         count_tag_tokens: Whether to count HTML tags
         keep_siblings_together: Keep sibling sections together
@@ -167,7 +177,7 @@ def chunk_single_html_file(
             logger.warning("Empty file: %s", input_file)
             return True, 0
 
-        chunks: List[Chunk] = chunk_html(
+        chunks: list[Chunk] = chunk_html(
             html_content=html_content,
             source_url=source_url,
             max_token_limit=max_token_limit,
@@ -179,7 +189,7 @@ def chunk_single_html_file(
             return True, 0
 
         relative_path = input_file.relative_to(input_base_dir)
-        base_metadata = extract_metadata_from_path(relative_path)
+        base_metadata = extract_metadata_from_path(relative_path, product_slug)
 
         chunk_count = 0
         for i, chunk_obj in enumerate(chunks):
@@ -221,12 +231,13 @@ def chunk_single_html_file(
         return False, 0
 
 
-def extract_metadata_from_path(file_path: Path) -> Dict[str, Any]:
+def extract_metadata_from_path(file_path: Path, product_slug: str) -> dict[str, Any]:
     """
     Extract metadata from file path.
 
     Args:
         file_path: Relative path to the file
+        product_slug: Product URL slug
 
     Returns:
         Dictionary with extracted metadata
@@ -253,11 +264,11 @@ def extract_metadata_from_path(file_path: Path) -> Dict[str, Any]:
         "doc_id": doc_id,
         "version": version,
         "file_path": str(file_path),
-        "doc_type": "openshift_documentation",
+        "doc_type": f"{product_slug}_documentation",
     }
 
 
-def validate_chunks(output_dir: Path, max_token_limit: int) -> Dict[str, Any]:
+def validate_chunks(output_dir: Path, max_token_limit: int) -> dict[str, Any]:
     """
     Validate generated chunks.
 
@@ -333,7 +344,7 @@ def validate_chunks(output_dir: Path, max_token_limit: int) -> Dict[str, Any]:
     return validation_results
 
 
-def get_chunking_stats(output_dir: Path) -> Dict[str, Any]:
+def get_chunking_stats(output_dir: Path) -> dict[str, Any]:
     """
     Get statistics about chunked documents.
 

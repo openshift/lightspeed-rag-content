@@ -6,14 +6,14 @@ import json
 import logging
 import sys
 from pathlib import Path
-from typing import Dict, List, Any, Callable
+from typing import Any, Callable
 
 from llama_index.core import Settings, SimpleDirectoryReader
 from llama_index.core.schema import TextNode
 from llama_index.readers.file.flat.base import FlatReader
 
 
-def runbook_file_metadata_func(file_path: str) -> Dict[str, Any]:
+def runbook_file_metadata_func(file_path: str) -> dict[str, Any]:
     """
     Populate metadata for a runbook page.
 
@@ -180,7 +180,7 @@ def has_whitespace(text: str) -> bool:
     return False
 
 
-def validate_runbook_chunks(output_dir: Path) -> Dict[str, Any]:
+def validate_runbook_chunks(output_dir: Path) -> dict[str, Any]:
     """
     Validate generated runbook chunks.
 
@@ -236,7 +236,7 @@ def validate_runbook_chunks(output_dir: Path) -> Dict[str, Any]:
     return validation_results
 
 
-def get_runbooks_stats(output_dir: Path) -> Dict[str, Any]:
+def get_runbooks_stats(output_dir: Path) -> dict[str, Any]:
     """
     Get statistics about processed runbooks.
 

@@ -4,12 +4,12 @@ HTML chunker module.
 This module splits HTML content into chunks based on semantic boundaries.
 """
 
-from typing import List, Dict, Any, Optional
+from typing import Any, Optional
 from dataclasses import dataclass
 from bs4 import BeautifulSoup, Tag, NavigableString
 import warnings
 
-from .tokenizer import count_html_tokens
+from tokenizer import count_html_tokens
 
 # Constants
 DEFAULT_CHARS_PER_TOKEN_RATIO = 3.5
@@ -23,7 +23,7 @@ class ChunkingOptions:
 class Chunk:
     """A dataclass to hold a chunk's text and its associated metadata."""
     text: str
-    metadata: Dict[str, Any]
+    metadata: dict[str, Any]
 
 
 def find_first_anchor(chunk_soup: BeautifulSoup) -> Optional[str]:
@@ -41,7 +41,7 @@ def find_first_anchor(chunk_soup: BeautifulSoup) -> Optional[str]:
 def get_document_title(soup: BeautifulSoup) -> str:
     """Extracts the document title from the <title> tag."""
     title_tag = soup.find('title')
-    return title_tag.get_text(strip=True) if title_tag else "Untitled"
+    return title_tag.get_text(strip=True) if title_tag is not None else "Untitled"
 
 
 def chunk_html(
@@ -50,7 +50,7 @@ def chunk_html(
     max_token_limit: int = 500,
     count_tag_tokens: bool = True,
     **kwargs
-) -> List[Chunk]:
+) -> list[Chunk]:
     """
     Chunks the given HTML content and generates metadata with source URLs and anchors.
 
@@ -132,7 +132,7 @@ def chunk_html(
     return final_chunks
 
 
-def _split_element_by_children(element: Tag, options: ChunkingOptions) -> List[str]:
+def _split_element_by_children(element: Tag, options: ChunkingOptions) -> list[str]:
     chunks, current_chunk_elements, current_tokens = [], [], 0
     children = [child for child in element.children if not (isinstance(child, NavigableString) and not child.strip())]
     
@@ -176,7 +176,7 @@ def _split_element_by_children(element: Tag, options: ChunkingOptions) -> List[s
     if current_chunk_elements: chunks.append("".join(current_chunk_elements))
     return chunks
 
-def _split_element_by_children_no_grouping(element: Tag, options: ChunkingOptions) -> List[str]:
+def _split_element_by_children_no_grouping(element: Tag, options: ChunkingOptions) -> list[str]:
     chunks, current_chunk_elements, current_tokens = [], [], 0
     children = [child for child in element.children if not (isinstance(child, NavigableString) and not child.strip())]
     
@@ -210,9 +210,9 @@ def _split_element_by_children_no_grouping(element: Tag, options: ChunkingOption
     if current_chunk_elements: chunks.append("".join(current_chunk_elements))
     return chunks
 
-def _split_definition_list(div_element: Tag, options: ChunkingOptions) -> List[str]:
+def _split_definition_list(div_element: Tag, options: ChunkingOptions) -> list[str]:
     dl = div_element.find('dl')
-    if not dl: return _split_element_by_children(div_element, options)
+    if dl is None: return _split_element_by_children(div_element, options)
     chunks, current_chunk_pairs_html, current_tokens = [], [], 0
     pairs, children, i = [], list(dl.children), 0
     while i < len(children):
@@ -234,14 +234,14 @@ def _split_definition_list(div_element: Tag, options: ChunkingOptions) -> List[s
     if current_chunk_pairs_html: chunks.append(f'<div class="variablelist"><dl>{"".join(current_chunk_pairs_html)}</dl></div>')
     return chunks if chunks else [str(div_element)]
 
-def _split_table(table: Tag, options: ChunkingOptions) -> List[str]:
+def _split_table(table: Tag, options: ChunkingOptions) -> list[str]:
     chunks, header = [], table.find('thead')
     rows = table.find_all('tr')
-    header_rows_ids = set(id(r) for r in header.find_all('tr')) if header else set()
+    header_rows_ids = set(id(r) for r in header.find_all('tr')) if header is not None else set()
     body_rows = [row for row in rows if id(row) not in header_rows_ids]
     table_attrs = " ".join([f'{k}="{v}"' for k, v in table.attrs.items()])
     table_open, table_close = f"<table {table_attrs}>", "</table>"
-    header_html = str(header) if header else ""
+    header_html = str(header) if header is not None else ""
     base_tokens = count_html_tokens(table_open + header_html + table_close, options.count_tag_tokens)
     current_chunk_rows, current_tokens = [], base_tokens
     for row in body_rows:
@@ -259,7 +259,7 @@ def _split_table(table: Tag, options: ChunkingOptions) -> List[str]:
     if current_chunk_rows: chunks.append(table_open + header_html + "".join(current_chunk_rows) + table_close)
     return chunks if chunks else [str(table)]
 
-def _split_oversized_row(row: Tag, table_open: str, header_html: str, table_close: str, options: ChunkingOptions) -> List[str]:
+def _split_oversized_row(row: Tag, table_open: str, header_html: str, table_close: str, options: ChunkingOptions) -> list[str]:
     row_chunks, cells = [], row.find_all(['td', 'th'], recursive=False)
     cell_sub_chunks = [_split_element_by_children(cell, options) for cell in cells]
     max_len = max(len(c) for c in cell_sub_chunks) if cell_sub_chunks else 0
@@ -274,7 +274,7 @@ def _split_oversized_row(row: Tag, table_open: str, header_html: str, table_clos
         row_chunks.append(table_open + header_html + new_row_html + table_close)
     return row_chunks
 
-def _split_list(list_element: Tag, options: ChunkingOptions) -> List[str]:
+def _split_list(list_element: Tag, options: ChunkingOptions) -> list[str]:
     chunks, items = [], list_element.find_all('li', recursive=False)
     list_attrs = " ".join([f'{k}="{v}"' for k, v in list_element.attrs.items()])
     list_open, list_close = f"<{list_element.name} {list_attrs}>", f"</{list_element.name}>"
@@ -285,7 +285,7 @@ def _split_list(list_element: Tag, options: ChunkingOptions) -> List[str]:
         if item_tokens + base_tokens > options.max_token_limit:
             if current_chunk_items: chunks.append(list_open + "".join(current_chunk_items) + list_close)
             item_soup = BeautifulSoup(item_html, 'html.parser').li
-            if item_soup:
+            if item_soup is not None:
                  sub_chunks = _split_element_by_children(item_soup, options)
                  for sub_chunk in sub_chunks: chunks.append(list_open + f"<li>{sub_chunk}</li>" + list_close)
             else: chunks.append(list_open + item_html + list_close)
@@ -299,7 +299,7 @@ def _split_list(list_element: Tag, options: ChunkingOptions) -> List[str]:
     if current_chunk_items: chunks.append(list_open + "".join(current_chunk_items) + list_close)
     return chunks if chunks else [str(list_element)]
 
-def _split_code(pre_element: Tag, options: ChunkingOptions) -> List[str]:
+def _split_code(pre_element: Tag, options: ChunkingOptions) -> list[str]:
     chunks, code_text = [], pre_element.get_text()
     lines = code_text.split('\n')
     attrs = " ".join([f'{k}="{v}"' for k, v in pre_element.attrs.items()])
@@ -316,7 +316,7 @@ def _split_code(pre_element: Tag, options: ChunkingOptions) -> List[str]:
     if current_chunk_lines: chunks.append(open_tag + "\n".join(current_chunk_lines) + close_tag)
     return chunks if chunks else [str(pre_element)]
 
-def _linear_split(html_content: str, options: ChunkingOptions) -> List[str]:
+def _linear_split(html_content: str, options: ChunkingOptions) -> list[str]:
     warnings.warn("Using linear character split as a fallback for an oversized, indivisible chunk.")
     chars_per_chunk = int(options.max_token_limit * DEFAULT_CHARS_PER_TOKEN_RATIO)
     return [html_content[i:i + chars_per_chunk] for i in range(0, len(html_content), chars_per_chunk)]
