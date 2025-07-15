@@ -47,7 +47,7 @@ def strip_html_content(
         # This logic is now more direct to avoid path ambiguities.
         # It iterates through found files and constructs a precise output path.
         for input_file in html_files:
-            if exclusion_list and str(input_file) in exclusion_list:
+            if exclusion_list is not None and str(input_file) in exclusion_list:
                 logger.debug("Skipping excluded file: %s", input_file)
                 continue
 

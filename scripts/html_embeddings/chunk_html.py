@@ -88,7 +88,7 @@ def chunk_html_documents(
             doc_specific_output_dir = output_dir / doc_name
 
             # Construct the source URL, which will be passed to the chunker.
-            if doc_url:
+            if doc_url is not None:
                 source_url = doc_url
             else:
                 source_url = f"https://docs.redhat.com/en/documentation/{product_slug}/{product_version}/html-single/{doc_name}/"

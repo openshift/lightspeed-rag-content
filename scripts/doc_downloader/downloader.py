@@ -45,7 +45,7 @@ def get_local_path(url: str, output_dir: Path, base_url: Optional[str] = None) -
     parsed_url = urlparse(url)
     path = parsed_url.path
 
-    if base_url:
+    if base_url is not None:
         parsed_base_url = urlparse(base_url)
         base_path = parsed_base_url.path
         # If base_url is a directory-like path, ensure it ends with a slash for clean prefix removal
@@ -57,7 +57,7 @@ def get_local_path(url: str, output_dir: Path, base_url: Optional[str] = None) -
 
     path = path.lstrip("/")
 
-    if not path or path.endswith('/'):
+    if path == "" or path.endswith('/'):
         path = path + "index.html"
     
     local_path = output_dir / path
@@ -163,7 +163,7 @@ async def download_page(
             logger.error("Error downloading %s: %s", url, e)
         
         if attempt < max_retries - 1:
-            await asyncio.sleep(1)
+            await asyncio.sleep(2 ** attempt)
 
     record_download(db_path, url, str(local_path), status="failed")
     return url, False
@@ -227,7 +227,6 @@ async def run_downloader(
     concurrency: int,
     force: bool,
     max_retries: int,
-    **kwargs, # Absorb unused arguments
 ) -> tuple[bool, bool, float]:
     """Run the complete download process."""
     output_dir_path = Path(output_dir)

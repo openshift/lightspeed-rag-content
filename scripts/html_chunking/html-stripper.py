@@ -48,7 +48,7 @@ def _aggressively_strip_tags_and_attributes(soup: BeautifulSoup, strip_links: bo
         state = rh_alert.get('state', 'note')
         content_div = rh_alert.find('div', slot=None) or rh_alert.find('p')
 
-        if content_div:
+        if content_div is not None:
             new_div = soup.new_tag('div')
             new_div['class'] = f'alert alert-{state}'
             new_div.extend(content_div.contents)

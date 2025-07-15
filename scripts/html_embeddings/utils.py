@@ -89,18 +89,18 @@ def create_directory_structure(
             product_version = ""
 
     product['slug'] = product_slug
-    product['version'] = product_version if product_version else "latest"
+    product['version'] = product_version if product_version is not None else "latest"
 
     cache_path = Path(cache_dir)
     output_path = Path(output_dir)
 
-    base_cache_path = cache_path / product_slug / product_version if product_version else cache_path / product_slug
+    base_cache_path = cache_path / product_slug / product_version if product_version is not None else cache_path / product_slug
 
     downloads_dir = base_cache_path / "downloads"
     stripped_dir = base_cache_path / "stripped"
     chunks_dir = base_cache_path / "chunks"
 
-    if specific_doc:
+    if specific_doc is not None:
         downloads_dir = downloads_dir / specific_doc
         stripped_dir = stripped_dir / specific_doc
 
@@ -169,19 +169,19 @@ def get_cache_info(
 ) -> dict[str, int]:
     """Get information about cached files."""
     base_path = cache_dir / "downloads" / version
-    if specific_doc:
+    if specific_doc is not None:
         base_path = base_path / specific_doc
 
     downloads_count = get_file_count(base_path, "*.html")
 
     base_path = cache_dir / "stripped" / version
-    if specific_doc:
+    if specific_doc is not None:
         base_path = base_path / specific_doc
 
     stripped_count = get_file_count(base_path, "*.html")
 
     base_path = cache_dir / "chunks" / version
-    if specific_doc:
+    if specific_doc is not None:
         base_path = base_path / specific_doc
 
     chunks_count = get_file_count(base_path, "*.json")

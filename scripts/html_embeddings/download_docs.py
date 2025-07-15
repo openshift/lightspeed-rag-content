@@ -49,7 +49,7 @@ def download_documentation(
     """
     logger = logging.getLogger(__name__)
 
-    if doc_url:
+    if doc_url is not None:
         base_url = doc_url
     elif specific_doc:
         base_url = f"https://docs.redhat.com/en/documentation/{product_slug}/{version}/html-single/{specific_doc}"

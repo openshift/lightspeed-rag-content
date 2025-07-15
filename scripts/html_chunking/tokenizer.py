@@ -93,7 +93,7 @@ class TokenCounter:
                 tokens = self.tokenizer(text)
                 return len(tokens)
         except Exception as e:
-            if "sequence length is longer than the specified maximum" in str(e) and self.hf_tokenizer:
+            if "sequence length is longer than the specified maximum" in str(e) and self.hf_tokenizer is not None:
                 warnings.warn(f"Token counting using full text failed: {e}. Using manual chunking approach.")
                 words = re.findall(r'\b\w+\b|[^\w\s]', text)
                 chunks = [' '.join(words[i:i+WORDS_PER_BATCH]) for i in range(0, len(words), WORDS_PER_BATCH)]

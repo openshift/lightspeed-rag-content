@@ -41,7 +41,7 @@ def find_first_anchor(chunk_soup: BeautifulSoup) -> Optional[str]:
 def get_document_title(soup: BeautifulSoup) -> str:
     """Extracts the document title from the <title> tag."""
     title_tag = soup.find('title')
-    return title_tag.get_text(strip=True) if title_tag else "Untitled"
+    return title_tag.get_text(strip=True) if title_tag is not None else "Untitled"
 
 
 def chunk_html(
@@ -212,7 +212,7 @@ def _split_element_by_children_no_grouping(element: Tag, options: ChunkingOption
 
 def _split_definition_list(div_element: Tag, options: ChunkingOptions) -> list[str]:
     dl = div_element.find('dl')
-    if not dl: return _split_element_by_children(div_element, options)
+    if dl is None: return _split_element_by_children(div_element, options)
     chunks, current_chunk_pairs_html, current_tokens = [], [], 0
     pairs, children, i = [], list(dl.children), 0
     while i < len(children):
@@ -237,11 +237,11 @@ def _split_definition_list(div_element: Tag, options: ChunkingOptions) -> list[s
 def _split_table(table: Tag, options: ChunkingOptions) -> list[str]:
     chunks, header = [], table.find('thead')
     rows = table.find_all('tr')
-    header_rows_ids = set(id(r) for r in header.find_all('tr')) if header else set()
+    header_rows_ids = set(id(r) for r in header.find_all('tr')) if header is not None else set()
     body_rows = [row for row in rows if id(row) not in header_rows_ids]
     table_attrs = " ".join([f'{k}="{v}"' for k, v in table.attrs.items()])
     table_open, table_close = f"<table {table_attrs}>", "</table>"
-    header_html = str(header) if header else ""
+    header_html = str(header) if header is not None else ""
     base_tokens = count_html_tokens(table_open + header_html + table_close, options.count_tag_tokens)
     current_chunk_rows, current_tokens = [], base_tokens
     for row in body_rows:
@@ -285,7 +285,7 @@ def _split_list(list_element: Tag, options: ChunkingOptions) -> list[str]:
         if item_tokens + base_tokens > options.max_token_limit:
             if current_chunk_items: chunks.append(list_open + "".join(current_chunk_items) + list_close)
             item_soup = BeautifulSoup(item_html, 'html.parser').li
-            if item_soup:
+            if item_soup is not None:
                  sub_chunks = _split_element_by_children(item_soup, options)
                  for sub_chunk in sub_chunks: chunks.append(list_open + f"<li>{sub_chunk}</li>" + list_close)
             else: chunks.append(list_open + item_html + list_close)
