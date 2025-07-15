@@ -9,7 +9,7 @@ from dataclasses import dataclass
 from bs4 import BeautifulSoup, Tag, NavigableString
 import warnings
 
-from .tokenizer import count_html_tokens
+from tokenizer import count_html_tokens
 
 # Constants
 DEFAULT_CHARS_PER_TOKEN_RATIO = 3.5

@@ -66,9 +66,7 @@ def download_documentation(
                 output_dir=str(output_dir),
                 concurrency=concurrency,
                 force=not cache_existing,
-                skip_toc=False,
                 max_retries=max_retries,
-                fail_on_error=fail_on_error,
             )
         )
 
