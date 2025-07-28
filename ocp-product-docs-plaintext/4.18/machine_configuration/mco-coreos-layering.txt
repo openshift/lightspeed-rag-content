@@ -203,13 +203,6 @@ You should not need to interact with these new objects or the machine-os-builder
 
 You need a separate MachineOSConfig CR for each machine config pool where you want to use a custom layered image.
 
-
-[IMPORTANT]
-----
-On-cluster image layering is a Technology Preview feature only. Technology Preview features are not supported with Red Hat production service level agreements (SLAs) and might not be functionally complete. Red Hat does not recommend using them in production. These features provide early access to upcoming product features, enabling customers to test functionality and provide feedback during the development process.
-For more information about the support scope of Red Hat Technology Preview features, see Technology Preview Features Support Scope.
-----
-
 Making certain changes to a MachineOSConfig object triggers an automatic rebuild of the associated custom layered image. You can mitigate the effects of the rebuild by pausing the machine config pool where the custom layered image is applied as described in "Pausing the machine config pools." While the pools are paused, the MCO does not roll out the newly built image to the nodes after the build is complete. However, the build will still run regardless of whether the pool is paused or not. For example, if you want to remove and replace a MachineOSCOnfig object, pausing the machine config pools before making the change prevents the MCO from reverting the associated nodes to the base image, reducing the number of reboots needed.
 
 When a machine config pool is paused, the oc get machineconfigpools reports the following status:
@@ -235,12 +228,18 @@ layered-c8765e26ebc87e1e17a7d6e0a78e8bae   False      False      False        Fa
 ```
 
 
-## On-cluster layering Technology Preview known limitations
+You can manually rebuild your custom layered image by either modifying your MachineOSConfig object or applying an annotation to the MachineOSConfig object. For more information, see "Rebuilding an on-cluster custom layered image".
+
+If you used a custom machine config pool to apply an on-cluster layered image to a node, you can remove the custom layered image from the node and revert to the base image. For more information, see "Reverting an on-cluster layered node".
+
+You can modify an on-custom layered image as needed, to install additional packages, remove existing packages, change repositories, update secrets, or other similar changes, by editing the MachineOSConfig object. For more information, see "Modifying a custom layered image".
+
+## On-cluster layering known limitations
 
 Note the following limitations when working with the on-cluster layering feature:
 
 * On-cluster layering is supported only for Red Hat OpenShift Container Platform clusters on the AMD64 architecture.
-* On-cluster layering is not supported on multi-architecture compute machines, single-node OpenShift, or disconnected clusters.
+* On-cluster layering is not supported on multi-architecture compute machines, or single-node OpenShift clusters.
 * If you scale up a machine set that uses a custom layered image, the nodes reboot two times. The first, when the node is initially created with the base image and a second time when the custom layered image is applied.
 * Node disruption policies are not supported on nodes with a custom layered image. As a result the following configuration changes cause a node reboot:
 * Modifying the configuration files in the /var or /etc directory
@@ -248,9 +247,8 @@ Note the following limitations when working with the on-cluster layering feature
 * Changing SSH keys
 * Removing mirroring rules from ICSP, ITMS, and IDMS objects
 * Changing the trusted CA, by updating the user-ca-bundle configmap in the openshift-config namespace
-* The images used in creating custom layered images take up space in your push registry. Always be aware of the free space in your registry and prune the images as needed.
+* The images used in creating custom layered images take up space in your push registry. Always be aware of the free space in your registry and prune the images as needed. You can automatically remove an on-cluster, custom layered image from the repository by deleting the MachineOSBuild object that created the image. Note that the credentials provided by the registry push secret must also grant permission to delete an image from the registry. For more information, see "Removing an on-cluster custom layered image".
 
-* You have enabled the TechPreviewNoUpgrade feature set by using the feature gates. For more information, see "Enabling features using feature gates".
 * You have a copy of the pull secret in the openshift-machine-config-operator namespace that the MCO needs to pull the base operating system image.
 
 For example, if you are using the global pull secret, you can run the following command:
@@ -265,47 +263,44 @@ $oc create secret docker-registry global-pull-secret-copy \
 * You have the push secret of the registry that the MCO needs to push the new custom layered image to.
 * You have a pull secret that your nodes need to pull the new custom layered image from your registry. This should be a different secret than the one used to push the image to the repository.
 * You are familiar with how to configure a Containerfile. Instructions on how to create a Containerfile are beyond the scope of this documentation.
-* Optional: You have a separate machine config pool for the nodes where you want to apply the custom layered image.
+* Optional: You have a separate machine config pool for the nodes where you want to apply the custom layered image. One benefit to having a custom machine config pool for the nodes is that you can easily revert to the base image, if needed. For more information, see "Reverting an on-cluster layered node".
 
 1. Create a MachineOSconfig object:
 1. Create a YAML file similar to the following:
 
 ```yaml
-apiVersion: machineconfiguration.openshift.io/v1alpha1 1
+apiVersion: machineconfiguration.openshift.io/v1 1
 kind: MachineOSConfig
 metadata:
   name: layered 2
 spec:
   machineConfigPool:
-    name: worker 3
-  buildInputs:
-    containerFile: 4
-    - containerfileArch: noarch
-      content: |-
-        FROM configs AS final
-        RUN rpm-ostree install tree && \
-            ostree container commit
-    imageBuilder: 5
-      imageBuilderType: PodImageBuilder
-    baseImagePullSecret: 6
-      name: global-pull-secret-copy
-    renderedImagePushspec: image-registry.openshift-image-registry.svc:5000/openshift/os-image:latest 7
-    renderedImagePushSecret: 8
-      name: builder-dockercfg-7lzwl
-  buildOutputs: 9
-    currentImagePullSecret:
-      name: builder-dockercfg-mtcl23
+    name: layered 3
+  containerFile: 4
+  - containerfileArch: NoArch 5
+    content: |-
+      FROM configs AS final
+      RUN dnf install -y cowsay && \
+        dnf clean all && \
+        ostree container commit
+  imageBuilder: 6
+    imageBuilderType: Job
+  baseImagePullSecret: 7
+    name: global-pull-secret-copy
+  renderedImagePushSpec: image-registry.openshift-image-registry.svc:5000/openshift/os-image:latest  8
+  renderedImagePushSecret: 9
+    name: builder-dockercfg-mtcl23
 ```
 
 Specifies the machineconfiguration.openshift.io/v1 API that is required for MachineConfig CRs.
 Specifies a name for the MachineOSConfig object. This name is used with other on-cluster layering resources. The examples in this documentation use the name layered.
-Specifies the name of the machine config pool associated with the nodes where you want to deploy the custom layered image. The examples in this documentation use the worker machine config pool.
+Specifies the name of the machine config pool associated with the nodes where you want to deploy the custom layered image. The examples in this documentation use the layered machine config pool.
 Specifies the Containerfile to configure the custom layered image.
-Specifies the name of the image builder to use. This must be PodImageBuilder.
-Specifies the name of the pull secret that the MCO needs in order to pull the base operating system image from the registry.
-Specifies the image registry to push the newly built custom layered image to. This can be any registry that your cluster has access to. This example uses the internal Red Hat OpenShift Container Platform registry.
-Specifies the name of the push secret that the MCO needs in order to push the newly built custom layered image to that registry.
-Specifies the secret required by the image registry that the nodes need in order to pull the newly built custom layered image. This should be a different secret than the one used to push the image to your repository.
+Specifies the architecture this containerfile is to be built for: ARM64, AMD64, PPC64LE, S390X, or NoArch. The default is NoArch, which defines a Containerfile that can be applied to any architecture.
+Specifies the name of the image builder to use. This must be Job, which is a reference to the job object that is managing the image build.
+Optional: Specifies the name of the pull secret that the MCO needs to pull the base operating system image from the registry. By default, the global pull secret is used.
+Specifies the image registry to push the newly-built custom layered image to. This can be any registry that your cluster has access to in the host[:port][/namespace]/name or svc_name.namespace.svc[:port]/repository/name:<tag> format. This example uses the internal Red Hat OpenShift Container Platform registry. You can specify a mirror registry if you cluster is properly configured to use a mirror registry.
+Specifies the name of the push secret that the MCO needs to push the newly-built custom layered image to that registry.
 2. Create the MachineOSConfig object:
 
 ```terminal
@@ -379,7 +374,7 @@ Example output
 ```yaml
 Name:         layered-ad5a3cad36303c363cf458ab0524e7c0
 # ...
-API Version:  machineconfiguration.openshift.io/v1alpha1
+API Version:  machineconfiguration.openshift.io/v1
 Kind:         MachineOSBuild
 # ...
 Spec:
@@ -430,8 +425,11 @@ Deployments:
 
 Digested image pull spec for the new custom layered image.
 
-* Enabling features using feature gates
 * Pausing the machine config pools
+* Removing an on-cluster custom layered image
+* Modifying a custom layered image
+* Rebuilding an on-cluster custom layered image
+* Reverting an on-cluster custom layered image
 
 ## Modifying a custom layered image
 
@@ -461,43 +459,33 @@ After the changes have been rolled out, you can unpause the machine config pool.
 1. Edit the MachineOSConfig object to modify the custom layered image. The following example adds the rngd daemon to nodes that already have the tree package that was installed using a custom layered image.
 
 ```yaml
-apiVersion: machineconfiguration.openshift.io/v1alpha1
+apiVersion: machineconfiguration.openshift.io/v1
 kind: MachineOSConfig
 metadata:
   name: layered
 spec:
   machineConfigPool:
-    name: worker
-  buildInputs:
-    containerFile:
-    - containerfileArch: noarch
-      content: |- 1
-        FROM configs AS final
-
-        RUN rpm-ostree install rng-tools && \
-            systemctl enable rngd && \
-            rpm-ostree cleanup -m && \
-            ostree container commit
-
-        RUN rpm-ostree install tree && \
-            ostree container commit
-    imageBuilder:
-      imageBuilderType: PodImageBuilder
-    baseImagePullSecret:
-      name: global-pull-secret-copy 2
-    renderedImagePushspec: image-registry.openshift-image-registry.svc:5000/openshift-machine-config-operator/os-images:latest 3
-    renderedImagePushSecret:  4
-      name: new-secret-name
-  buildOutputs:
-    currentImagePullSecret:
-      name: new-secret-name 5
+    name: layered
+  containerFile:
+  - containerfileArch: NoArch
+    content: |- 1
+      FROM configs AS final
+      RUN dnf install -y cowsay && \
+        dnf clean all && \
+        ostree container commit
+  imageBuilder:
+    imageBuilderType: Job
+  baseImagePullSecret:
+    name: global-pull-secret-copy 2
+  renderedImagePushSpec: image-registry.openshift-image-registry.svc:5000/openshift/os-image:latest 3
+  renderedImagePushSecret: 4
+    name: builder-dockercfg-mtcl23
 ```
 
 Optional: Modify the Containerfile, for example to add or remove packages.
 Optional: Update the secret needed to pull the base operating system image from the registry.
 Optional: Modify the image registry to push the newly built custom layered image to.
 Optional: Update the secret needed to push the newly built custom layered image to the registry.
-Optional: Update the secret needed to pull the newly built custom layered image from the registry.
 
 When you save the changes, the MCO drains, cordons, and reboots the nodes. After the reboot, the node uses the cluster base Red Hat Enterprise Linux CoreOS (RHCOS) image. If your changes modify a secret only, no new build is triggered and no reboot is performed.
 
@@ -569,6 +557,70 @@ rngd 6.16
 
 
 * Pausing the machine config pools
+
+## Rebuilding an on-cluster custom layered image
+
+In situations where you want to rebuild an on-cluster custom layered image, you can either modify your MachineOSConfig object or add an annotation to the MachineOSConfig object. Both of these actions trigger an automatic rebuild of the object. For example, you could perform a rebuild if the you change the Containerfile or need to update the osimageurl location in a machine config.
+
+After you add the annotation, the Machine Config Operator (MCO) deletes the current MachineOSBuild object and creates a new one in its place. When the build process is complete, the MCO automatically removes the annotation.
+
+* You have opted-in to {image-mode-os-on-lower} by creating a MachineOSConfig object.
+
+* Edit the MachineOSConfig object to add the machineconfiguration.openshift.io/rebuild annotation by using the following command:
+
+```terminal
+$ oc edit MachineOSConfig <object_name>
+```
+
+Example MachineOSConfig object
+
+```yaml
+apiVersion: machineconfiguration.openshift.io/v1
+kind: MachineOSConfig
+metadata:
+  annotations:
+    machineconfiguration.openshift.io/current-machine-os-build: layering-c26d4a003432df70ee66c83981144cfa
+    machineconfiguration.openshift.io/rebuild: "" 1
+# ...
+  name: layered
+# ...
+```
+
+Add this annotation to trigger a rebuild of the custom layered image.
+
+* Check that the MachineOSBuild object is building by using the following command:
+
+```terminal
+$ oc get machineosbuild
+```
+
+Example output
+
+```terminal
+NAME                                             PREPARED   BUILDING   SUCCEEDED   INTERRUPTED   FAILED   AGE
+layered-d6b929a29c6dbfa8e4007c8069a2fd08   False      True       False       False         False    2m41s 1
+```
+
+The value True in the BUILDING column indicates that the MachineOSBuild object is building.
+* Edit the MachineOSConfig object to verify that the MCO removed the machineconfiguration.openshift.io/rebuild annotation by using the following command:
+
+```terminal
+$ oc edit MachineOSConfig <object_name>
+```
+
+Example MachineOSConfig object
+
+```yaml
+apiVersion: machineconfiguration.openshift.io/v1
+kind: MachineOSConfig
+metadata:
+  annotations:
+    machineconfiguration.openshift.io/current-machine-os-build: layering-c26d4a003432df70ee66c83981144cfa
+# ...
+  name: layered
+# ...
+```
+
 
 ## Reverting an on-cluster custom layered image
 
@@ -657,6 +709,14 @@ Deployments:
                   Version: 418.94.202501300706-0 (2025-01-30T07:10:58Z)
 ```
 
+
+## Removing an on-cluster custom layered image
+
+To prevent the custom layered images from taking up excessive space in your registry, you can automatically remove an on-cluster custom layered image from the repository by deleting the MachineOSBuild object that created the image.
+
+The credentials provided by the registry push secret that you added to the MachineOSBuild object must grant the permission for deleting an image from the registry. If the delete permission is not provided, the image is not removed when you delete the MachineOSBuild object.
+
+The custom layered image is not deleted if the image is either currently in use on a node or is desired by the nodes, as indicated by the machineconfiguration.openshift.io/currentImage or machineconfiguration.openshift.io/desiredImage annotations on the node, which are added to the node when you create the MachineOSConfig object.
 
 # Using out-of-cluster layering to apply a custom layered image
 
