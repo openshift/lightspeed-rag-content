@@ -1,7 +1,7 @@
 # NVIDIA GPUDirect Remote Direct Memory Access (RDMA)
 
 
-NVIDIA GPUDirect Remote Direct Memory Access (RDMA) allows for the memory in one computer to directly access the memory of another computer without needing access through the operating system. This provides the ability to bypass kernel intervention in the process, freeing up resources and greatly reducing the CPU overhead normally needed to process network communications. This is useful for distributing GPU-accelerated workloads across clusters. And because RDMA is so suited toward high bandwidth and low latency applications, this makes it ideal for big data and machine learning applications.
+NVIDIA GPUDirect Remote Direct Memory Access (RDMA) allows for an application in one computer to directly access the memory of another computer without needing access through the operating system. This provides the ability to bypass kernel intervention in the process, freeing up resources and greatly reducing the CPU overhead normally needed to process network communications. This is useful for distributing GPU-accelerated workloads across clusters. And because RDMA is so suited toward high bandwidth and low latency applications, this makes it ideal for big data and machine learning applications.
 There are currently three configuration methods for NVIDIA GPUDirect RDMA:
 Shared device:: This method allows for an NVIDIA GPUDirect RDMA device to be shared among multiple pods on the Red Hat OpenShift Container Platform worker node where the device is exposed.
 Host device:: This method provides direct physical Ethernet access on the worker node by
@@ -962,4 +962,1515 @@ Allocatable:
   pods:                         250
   rdma/rdma_shared_device_eth:  63
   rdma/rdma_shared_device_ib:   63
+```
+
+
+# Creating the machine configuration
+
+Before you create the resource pods, you need to create the machineconfig.yaml custom resource (CR) that provides access to the GPU and networking resources without the need for user privileges.
+
+1. Generate a Machineconfig CR:
+
+```yaml
+apiVersion: machineconfiguration.openshift.io/v1
+kind: MachineConfig
+metadata:
+  labels:
+    machineconfiguration.openshift.io/role: worker
+  name: 02-worker-container-runtime
+spec:
+  config:
+    ignition:
+      version: 3.2.0
+    storage:
+      files:
+      - contents:
+          source: data:text/plain;charset=utf-8;base64,W2NyaW8ucnVudGltZV0KZGVmYXVsdF91bGltaXRzID0gWwoibWVtbG9jaz0tMTotMSIKXQo=
+        mode: 420
+        overwrite: true
+        path: /etc/crio/crio.conf.d/10-custom
+```
+
+
+# Creating the workload pods
+
+Use the procedures in this section to create the workload pods for the shared and host devices.
+
+## Creating a shared device RDMA on RoCE
+
+Create the workload pods for a shared device RDMA on RDMA over Converged Ethernet (RoCE) for the NVIDIA Network Operator and test the pod configuration.
+
+The NVIDIA GPUDirect RDMA device is shared among pods on the Red Hat OpenShift Container Platform worker node where the device is exposed.
+
+* Ensure that the Operator is running.
+* Delete the NicClusterPolicy custom resource (CR), if it exists.
+
+1. Generate custom pod resources:
+
+```yaml
+$ cat <<EOF > rdma-eth-32-workload.yaml
+apiVersion: v1
+kind: Pod
+metadata:
+  name: rdma-eth-32-workload
+  namespace: default
+  annotations:
+    k8s.v1.cni.cncf.io/networks: rdmashared-net
+spec:
+  nodeSelector:
+    kubernetes.io/hostname: nvd-srv-32.nvidia.eng.rdu2.dc.redhat.com
+  containers:
+  - image: quay.io/edge-infrastructure/nvidia-tools:0.1.5
+    name: rdma-eth-32-workload
+    resources:
+      limits:
+        nvidia.com/gpu: 1
+        rdma/rdma_shared_device_eth: 1
+      requests:
+        nvidia.com/gpu: 1
+        rdma/rdma_shared_device_eth: 1
+
+EOF
+
+$ cat <<EOF > rdma-eth-33-workload.yaml
+apiVersion: v1
+kind: Pod
+metadata:
+  name: rdma-eth-33-workload
+  namespace: default
+  annotations:
+    k8s.v1.cni.cncf.io/networks: rdmashared-net
+spec:
+  nodeSelector:
+    kubernetes.io/hostname: nvd-srv-33.nvidia.eng.rdu2.dc.redhat.com
+  containers:
+  - image: quay.io/edge-infrastructure/nvidia-tools:0.1.5
+    name: rdma-eth-33-workload
+    securityContext:
+      capabilities:
+        add: [ "IPC_LOCK" ]
+    resources:
+      limits:
+        nvidia.com/gpu: 1
+        rdma/rdma_shared_device_eth: 1
+      requests:
+        nvidia.com/gpu: 1
+        rdma/rdma_shared_device_eth: 1
+EOF
+```
+
+2. Create the pods on the cluster by using the following commands:
+
+```terminal
+$ oc create -f rdma-eth-32-workload.yaml
+```
+
+Example output
+
+```terminal
+pod/rdma-eth-32-workload created
+```
+
+
+```terminal
+$ oc create -f rdma-eth-33-workload.yaml
+```
+
+Example output
+
+```terminal
+pod/rdma-eth-33-workload created
+```
+
+3. Verify that the pods are running by using the following command:
+
+```terminal
+$ oc get pods -n default
+```
+
+Example output
+
+```terminal
+NAME                   READY   STATUS    RESTARTS   AGE
+rdma-eth-32-workload   1/1     Running   0          25s
+rdma-eth-33-workload   1/1     Running   0          22s
+```
+
+
+## Creating a host device RDMA on RoCE
+
+Create the workload pods for a host device Remote Direct Memory Access (RDMA) for the NVIDIA Network Operator and test the pod configuration.
+
+* Ensure that the Operator is running.
+* Delete the NicClusterPolicy custom resource (CR), if it exists.
+
+1. Generate a new host device NicClusterPolicy (CR), as shown below:
+
+```yaml
+$ cat <<EOF > network-hostdev-nic-cluster-policy.yaml
+apiVersion: mellanox.com/v1alpha1
+kind: NicClusterPolicy
+metadata:
+  name: nic-cluster-policy
+spec:
+  ofedDriver:
+    image: doca-driver
+    repository: nvcr.io/nvidia/mellanox
+    version: 24.10-0.7.0.0-0
+    startupProbe:
+      initialDelaySeconds: 10
+      periodSeconds: 20
+    livenessProbe:
+      initialDelaySeconds: 30
+      periodSeconds: 30
+    readinessProbe:
+      initialDelaySeconds: 10
+      periodSeconds: 30
+    env:
+    - name: UNLOAD_STORAGE_MODULES
+      value: "true"
+    - name: RESTORE_DRIVER_ON_POD_TERMINATION
+      value: "true"
+    - name: CREATE_IFNAMES_UDEV
+      value: "true"
+  sriovDevicePlugin:
+      image: sriov-network-device-plugin
+      repository: ghcr.io/k8snetworkplumbingwg
+      version: v3.7.0
+      config: |
+        {
+          "resourceList": [
+              {
+                  "resourcePrefix": "nvidia.com",
+                  "resourceName": "hostdev",
+                  "selectors": {
+                      "vendors": ["15b3"],
+                      "isRdma": true
+                  }
+              }
+          ]
+        }
+EOF
+```
+
+2. Create the NicClusterPolicy CR on the cluster by using the following command:
+
+```terminal
+$ oc create -f network-hostdev-nic-cluster-policy.yaml
+```
+
+Example output
+
+```terminal
+nicclusterpolicy.mellanox.com/nic-cluster-policy created
+```
+
+3. Verify that the host device NicClusterPolicy CR by using the following command in the DOCA/MOFED container:
+
+```terminal
+$ oc get pods -n nvidia-network-operator
+```
+
+Example output
+
+```terminal
+NAME                                                          READY   STATUS    RESTARTS   AGE
+mofed-rhcos4.16-696886fcb4-ds-9sgvd                           2/2     Running   0          2m37s
+mofed-rhcos4.16-696886fcb4-ds-lkjd4                           2/2     Running   0          2m37s
+nvidia-network-operator-controller-manager-68d547dbbd-qsdkf   1/1     Running   0          141m
+sriov-device-plugin-6v2nz                                     1/1     Running   0          2m14s
+sriov-device-plugin-hc4t8                                     1/1     Running   0          2m14s
+```
+
+4. Confirm that the resources appear in the cluster oc describe node section by using the following command:
+
+```terminal
+$ oc describe node -l node-role.kubernetes.io/worker=| grep -E 'Capacity:|Allocatable:' -A7
+```
+
+Example output
+
+```terminal
+Capacity:
+  cpu:                 128
+  ephemeral-storage:   1561525616Ki
+  hugepages-1Gi:       0
+  hugepages-2Mi:       0
+  memory:              263596708Ki
+  nvidia.com/hostdev:  2
+  pods:                250
+Allocatable:
+  cpu:                 127500m
+  ephemeral-storage:   1438028263499
+  hugepages-1Gi:       0
+  hugepages-2Mi:       0
+  memory:              262445732Ki
+  nvidia.com/hostdev:  2
+  pods:                250
+--
+Capacity:
+  cpu:                 128
+  ephemeral-storage:   1561525616Ki
+  hugepages-1Gi:       0
+  hugepages-2Mi:       0
+  memory:              263596704Ki
+  nvidia.com/hostdev:  2
+  pods:                250
+Allocatable:
+  cpu:                 127500m
+  ephemeral-storage:   1438028263499
+  hugepages-1Gi:       0
+  hugepages-2Mi:       0
+  memory:              262445728Ki
+  nvidia.com/hostdev:  2
+  pods:                250
+```
+
+5. Create a HostDeviceNetwork CR file:
+
+```yaml
+$ cat <<EOF >  hostdev-network.yaml
+apiVersion: mellanox.com/v1alpha1
+kind: HostDeviceNetwork
+metadata:
+  name: hostdev-net
+spec:
+  networkNamespace: "default"
+  resourceName: "hostdev"
+  ipam: |
+    {
+      "type": "whereabouts",
+      "range": "192.168.3.225/28",
+      "exclude": [
+       "192.168.3.229/30",
+       "192.168.3.236/32"
+      ]
+    }
+EOF
+```
+
+6. Create the HostDeviceNetwork resource on the cluster by using the following command:
+
+```terminal
+$ oc create -f hostdev-network.yaml
+```
+
+Example output
+
+```terminal
+hostdevicenetwork.mellanox.com/hostdev-net created
+```
+
+7. Confirm that the resources appear in the cluster oc describe node section by using the following command:
+
+```terminal
+$ oc describe node -l node-role.kubernetes.io/worker=| grep -E 'Capacity:|Allocatable:' -A8
+```
+
+Example output
+
+```terminal
+Capacity:
+  cpu:                 128
+  ephemeral-storage:   1561525616Ki
+  hugepages-1Gi:       0
+  hugepages-2Mi:       0
+  memory:              263596708Ki
+  nvidia.com/gpu:      2
+  nvidia.com/hostdev:  2
+  pods:                250
+Allocatable:
+  cpu:                 127500m
+  ephemeral-storage:   1438028263499
+  hugepages-1Gi:       0
+  hugepages-2Mi:       0
+  memory:              262445732Ki
+  nvidia.com/gpu:      2
+  nvidia.com/hostdev:  2
+  pods:                250
+--
+Capacity:
+  cpu:                 128
+  ephemeral-storage:   1561525616Ki
+  hugepages-1Gi:       0
+  hugepages-2Mi:       0
+  memory:              263596680Ki
+  nvidia.com/gpu:      2
+  nvidia.com/hostdev:  2
+  pods:                250
+Allocatable:
+  cpu:                 127500m
+  ephemeral-storage:   1438028263499
+  hugepages-1Gi:       0
+  hugepages-2Mi:       0
+  memory:              262445704Ki
+  nvidia.com/gpu:      2
+  nvidia.com/hostdev:  2
+  pods:                250
+```
+
+
+## Creating a SR-IOV legacy mode RDMA on RoCE
+
+Configure a Single Root I/O Virtualization (SR-IOV) legacy mode host device RDMA on RoCE.
+
+1. Generate a new host device NicClusterPolicy custom resource (CR):
+
+```yaml
+$ cat <<EOF > network-sriovleg-nic-cluster-policy.yaml
+apiVersion: mellanox.com/v1alpha1
+kind: NicClusterPolicy
+metadata:
+  name: nic-cluster-policy
+spec:
+  ofedDriver:
+    image: doca-driver
+    repository: nvcr.io/nvidia/mellanox
+    version: 24.10-0.7.0.0-0
+    startupProbe:
+      initialDelaySeconds: 10
+      periodSeconds: 20
+    livenessProbe:
+      initialDelaySeconds: 30
+      periodSeconds: 30
+    readinessProbe:
+      initialDelaySeconds: 10
+      periodSeconds: 30
+    env:
+    - name: UNLOAD_STORAGE_MODULES
+      value: "true"
+    - name: RESTORE_DRIVER_ON_POD_TERMINATION
+      value: "true"
+    - name: CREATE_IFNAMES_UDEV
+      value: "true"
+EOF
+```
+
+2. Create the policy on the cluster by using the following command:
+
+```terminal
+$ oc create -f network-sriovleg-nic-cluster-policy.yaml
+```
+
+Example output
+
+```terminal
+nicclusterpolicy.mellanox.com/nic-cluster-policy created
+```
+
+3. Verify the pods by using the following command in the DOCA/MOFED container:
+
+```terminal
+$ oc get pods -n nvidia-network-operator
+```
+
+Example output
+
+```terminal
+NAME                                                          READY   STATUS    RESTARTS      AGE
+mofed-rhcos4.16-696886fcb4-ds-4mb42                           2/2     Running   0             40s
+mofed-rhcos4.16-696886fcb4-ds-8knwq                           2/2     Running   0             40s
+nvidia-network-operator-controller-manager-68d547dbbd-qsdkf   1/1     Running   13 (4d ago)   4d21h
+```
+
+4. Create an SriovNetworkNodePolicy CR that generates the Virtual Functions (VFs) for the device you want to operate in SR-IOV legacy mode. See the following example:
+
+```yaml
+$ cat <<EOF > sriov-network-node-policy.yaml
+apiVersion: sriovnetwork.openshift.io/v1
+kind: SriovNetworkNodePolicy
+metadata:
+  name: sriov-legacy-policy
+  namespace:  openshift-sriov-network-operator
+spec:
+  deviceType: netdevice
+  mtu: 1500
+  nicSelector:
+    vendor: "15b3"
+    pfNames: ["ens8f0np0#0-7"]
+  nodeSelector:
+    feature.node.kubernetes.io/pci-15b3.present: "true"
+  numVfs: 8
+  priority: 90
+  isRdma: true
+  resourceName: sriovlegacy
+EOF
+```
+
+5. Create the CR on the cluster by using the following command:
+
+[NOTE]
+----
+Ensure that SR-IOV Global Enable is enabled. For more information, see Unable to enable SR-IOV and receiving the message "not enough MMIO resources for SR-IOV" in Red Hat Enterprise Linux.
+----
+
+```terminal
+$ oc create -f sriov-network-node-policy.yaml
+```
+
+Example output
+
+```terminal
+sriovnetworknodepolicy.sriovnetwork.openshift.io/sriov-legacy-policy created
+```
+
+6. Each node has scheduling disabled. The nodes reboot to apply the configuration. You can view the nodes by using the following command:
+
+```terminal
+$ oc get nodes
+```
+
+Example output
+
+```terminal
+NAME                                       STATUS                        ROLES                         AGE     VERSION
+edge-19.edge.lab.eng.rdu2.redhat.com       Ready                         control-plane,master,worker   5d      v1.29.8+632b078
+nvd-srv-32.nvidia.eng.rdu2.dc.redhat.com   Ready                         worker                        4d22h   v1.29.8+632b078
+nvd-srv-33.nvidia.eng.rdu2.dc.redhat.com   NotReady,SchedulingDisabled   worker                        4d22h   v1.29.8+632b078
+```
+
+7. After the nodes have rebooted, verify that the VF interfaces exist by opening up a debug pod on each node. Run the following command:
+
+```terminal
+a$ oc debug node/nvd-srv-33.nvidia.eng.rdu2.dc.redhat.com
+```
+
+Example output
+
+```terminal
+Starting pod/nvd-srv-33nvidiaengrdu2dcredhatcom-debug-cqfjz ...
+To use host binaries, run `chroot /host`
+Pod IP: 10.6.135.12
+If you don't see a command prompt, try pressing enter.
+sh-5.1# chroot /host
+sh-5.1# ip link show | grep ens8
+26: ens8f0np0: <BROADCAST,MULTICAST,UP,LOWER_UP> mtu 1500 qdisc mq state UP mode DEFAULT group default qlen 1000
+42: ens8f0v0: <BROADCAST,MULTICAST> mtu 1500 qdisc noop state DOWN mode DEFAULT group default qlen 1000
+43: ens8f0v1: <BROADCAST,MULTICAST> mtu 1500 qdisc noop state DOWN mode DEFAULT group default qlen 1000
+44: ens8f0v2: <BROADCAST,MULTICAST> mtu 1500 qdisc noop state DOWN mode DEFAULT group default qlen 1000
+45: ens8f0v3: <BROADCAST,MULTICAST> mtu 1500 qdisc noop state DOWN mode DEFAULT group default qlen 1000
+46: ens8f0v4: <BROADCAST,MULTICAST> mtu 1500 qdisc noop state DOWN mode DEFAULT group default qlen 1000
+47: ens8f0v5: <BROADCAST,MULTICAST> mtu 1500 qdisc noop state DOWN mode DEFAULT group default qlen 1000
+48: ens8f0v6: <BROADCAST,MULTICAST> mtu 1500 qdisc noop state DOWN mode DEFAULT group default qlen 1000
+49: ens8f0v7: <BROADCAST,MULTICAST> mtu 1500 qdisc noop state DOWN mode DEFAULT group default qlen 1000
+```
+
+8. Repeat the previous steps on the second node, if necessary.
+9. Optional: Confirm that the resources appear in the cluster oc describe node section by using the following command:
+
+```terminal
+$ oc describe node -l node-role.kubernetes.io/worker=| grep -E 'Capacity:|Allocatable:' -A8
+```
+
+Example output
+
+```terminal
+Capacity:
+  cpu:                       128
+  ephemeral-storage:         1561525616Ki
+  hugepages-1Gi:             0
+  hugepages-2Mi:             0
+  memory:                    263596692Ki
+  nvidia.com/gpu:            2
+  nvidia.com/hostdev:        0
+  openshift.io/sriovlegacy:  8
+--
+Allocatable:
+  cpu:                       127500m
+  ephemeral-storage:         1438028263499
+  hugepages-1Gi:             0
+  hugepages-2Mi:             0
+  memory:                    262445716Ki
+  nvidia.com/gpu:            2
+  nvidia.com/hostdev:        0
+  openshift.io/sriovlegacy:  8
+--
+Capacity:
+  cpu:                       128
+  ephemeral-storage:         1561525616Ki
+  hugepages-1Gi:             0
+  hugepages-2Mi:             0
+  memory:                    263596688Ki
+  nvidia.com/gpu:            2
+  nvidia.com/hostdev:        0
+  openshift.io/sriovlegacy:  8
+--
+Allocatable:
+  cpu:                       127500m
+  ephemeral-storage:         1438028263499
+  hugepages-1Gi:             0
+  hugepages-2Mi:             0
+  memory:                    262445712Ki
+  nvidia.com/gpu:            2
+  nvidia.com/hostdev:        0
+  openshift.io/sriovlegacy:  8
+```
+
+10. After the VFs for SR-IOV legacy mode are in place, generate the SriovNetwork CR file. See the following example:
+
+```yaml
+$ cat <<EOF > sriov-network.yaml
+apiVersion: sriovnetwork.openshift.io/v1
+kind: SriovNetwork
+metadata:
+  name: sriov-network
+  namespace:  openshift-sriov-network-operator
+spec:
+  vlan: 0
+  networkNamespace: "default"
+  resourceName: "sriovlegacy"
+  ipam: |
+    {
+      "type": "whereabouts",
+      "range": "192.168.3.225/28",
+      "exclude": [
+       "192.168.3.229/30",
+       "192.168.3.236/32"
+      ]
+    }
+EOF
+```
+
+11. Create the custom resource on the cluster by using the following command:
+
+```terminal
+$ oc create -f sriov-network.yaml
+```
+
+Example output
+
+```terminal
+sriovnetwork.sriovnetwork.openshift.io/sriov-network created
+```
+
+
+## Creating a shared device RDMA on Infiniband
+
+Create the workload pods for a shared device Remote Direct Memory Access (RDMA) for an Infiniband installation.
+
+1. Generate custom pod resources:
+
+```yaml
+$ cat <<EOF > rdma-ib-32-workload.yaml
+apiVersion: v1
+kind: Pod
+metadata:
+  name: rdma-ib-32-workload
+  namespace: default
+  annotations:
+    k8s.v1.cni.cncf.io/networks: example-ipoibnetwork
+spec:
+  nodeSelector:
+    kubernetes.io/hostname: nvd-srv-32.nvidia.eng.rdu2.dc.redhat.com
+  containers:
+  - image: quay.io/edge-infrastructure/nvidia-tools:0.1.5
+    name: rdma-ib-32-workload
+    resources:
+      limits:
+        nvidia.com/gpu: 1
+        rdma/rdma_shared_device_ib: 1
+      requests:
+        nvidia.com/gpu: 1
+        rdma/rdma_shared_device_ib: 1
+EOF
+
+$ cat <<EOF > rdma-ib-32-workload.yaml
+apiVersion: v1
+kind: Pod
+metadata:
+  name: rdma-ib-33-workload
+  namespace: default
+  annotations:
+    k8s.v1.cni.cncf.io/networks: example-ipoibnetwork
+spec:
+  nodeSelector:
+    kubernetes.io/hostname: nvd-srv-33.nvidia.eng.rdu2.dc.redhat.com
+  containers:
+  - image: quay.io/edge-infrastructure/nvidia-tools:0.1.5
+    name: rdma-ib-33-workload
+    securityContext:
+      capabilities:
+        add: [ "IPC_LOCK" ]
+    resources:
+      limits:
+        nvidia.com/gpu: 1
+        rdma/rdma_shared_device_ib: 1
+      requests:
+        nvidia.com/gpu: 1
+        rdma/rdma_shared_device_ib: 1
+EOF
+```
+
+2. Create the pods on the cluster by using the following commands:
+
+```terminal
+$ oc create -f rdma-ib-32-workload.yaml
+```
+
+Example output
+
+```terminal
+pod/rdma-ib-32-workload created
+```
+
+
+```terminal
+$ oc create -f rdma-ib-33-workload.yaml
+```
+
+Example output
+
+```terminal
+pod/rdma-ib-33-workload created
+```
+
+3. Verify that the pods are running by using the following command:
+
+```terminal
+$ oc get pods
+```
+
+Example output
+
+```terminal
+NAME                  READY   STATUS    RESTARTS   AGE
+rdma-ib-32-workload   1/1     Running   0          10s
+rdma-ib-33-workload   1/1     Running   0          3s
+```
+
+
+# Verifying RDMA connectivity
+
+Confirm Remote Direct Memory Access (RDMA) connectivity is working between the systems, specifically for Legacy Single Root I/O Virtualization (SR-IOV) Ethernet.
+
+1. Connect to each rdma-workload-client pod by using the following command:
+
+```terminal
+$ oc rsh -n default rdma-sriov-32-workload
+```
+
+Example output
+
+```terminal
+sh-5.1#
+```
+
+2. Check the IP address assigned to the first workload pod by using the following command. In this example, the first workload pod is the RDMA test server.
+
+```terminal
+sh-5.1# ip a
+```
+
+Example output
+
+```terminal
+1: lo: <LOOPBACK,UP,LOWER_UP> mtu 65536 qdisc noqueue state UNKNOWN group default qlen 1000
+    link/loopback 00:00:00:00:00:00 brd 00:00:00:00:00:00
+    inet 127.0.0.1/8 scope host lo
+       valid_lft forever preferred_lft forever
+    inet6 ::1/128 scope host
+       valid_lft forever preferred_lft forever
+2: eth0@if3970: <BROADCAST,MULTICAST,UP,LOWER_UP> mtu 1400 qdisc noqueue state UP group default
+    link/ether 0a:58:0a:80:02:a7 brd ff:ff:ff:ff:ff:ff link-netnsid 0
+    inet 10.128.2.167/23 brd 10.128.3.255 scope global eth0
+       valid_lft forever preferred_lft forever
+    inet6 fe80::858:aff:fe80:2a7/64 scope link
+       valid_lft forever preferred_lft forever
+3843: net1: <BROADCAST,MULTICAST,UP,LOWER_UP> mtu 1500 qdisc mq state UP group default qlen 1000
+    link/ether 26:34:fd:53:a6:ec brd ff:ff:ff:ff:ff:ff
+    altname enp55s0f0v5
+    inet 192.168.4.225/28 brd 192.168.4.239 scope global net1
+       valid_lft forever preferred_lft forever
+    inet6 fe80::2434:fdff:fe53:a6ec/64 scope link
+       valid_lft forever preferred_lft forever
+sh-5.1#
+```
+
+
+The IP address of the RDMA server assigned to this pod is the net1 interface. In this example, the IP address is 192.168.4.225.
+3. Run the ibstatus command to get the link_layer type, Ethernet or Infiniband, associated with each RDMA device mlx5_x.  The output also shows the status of all of the RDMA devices by checking the state field, which shows either ACTIVE or DOWN.
+
+```terminal
+sh-5.1# ibstatus
+```
+
+Example output
+
+```terminal
+Infiniband device 'mlx5_0' port 1 status:
+	default gid:	 0000:0000:0000:0000:0000:0000:0000:0000
+	base lid:	 0x0
+	sm lid:		 0x0
+	state:		 4: ACTIVE
+	phys state:	 5: LinkUp
+	rate:		 200 Gb/sec (4X HDR)
+	link_layer:	 Ethernet
+
+Infiniband device 'mlx5_1' port 1 status:
+	default gid:	 fe80:0000:0000:0000:e8eb:d303:0072:1415
+	base lid:	 0xc
+	sm lid:		 0x1
+	state:		 4: ACTIVE
+	phys state:	 5: LinkUp
+	rate:		 200 Gb/sec (4X HDR)
+	link_layer:	 InfiniBand
+
+Infiniband device 'mlx5_2' port 1 status:
+	default gid:	 0000:0000:0000:0000:0000:0000:0000:0000
+	base lid:	 0x0
+	sm lid:		 0x0
+	state:		 1: DOWN
+	phys state:	 3: Disabled
+	rate:		 200 Gb/sec (4X HDR)
+	link_layer:	 Ethernet
+
+Infiniband device 'mlx5_3' port 1 status:
+	default gid:	 0000:0000:0000:0000:0000:0000:0000:0000
+	base lid:	 0x0
+	sm lid:		 0x0
+	state:		 1: DOWN
+	phys state:	 3: Disabled
+	rate:		 200 Gb/sec (4X HDR)
+	link_layer:	 Ethernet
+
+Infiniband device 'mlx5_4' port 1 status:
+	default gid:	 0000:0000:0000:0000:0000:0000:0000:0000
+	base lid:	 0x0
+	sm lid:		 0x0
+	state:		 1: DOWN
+	phys state:	 3: Disabled
+	rate:		 200 Gb/sec (4X HDR)
+	link_layer:	 Ethernet
+
+Infiniband device 'mlx5_5' port 1 status:
+	default gid:	 0000:0000:0000:0000:0000:0000:0000:0000
+	base lid:	 0x0
+	sm lid:		 0x0
+	state:		 1: DOWN
+	phys state:	 3: Disabled
+	rate:		 200 Gb/sec (4X HDR)
+	link_layer:	 Ethernet
+
+Infiniband device 'mlx5_6' port 1 status:
+	default gid:	 0000:0000:0000:0000:0000:0000:0000:0000
+	base lid:	 0x0
+	sm lid:		 0x0
+	state:		 1: DOWN
+	phys state:	 3: Disabled
+	rate:		 200 Gb/sec (4X HDR)
+	link_layer:	 Ethernet
+
+Infiniband device 'mlx5_7' port 1 status:
+	default gid:	 fe80:0000:0000:0000:2434:fdff:fe53:a6ec
+	base lid:	 0x0
+	sm lid:		 0x0
+	state:		 4: ACTIVE
+	phys state:	 5: LinkUp
+	rate:		 200 Gb/sec (4X HDR)
+	link_layer:	 Ethernet
+
+Infiniband device 'mlx5_8' port 1 status:
+	default gid:	 0000:0000:0000:0000:0000:0000:0000:0000
+	base lid:	 0x0
+	sm lid:		 0x0
+	state:		 1: DOWN
+	phys state:	 3: Disabled
+	rate:		 200 Gb/sec (4X HDR)
+	link_layer:	 Ethernet
+
+Infiniband device 'mlx5_9' port 1 status:
+	default gid:	 0000:0000:0000:0000:0000:0000:0000:0000
+	base lid:	 0x0
+	sm lid:		 0x0
+	state:		 1: DOWN
+	phys state:	 3: Disabled
+	rate:		 200 Gb/sec (4X HDR)
+	link_layer:	 Ethernet
+
+sh-5.1#
+```
+
+4. To get the link_layer for each RDMA mlx5 device on your worker node, run the ibstat command:
+
+```terminal
+sh-5.1# ibstat | egrep "Port|Base|Link"
+```
+
+Example output
+
+```terminal
+Port 1:
+		Physical state: LinkUp
+		Base lid: 0
+		Port GUID: 0x0000000000000000
+		Link layer: Ethernet
+	Port 1:
+		Physical state: LinkUp
+		Base lid: 12
+		Port GUID: 0xe8ebd30300721415
+		Link layer: InfiniBand
+	Port 1:
+		Base lid: 0
+		Port GUID: 0x0000000000000000
+		Link layer: Ethernet
+	Port 1:
+		Base lid: 0
+		Port GUID: 0x0000000000000000
+		Link layer: Ethernet
+	Port 1:
+		Base lid: 0
+		Port GUID: 0x0000000000000000
+		Link layer: Ethernet
+	Port 1:
+		Base lid: 0
+		Port GUID: 0x0000000000000000
+		Link layer: Ethernet
+	Port 1:
+		Base lid: 0
+		Port GUID: 0x0000000000000000
+		Link layer: Ethernet
+	Port 1:
+		Physical state: LinkUp
+		Base lid: 0
+		Port GUID: 0x2434fdfffe53a6ec
+		Link layer: Ethernet
+	Port 1:
+		Base lid: 0
+		Port GUID: 0x0000000000000000
+		Link layer: Ethernet
+	Port 1:
+		Base lid: 0
+		Port GUID: 0x0000000000000000
+		Link layer: Ethernet
+sh-5.1#
+```
+
+5. For RDMA Shared Device or Host Device workload pods, the RDMA device named mlx5_x is already known and is typically mlx5_0 or mlx5_1. For RDMA Legacy SR-IOV workload pods, you need to determine which RDMA device is associated with which Virtual Function (VF) subinterface. Provide this information by using the following command:
+
+```terminal
+sh-5.1# rdma link show
+```
+
+Example output
+
+```terminal
+link mlx5_0/1 state ACTIVE physical_state LINK_UP
+link mlx5_1/1 subnet_prefix fe80:0000:0000:0000 lid 12 sm_lid 1 lmc 0 state ACTIVE physical_state LINK_UP
+link mlx5_2/1 state DOWN physical_state DISABLED
+link mlx5_3/1 state DOWN physical_state DISABLED
+link mlx5_4/1 state DOWN physical_state DISABLED
+link mlx5_5/1 state DOWN physical_state DISABLED
+link mlx5_6/1 state DOWN physical_state DISABLED
+link mlx5_7/1 state ACTIVE physical_state LINK_UP netdev net1
+link mlx5_8/1 state DOWN physical_state DISABLED
+link mlx5_9/1 state DOWN physical_state DISABLED
+```
+
+
+In this example, the RDMA device names mlx5_7 is associated with the net1 interface. This output is used in the next command to perform the RDMA bandwidth test, which also verifies RDMA connectivity between worker nodes.
+6. Run the following ib_write_bw RDMA bandwidth test command:
+
+```terminal
+sh-5.1# /root/perftest/ib_write_bw -R -T 41 -s 65536 -F -x 3 -m 4096 --report_gbits -q 16 -D 60  -d mlx5_7 -p 10000 --source_ip  192.168.4.225 --use_cuda=0 --use_cuda_dmabuf
+```
+
+
+where:
+* The mlx5_7 RDMA device is passed in the -d switch.
+* The source IP address is 192.168.4.225 to start the RDMA server.
+* The --use_cuda=0, --use_cuda_dmabuf switches indicate that the use of GPUDirect RDMA.
+Example output
+
+```terminal
+WARNING: BW peak won't be measured in this run.
+Perftest doesn't supports CUDA tests with inline messages: inline size set to 0
+
+************************************
+* Waiting for client to connect... *
+************************************
+```
+
+7. Open another terminal window and run oc rsh command on the second workload pod that acts as the RDMA test client pod:
+
+```terminal
+$ oc rsh -n default rdma-sriov-33-workload
+```
+
+Example output
+
+```terminal
+sh-5.1#
+```
+
+8. Obtain the RDMA test client pod IP address from the net1 interface by using the following command:
+
+```terminal
+sh-5.1# ip a
+```
+
+Example output
+
+```terminal
+1: lo: <LOOPBACK,UP,LOWER_UP> mtu 65536 qdisc noqueue state UNKNOWN group default qlen 1000
+    link/loopback 00:00:00:00:00:00 brd 00:00:00:00:00:00
+    inet 127.0.0.1/8 scope host lo
+       valid_lft forever preferred_lft forever
+    inet6 ::1/128 scope host
+       valid_lft forever preferred_lft forever
+2: eth0@if4139: <BROADCAST,MULTICAST,UP,LOWER_UP> mtu 1400 qdisc noqueue state UP group default
+    link/ether 0a:58:0a:83:01:d5 brd ff:ff:ff:ff:ff:ff link-netnsid 0
+    inet 10.131.1.213/23 brd 10.131.1.255 scope global eth0
+       valid_lft forever preferred_lft forever
+    inet6 fe80::858:aff:fe83:1d5/64 scope link
+       valid_lft forever preferred_lft forever
+4076: net1: <BROADCAST,MULTICAST,UP,LOWER_UP> mtu 1500 qdisc mq state UP group default qlen 1000
+    link/ether 56:6c:59:41:ae:4a brd ff:ff:ff:ff:ff:ff
+    altname enp55s0f0v0
+    inet 192.168.4.226/28 brd 192.168.4.239 scope global net1
+       valid_lft forever preferred_lft forever
+    inet6 fe80::546c:59ff:fe41:ae4a/64 scope link
+       valid_lft forever preferred_lft forever
+sh-5.1#
+```
+
+9. Obtain the link_layer type associated with each RDMA device mlx5_x by using the following command:
+
+```terminal
+sh-5.1# ibstatus
+```
+
+Example output
+
+```terminal
+Infiniband device 'mlx5_0' port 1 status:
+	default gid:	 0000:0000:0000:0000:0000:0000:0000:0000
+	base lid:	 0x0
+	sm lid:		 0x0
+	state:		 4: ACTIVE
+	phys state:	 5: LinkUp
+	rate:		 200 Gb/sec (4X HDR)
+	link_layer:	 Ethernet
+
+Infiniband device 'mlx5_1' port 1 status:
+	default gid:	 fe80:0000:0000:0000:e8eb:d303:0072:09f5
+	base lid:	 0xd
+	sm lid:		 0x1
+	state:		 4: ACTIVE
+	phys state:	 5: LinkUp
+	rate:		 200 Gb/sec (4X HDR)
+	link_layer:	 InfiniBand
+
+Infiniband device 'mlx5_2' port 1 status:
+	default gid:	 fe80:0000:0000:0000:546c:59ff:fe41:ae4a
+	base lid:	 0x0
+	sm lid:		 0x0
+	state:		 4: ACTIVE
+	phys state:	 5: LinkUp
+	rate:		 200 Gb/sec (4X HDR)
+	link_layer:	 Ethernet
+
+Infiniband device 'mlx5_3' port 1 status:
+	default gid:	 0000:0000:0000:0000:0000:0000:0000:0000
+	base lid:	 0x0
+	sm lid:		 0x0
+	state:		 1: DOWN
+	phys state:	 3: Disabled
+	rate:		 200 Gb/sec (4X HDR)
+	link_layer:	 Ethernet
+
+Infiniband device 'mlx5_4' port 1 status:
+	default gid:	 0000:0000:0000:0000:0000:0000:0000:0000
+	base lid:	 0x0
+	sm lid:		 0x0
+	state:		 1: DOWN
+	phys state:	 3: Disabled
+	rate:		 200 Gb/sec (4X HDR)
+	link_layer:	 Ethernet
+
+Infiniband device 'mlx5_5' port 1 status:
+	default gid:	 0000:0000:0000:0000:0000:0000:0000:0000
+	base lid:	 0x0
+	sm lid:		 0x0
+	state:		 1: DOWN
+	phys state:	 3: Disabled
+	rate:		 200 Gb/sec (4X HDR)
+	link_layer:	 Ethernet
+
+Infiniband device 'mlx5_6' port 1 status:
+	default gid:	 0000:0000:0000:0000:0000:0000:0000:0000
+	base lid:	 0x0
+	sm lid:		 0x0
+	state:		 1: DOWN
+	phys state:	 3: Disabled
+	rate:		 200 Gb/sec (4X HDR)
+	link_layer:	 Ethernet
+
+Infiniband device 'mlx5_7' port 1 status:
+	default gid:	 0000:0000:0000:0000:0000:0000:0000:0000
+	base lid:	 0x0
+	sm lid:		 0x0
+	state:		 1: DOWN
+	phys state:	 3: Disabled
+	rate:		 200 Gb/sec (4X HDR)
+	link_layer:	 Ethernet
+
+Infiniband device 'mlx5_8' port 1 status:
+	default gid:	 0000:0000:0000:0000:0000:0000:0000:0000
+	base lid:	 0x0
+	sm lid:		 0x0
+	state:		 1: DOWN
+	phys state:	 3: Disabled
+	rate:		 200 Gb/sec (4X HDR)
+	link_layer:	 Ethernet
+
+Infiniband device 'mlx5_9' port 1 status:
+	default gid:	 0000:0000:0000:0000:0000:0000:0000:0000
+	base lid:	 0x0
+	sm lid:		 0x0
+	state:		 1: DOWN
+	phys state:	 3: Disabled
+	rate:		 200 Gb/sec (4X HDR)
+	link_layer:	 Ethernet
+```
+
+10. Optional: Obtain the firmware version of Mellanox cards by using the ibstat command:
+
+```terminal
+sh-5.1# ibstat
+```
+
+Example output
+
+```terminal
+CA 'mlx5_0'
+	CA type: MT4123
+	Number of ports: 1
+	Firmware version: 20.43.1014
+	Hardware version: 0
+	Node GUID: 0xe8ebd303007209f4
+	System image GUID: 0xe8ebd303007209f4
+	Port 1:
+		State: Active
+		Physical state: LinkUp
+		Rate: 200
+		Base lid: 0
+		LMC: 0
+		SM lid: 0
+		Capability mask: 0x00010000
+		Port GUID: 0x0000000000000000
+		Link layer: Ethernet
+CA 'mlx5_1'
+	CA type: MT4123
+	Number of ports: 1
+	Firmware version: 20.43.1014
+	Hardware version: 0
+	Node GUID: 0xe8ebd303007209f5
+	System image GUID: 0xe8ebd303007209f4
+	Port 1:
+		State: Active
+		Physical state: LinkUp
+		Rate: 200
+		Base lid: 13
+		LMC: 0
+		SM lid: 1
+		Capability mask: 0xa651e848
+		Port GUID: 0xe8ebd303007209f5
+		Link layer: InfiniBand
+CA 'mlx5_2'
+	CA type: MT4124
+	Number of ports: 1
+	Firmware version: 20.43.1014
+	Hardware version: 0
+	Node GUID: 0x566c59fffe41ae4a
+	System image GUID: 0xe8ebd303007209f4
+	Port 1:
+		State: Active
+		Physical state: LinkUp
+		Rate: 200
+		Base lid: 0
+		LMC: 0
+		SM lid: 0
+		Capability mask: 0x00010000
+		Port GUID: 0x546c59fffe41ae4a
+		Link layer: Ethernet
+CA 'mlx5_3'
+	CA type: MT4124
+	Number of ports: 1
+	Firmware version: 20.43.1014
+	Hardware version: 0
+	Node GUID: 0xb2ae4bfffe8f3d02
+	System image GUID: 0xe8ebd303007209f4
+	Port 1:
+		State: Down
+		Physical state: Disabled
+		Rate: 200
+		Base lid: 0
+		LMC: 0
+		SM lid: 0
+		Capability mask: 0x00010000
+		Port GUID: 0x0000000000000000
+		Link layer: Ethernet
+CA 'mlx5_4'
+	CA type: MT4124
+	Number of ports: 1
+	Firmware version: 20.43.1014
+	Hardware version: 0
+	Node GUID: 0x2a9967fffe8bf272
+	System image GUID: 0xe8ebd303007209f4
+	Port 1:
+		State: Down
+		Physical state: Disabled
+		Rate: 200
+		Base lid: 0
+		LMC: 0
+		SM lid: 0
+		Capability mask: 0x00010000
+		Port GUID: 0x0000000000000000
+		Link layer: Ethernet
+CA 'mlx5_5'
+	CA type: MT4124
+	Number of ports: 1
+	Firmware version: 20.43.1014
+	Hardware version: 0
+	Node GUID: 0x5aff2ffffe2e17e8
+	System image GUID: 0xe8ebd303007209f4
+	Port 1:
+		State: Down
+		Physical state: Disabled
+		Rate: 200
+		Base lid: 0
+		LMC: 0
+		SM lid: 0
+		Capability mask: 0x00010000
+		Port GUID: 0x0000000000000000
+		Link layer: Ethernet
+CA 'mlx5_6'
+	CA type: MT4124
+	Number of ports: 1
+	Firmware version: 20.43.1014
+	Hardware version: 0
+	Node GUID: 0x121bf1fffe074419
+	System image GUID: 0xe8ebd303007209f4
+	Port 1:
+		State: Down
+		Physical state: Disabled
+		Rate: 200
+		Base lid: 0
+		LMC: 0
+		SM lid: 0
+		Capability mask: 0x00010000
+		Port GUID: 0x0000000000000000
+		Link layer: Ethernet
+CA 'mlx5_7'
+	CA type: MT4124
+	Number of ports: 1
+	Firmware version: 20.43.1014
+	Hardware version: 0
+	Node GUID: 0xb22b16fffed03dd7
+	System image GUID: 0xe8ebd303007209f4
+	Port 1:
+		State: Down
+		Physical state: Disabled
+		Rate: 200
+		Base lid: 0
+		LMC: 0
+		SM lid: 0
+		Capability mask: 0x00010000
+		Port GUID: 0x0000000000000000
+		Link layer: Ethernet
+CA 'mlx5_8'
+	CA type: MT4124
+	Number of ports: 1
+	Firmware version: 20.43.1014
+	Hardware version: 0
+	Node GUID: 0x523800fffe16d105
+	System image GUID: 0xe8ebd303007209f4
+	Port 1:
+		State: Down
+		Physical state: Disabled
+		Rate: 200
+		Base lid: 0
+		LMC: 0
+		SM lid: 0
+		Capability mask: 0x00010000
+		Port GUID: 0x0000000000000000
+		Link layer: Ethernet
+CA 'mlx5_9'
+	CA type: MT4124
+	Number of ports: 1
+	Firmware version: 20.43.1014
+	Hardware version: 0
+	Node GUID: 0xd2b4a1fffebdc4a9
+	System image GUID: 0xe8ebd303007209f4
+	Port 1:
+		State: Down
+		Physical state: Disabled
+		Rate: 200
+		Base lid: 0
+		LMC: 0
+		SM lid: 0
+		Capability mask: 0x00010000
+		Port GUID: 0x0000000000000000
+		Link layer: Ethernet
+sh-5.1#
+```
+
+11. To determine which RDMA device is associated with the Virtual Function subinterface that the client workload pod uses, run the following command. In this example, the net1 interface is using the RDMA device mlx5_2.
+
+```terminal
+sh-5.1# rdma link show
+```
+
+Example output
+
+```terminal
+link mlx5_0/1 state ACTIVE physical_state LINK_UP
+link mlx5_1/1 subnet_prefix fe80:0000:0000:0000 lid 13 sm_lid 1 lmc 0 state ACTIVE physical_state LINK_UP
+link mlx5_2/1 state ACTIVE physical_state LINK_UP netdev net1
+link mlx5_3/1 state DOWN physical_state DISABLED
+link mlx5_4/1 state DOWN physical_state DISABLED
+link mlx5_5/1 state DOWN physical_state DISABLED
+link mlx5_6/1 state DOWN physical_state DISABLED
+link mlx5_7/1 state DOWN physical_state DISABLED
+link mlx5_8/1 state DOWN physical_state DISABLED
+link mlx5_9/1 state DOWN physical_state DISABLED
+sh-5.1#
+```
+
+12. Run the following ib_write_bw RDMA bandwidth test command:
+
+```terminal
+sh-5.1# /root/perftest/ib_write_bw -R -T 41 -s 65536 -F -x 3 -m 4096 --report_gbits -q 16 -D 60  -d mlx5_2 -p 10000 --source_ip  192.168.4.226 --use_cuda=0 --use_cuda_dmabuf 192.168.4.225
+```
+
+
+where:
+* The mlx5_2 RDMA device is passed in the -d switch.
+* The source IP address 192.168.4.226 and the destination IP address of the RDMA server 192.168.4.225.
+* The --use_cuda=0, --use_cuda_dmabuf switches indicate that the use of GPUDirect RDMA.
+Example output
+
+```terminal
+WARNING: BW peak won't be measured in this run.
+Perftest doesn't supports CUDA tests with inline messages: inline size set to 0
+Requested mtu is higher than active mtu
+Changing to active mtu - 3
+initializing CUDA
+Listing all CUDA devices in system:
+CUDA device 0: PCIe address is 61:00
+
+Picking device No. 0
+[pid = 8909, dev = 0] device name = [NVIDIA A40]
+creating CUDA Ctx
+making it the current CUDA Ctx
+CUDA device integrated: 0
+using DMA-BUF for GPU buffer address at 0x7f8738600000 aligned at 0x7f8738600000 with aligned size 2097152
+allocated GPU buffer of a 2097152 address at 0x23a7420 for type CUDA_MEM_DEVICE
+Calling ibv_reg_dmabuf_mr(offset=0, size=2097152, addr=0x7f8738600000, fd=40) for QP #0
+---------------------------------------------------------------------------------------
+                    RDMA_Write BW Test
+ Dual-port       : OFF		Device         : mlx5_2
+ Number of qps   : 16		Transport type : IB
+ Connection type : RC		Using SRQ      : OFF
+ PCIe relax order: ON		Lock-free      : OFF
+ ibv_wr* API     : ON		Using DDP      : OFF
+ TX depth        : 128
+ CQ Moderation   : 1
+ CQE Poll Batch  : 16
+ Mtu             : 1024[B]
+ Link type       : Ethernet
+ GID index       : 3
+ Max inline data : 0[B]
+ rdma_cm QPs	 : ON
+ Data ex. method : rdma_cm 	TOS    : 41
+---------------------------------------------------------------------------------------
+ local address: LID 0000 QPN 0x012d PSN 0x3cb6d7
+ GID: 00:00:00:00:00:00:00:00:00:00:255:255:192:168:04:226
+ local address: LID 0000 QPN 0x012e PSN 0x90e0ac
+ GID: 00:00:00:00:00:00:00:00:00:00:255:255:192:168:04:226
+ local address: LID 0000 QPN 0x012f PSN 0x153f50
+ GID: 00:00:00:00:00:00:00:00:00:00:255:255:192:168:04:226
+ local address: LID 0000 QPN 0x0130 PSN 0x5e0128
+ GID: 00:00:00:00:00:00:00:00:00:00:255:255:192:168:04:226
+ local address: LID 0000 QPN 0x0131 PSN 0xd89752
+ GID: 00:00:00:00:00:00:00:00:00:00:255:255:192:168:04:226
+ local address: LID 0000 QPN 0x0132 PSN 0xe5fc16
+ GID: 00:00:00:00:00:00:00:00:00:00:255:255:192:168:04:226
+ local address: LID 0000 QPN 0x0133 PSN 0x236787
+ GID: 00:00:00:00:00:00:00:00:00:00:255:255:192:168:04:226
+ local address: LID 0000 QPN 0x0134 PSN 0xd9273e
+ GID: 00:00:00:00:00:00:00:00:00:00:255:255:192:168:04:226
+ local address: LID 0000 QPN 0x0135 PSN 0x37cfd4
+ GID: 00:00:00:00:00:00:00:00:00:00:255:255:192:168:04:226
+ local address: LID 0000 QPN 0x0136 PSN 0x3bff8f
+ GID: 00:00:00:00:00:00:00:00:00:00:255:255:192:168:04:226
+ local address: LID 0000 QPN 0x0137 PSN 0x81f2bd
+ GID: 00:00:00:00:00:00:00:00:00:00:255:255:192:168:04:226
+ local address: LID 0000 QPN 0x0138 PSN 0x575c43
+ GID: 00:00:00:00:00:00:00:00:00:00:255:255:192:168:04:226
+ local address: LID 0000 QPN 0x0139 PSN 0x6cf53d
+ GID: 00:00:00:00:00:00:00:00:00:00:255:255:192:168:04:226
+ local address: LID 0000 QPN 0x013a PSN 0xcaaf6f
+ GID: 00:00:00:00:00:00:00:00:00:00:255:255:192:168:04:226
+ local address: LID 0000 QPN 0x013b PSN 0x346437
+ GID: 00:00:00:00:00:00:00:00:00:00:255:255:192:168:04:226
+ local address: LID 0000 QPN 0x013c PSN 0xcc5865
+ GID: 00:00:00:00:00:00:00:00:00:00:255:255:192:168:04:226
+ remote address: LID 0000 QPN 0x026d PSN 0x359409
+ GID: 00:00:00:00:00:00:00:00:00:00:255:255:192:168:04:225
+ remote address: LID 0000 QPN 0x026e PSN 0xe387bf
+ GID: 00:00:00:00:00:00:00:00:00:00:255:255:192:168:04:225
+ remote address: LID 0000 QPN 0x026f PSN 0x5be79d
+ GID: 00:00:00:00:00:00:00:00:00:00:255:255:192:168:04:225
+ remote address: LID 0000 QPN 0x0270 PSN 0x1b4b28
+ GID: 00:00:00:00:00:00:00:00:00:00:255:255:192:168:04:225
+ remote address: LID 0000 QPN 0x0271 PSN 0x76a61b
+ GID: 00:00:00:00:00:00:00:00:00:00:255:255:192:168:04:225
+ remote address: LID 0000 QPN 0x0272 PSN 0x3d50e1
+ GID: 00:00:00:00:00:00:00:00:00:00:255:255:192:168:04:225
+ remote address: LID 0000 QPN 0x0273 PSN 0x1b572c
+ GID: 00:00:00:00:00:00:00:00:00:00:255:255:192:168:04:225
+ remote address: LID 0000 QPN 0x0274 PSN 0x4ae1b5
+ GID: 00:00:00:00:00:00:00:00:00:00:255:255:192:168:04:225
+ remote address: LID 0000 QPN 0x0275 PSN 0x5591b5
+ GID: 00:00:00:00:00:00:00:00:00:00:255:255:192:168:04:225
+ remote address: LID 0000 QPN 0x0276 PSN 0xfa2593
+ GID: 00:00:00:00:00:00:00:00:00:00:255:255:192:168:04:225
+ remote address: LID 0000 QPN 0x0277 PSN 0xd9473b
+ GID: 00:00:00:00:00:00:00:00:00:00:255:255:192:168:04:225
+ remote address: LID 0000 QPN 0x0278 PSN 0x2116b2
+ GID: 00:00:00:00:00:00:00:00:00:00:255:255:192:168:04:225
+ remote address: LID 0000 QPN 0x0279 PSN 0x9b83b6
+ GID: 00:00:00:00:00:00:00:00:00:00:255:255:192:168:04:225
+ remote address: LID 0000 QPN 0x027a PSN 0xa0822b
+ GID: 00:00:00:00:00:00:00:00:00:00:255:255:192:168:04:225
+ remote address: LID 0000 QPN 0x027b PSN 0x6d930d
+ GID: 00:00:00:00:00:00:00:00:00:00:255:255:192:168:04:225
+ remote address: LID 0000 QPN 0x027c PSN 0xb1a4d
+ GID: 00:00:00:00:00:00:00:00:00:00:255:255:192:168:04:225
+---------------------------------------------------------------------------------------
+ #bytes     #iterations    BW peak[Gb/sec]    BW average[Gb/sec]   MsgRate[Mpps]
+ 65536      10329004         0.00               180.47 		     0.344228
+---------------------------------------------------------------------------------------
+deallocating GPU buffer 00007f8738600000
+destroying current CUDA Ctx
+sh-5.1#
+```
+
+
+A positive test is seeing an expected BW average and MsgRate in Mpps.
+
+Upon completion of the ib_write_bw command, the server side output also appears on the server pod. See the following example:
+Example output
+
+```terminal
+WARNING: BW peak won't be measured in this run.
+Perftest doesn't supports CUDA tests with inline messages: inline size set to 0
+
+************************************
+* Waiting for client to connect... *
+************************************
+Requested mtu is higher than active mtu
+Changing to active mtu - 3
+initializing CUDA
+Listing all CUDA devices in system:
+CUDA device 0: PCIe address is 61:00
+
+Picking device No. 0
+[pid = 9226, dev = 0] device name = [NVIDIA A40]
+creating CUDA Ctx
+making it the current CUDA Ctx
+CUDA device integrated: 0
+using DMA-BUF for GPU buffer address at 0x7f447a600000 aligned at 0x7f447a600000 with aligned size 2097152
+allocated GPU buffer of a 2097152 address at 0x2406400 for type CUDA_MEM_DEVICE
+Calling ibv_reg_dmabuf_mr(offset=0, size=2097152, addr=0x7f447a600000, fd=40) for QP #0
+---------------------------------------------------------------------------------------
+                    RDMA_Write BW Test
+ Dual-port       : OFF		Device         : mlx5_7
+ Number of qps   : 16		Transport type : IB
+ Connection type : RC		Using SRQ      : OFF
+ PCIe relax order: ON		Lock-free      : OFF
+ ibv_wr* API     : ON		Using DDP      : OFF
+ CQ Moderation   : 1
+ CQE Poll Batch  : 16
+ Mtu             : 1024[B]
+ Link type       : Ethernet
+ GID index       : 3
+ Max inline data : 0[B]
+ rdma_cm QPs	 : ON
+ Data ex. method : rdma_cm 	TOS    : 41
+---------------------------------------------------------------------------------------
+ Waiting for client rdma_cm QP to connect
+ Please run the same command with the IB/RoCE interface IP
+---------------------------------------------------------------------------------------
+ local address: LID 0000 QPN 0x026d PSN 0x359409
+ GID: 00:00:00:00:00:00:00:00:00:00:255:255:192:168:04:225
+ local address: LID 0000 QPN 0x026e PSN 0xe387bf
+ GID: 00:00:00:00:00:00:00:00:00:00:255:255:192:168:04:225
+ local address: LID 0000 QPN 0x026f PSN 0x5be79d
+ GID: 00:00:00:00:00:00:00:00:00:00:255:255:192:168:04:225
+ local address: LID 0000 QPN 0x0270 PSN 0x1b4b28
+ GID: 00:00:00:00:00:00:00:00:00:00:255:255:192:168:04:225
+ local address: LID 0000 QPN 0x0271 PSN 0x76a61b
+ GID: 00:00:00:00:00:00:00:00:00:00:255:255:192:168:04:225
+ local address: LID 0000 QPN 0x0272 PSN 0x3d50e1
+ GID: 00:00:00:00:00:00:00:00:00:00:255:255:192:168:04:225
+ local address: LID 0000 QPN 0x0273 PSN 0x1b572c
+ GID: 00:00:00:00:00:00:00:00:00:00:255:255:192:168:04:225
+ local address: LID 0000 QPN 0x0274 PSN 0x4ae1b5
+ GID: 00:00:00:00:00:00:00:00:00:00:255:255:192:168:04:225
+ local address: LID 0000 QPN 0x0275 PSN 0x5591b5
+ GID: 00:00:00:00:00:00:00:00:00:00:255:255:192:168:04:225
+ local address: LID 0000 QPN 0x0276 PSN 0xfa2593
+ GID: 00:00:00:00:00:00:00:00:00:00:255:255:192:168:04:225
+ local address: LID 0000 QPN 0x0277 PSN 0xd9473b
+ GID: 00:00:00:00:00:00:00:00:00:00:255:255:192:168:04:225
+ local address: LID 0000 QPN 0x0278 PSN 0x2116b2
+ GID: 00:00:00:00:00:00:00:00:00:00:255:255:192:168:04:225
+ local address: LID 0000 QPN 0x0279 PSN 0x9b83b6
+ GID: 00:00:00:00:00:00:00:00:00:00:255:255:192:168:04:225
+ local address: LID 0000 QPN 0x027a PSN 0xa0822b
+ GID: 00:00:00:00:00:00:00:00:00:00:255:255:192:168:04:225
+ local address: LID 0000 QPN 0x027b PSN 0x6d930d
+ GID: 00:00:00:00:00:00:00:00:00:00:255:255:192:168:04:225
+ local address: LID 0000 QPN 0x027c PSN 0xb1a4d
+ GID: 00:00:00:00:00:00:00:00:00:00:255:255:192:168:04:225
+ remote address: LID 0000 QPN 0x012d PSN 0x3cb6d7
+ GID: 00:00:00:00:00:00:00:00:00:00:255:255:192:168:04:226
+ remote address: LID 0000 QPN 0x012e PSN 0x90e0ac
+ GID: 00:00:00:00:00:00:00:00:00:00:255:255:192:168:04:226
+ remote address: LID 0000 QPN 0x012f PSN 0x153f50
+ GID: 00:00:00:00:00:00:00:00:00:00:255:255:192:168:04:226
+ remote address: LID 0000 QPN 0x0130 PSN 0x5e0128
+ GID: 00:00:00:00:00:00:00:00:00:00:255:255:192:168:04:226
+ remote address: LID 0000 QPN 0x0131 PSN 0xd89752
+ GID: 00:00:00:00:00:00:00:00:00:00:255:255:192:168:04:226
+ remote address: LID 0000 QPN 0x0132 PSN 0xe5fc16
+ GID: 00:00:00:00:00:00:00:00:00:00:255:255:192:168:04:226
+ remote address: LID 0000 QPN 0x0133 PSN 0x236787
+ GID: 00:00:00:00:00:00:00:00:00:00:255:255:192:168:04:226
+ remote address: LID 0000 QPN 0x0134 PSN 0xd9273e
+ GID: 00:00:00:00:00:00:00:00:00:00:255:255:192:168:04:226
+ remote address: LID 0000 QPN 0x0135 PSN 0x37cfd4
+ GID: 00:00:00:00:00:00:00:00:00:00:255:255:192:168:04:226
+ remote address: LID 0000 QPN 0x0136 PSN 0x3bff8f
+ GID: 00:00:00:00:00:00:00:00:00:00:255:255:192:168:04:226
+ remote address: LID 0000 QPN 0x0137 PSN 0x81f2bd
+ GID: 00:00:00:00:00:00:00:00:00:00:255:255:192:168:04:226
+ remote address: LID 0000 QPN 0x0138 PSN 0x575c43
+ GID: 00:00:00:00:00:00:00:00:00:00:255:255:192:168:04:226
+ remote address: LID 0000 QPN 0x0139 PSN 0x6cf53d
+ GID: 00:00:00:00:00:00:00:00:00:00:255:255:192:168:04:226
+ remote address: LID 0000 QPN 0x013a PSN 0xcaaf6f
+ GID: 00:00:00:00:00:00:00:00:00:00:255:255:192:168:04:226
+ remote address: LID 0000 QPN 0x013b PSN 0x346437
+ GID: 00:00:00:00:00:00:00:00:00:00:255:255:192:168:04:226
+ remote address: LID 0000 QPN 0x013c PSN 0xcc5865
+ GID: 00:00:00:00:00:00:00:00:00:00:255:255:192:168:04:226
+---------------------------------------------------------------------------------------
+ #bytes     #iterations    BW peak[Gb/sec]    BW average[Gb/sec]   MsgRate[Mpps]
+ 65536      10329004         0.00               180.47 		     0.344228
+---------------------------------------------------------------------------------------
+deallocating GPU buffer 00007f447a600000
+destroying current CUDA Ctx
 ```
