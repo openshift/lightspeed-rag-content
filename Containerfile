@@ -20,7 +20,7 @@ USER 0
 WORKDIR /workdir
 
 COPY requirements.gpu.txt .
-RUN pip3.11 install --no-cache-dir -r requirements.gpu.txt
+RUN pip3.11 install --no-cache-dir -r requirements.gpu.txt && ln -s /usr/local/lib/python3.11/site-packages/llama_index/core/_static/nltk_cache /root/nltk_data
 
 COPY ocp-product-docs-plaintext ./ocp-product-docs-plaintext
 COPY runbooks ./runbooks
