@@ -33,12 +33,12 @@ RUN cd embeddings_model; if [ "$HERMETIC" == "true" ]; then \
     fi
 
 RUN if [ "$FLAVOR" == "gpu" ]; then \
-        export LD_LIBRARY_PATH=/usr/local/cuda-12/compat:$LD_LIBRARY_PATH; \
+        export LD_LIBRARY_PATH=/usr/local/cuda-13/compat:$LD_LIBRARY_PATH; \
         python3.11 -c "import torch; print(torch.version.cuda); print(torch.cuda.is_available());"; \
     fi
 
 COPY scripts/generate_embeddings.py .
-RUN export LD_LIBRARY_PATH=/usr/local/cuda-12/compat:$LD_LIBRARY_PATH; \
+RUN export LD_LIBRARY_PATH=/usr/local/cuda-13/compat:$LD_LIBRARY_PATH; \
     set -e && for OCP_VERSION in $(ls -1 ocp-product-docs-plaintext); do \
         python3.11 generate_embeddings.py -f ocp-product-docs-plaintext/${OCP_VERSION} -r runbooks/alerts -md embeddings_model \
             -mn ${EMBEDDING_MODEL} -o vector_db/ocp_product_docs/${OCP_VERSION} \
