@@ -1,6 +1,6 @@
 import os
 
-versions = ["4.15", "4.16", "4.17", "4.18"]
+versions = ["4.16", "4.17", "4.18", "4.19"]
 
 if __name__ == "__main__":
     for version in versions:
