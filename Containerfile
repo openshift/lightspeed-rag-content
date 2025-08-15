@@ -6,7 +6,7 @@ FROM registry.access.redhat.com/ubi9/python-311 as cpu-base
 ARG EMBEDDING_MODEL
 ARG FLAVOR
 
-FROM nvcr.io/nvidia/cuda:12.9.1-devel-ubi9 as gpu-base
+FROM nvcr.io/nvidia/cuda:13.0.0-devel-ubi9 as gpu-base
 ARG EMBEDDING_MODEL
 ARG FLAVOR
 RUN dnf install -y python3.11 python3.11-pip libcudnn9 libnccl libcusparselt0
@@ -33,13 +33,11 @@ RUN cd embeddings_model; if [ "$HERMETIC" == "true" ]; then \
     fi
 
 RUN if [ "$FLAVOR" == "gpu" ]; then \
-        export LD_LIBRARY_PATH=/usr/local/cuda-12/compat:$LD_LIBRARY_PATH; \
         python3.11 -c "import torch; print(torch.version.cuda); print(torch.cuda.is_available());"; \
     fi
 
 COPY scripts/generate_embeddings.py .
-RUN export LD_LIBRARY_PATH=/usr/local/cuda-12/compat:$LD_LIBRARY_PATH; \
-    set -e && for OCP_VERSION in $(ls -1 ocp-product-docs-plaintext); do \
+RUN set -e && for OCP_VERSION in $(ls -1 ocp-product-docs-plaintext); do \
         python3.11 generate_embeddings.py -f ocp-product-docs-plaintext/${OCP_VERSION} -r runbooks/alerts -md embeddings_model \
             -mn ${EMBEDDING_MODEL} -o vector_db/ocp_product_docs/${OCP_VERSION} \
             -i ocp-product-docs-$(echo $OCP_VERSION | sed 's/\./_/g') -v ${OCP_VERSION} -hb $HERMETIC; \
