@@ -194,183 +194,113 @@ However, the managementState of the Image Registry Operator alters the behavior 
 
 # Manually pruning images
 
-The pruning custom resource enables automatic image pruning for the images from the OpenShift image registry. However, administrators can manually prune images that are no longer required by the system due to age, status, or exceed limits. There are two methods to manually prune images:
+The pruning custom resource enables automatic image pruning for the images from the OpenShift image registry. Administrators can manually prune images with the oc adm prune images <image_prune_option> command. For example:
 
-* Running image pruning as a Job or CronJob on the cluster.
-* Running the oc adm prune images command.
-
-* To prune images, you must first log in to the CLI as a user with an access token. The user must also have the system:image-pruner cluster role or greater (for example, cluster-admin).
-* Expose the image registry.
-
-To manually prune images that are no longer required by the system due to age, status, or exceed limits, use one of the following methods:
-
-* Run image pruning as a Job or CronJob on the cluster by creating a YAML file for the pruner service account, for example:
 
 ```terminal
-$ oc create -f <filename>.yaml
-```
-
-Example output
-
-```yaml
-kind: List
-apiVersion: v1
-items:
-- apiVersion: v1
-  kind: ServiceAccount
-  metadata:
-    name: pruner
-    namespace: openshift-image-registry
-- apiVersion: rbac.authorization.k8s.io/v1
-  kind: ClusterRoleBinding
-  metadata:
-    name: openshift-image-registry-pruner
-  roleRef:
-    apiGroup: rbac.authorization.k8s.io
-    kind: ClusterRole
-    name: system:image-pruner
-  subjects:
-  - kind: ServiceAccount
-    name: pruner
-    namespace: openshift-image-registry
-- apiVersion: batch/v1
-  kind: CronJob
-  metadata:
-    name: image-pruner
-    namespace: openshift-image-registry
-  spec:
-    schedule: "0 0 * * *"
-    concurrencyPolicy: Forbid
-    successfulJobsHistoryLimit: 1
-    failedJobsHistoryLimit: 3
-    jobTemplate:
-      spec:
-        template:
-          spec:
-            restartPolicy: OnFailure
-            containers:
-            - image: "quay.io/openshift/origin-cli:4.1"
-              resources:
-                requests:
-                  cpu: 1
-                  memory: 1Gi
-              terminationMessagePolicy: FallbackToLogsOnError
-              command:
-              - oc
-              args:
-              - adm
-              - prune
-              - images
-              - --certificate-authority=/var/run/secrets/kubernetes.io/serviceaccount/service-ca.crt
-              - --keep-tag-revisions=5
-              - --keep-younger-than=96h
-              - --confirm=true
-              name: image-pruner
-            serviceAccountName: pruner
-```
-
-* Run the oc adm prune images [<options>] command:
-
-```terminal
-$ oc adm prune images [<options>]
+$ oc adm prune images <image_prune_option> 1
 ```
 
 
-Pruning images removes data from the integrated registry unless --prune-registry=false is used.
+For more information about available pruning options, see "Manual image pruning command options".
 
-Pruning images with the --namespace flag does not remove images, only image streams. Images are non-namespaced resources. Therefore, limiting pruning to a particular namespace makes it impossible to calculate its current usage.
+This command removes images that are no longer required by the system.
 
-By default, the integrated registry caches metadata of blobs to reduce the number of requests to storage, and to increase the request-processing speed. Pruning does not update the integrated registry cache. Images that still contain pruned layers after pruning will be broken because the pruned layers that have metadata in the cache will not be pushed. Therefore, you must redeploy the registry to clear the cache after pruning:
+Depending on your needs, you can prune images based on their age and tag history, or prune images that cause a project to exceed its defined storage limits.
+
+## Considerations when pruning images
+
+Consider the following information before manually pruning images:
+
+* Pruning with the --namespace flag does not remove images. It only removes image streams, because images are cluster-scoped resources. Limiting pruning to a particular namespace makes it impossible to calculate current usage.
+* By default, the integrated registry caches metadata of blobs to reduce the number of requests to storage, and to increase request-processing speed. Pruning does not update the integrated registry cache. Images that still contain pruned layers after pruning will be broken because the pruned layers that have metadata in the cache will not be pushed. Therefore, you must redeploy the registry to clear the cache after pruning:
 
 ```terminal
 $ oc rollout restart deployment/image-registry -n openshift-image-registry
 ```
 
+* If the integrated registry uses a Redis cache, you must clean the database manually.
+* If redeploying the registry after pruning is not an option, then you must permanently disable the cache.
+* oc adm prune images operations require a route for your registry. Registry routes are not created by default.
 
-If the integrated registry uses a Redis cache, you must clean the database manually.
+## Limitations when pruning images
 
-If redeploying the registry after pruning is not an option, then you must permanently disable the cache.
+The following limitations apply when pruning an image:
 
-oc adm prune images operations require a route for your registry. Registry routes are not created by default.
-
-The Prune images CLI configuration options table describes the options you can use with the oc adm prune images <options> command.
-Prune images CLI configuration options
-
+* Pruning images from external registries is unsupported.
+* When an image is pruned, all references to the image are removed from all image streams that contain the image in status.tags.
+* Image layers that are no longer referenced by any images are removed.
 
 ## Image prune conditions
 
-You can apply conditions to your manually pruned images.
+Red Hat OpenShift Container Platform supports two methodologies for pruning images:
 
-* To remove any image managed by Red Hat OpenShift Container Platform, or images with the annotation openshift.io/image.managed:
-* Created at least --keep-younger-than minutes ago and are not currently referenced by any:
-* Pods created less than --keep-younger-than minutes ago
-* Image streams created less than --keep-younger-than minutes ago
-* Running pods
-* Pending pods
-* Replication controllers
-* Deployments
-* Deployment configs
-* Replica sets
-* Build configurations
-* Builds
-* Jobs
-* Cronjobs
-* Stateful sets
-* --keep-tag-revisions most recent items in stream.status.tags[].items
-* That are exceeding the smallest limit defined in the same project and are not currently referenced by any:
-* Running pods
-* Pending pods
-* Replication controllers
-* Deployments
-* Deployment configs
-* Replica sets
-* Build configurations
-* Builds
-* Jobs
-* Cronjobs
-* Stateful sets
-* There is no support for pruning from external registries.
-* When an image is pruned, all references to the image are removed from all
-image streams that have a reference to the image in status.tags.
-* Image layers that are no longer referenced by any images are removed.
+1. Pruning by age and tag
+2. Pruning by size limit
+
+These methodologies are mutually exclusive. You must choose whether to prune by age and tag, or by size limit. Regardless of the method that you choose, the image pruner checks to ensure that images in use are not removed.
+
+An image is only pruned if it meets the primary condition and is not actively referenced by a system component.
+
+### Pruning an image by age and tag
+
+Pruning an image by age and tag is the default pruning strategy. It identifies images for removal by using the --keep-younger-than and --keep-tag-revisions flags. To prune an image by age and tag, the image must be older than the --keep-younger-than threshold, not one of the most recent tag revisions, and cannot be in use by an active workload.
+
+For an image to be pruned by age and tag, all of the following conditions must be met:
+
+1. The image is managed by Red Hat OpenShift Container Platform or has the openshift.io/image.managed annotation.
+2. The image is older than the time specified by the --keep-younger-than flag.
+3. The image is not one of the most recent images for its tag, as specified by the --keep-tag-revisions flag.
+4. The image is not currently referenced by any of the following active or recent API objects:
+* Pods or image streams created more recently than the --keep-younger-than duration.
+* Running or pending pods
+* Deployments, replication controllers, replica sets, or stateful sets.
+* Builds, build configurations, jobs, or cronjobs.
+
+An image is only removed if it is old, not a recent tag revision, and is confirmed to have no active references by system components.
+
+### Pruning an image by size limit
+
+Pruning an image by size limit uses the --prune-over-size-limit flag. This method is used to bring a project back under its defined image storage limit.
 
 
 [NOTE]
 ----
-The --prune-over-size-limit flag cannot be combined with the --keep-tag-revisions flag nor the --keep-younger-than flags. Doing so returns
-information that this operation is not allowed.
+The --prune-over-size-limit flag cannot be combined with the --keep-tag-revisions flag nor the --keep-younger-than flags. Doing so returns information that this operation is not allowed.
 ----
 
-Separating the removal of Red Hat OpenShift Container Platform image API objects and image data from the registry by using --prune-registry=false, followed by hard pruning the registry, can narrow timing windows and is safer when compared to trying to prune both through one command. However, timing windows are not completely removed.
+For an image to be pruned using this method, all of the following conditions must be true:
 
-For example, you can still create a pod referencing an image as pruning identifies that image for pruning. You should still keep track of an API object created during the pruning operations that might reference images so that you can mitigate any references to deleted content.
+1. The image is part of a project that is currently exceeding its smallest defined size limit.
+2. The image is selected by the pruner as a candidate for deletion to reduce the total size.
+3. The image is not currently referenced by any of the following active API objects:
+* Pods that are in a running or pending state.
+* Deployments, replication controllers, replica sets, or stateful sets.
+* Builds, build configurations, jobs, or cronjobs.
 
-Re-doing the pruning without the --prune-registry option or with --prune-registry=true does not lead to pruning the associated storage in the image registry for images previously pruned by --prune-registry=false. Any images that were pruned with --prune-registry=false can only be deleted from registry storage by hard pruning the registry.
+With this method, the primary trigger is the project&#8217;s size, but the safety check to ensure that the image is not actively in use is still performed.
 
-## Running the image prune operation
+## Running image prune operations
 
-1. To see what a pruning operation would delete:
-1. Keeping up to three tag revisions, and keeping resources (images, image streams, and pods) younger than 60 minutes:
+Use the following procedure to run an image prune operation
+
+* You must be logged into the CLI with an access token.
+* You must have the system:image-pruner cluster role or greater (for example, cluster-admin).
+* The image registry must be exposed.
+* You have reviewed the "Considerations when manually pruning images" section of this document.
+
+1. Optional: To preview which images would be pruned, enter the following command. This command prints a list of the images, image streams, and pods that would be removed. Note that nothing is deleted until you add the --confirm flag.
 
 ```terminal
-$ oc adm prune images --keep-tag-revisions=3 --keep-younger-than=60m
+$ oc adm prune images <image_prune_option_one> <image_prune_option_two> 1
 ```
 
-2. Pruning every image that exceeds defined limits:
+For more information about available pruning options, see "Manual image pruning command options".
+2. Review the output to confirm the list of images, image streams, and pods to be removed.
+3. Run the oc adm prune images command with the appropriate options for your cluster. Add the --confirm flag to confirm deletion. For example:
 
 ```terminal
-$ oc adm prune images --prune-over-size-limit
-```
-
-2. To perform the prune operation with the options from the previous step:
-
-```terminal
-$ oc adm prune images --keep-tag-revisions=3 --keep-younger-than=60m --confirm
-```
-
-
-```terminal
-$ oc adm prune images --prune-over-size-limit --confirm
+$ oc adm prune images <image_prune_option_one> <image_prune_option_two> --confirm
 ```
 
 
@@ -398,6 +328,28 @@ or choosing the insecure connection when prompted.
 If the registry is secured by a certificate authority different from the one used by Red Hat OpenShift Container Platform, it must be specified using the
 --certificate-authority flag. Otherwise, the prune command fails with an error.
 ----
+
+## Image pruning CLI options
+
+The following table describes the options you can use with the oc adm prune images <image_prune_option> command.
+
+
+
+### Additional information about the --prune-registry flag
+
+You can separate the removal of Red Hat OpenShift Container Platform image API objects from the removal of image data in the registry by passing in the --prune-registry=false flag. For example, the following command prunes only the API objects, leaving the registry storage untouched:
+
+
+```terminal
+$ oc adm prune images --keep-tag-revisions=3 --keep-younger-than=60m --confirm --prune-registry=false
+```
+
+
+Then, you can perform a hard prune of the registry to remove the associated image data. This approach can narrow the timing window for race conditions compared to pruning both in a single command.
+
+However, timing windows are not completely eliminated. For example, a pod might still be created that references an image while that image is being identified for pruning. You should track any API objects created during pruning to ensure that they do not reference deleted content.
+
+Re-running the pruning without the --prune-registry option, or with --prune-registry=true, does not remove the associated registry storage for images previously pruned with --prune-registry=false. Those images can only be removed from registry storage by performing a hard prune of the registry. For more information, see "Hard pruning the registry".
 
 ## Image pruning problems
 
