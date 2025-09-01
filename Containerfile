@@ -1,4 +1,4 @@
-ARG EMBEDDING_MODEL=sentence-transformers/all-mpnet-base-v2
+ARG EMBEDDING_MODEL=ibm-granite/granite-embedding-125m-english
 ARG FLAVOR=cpu
 ARG HERMETIC=false
 
@@ -29,7 +29,7 @@ COPY embeddings_model ./embeddings_model
 RUN cd embeddings_model; if [ "$HERMETIC" == "true" ]; then \
         cp /cachi2/output/deps/generic/model.safetensors model.safetensors; \
     else \
-        curl -L -O https://huggingface.co/sentence-transformers/all-mpnet-base-v2/resolve/9a3225965996d404b775526de6dbfe85d3368642/model.safetensors; \
+        curl -L -O https://huggingface.co/ibm-granite/granite-embedding-125m-english/resolve/main/model.safetensors; \
     fi
 
 RUN if [ "$FLAVOR" == "gpu" ]; then \
