@@ -194,6 +194,114 @@ If the Operator does not appear as installed, to troubleshoot further:
 * Go to the Operators -> Installed Operators page and inspect the Operator Subscriptions and Install Plans tabs for any failure or errors under Status.
 * Go to the Workloads -> Pods page and check the logs for pods in the default project.
 
+# Configuring a single NUMA node policy
+
+The NUMA Resources Operator requires a single NUMA node policy to be configured on the cluster. This can be achieved in two ways: by creating and applying a performance profile, or by configuring a KubeletConfig.
+
+
+[NOTE]
+----
+The preferred way to configure a single NUMA node policy is to apply a performance profile. You can use the Performance Profile Creator (PPC) tool to create the performance profile. If a performance profile is created on the cluster, it automatically creates other tuning components like KubeletConfig and the tuned profile.
+----
+
+For more information about creating a performance profile, see "About the Performance Profile Creator" in the "Additional resources" section.
+
+* Configuring image registry repository mirroring
+* About the Performance Profile Creator
+
+## Sample performance profile
+
+This example YAML shows a performance profile created by using the performance profile creator (PPC) tool:
+
+
+```yaml
+apiVersion: performance.openshift.io/v2
+kind: PerformanceProfile
+metadata:
+  name: performance
+spec:
+  cpu:
+    isolated: "3"
+    reserved: 0-2
+  machineConfigPoolSelector:
+    pools.operator.machineconfiguration.openshift.io/worker: "" 1
+  nodeSelector:
+    node-role.kubernetes.io/worker: ""
+  numa:
+    topologyPolicy: single-numa-node 2
+  realTimeKernel:
+    enabled: true
+  workloadHints:
+    highPowerConsumption: true
+    perPodPowerManagement: false
+    realTime: true
+```
+
+
+This value must match the MachineConfigPool value that you want to configure the NUMA Resources Operator on. For example, you might create a MachineConfigPool object named worker-cnf that designates a set of nodes that run telecommunications workloads. The value for MachineConfigPool must match the machineConfigPoolSelector value in the NUMAResourcesOperator CR that you configure later in "Creating the NUMAResourcesOperator custom resource".
+Ensure that the topologyPolicy field is set to single-numa-node by setting the topology-manager-policy argument to single-numa-node when you run the PPC tool.
+
+[NOTE]
+----
+For hosted control plane clusters, the machineConfigPoolSelector does not have any functional effect. Node association is instead determined by the specified NodePool object.
+----
+
+## Creating a KubeletConfig CR
+
+The recommended way to configure a single NUMA node policy is to apply a performance profile. Another way is by creating and applying a KubeletConfig custom resource (CR), as shown in the following procedure.
+
+1. Create the KubeletConfig custom resource (CR) that configures the pod admittance policy for the machine profile:
+1. Save the following YAML in the nro-kubeletconfig.yaml file:
+
+```yaml
+apiVersion: machineconfiguration.openshift.io/v1
+kind: KubeletConfig
+metadata:
+  name: worker-tuning
+spec:
+  machineConfigPoolSelector:
+    matchLabels:
+      pools.operator.machineconfiguration.openshift.io/worker: "" 1
+  kubeletConfig:
+    cpuManagerPolicy: "static" 2
+    cpuManagerReconcilePeriod: "5s"
+    reservedSystemCPUs: "0,1" 3
+    memoryManagerPolicy: "Static" 4
+    evictionHard:
+      memory.available: "100Mi"
+    kubeReserved:
+      memory: "512Mi"
+    reservedMemory:
+      - numaNode: 0
+        limits:
+          memory: "1124Mi"
+    systemReserved:
+      memory: "512Mi"
+    topologyManagerPolicy: "single-numa-node" 5
+```
+
+Ensure that this label matches the machineConfigPoolSelector setting in the NUMAResourcesOperator CR that you configure later in "Creating the NUMAResourcesOperator custom resource".
+For cpuManagerPolicy, static must use a lowercase s.
+Adjust this based on the CPU on your nodes.
+For memoryManagerPolicy, Static must use an uppercase S.
+topologyManagerPolicy must be set to single-numa-node.
+
+[NOTE]
+----
+For hosted control plane clusters, the machineConfigPoolSelector setting does not have any functional effect. Node association is instead determined by the specified NodePool object. To apply a KubeletConfig for hosted control plane clusters, you must create a ConfigMap that contains the configuration, and then reference that ConfigMap within the spec.config field of a NodePool.
+----
+2. Create the KubeletConfig CR by running the following command:
+
+```terminal
+$ oc create -f nro-kubeletconfig.yaml
+```
+
+
+[NOTE]
+----
+Applying performance profile or KubeletConfig automatically triggers rebooting of the nodes. If no reboot is triggered, you can troubleshoot the issue by looking at the labels in KubeletConfig that address the node group.
+----
+
 # Scheduling NUMA-aware workloads
 
 Clusters running latency-sensitive workloads typically feature performance profiles that help to minimize workload latency and optimize performance. The NUMA-aware scheduler deploys workloads based on available node NUMA resources and with respect to any performance profile settings applied to the node. The combination of NUMA-aware deployments, and the performance profile of the workload, ensures that workloads are scheduled in a way that maximizes performance.
@@ -283,6 +391,131 @@ pod/numaresourcesoperator-worker-jp9mw                  2/2     Running   0     
 ```
 
 
+## Creating the NUMAResourcesOperator custom resource for hosted control planes
+
+After you install the NUMA Resources Operator, create the NUMAResourcesOperator custom resource (CR). The CR instructs the NUMA Resources Operator to install all the cluster infrastructure that is needed to support the NUMA-aware scheduler on hosted control planes, including daemon sets and APIs.
+
+
+[IMPORTANT]
+----
+Creating the NUMAResourcesOperator custom resource for hosted control planes is a Technology Preview feature only. Technology Preview features are not supported with Red Hat production service level agreements (SLAs) and might not be functionally complete. Red Hat does not recommend using them in production. These features provide early access to upcoming product features, enabling customers to test functionality and provide feedback during the development process.
+For more information about the support scope of Red Hat Technology Preview features, see Technology Preview Features Support Scope.
+----
+
+* Install the OpenShift CLI (oc).
+* Log in as a user with cluster-admin privileges.
+* Install the NUMA Resources Operator.
+
+1. Export the management cluster kubeconfig file by running the following command:
+
+```terminal
+$ export KUBECONFIG=<path-to-management-cluster-kubeconfig>
+```
+
+2. Find the node-pool-name for your cluster by running the following command:
+
+```terminal
+$ oc --kubeconfig="$MGMT_KUBECONFIG" get np -A
+```
+
+Example output
+
+```terminal
+NAMESPACE   NAME                     CLUSTER       DESIRED NODES   CURRENT NODES   AUTOSCALING   AUTOREPAIR   VERSION   UPDATINGVERSION   UPDATINGCONFIG   MESSAGE
+clusters    democluster-us-east-1a   democluster   1               1               False         False        4.19.0    False             False
+```
+
+
+The node-pool-name is the NAME field in the output. In this example, the node-pool-name is democluster-us-east-1a.
+3. Create a YAML file named nrop-hcp.yaml with at least the following content:
+
+```yaml
+apiVersion: nodetopology.openshift.io/v1
+kind: NUMAResourcesOperator
+metadata:
+  name: numaresourcesoperator
+spec:
+  nodeGroups:
+  - poolName: democluster-us-east-1a 1
+```
+
+The poolName is the node-pool-name retrieved in step 2.
+4. On the management cluster, run the following command to list the available secrets:
+
+```terminal
+$ oc get secrets -n clusters
+```
+
+Example output
+
+```terminal
+NAME                              TYPE                      DATA   AGE
+builder-dockercfg-25qpp           kubernetes.io/dockercfg   1      128m
+default-dockercfg-mkvlz           kubernetes.io/dockercfg   1      128m
+democluster-admin-kubeconfig      Opaque                    1      127m
+democluster-etcd-encryption-key   Opaque                    1      128m
+democluster-kubeadmin-password    Opaque                    1      126m
+democluster-pull-secret           Opaque                    1      128m
+deployer-dockercfg-8lfpd          kubernetes.io/dockercfg   1      128m
+```
+
+5. Extract the kubeconfig file for the hosted cluster by running the following command:
+
+```terminal
+$ oc get secret <SECRET_NAME> -n clusters -o jsonpath='{.data.kubeconfig}' | base64 -d > hosted-cluster-kubeconfig
+```
+
+Example
+
+```terminal
+$ oc get secret democluster-admin-kubeconfig -n clusters -o jsonpath='{.data.kubeconfig}' | base64 -d > hosted-cluster-kubeconfig
+```
+
+6. Export the hosted cluster kubeconfig file by running the following command:
+
+```terminal
+$ export HC_KUBECONFIG=<path_to_hosted-cluster-kubeconfig>
+```
+
+7. Create the NUMAResourcesOperator CR by running the following command on the hosted cluster:
+
+```terminal
+$ oc create -f nrop-hcp.yaml
+```
+
+
+1. Verify that the NUMA Resources Operator deployed successfully by running the following command:
+
+```terminal
+$ oc get numaresourcesoperators.nodetopology.openshift.io
+```
+
+Example output
+
+```terminal
+NAME                    AGE
+numaresourcesoperator   27s
+```
+
+2. After a few minutes, run the following command to verify that the required resources deployed successfully:
+
+```terminal
+$ oc get all -n openshift-numaresources
+```
+
+Example output
+
+```terminal
+NAME                                                    READY   STATUS    RESTARTS   AGE
+pod/numaresources-controller-manager-7d9d84c58d-qk2mr   1/1     Running   0          12m
+pod/numaresourcesoperator-democluster-7d96r             2/2     Running   0          97s
+pod/numaresourcesoperator-democluster-crsht             2/2     Running   0          97s
+pod/numaresourcesoperator-democluster-jp9mw             2/2     Running   0          97s
+```
+
+
+* Creating a performance profile for hosted control planes
+
 ## Deploying the NUMA-aware secondary pod scheduler
 
 After you install the NUMA Resources Operator, follow this procedure to deploy the NUMA-aware secondary pod scheduler.
@@ -308,6 +541,11 @@ In a disconnected environment, make sure to configure the resolution of this ima
 $ oc create -f nro-scheduler.yaml
 ```
 
+
+[NOTE]
+----
+In a hosted control plane cluster, run this command on the hosted control plane node.
+----
 2. After a few seconds, run the following command to confirm the successful deployment of the required resources:
 
 ```terminal
@@ -336,104 +574,6 @@ replicaset.apps/numaresources-controller-manager-7d9d84c58d   1         1       
 replicaset.apps/secondary-scheduler-847cb74f84                1         1         1       10m
 ```
 
-
-## Configuring a single NUMA node policy
-
-The NUMA Resources Operator requires a single NUMA node policy to be configured on the cluster. This can be achieved in two ways: by creating and applying a performance profile, or by configuring a KubeletConfig.
-
-
-[NOTE]
-----
-The preferred way to configure a single NUMA node policy is to apply a performance profile. You can use the Performance Profile Creator (PPC) tool to create the performance profile. If a performance profile is created on the cluster, it automatically creates other tuning components like KubeletConfig and the tuned profile.
-----
-
-For more information about creating a performance profile, see "About the Performance Profile Creator" in the "Additional resources" section.
-
-* Configuring image registry repository mirroring
-* About the Performance Profile Creator
-
-## Sample performance profile
-
-This example YAML shows a performance profile created by using the performance profile creator (PPC) tool:
-
-
-```yaml
-apiVersion: performance.openshift.io/v2
-kind: PerformanceProfile
-metadata:
-  name: performance
-spec:
-  cpu:
-    isolated: "3"
-    reserved: 0-2
-  machineConfigPoolSelector:
-    pools.operator.machineconfiguration.openshift.io/worker: "" 1
-  nodeSelector:
-    node-role.kubernetes.io/worker: ""
-  numa:
-    topologyPolicy: single-numa-node 2
-  realTimeKernel:
-    enabled: true
-  workloadHints:
-    highPowerConsumption: true
-    perPodPowerManagement: false
-    realTime: true
-```
-
-
-This should match the MachineConfigPool that you want to configure the NUMA Resources Operator on. For example, you might have created a MachineConfigPool named worker-cnf that designates a set of nodes that run telecommunications workloads.
-The topologyPolicy must be set to single-numa-node. Ensure that this is the case by setting the topology-manager-policy argument to single-numa-node when running the PPC tool.
-
-## Creating a KubeletConfig CR
-
-The recommended way to configure a single NUMA node policy is to apply a performance profile. Another way is by creating and applying a KubeletConfig custom resource (CR), as shown in the following procedure.
-
-1. Create the KubeletConfig custom resource (CR) that configures the pod admittance policy for the machine profile:
-1. Save the following YAML in the nro-kubeletconfig.yaml file:
-
-```yaml
-apiVersion: machineconfiguration.openshift.io/v1
-kind: KubeletConfig
-metadata:
-  name: worker-tuning
-spec:
-  machineConfigPoolSelector:
-    matchLabels:
-      pools.operator.machineconfiguration.openshift.io/worker: "" 1
-  kubeletConfig:
-    cpuManagerPolicy: "static" 2
-    cpuManagerReconcilePeriod: "5s"
-    reservedSystemCPUs: "0,1" 3
-    memoryManagerPolicy: "Static" 4
-    evictionHard:
-      memory.available: "100Mi"
-    kubeReserved:
-      memory: "512Mi"
-    reservedMemory:
-      - numaNode: 0
-        limits:
-          memory: "1124Mi"
-    systemReserved:
-      memory: "512Mi"
-    topologyManagerPolicy: "single-numa-node" 5
-```
-
-Adjust this label to match the machineConfigPoolSelector in the NUMAResourcesOperator CR.
-For cpuManagerPolicy, static must use a lowercase s.
-Adjust this based on the CPU on your nodes.
-For memoryManagerPolicy, Static must use an uppercase S.
-topologyManagerPolicy must be set to single-numa-node.
-2. Create the KubeletConfig CR by running the following command:
-
-```terminal
-$ oc create -f nro-kubeletconfig.yaml
-```
-
-
-[NOTE]
-----
-Applying performance profile or KubeletConfig automatically triggers rebooting of the nodes. If no reboot is triggered, you can troubleshoot the issue by looking at the labels in KubeletConfig that address the node group.
-----
 
 ## Scheduling workloads with the NUMA-aware scheduler
 
