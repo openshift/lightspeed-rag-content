@@ -129,6 +129,8 @@ def strip_html_content(
                 chapters = [body_content]
 
             for chapter in chapters:
+                for tooltip in chapter.find_all("rh-tooltip"):
+                    tooltip.decompose()
                 new_soup.body.append(chapter.extract())
             
             soup = new_soup
