@@ -27,6 +27,7 @@ def chunk_html_documents(
     count_tag_tokens: bool = True,
     keep_siblings_together: bool = True,
     prepend_parent_section_text: bool = True,
+    quick_link: bool = False,
 ) -> bool:
     """
     Chunk all HTML documents in input directory.
@@ -41,6 +42,7 @@ def chunk_html_documents(
         count_tag_tokens: Whether to count HTML tags in token count
         keep_siblings_together: Keep sibling sections together when possible
         prepend_parent_section_text: Prepend parent section text to chunks
+        quick_link: Prefers chapter wide linking over whole guide
 
     Returns:
         True if chunking was successful
@@ -147,6 +149,7 @@ def chunk_single_html_file(
     count_tag_tokens: bool = True,
     keep_siblings_together: bool = True,
     prepend_parent_section_text: bool = True,
+    quick_link: bool = False,
 ) -> tuple[bool, int]:
     """
     Chunk a single HTML file.
@@ -161,6 +164,7 @@ def chunk_single_html_file(
         count_tag_tokens: Whether to count HTML tags
         keep_siblings_together: Keep sibling sections together
         prepend_parent_section_text: Prepend parent section text
+        quick_link: Prefers chapter wide linking over whole guide
 
     Returns:
         Tuple of (success, chunk_count)
@@ -181,7 +185,8 @@ def chunk_single_html_file(
             html_content=html_content,
             source_url=source_url,
             max_token_limit=max_token_limit,
-            count_tag_tokens=count_tag_tokens
+            count_tag_tokens=count_tag_tokens,
+            quick_link=quick_link,
         )
 
         if not chunks:
