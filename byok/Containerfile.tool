@@ -34,12 +34,13 @@ COPY LICENSE /licenses/
 
 # Labels for enterprise contract
 LABEL com.redhat.component=openshift-lightspeed-rag-content
+LABEL cpe="cpe:/a:redhat:openshift_lightspeed:1::el9"
 LABEL description="Red Hat OpenShift Lightspeed BYO Knowledge Tools"
 LABEL distribution-scope=private
 LABEL io.k8s.description="Red Hat OpenShift Lightspeed BYO Knowledge Tools"
 LABEL io.k8s.display-name="Openshift Lightspeed BYO Knowledge Tools"
 LABEL io.openshift.tags="openshift,lightspeed,ai,assistant,rag"
-LABEL name=openshift-lightspeed-rag-content
+LABEL name="openshift-lightspeed-tech-preview/lightspeed-rag-tool-rhel9"
 LABEL release=0.0.1
 LABEL url="https://github.com/openshift/lightspeed-rag-content"
 LABEL vendor="Red Hat, Inc."
