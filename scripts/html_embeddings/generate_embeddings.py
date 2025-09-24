@@ -322,7 +322,6 @@ def run_chunk_step(
             product_slug=product.get("slug"),
             product_version=product.get("version"),
             doc_url=product.get("url"),
-            quick_link=os.getenv("QUICK_LINK") != "",
             **chunking_options,
         )
         if success:

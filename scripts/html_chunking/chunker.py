@@ -68,17 +68,13 @@ def chunk_html(
         count_tag_tokens=count_tag_tokens
     )
 
-    quick_link = kwargs.get('quick_link', False)
     try:
         soup = BeautifulSoup(html_content, 'html.parser')
         document_title = get_document_title(soup)
 
         if count_html_tokens(html_content, options.count_tag_tokens) <= options.max_token_limit:
-            anchored_url = source_url
-            if (section := soup.find('section')):
-                anchored_url = _get_anchored_url(source_url, section.get('id'), quick_link=quick_link)
             metadata = {
-                "docs_url": _get_anchored_url(source_url, anchored_url, quick_link=quick_link),
+                "docs_url": source_url,
                 "title": document_title,
                 "section_title": document_title
             }
@@ -120,7 +116,6 @@ def chunk_html(
         full_source_url = _get_anchored_url(source_url,
                                             final_anchor,
                                             chapter_anchor if final_anchor != chapter_anchor else "",
-                                            quick_link=quick_link,
                                         )
         if (outer := chunk_soup.find('section')):
             outer.unwrap()
@@ -236,7 +231,24 @@ def _split_element_by_children(element: Tag, options: ChunkingOptions) -> list[s
         chunks.append(_wrap_with_section("".join(current_chunk_elements), current_section_id))
     return chunks
 
+def _split_special_element(element: Tag, options: ChunkingOptions) -> Optional[list[str]]:
+    """Split special elements that need custom handling. Returns None if not a special element."""
+    if element.name in ['table', 'rh-table']:
+        return _split_table(element, options)
+    elif element.name in ['ol', 'ul']:
+        return _split_list(element, options)
+    elif element.name == 'pre':
+        return _split_code(element, options)
+    elif element.name == 'div' and 'class' in element.attrs and 'variablelist' in element.attrs['class']:
+        return _split_definition_list(element, options)
+    return None
+
 def _split_element_by_children_no_grouping(element: Tag, options: ChunkingOptions) -> list[str]:
+    # try special element handling first
+    special_chunks = _split_special_element(element, options)
+    if special_chunks is not None:
+        return special_chunks
+
     chunks, current_chunk_elements, current_tokens = [], [], 0
     children = [child for child in element.children if not (isinstance(child, NavigableString) and not child.strip())]
 
@@ -251,12 +263,14 @@ def _split_element_by_children_no_grouping(element: Tag, options: ChunkingOption
         if is_oversized:
             if current_chunk_elements: chunks.append("".join(current_chunk_elements))
             if isinstance(child, Tag):
-                if child.name in ['table', 'rh-table']: chunks.extend(_split_table(child, options))
-                elif child.name in ['ol', 'ul']: chunks.extend(_split_list(child, options))
-                elif child.name == 'pre': chunks.extend(_split_code(child, options))
-                elif child.name == 'div' and 'class' in child.attrs and 'variablelist' in child.attrs['class']: chunks.extend(_split_definition_list(child, options))
-                else: chunks.extend(_split_element_by_children_no_grouping(child, options))
-            else: chunks.extend(_linear_split(child_html, options))
+                # use the centralized special element handler
+                special_chunks = _split_special_element(child, options)
+                if special_chunks is not None:
+                    chunks.extend(special_chunks)
+                else:
+                    chunks.extend(_split_element_by_children_no_grouping(child, options))
+            else: 
+                chunks.extend(_linear_split(child_html, options))
             current_chunk_elements, current_tokens = [], 0
             continue
 
@@ -300,7 +314,7 @@ def _split_table(table: Tag, options: ChunkingOptions) -> list[str]:
     header_rows_ids = set(id(r) for r in header.find_all('tr')) if header is not None else set()
     body_rows = [row for row in rows if id(row) not in header_rows_ids]
     table_attrs = " ".join([f'{k}="{v}"' for k, v in table.attrs.items()])
-    table_open, table_close = f"<table {table_attrs}>", "</table>"
+    table_open, table_close = "<table" + (f" {table_attrs}" if table_attrs else "" + ">"), "</table>"
     header_html = str(header) if header is not None else ""
     base_tokens = count_html_tokens(table_open + header_html + table_close, options.count_tag_tokens)
     current_chunk_rows, current_tokens = [], base_tokens
@@ -337,7 +351,7 @@ def _split_oversized_row(row: Tag, table_open: str, header_html: str, table_clos
 def _split_list(list_element: Tag, options: ChunkingOptions) -> list[str]:
     chunks, items = [], list_element.find_all('li', recursive=False)
     list_attrs = " ".join([f'{k}="{v}"' for k, v in list_element.attrs.items()])
-    list_open, list_close = f"<{list_element.name} {list_attrs}>", f"</{list_element.name}>"
+    list_open, list_close = f"<{list_element.name}" + (f" {list_attrs}" if list_attrs else "") + ">", f"</{list_element.name}>"
     base_tokens = count_html_tokens(list_open + list_close, options.count_tag_tokens)
     current_chunk_items, current_tokens = [], base_tokens
     for item in items:
@@ -381,15 +395,13 @@ def _linear_split(html_content: str, options: ChunkingOptions) -> list[str]:
     chars_per_chunk = int(options.max_token_limit * DEFAULT_CHARS_PER_TOKEN_RATIO)
     return [html_content[i:i + chars_per_chunk] for i in range(0, len(html_content), chars_per_chunk)]
 
-def _get_anchored_url(source_url: str, my_id: str, parent_id: str = "", quick_link: bool = False) -> str:
+def _get_anchored_url(source_url: str, my_id: str, parent_id: str = "") -> str:
     """Return anchored URL to distinct subsection."""
-    source_url = source_url.rstrip('/')
-    if quick_link:
-        # requires more testing, this enables jumping to the target link quicker from OLS console
-        # rather than loading the whole document
-        source_url = source_url.replace('/html-single/', '/html/')
-    if source_url.find("/html/") > -1:
-        # whole guide in multiple html pages
-        return f"{source_url}/{parent_id}#{my_id}" if parent_id else f"{source_url}/{my_id}"
-    # whole guide in single html page
-    return f"{source_url}/index#{my_id}"
+    source_url = source_url.replace('/html-single/', '/html/').rstrip('/')
+
+    # if no anchor ID provided, return the source URL as-is
+    if not my_id:
+        return source_url
+
+    # whole guide in multiple html pages
+    return f"{source_url}/{parent_id}#{my_id}" if parent_id else f"{source_url}/{my_id}"

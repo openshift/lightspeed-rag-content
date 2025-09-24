@@ -94,7 +94,7 @@ def _aggressively_strip_tags_and_attributes(soup: BeautifulSoup, strip_links: bo
         if not tag.get_text(strip=True) and not tag.find_all(recursive=False):
             tag.decompose()
 
-    # 6. Decompose spurious information
+    # 6. Remove tags that doesn't bring any knowledge along with its content
     tags_to_decompose = ['rh-tooltip', 'rh-button', 'button']
     for tag in soup.find_all(tags_to_decompose):
         tag.decompose()
