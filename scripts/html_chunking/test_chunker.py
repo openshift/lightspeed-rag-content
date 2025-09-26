@@ -88,7 +88,7 @@ class TestHtmlChunker(unittest.TestCase):
         chunks = chunk_html(html, "http://example.com/list", max_token_limit=100)
         self.assertGreater(len(chunks), 1)
         for chunk in chunks:
-            self.assertIn("<ul ", chunk.text)
+            self.assertIn("<ul", chunk.text)
             self.assertIn("</ul>", chunk.text)
             self.assertEqual(chunk.metadata["title"], "List Test")
         self.assertIn("Item 0", chunks[0].text)
@@ -97,41 +97,67 @@ class TestHtmlChunker(unittest.TestCase):
     def test_metadata_and_section_titles(self):
         """Tests the generation of metadata with correct anchors and section titles."""
         html = """
-        <html><head><title>Main Document Title</title></head><body>
-            <section id="intro"><h1>Introduction</h1><p>Text about intro.</p></section>
-            <div id="main-content">
-                <h2 id="topic1">Topic 1</h2><p>Content 1</p>
-                <p>More content 1, still under Topic 1.</p>
-            </div>
-            <section id="conclusion">
-                <p>Conclusion text, still under Topic 1 technically.</p>
-                <h3 id="final-thoughts">Final Thoughts</h3><p>Final words.</p>
+        <html>
+        <head><title>Main Document Title</title></head>
+        <body>
+            <section id="intro">
+                <div><h2>Introduction</h2>
+                    <p>Text about intro.</p>
+                </div>
+                <section id="topic">
+                    <div><h3>Topic</h3></div>
+                    <div>
+                        <p>Content</p>
+                        <p>More content, still under Topic.</p>
+                    </div>
+                    <section id="sub_topic">
+                        <div><h4>Sub Topic</h4></div>
+                        <div>
+                            <p>The inner most content of subtopic</p>
+                        </div>
+                    </section>
+                </section>
+                <section id="final">
+                    <div><h3>Final</h3></div>
+                    <div>
+                        <p>Final conclusion</p>
+                    </div>
+                </section>
             </section>
-        </body></html>
+        </body>
+        </html>
         """
-        chunks = chunk_html(html, "http://example.com/meta", max_token_limit=25)
-        
-        self.assertGreaterEqual(len(chunks), 4)
+        for source_url in ["http://example.com/html-single/meta/", "http://example.com/html/meta"]:
+            chunks = chunk_html(html, source_url, max_token_limit=25)
+            self.assertGreaterEqual(len(chunks), 7)
 
-        # Check document title consistency
-        for chunk in chunks:
-            self.assertEqual(chunk.metadata["title"], "Main Document Title")
+            # Check document title consistency
+            for chunk in chunks:
+                self.assertEqual(chunk.metadata["title"], "Main Document Title")
 
-        # Check section titles and anchors
-        intro_chunk = next(c for c in chunks if "Introduction" in c.text)
-        self.assertIn(intro_chunk.metadata["docs_url"], ["http://example.com/meta#intro", "http://example.com/meta"])
-        self.assertEqual(intro_chunk.metadata["section_title"], "Introduction")
+            # Check section titles and anchors
+            intro_chunk = chunks[0]
+            # only the parent will not have any fragement (url/parent-section-id)
+            self.assertEqual(intro_chunk.metadata["docs_url"], "http://example.com/html/meta/intro")
+            self.assertEqual(intro_chunk.metadata["section_title"], "Introduction")
 
-        topic1_chunks = [c for c in chunks if "Topic 1" in c.text or "Content 1" in c.text]
-        self.assertTrue(all(c.metadata["docs_url"] == "http://example.com/meta#topic1" for c in topic1_chunks))
-        self.assertTrue(all(c.metadata["section_title"] == "Topic 1" for c in topic1_chunks))
+            topic_chunks = chunks[1:4]
+            self.assertTrue(all(c.metadata["docs_url"] == "http://example.com/html/meta/intro#topic"
+                            for c in topic_chunks))
+            self.assertTrue(all(c.metadata["section_title"] == "Topic"
+                            for c in topic_chunks))
 
-        conclusion_chunk = next(c for c in chunks if "Conclusion text" in c.text)
-        self.assertEqual(conclusion_chunk.metadata["section_title"], "Topic 1") # Inherited from previous heading
+            subtopic_chunks = chunks[4:6]
+            self.assertTrue(all(c.metadata["docs_url"] == "http://example.com/html/meta/intro#sub_topic"
+                            for c in subtopic_chunks))
+            self.assertTrue(all(c.metadata["section_title"] == "Sub Topic"
+                            for c in subtopic_chunks))
 
-        final_thoughts_chunk = next(c for c in chunks if "Final words" in c.text)
-        self.assertEqual(final_thoughts_chunk.metadata["docs_url"], "http://example.com/meta#final-thoughts")
-        self.assertEqual(final_thoughts_chunk.metadata["section_title"], "Final Thoughts")
+            final_chunks = chunks[6:8]
+            self.assertTrue(all(c.metadata["docs_url"] == "http://example.com/html/meta/intro#final"
+                            for c in final_chunks))
+            self.assertTrue(all(c.metadata["section_title"] == "Final"
+                            for c in final_chunks))
 
     def test_no_anchor_found(self):
         """Tests that the source URL has no anchor if no IDs are present."""

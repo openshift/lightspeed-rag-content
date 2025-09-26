@@ -181,7 +181,7 @@ def chunk_single_html_file(
             html_content=html_content,
             source_url=source_url,
             max_token_limit=max_token_limit,
-            count_tag_tokens=count_tag_tokens
+            count_tag_tokens=count_tag_tokens,
         )
 
         if not chunks:

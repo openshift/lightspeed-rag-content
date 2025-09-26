@@ -94,32 +94,38 @@ def chunk_html(
     final_chunks = []
     last_seen_anchor = None
     last_heading_text = document_title
+    chapter_anchor = None
 
     for s_chunk in string_chunks:
         if not s_chunk.strip():
             continue
-        
         chunk_soup = BeautifulSoup(s_chunk, 'html.parser')
         current_anchor = find_first_anchor(chunk_soup)
-        
         if current_anchor:
             last_seen_anchor = current_anchor
-            
         final_anchor = last_seen_anchor
-        
         chunk_headings = chunk_soup.find_all(['h1', 'h2', 'h3', 'h4', 'h5', 'h6'])
         if chunk_headings:
+            # chapter section is 'h2'
+            if (hid := chunk_headings[0]) and hid.name == 'h2':
+                chapter_anchor = final_anchor
             last_heading_text = chunk_headings[-1].get_text(strip=True)
 
         section_title = last_heading_text
 
-        full_source_url = f"{source_url}#{final_anchor}" if final_anchor else source_url
+        full_source_url = _get_anchored_url(source_url,
+                                            final_anchor,
+                                            chapter_anchor if final_anchor != chapter_anchor else "",
+                                        )
+        if (outer := chunk_soup.find('section')):
+            outer.unwrap()
+
         metadata = {
             "docs_url": full_source_url,
             "title": document_title,
             "section_title": section_title
         }
-        final_chunks.append(Chunk(text=s_chunk, metadata=metadata))
+        final_chunks.append(Chunk(text=str(chunk_soup), metadata=metadata))
 
     if not final_chunks:
         metadata = {
@@ -132,18 +138,57 @@ def chunk_html(
     return final_chunks
 
 
+def _find_section_context(element: Tag) -> Optional[Tag]:
+    """Find the nearest section ancestor that has an ID."""
+    current = element
+    while current:
+        if current.name == 'section' and current.get('id'):
+            return current
+        current = current.parent
+    return None
+
+
+def _get_section_context(child: Tag, current_section_id: str) -> str:
+    """Get the section ID that should wrap this child element."""
+    if isinstance(child, Tag) and child.name == 'section' and child.get('id'):
+        return child.get('id')
+    # Look for section context in parents
+    section = _find_section_context(child)
+    return section.get('id') if section else current_section_id
+
+
+def _wrap_with_section(content: str, section_id: str) -> str:
+    """Wrap content with section tag if section_id is provided."""
+    if section_id:
+        return f'<section id="{section_id}">{content}</section>'
+    return content
+
+
 def _split_element_by_children(element: Tag, options: ChunkingOptions) -> list[str]:
     chunks, current_chunk_elements, current_tokens = [], [], 0
     children = [child for child in element.children if not (isinstance(child, NavigableString) and not child.strip())]
-    
+    current_section_id = None
+
     i = 0
     while i < len(children):
         child, processed_elements = children[i], 1
         child_html = str(child)
-        
+        # Update section context if we encounter a section
+        if isinstance(child, Tag) and child.name == 'section' and child.get('id'):
+            # Process section recursively
+            if current_chunk_elements:
+                chunks.append(_wrap_with_section("".join(current_chunk_elements), current_section_id))
+                current_chunk_elements, current_tokens = [], 0
+
+            section_chunks = _split_element_by_children(child, options)
+            chunks.extend(section_chunks)
+            i += 1
+            continue
+
+        section_id = _get_section_context(child, current_section_id)
+
         is_heading = isinstance(child, Tag) and child.name in ['h1', 'h2', 'h3', 'h4', 'h5', 'h6']
         is_p_tag = isinstance(child, Tag) and child.name == 'p'
-        
         if is_heading and i + 1 < len(children):
             child_html += str(children[i+1])
             processed_elements = 2
@@ -152,7 +197,6 @@ def _split_element_by_children(element: Tag, options: ChunkingOptions) -> list[s
             if isinstance(next_child, Tag) and (next_child.name in ['table', 'rh-table', 'ol', 'ul'] or ('class' in next_child.attrs and 'variablelist' in next_child.attrs['class'])):
                 child_html += str(next_child)
                 processed_elements = 2
-        
         try:
             child_tokens = count_html_tokens(child_html, options.count_tag_tokens)
             is_oversized = child_tokens > options.max_token_limit
@@ -160,26 +204,54 @@ def _split_element_by_children(element: Tag, options: ChunkingOptions) -> list[s
             child_tokens, is_oversized = options.max_token_limit + 1, True
 
         if is_oversized:
-            if current_chunk_elements: chunks.append("".join(current_chunk_elements))
-            root_to_split = BeautifulSoup(child_html, 'html.parser').body or BeautifulSoup(child_html, 'html.parser')
-            chunks.extend(_split_element_by_children_no_grouping(root_to_split, options))
+            if current_chunk_elements:
+                chunks.append(_wrap_with_section("".join(current_chunk_elements), current_section_id))
+            if isinstance(child, Tag):
+                sub_chunks = _split_element_by_children_no_grouping(child, options)
+                chunks.extend([_wrap_with_section(chunk, section_id) for chunk in sub_chunks])
+            else:
+                root_to_split = BeautifulSoup(child_html, 'html.parser').body or BeautifulSoup(child_html, 'html.parser')
+                sub_chunks = _split_element_by_children_no_grouping(root_to_split, options)
+                chunks.extend([_wrap_with_section(chunk, section_id) for chunk in sub_chunks])
             current_chunk_elements, current_tokens = [], 0
+            current_section_id = section_id
         elif current_chunk_elements and current_tokens + child_tokens > options.max_token_limit:
-            chunks.append("".join(current_chunk_elements))
+            chunks.append(_wrap_with_section("".join(current_chunk_elements), current_section_id))
             current_chunk_elements, current_tokens = [child_html], child_tokens
+            current_section_id = section_id
         else:
             current_chunk_elements.append(child_html)
             current_tokens += child_tokens
-        
+            if not current_section_id:
+                current_section_id = section_id
+
         i += processed_elements
-            
-    if current_chunk_elements: chunks.append("".join(current_chunk_elements))
+
+    if current_chunk_elements:
+        chunks.append(_wrap_with_section("".join(current_chunk_elements), current_section_id))
     return chunks
 
+def _split_special_element(element: Tag, options: ChunkingOptions) -> Optional[list[str]]:
+    """Split special elements that need custom handling. Returns None if not a special element."""
+    if element.name in ['table', 'rh-table']:
+        return _split_table(element, options)
+    elif element.name in ['ol', 'ul']:
+        return _split_list(element, options)
+    elif element.name == 'pre':
+        return _split_code(element, options)
+    elif element.name == 'div' and 'class' in element.attrs and 'variablelist' in element.attrs['class']:
+        return _split_definition_list(element, options)
+    return None
+
 def _split_element_by_children_no_grouping(element: Tag, options: ChunkingOptions) -> list[str]:
+    # try special element handling first
+    special_chunks = _split_special_element(element, options)
+    if special_chunks is not None:
+        return special_chunks
+
     chunks, current_chunk_elements, current_tokens = [], [], 0
     children = [child for child in element.children if not (isinstance(child, NavigableString) and not child.strip())]
-    
+
     for child in children:
         child_html = str(child)
         try:
@@ -191,22 +263,24 @@ def _split_element_by_children_no_grouping(element: Tag, options: ChunkingOption
         if is_oversized:
             if current_chunk_elements: chunks.append("".join(current_chunk_elements))
             if isinstance(child, Tag):
-                if child.name in ['table', 'rh-table']: chunks.extend(_split_table(child, options))
-                elif child.name in ['ol', 'ul']: chunks.extend(_split_list(child, options))
-                elif child.name == 'pre': chunks.extend(_split_code(child, options))
-                elif child.name == 'div' and 'class' in child.attrs and 'variablelist' in child.attrs['class']: chunks.extend(_split_definition_list(child, options))
-                else: chunks.extend(_split_element_by_children_no_grouping(child, options))
-            else: chunks.extend(_linear_split(child_html, options))
+                # use the centralized special element handler
+                special_chunks = _split_special_element(child, options)
+                if special_chunks is not None:
+                    chunks.extend(special_chunks)
+                else:
+                    chunks.extend(_split_element_by_children_no_grouping(child, options))
+            else: 
+                chunks.extend(_linear_split(child_html, options))
             current_chunk_elements, current_tokens = [], 0
             continue
-        
+
         if current_chunk_elements and current_tokens + child_tokens > options.max_token_limit:
             chunks.append("".join(current_chunk_elements))
             current_chunk_elements, current_tokens = [child_html], child_tokens
         else:
             current_chunk_elements.append(child_html)
             current_tokens += child_tokens
-    
+
     if current_chunk_elements: chunks.append("".join(current_chunk_elements))
     return chunks
 
@@ -240,7 +314,7 @@ def _split_table(table: Tag, options: ChunkingOptions) -> list[str]:
     header_rows_ids = set(id(r) for r in header.find_all('tr')) if header is not None else set()
     body_rows = [row for row in rows if id(row) not in header_rows_ids]
     table_attrs = " ".join([f'{k}="{v}"' for k, v in table.attrs.items()])
-    table_open, table_close = f"<table {table_attrs}>", "</table>"
+    table_open, table_close = "<table" + (f" {table_attrs}" if table_attrs else "" + ">"), "</table>"
     header_html = str(header) if header is not None else ""
     base_tokens = count_html_tokens(table_open + header_html + table_close, options.count_tag_tokens)
     current_chunk_rows, current_tokens = [], base_tokens
@@ -277,7 +351,7 @@ def _split_oversized_row(row: Tag, table_open: str, header_html: str, table_clos
 def _split_list(list_element: Tag, options: ChunkingOptions) -> list[str]:
     chunks, items = [], list_element.find_all('li', recursive=False)
     list_attrs = " ".join([f'{k}="{v}"' for k, v in list_element.attrs.items()])
-    list_open, list_close = f"<{list_element.name} {list_attrs}>", f"</{list_element.name}>"
+    list_open, list_close = f"<{list_element.name}" + (f" {list_attrs}" if list_attrs else "") + ">", f"</{list_element.name}>"
     base_tokens = count_html_tokens(list_open + list_close, options.count_tag_tokens)
     current_chunk_items, current_tokens = [], base_tokens
     for item in items:
@@ -320,3 +394,14 @@ def _linear_split(html_content: str, options: ChunkingOptions) -> list[str]:
     warnings.warn("Using linear character split as a fallback for an oversized, indivisible chunk.")
     chars_per_chunk = int(options.max_token_limit * DEFAULT_CHARS_PER_TOKEN_RATIO)
     return [html_content[i:i + chars_per_chunk] for i in range(0, len(html_content), chars_per_chunk)]
+
+def _get_anchored_url(source_url: str, my_id: str, parent_id: str = "") -> str:
+    """Return anchored URL to distinct subsection."""
+    source_url = source_url.replace('/html-single/', '/html/').rstrip('/')
+
+    # if no anchor ID provided, return the source URL as-is
+    if not my_id:
+        return source_url
+
+    # whole guide in multiple html pages
+    return f"{source_url}/{parent_id}#{my_id}" if parent_id else f"{source_url}/{my_id}"
