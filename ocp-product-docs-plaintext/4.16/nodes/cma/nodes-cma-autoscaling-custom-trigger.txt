@@ -37,6 +37,7 @@ spec:
       cortexOrgID: my-org 8
       ignoreNullValues: "false" 9
       unsafeSsl: "false" 10
+      timeout: 1000 11
 ```
 
 
@@ -59,6 +60,7 @@ Optional: Specifies whether the certificate check should be skipped. For example
 ----
 Skipping the check is not recommended.
 ----
+Optional: Specifies an HTTP request timeout in milliseconds for the HTTP client used by this Prometheus trigger. This value overrides any global timeout setting.
 
 ## Configuring the custom metrics autoscaler to use Red Hat OpenShift Container Platform monitoring
 
@@ -75,7 +77,6 @@ These steps are not required for an external Prometheus source.
 You must perform the following tasks, as described in this section:
 
 * Create a service account.
-* Create a secret that generates a token for the service account.
 * Create the trigger authentication.
 * Create a role.
 * Add that role to the service account.
@@ -94,7 +95,7 @@ $ oc project <project_name> 1
 Specifies one of the following projects:
 * If you are using a trigger authentication, specify the project with the object you want to scale.
 * If you are using a cluster trigger authentication, specify the openshift-keda project.
-2. Create a service account and token, if your cluster does not have one:
+2. Create a service account if your cluster does not have one:
 1. Create a service account object by using the following command:
 
 ```terminal
@@ -102,45 +103,6 @@ $ oc create serviceaccount thanos 1
 ```
 
 Specifies the name of the service account.
-2. Create a secret YAML to generate a service account token:
-
-```yaml
-apiVersion: v1
-kind: Secret
-metadata:
-  name: thanos-token
-  annotations:
-    kubernetes.io/service-account.name: thanos 1
-type: kubernetes.io/service-account-token
-```
-
-Specifies the name of the service account.
-3. Create the secret object by using the following command:
-
-```terminal
-$ oc create -f <file_name>.yaml
-```
-
-4. Use the following command to locate the token assigned to the service account:
-
-```terminal
-$ oc describe serviceaccount thanos 1
-```
-
-Specifies the name of the service account.
-
-```terminal
-Name:                thanos
-Namespace:           <namespace_name>
-Labels:              <none>
-Annotations:         <none>
-Image pull secrets:  thanos-dockercfg-nnwgj
-Mountable secrets:   thanos-dockercfg-nnwgj
-Tokens:              thanos-token 1
-Events:              <none>
-```
-
-Use this token in the trigger authentication.
 3. Create a trigger authentication with the service account token:
 1. Create a YAML file similar to the following:
 
@@ -150,22 +112,17 @@ kind: <authentication_method> 1
 metadata:
   name: keda-trigger-auth-prometheus
 spec:
-  secretTargetRef: 2
-  - parameter: bearerToken 3
-    name: thanos-token 4
-    key: token 5
-  - parameter: ca
-    name: thanos-token
-    key: ca.crt
+  boundServiceAccountToken: 2
+    - parameter: bearerToken 3
+      serviceAccountName: thanos 4
 ```
 
 Specifies one of the following trigger authentication methods:
 * If you are using a trigger authentication, specify TriggerAuthentication. This example configures a trigger authentication.
 * If you are using a cluster trigger authentication, specify ClusterTriggerAuthentication.
-Specifies that this object uses a secret for authorization.
-Specifies the authentication parameter to supply by using the token.
-Specifies the name of the token to use.
-Specifies the key in the token to use with the specified parameter.
+Specifies that this trigger authentication uses a bound service account token for authorization when connecting to the metrics endpoint.
+Specifies the authentication parameter to supply by using the token. Here, the example uses bearer authentication.
+Specifies the name of the service account to use.
 2. Create the CR object:
 
 ```terminal
@@ -424,3 +381,40 @@ Specifies the timezone for the time frame. This value must be from the IANA Time
 Specifies the start of the time frame.
 Specifies the end of the time frame.
 Specifies the number of pods to scale to between the start and end of the time frame. This value should be the same as maxReplicaCount.
+
+# Understanding the Kubernetes workload trigger
+
+You can scale pods based on the number of pods matching a specific label selector.
+
+The Custom Metrics Autoscaler Operator tracks the number of pods with a specific label that are in the same namespace, then calculates a relation based on the number of labeled pods to the pods for the scaled object. Using this relation, the Custom Metrics Autoscaler Operator scales the object according to the scaling policy in the ScaledObject or ScaledJob specification.
+
+The pod counts includes pods with a Succeeded or Failed phase.
+
+For example, if you have a frontend deployment and a backend deployment. You can use a kubernetes-workload trigger to scale the backend deployment based on the number of frontend pods. If number of frontend pods goes up, the Operator would scale the backend pods to maintain the specified ratio. In this example, if there are 10 pods with the app=frontend pod selector, the Operator scales the backend pods to 5 in order to maintain the 0.5 ratio set in the scaled object.
+
+
+```yaml
+apiVersion: keda.sh/v1alpha1
+kind: ScaledObject
+metadata:
+  name: workload-scaledobject
+  namespace: my-namespace
+spec:
+  triggers:
+  - type: kubernetes-workload 1
+    metadata:
+      podSelector: 'app=frontend' 2
+      value: '0.5' 3
+      activationValue: '3.1' 4
+```
+
+
+Specifies a Kubernetes workload trigger.
+Specifies one or more pod selectors and/or set-based selectors, separated with commas, to use to get the pod count.
+Specifies the target relation between the scaled workload and the number of pods that match the selector. The relation is calculated following the following formula:
+
+```
+relation = (pods that match the selector) / (scaled workload pods)
+```
+
+Optional: Specifies the target value for scaler activation phase. The default is 0.

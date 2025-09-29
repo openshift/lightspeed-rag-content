@@ -631,11 +631,11 @@ Where <machineset_name> is the name of the machine set and <n> is the number of 
 
 # Enabling OVS balance-slb mode for your cluster
 
-You can enable the Open vSwitch (OVS) balance-slb mode on infrastructure where your cluster runs so that two or more physical interfaces can share their network traffic. A balance-slb mode interface provides source load balancing (SLB) capabilities for a cluster that runs virtualization workloads, where the interface can act independently without needing to communicate with a network switch.
+You can enable the Open vSwitch (OVS) balance-slb mode so that two or more physical interfaces can share their network traffic. A balance-slb mode interface can give source load balancing (SLB) capabilities to a cluster that runs virtualization workloads, without requiring load balancing negotiation with the network switch.
 
-Currently, source load balancing works by assigning a Media Access Control (MAC) address and a virtual local area network (vLAN), if required, to a bond interface, such as br-phy. Because of the shared MAC address and vLAN between interfaces, using balance-slb mode to share pod traffic has no benefit.
+Currently, source load balancing runs on a bond interface, where the interface connects to an auxiliary bridge, such as  br-phy. Source load balancing balances only across different Media Access Control (MAC) address and virtual local area network (VLAN) combinations. Note that all OVN-Kubernetes pod traffic uses the same MAC address and VLAN, so this traffic cannot be load balanced across many physical interfaces.
 
-The following diagram shows balance-slb mode on a simple cluster infrastructure layout. Virtual machines (VMs) connect to specific localnet NetworkAttachmentDefinition (NAD) custom resource definition (CRDs), NAD 0 or NAD 1. Each NAD provides VMs with access to network traffic, such as VLAN ID tags. A br-ex OVS bridge receives traffic from VMs and passes the traffic to the next OVS bridge, br-phy. The br-phy bridge functions as the controller for the SLB bond. The SLB bond balances traffic from different VM ports over the physical interface links, such as eno0 and eno1. Additionally, ingress traffic from either physical interface can pass through the set of OVS bridges to reach the VMs.
+The following diagram shows balance-slb mode on a simple cluster infrastructure layout. Virtual machines (VMs) connect to specific localnet NetworkAttachmentDefinition (NAD) custom resource definition (CRDs), NAD 0 or NAD 1. Each NAD provides VMs with access to the underlying physical network, supporting VLAN-tagged or untagged traffic. A br-ex OVS bridge receives traffic from VMs and passes the traffic to the next OVS bridge, br-phy. The br-phy bridge functions as the controller for the SLB bond. The SLB bond balances traffic from different VM ports over the physical interface links, such as eno0 and eno1. Additionally, ingress traffic from either physical interface can pass through the set of OVS bridges to reach the VMs.
 
 ![OVS `balance-slb` mode ` operating on a localnet with two NADs]
 
@@ -643,11 +643,10 @@ You can integrate the balance-slb mode interface into primary or secondary netwo
 
 * Supports the OVN-Kubernetes CNI plugin and easily integrates with the plugin.
 * Natively supports balance-slb mode.
-* Cannot use the method external to your Red Hat OpenShift Container Platform cluster.
 
 * You have more than one physical interface attached to your primary network and you defined the interfaces in a MachineConfig file.
 * You created a manifest object and defined a customized br-ex bridge in the object configuration file.
-* You have more than one physical interfaces attached to your primary network and you defined the interfaces in a NAD file.
+* You have more than one physical interfaces attached to your primary network and you defined the interfaces in a NAD CRD file.
 
 1. For each bare-metal host that exists in a cluster, in the install-config.yaml file for your cluster define a networkConfig section similar to the following example:
 
@@ -656,7 +655,7 @@ You can integrate the balance-slb mode interface into primary or secondary netwo
 networkConfig:
   interfaces:
     - name: enp1s0 1
-      type: interface
+      type: ethernet
       state: up
       ipv4:
         dhcp: true
@@ -664,16 +663,19 @@ networkConfig:
       ipv6:
         enabled: false
     - name: enp2s0 2
-      type: interface
+      type: ethernet
       state: up
+      mtu: 1500 3
       ipv4:
         dhcp: true
         enabled: true
       ipv6:
-        enabled: false
-    - name: enp3s0 3
-      type: interface
+        dhcp: true
+        enabled: true
+    - name: enp3s0 4
+      type: ethernet
       state: up
+      mtu: 1500
       ipv4:
         enabled: false
       ipv6:
@@ -681,14 +683,14 @@ networkConfig:
 # ...
 ```
 
-The interface for the provisioned network interface card (NIC).
+The interface for the provisioned network interface controller (NIC).
 The first bonded interface that pulls in the Ignition config file for the bond interface.
+Manually set the br-ex maximum transmission unit (MTU) on the bond ports.
 The second bonded interface is part of a minimal configuration that pulls ignition during cluster installation.
-2. Define each network interface in a MachineConfig manifest file:
-Example MachineConfig manifest file that defines multiple network interfaces
+2. Define each network interface in an NMState configuration file:
+Example NMState configuration file that defines many network interfaces
 
 ```yaml
-# ...
 ovn:
   bridge-mappings:
     - localnet: localnet-network
@@ -698,12 +700,6 @@ interfaces:
   - name: br-ex
     type: ovs-bridge
     state: up
-    ipv4:
-      enabled: false
-      dhcp: false
-    ipv6:
-      enabled: false
-      dhcp: false
     bridge:
       allow-extra-patch-ports: true
       port:
@@ -715,7 +711,7 @@ interfaces:
   - name: br-ex
     type: ovs-interface
     state: up
-    copy-mac-from: enp2s0
+    mtu: 1500 1
     ipv4:
       enabled: true
       dhcp: true
@@ -723,15 +719,10 @@ interfaces:
     ipv6:
       enabled: false
       dhcp: false
+      auto-route-metric: 48
   - name: br-phy
     type: ovs-bridge
     state: up
-    ipv4:
-      enabled: false
-      dhcp: false
-    ipv6:
-      enabled: false
-      dhcp: false
     bridge:
       allow-extra-patch-ports: true
       port:
@@ -752,17 +743,42 @@ interfaces:
     state: up
     patch:
       peer: patch-ex-to-phy
+  - name: enp1s0
+    type: ethernet
+    state: up
+    ipv4:
+      dhcp: true
+      enabled: true
+    ipv6:
+      enabled: false
+  - name: enp2s0
+    type: ethernet
+    state: up
+    mtu: 1500
+    ipv4:
+      enabled: false
+    ipv6:
+      enabled: false
+  - name: enp3s0
+    type: ethernet
+    state: up
+    mtu: 1500
+    ipv4:
+      enabled: false
+    ipv6:
+      enabled: false
 # ...
 ```
 
-3. Use the cat command to base64-encode the interface content of the MachineConfig manifest file:
+Manually set the br-ex MTU on the bond ports.
+3. Use the base64 command to encode the interface content of the NMState configuration file:
 
 ```terminal
-$ cat machineconfig.yaml | base64 -w0 1
+$ base64 -w0  <nmstate_configuration>.yml 1
 ```
 
 Where the -w0 option prevents line wrapping during the base64 encoding operation.
-4. Create MachineConfig manifest files for the master role and the worker role. The following example manifest file configures the master role for all nodes that exist in a cluster. You can also create a manifest file for master and worker roles specific to a node.
+4. Create MachineConfig manifest files for the master role and the worker role. Ensure that you embed the base64-encoded string from an earlier command into each MachineConfig manifest file. The following example manifest file configures the master role for all nodes that exist in a cluster. You can also create a manifest file for master and worker roles specific to a node.
 
 ```yaml
 apiVersion: machineconfiguration.openshift.io/v1
@@ -787,7 +803,9 @@ spec:
 The name of the policy.
 Writes the encoded base64 information to the specified path.
 Specify the path to the cluster.yml file. For each node in your cluster, you can specify the short hostname path to your node, such as <node_short_hostname>.yml.
-5. Save the MachineConfig manifest file to the ./<installation_directory>/manifests directory, where <installation_directory> is the directory in which the installation program creates files.
+5. Save each MachineConfig manifest file to the ./<installation_directory>/manifests directory, where <installation_directory> is the directory in which the installation program creates files.
+
+The Machine Config Operator (MCO) takes the content from each manifest file and consistently applies the content to all selected nodes during a rolling update.
 
 # Preparing the user-provisioned infrastructure
 
@@ -3663,5 +3681,5 @@ After you confirm that your OpenShift Cluster Manager inventory is correct, eith
 * Validating an installation.
 * Customize your cluster.
 * If necessary, you can
-opt out of remote health reporting.
+Remote health reporting.
 * Set up your registry and configure registry storage.

@@ -69,9 +69,17 @@ The Data Protection Application requires a default Secret. Otherwise, the instal
 If you do not want to specify backup or snapshot locations during the installation, you can create a default Secret with an empty credentials-velero file.
 ----
 
-## Creating a default Secret
+# About authenticating OADP with Azure
 
-You create a default Secret if your backup and snapshot locations use the same credentials or if you do not require a snapshot location.
+You can authenticate OADP with Azure by using the following methods:
+
+* A Velero-specific service principal with secret-based authentication.
+* A Velero-specific storage account access key with secret-based authentication.
+* Azure Security Token Service.
+
+# Using a service principal or a storage account access key
+
+You create a default Secret object and reference it in the backup storage location custom resource. The credentials file for the Secret object can contain information about the Azure service principal or a storage account access key.
 
 The default name of the Secret is cloud-credentials-azure.
 
@@ -82,19 +90,30 @@ The DataProtectionApplication custom resource (CR) requires a default Secret.  O
 If you do not want to use the backup location credentials during the installation, you can create a Secret with the default name by using an empty credentials-velero file.
 ----
 
-* Your object storage and cloud storage, if any, must use the same credentials.
-* You must configure object storage for Velero.
+* You have access to the OpenShift cluster as a user with cluster-admin privileges.
+* You have an Azure subscription with appropriate permissions.
+* You have installed OADP.
+* You have configured an object storage for storing the backups.
 
 1. Create a credentials-velero file for the backup storage location in the appropriate format for your cloud provider.
 
-See the following example:
+You can use one of the following two methods to authenticate OADP with Azure.
+* Use the service principal with secret-based authentication. See the following example:
 
 ```terminal
-AZURE_SUBSCRIPTION_ID= <azure_subscription_id>
+AZURE_SUBSCRIPTION_ID=<azure_subscription_id>
 AZURE_TENANT_ID=<azure_tenant_id>
 AZURE_CLIENT_ID=<azure_client_id>
 AZURE_CLIENT_SECRET=<azure_client_secret>
+AZURE_RESOURCE_GROUP=<azure_resource_group>
+AZURE_CLOUD_NAME=<azure_cloud_name>
+```
+
+* Use a storage account access key. See the following example:
+
+```terminal
 AZURE_STORAGE_ACCOUNT_ACCESS_KEY=<azure_storage_account_access_key>
+AZURE_SUBSCRIPTION_ID=<azure_subscription_id>
 AZURE_RESOURCE_GROUP=<azure_resource_group>
 AZURE_CLOUD_NAME=<azure_cloud_name>
 ```
@@ -105,31 +124,7 @@ AZURE_CLOUD_NAME=<azure_cloud_name>
 $ oc create secret generic cloud-credentials-azure -n openshift-adp --from-file cloud=credentials-velero
 ```
 
-
-The Secret is referenced in the spec.backupLocations.credential block of the DataProtectionApplication CR when you install the Data Protection Application.
-
-## Creating secrets for different credentials
-
-If your backup and snapshot locations use different credentials, you must create two Secret objects:
-
-* Backup location Secret with a custom name. The custom name is specified in the spec.backupLocations block of the DataProtectionApplication custom resource (CR).
-* Snapshot location Secret with the default name, cloud-credentials-azure. This Secret is not specified in the DataProtectionApplication CR.
-
-1. Create a credentials-velero file for the snapshot location in the appropriate format for your cloud provider.
-2. Create a Secret for the snapshot location with the default name:
-
-```terminal
-$ oc create secret generic cloud-credentials-azure -n openshift-adp --from-file cloud=credentials-velero
-```
-
-3. Create a credentials-velero file for the backup location in the appropriate format for your object storage.
-4. Create a Secret for the backup location with a custom name:
-
-```terminal
-$ oc create secret generic <custom_secret> -n openshift-adp --from-file cloud=credentials-velero
-```
-
-5. Add the Secret with the custom name to the DataProtectionApplication CR, as in the following example:
+3. Reference the Secret in the spec.backupLocations.velero.credential block of the DataProtectionApplication CR when you install the Data Protection Application as shown in the following example:
 
 ```yaml
 apiVersion: oadp.openshift.io/v1alpha1
@@ -145,7 +140,6 @@ spec:
           resourceGroup: <azure_resource_group>
           storageAccount: <azure_storage_account_id>
           subscriptionId: <azure_subscription_id>
-          storageAccountKeyEnvVar: AZURE_STORAGE_ACCOUNT_ACCESS_KEY
         credential:
           key: cloud
           name: <custom_secret> 1
@@ -165,11 +159,224 @@ spec:
 
 Backup location Secret with custom name.
 
-# Configuring the Data Protection Application
+# Using OADP with Azure Security Token Service authentication
+
+You can use Microsoft Entra Workload ID to access Azure storage for OADP backup and restore operations. This approach uses the signed Kubernetes service account tokens of the OpenShift cluster. These token are automatically rotated every hour and exchanged with the Azure Active Directory (AD) access tokens, eliminating the need for long-term client secrets.
+
+To use the Azure Security Token Service (STS) configuration, you need the credentialsMode field set to Manual during cluster installation. This approach uses the Cloud Credential Operator (ccoctl) to set up the workload identity infrastructure, including the OpenID Connect (OIDC) provider, issuer configuration, and user-assigned managed identities.
+
+* You have an OpenShift cluster installed on Microsoft Azure with Microsoft Entra Workload ID configured. For more details see, Configuring an Azure cluster to use short-term credentials.
+* You have the Azure CLI (az) installed and configured.
+* You have access to the OpenShift cluster as a user with cluster-admin privileges.
+* You have an Azure subscription with appropriate permissions.
+
+
+[NOTE]
+----
+If your OpenShift cluster was not originally installed with Microsoft Entra Workload ID, you can enable short-term credentials after installation. This post-installation configuration is supported specifically for Azure clusters.
+----
+
+1. If your cluster was installed with long-term credentials, you can switch to Microsoft Entra Workload ID authentication after installation. For more details, see Enabling Microsoft Entra Workload ID on an existing cluster.
+
+[IMPORTANT]
+----
+After enabling Microsoft Entra Workload ID on an existing Azure cluster, you must update all cluster components that use cloud credentials, including OADP, to use the new authentication method.
+----
+2. Set the environment variables for your Azure STS configuration as shown in the following example:
+
+```terminal
+export API_URL=$(oc whoami --show-server) # Get cluster information
+export CLUSTER_NAME=$(echo "$API_URL" | sed 's|https://api\.||' | sed 's|\..*||')
+export CLUSTER_RESOURCE_GROUP="${CLUSTER_NAME}-rg"
+
+# Get Azure information
+export AZURE_SUBSCRIPTION_ID=$(az account show --query id -o tsv)
+export AZURE_TENANT_ID=$(az account show --query tenantId -o tsv)
+
+# Set names for resources
+export IDENTITY_NAME="velero"
+export APP_NAME="velero-${CLUSTER_NAME}"
+export STORAGE_ACCOUNT_NAME=$(echo "velero${CLUSTER_NAME}" | tr -d '-' | tr '[:upper:]' '[:lower:]' | cut -c1-24)
+export CONTAINER_NAME="velero"
+```
+
+3. Create an Azure Managed Identity for OADP as shown in the following example:
+
+```terminal
+az identity create \ # Create managed identity
+    --subscription "$AZURE_SUBSCRIPTION_ID" \
+    --resource-group "$CLUSTER_RESOURCE_GROUP" \
+    --name "$IDENTITY_NAME"
+
+# Get identity details
+export IDENTITY_CLIENT_ID=$(az identity show -g "$CLUSTER_RESOURCE_GROUP" -n "$IDENTITY_NAME" --query clientId -o tsv)
+export IDENTITY_PRINCIPAL_ID=$(az identity show -g "$CLUSTER_RESOURCE_GROUP" -n "$IDENTITY_NAME" --query principalId -o tsv)
+```
+
+4. Grant the required Azure roles to the managed identity as shown in the following example:
+
+```terminal
+export SUBSCRIPTION_ID=$(az account show --query id -o tsv) # Get subscription ID for role assignments
+
+# Required roles for OADP operations
+REQUIRED_ROLES=(
+    "Contributor"
+    "Storage Blob Data Contributor"
+    "Disk Snapshot Contributor"
+)
+
+for role in "${REQUIRED_ROLES[@]}"; do
+    echo "Assigning role: $role"
+    az role assignment create \
+        --assignee "$IDENTITY_PRINCIPAL_ID" \
+        --role "$role" \
+        --scope "/subscriptions/$SUBSCRIPTION_ID"
+done
+```
+
+5. Create an Azure storage account and a container as shown in the following example:
+
+```terminal
+az storage account create \ # Create storage account
+    --name "$STORAGE_ACCOUNT_NAME" \
+    --resource-group "$CLUSTER_RESOURCE_GROUP" \
+    --location "$(az group show -n $CLUSTER_RESOURCE_GROUP --query location -o tsv)" \
+    --sku Standard_LRS \
+    --kind StorageV2
+```
+
+6. Get the OIDC issuer URL from your OpenShift cluster as shown in the following example:
+
+```terminal
+export SERVICE_ACCOUNT_ISSUER=$(oc get authentication.config.openshift.io cluster -o json | jq -r .spec.serviceAccountIssuer)
+echo "OIDC Issuer: $SERVICE_ACCOUNT_ISSUER"
+```
+
+7. Configure Microsoft Entra Workload ID Federation as shown in the following example:
+
+```terminal
+az identity federated-credential create \ # Create federated identity credential for Velero service account
+    --name "velero-federated-credential" \
+    --identity-name "$IDENTITY_NAME" \
+    --resource-group "$CLUSTER_RESOURCE_GROUP" \
+    --issuer "$SERVICE_ACCOUNT_ISSUER" \
+    --subject "system:serviceaccount:openshift-adp:velero" \
+    --audiences "openshift"
+
+# Create federated identity credential for OADP controller manager
+az identity federated-credential create \
+    --name "oadp-controller-federated-credential" \
+    --identity-name "$IDENTITY_NAME" \
+    --resource-group "$CLUSTER_RESOURCE_GROUP" \
+    --issuer "$SERVICE_ACCOUNT_ISSUER" \
+    --subject "system:serviceaccount:openshift-adp:openshift-adp-controller-manager" \
+    --audiences "openshift"
+```
+
+8. Create the OADP namespace if it does not already exist by running the following command:
+
+```terminal
+oc create namespace openshift-adp
+```
+
+9. To use the CloudStorage CR to create an Azure cloud storage resource, run the following command:
+
+```terminal
+cat <<EOF | oc apply -f -
+apiVersion: oadp.openshift.io/v1alpha1
+kind: CloudStorage
+metadata:
+  name: azure-backup-storage
+  namespace: openshift-adp
+spec:
+  name: ${CONTAINER_NAME}
+  provider: azure
+  creationSecret:
+    name: cloud-credentials-azure
+    key: azurekey
+  config:
+    storageAccount: ${STORAGE_ACCOUNT_NAME}
+EOF
+```
+
+10. Create the DataProtectionApplication (DPA) custom resource (CR) and configure the Azure STS details as shown in the following example:
+
+```terminal
+cat <<EOF | oc apply -f -
+apiVersion: oadp.openshift.io/v1alpha1
+kind: DataProtectionApplication
+metadata:
+  name: dpa-azure-workload-id-cloudstorage
+  namespace: openshift-adp
+spec:
+  backupLocations:
+  - bucket:
+      cloudStorageRef:
+        name: <cloud_storage_cr> 1
+      config:
+        storageAccount: <storage_account_name> 2
+        useAAD: "true"
+      credential:
+        key: azurekey
+        name: cloud-credentials-azure
+      default: true
+      prefix: velero
+    name: default
+  configuration:
+    velero:
+      defaultPlugins:
+      - azure
+      - openshift
+      - csi
+      disableFsBackup: false
+  logFormat: text
+  snapshotLocations:
+  - name: default
+    velero:
+      config:
+        resourceGroup: <resource_group> 3
+        subscriptionId: <subscription_ID> 4
+      credential:
+        key: azurekey
+        name: cloud-credentials-azure
+      provider: azure
+EOF
+```
+
+Specify the CloudStorage CR name.
+Specify the Azure storage account name.
+Specify the resource group.
+Specify the subscription ID.
+
+1. Verify that the OADP operator pods are running:
+
+```terminal
+$ oc get pods -n openshift-adp
+```
+
+2. Verify the Azure role assignments:
+
+```terminal
+az role assignment list --assignee ${IDENTITY_PRINCIPAL_ID} --all --query "[].roleDefinitionName" -o tsv
+```
+
+3. Verify Microsoft Entra Workload ID authentication:
+
+```terminal
+$ VELERO_POD=$(oc get pods -n openshift-adp -l app.kubernetes.io/name=velero -o jsonpath='{.items[0].metadata.name}') # Check Velero pod environment variables
+
+# Check AZURE_CLIENT_ID environment variable
+$ oc get pod ${VELERO_POD} -n openshift-adp -o jsonpath='{.spec.containers[0].env[?(@.name=="AZURE_CLIENT_ID")]}'
+
+# Check AZURE_FEDERATED_TOKEN_FILE environment variable
+$ oc get pod ${VELERO_POD} -n openshift-adp -o jsonpath='{.spec.containers[0].env[?(@.name=="AZURE_FEDERATED_TOKEN_FILE")]}'
+```
+
+4. Create a backup of an application and verify the backup is stored successfully in Azure storage.
 
 You can configure the Data Protection Application by setting Velero resource allocations or enabling self-signed CA certificates.
 
-## Setting Velero CPU and memory resource allocations
+# Setting Velero CPU and memory resource allocations
 
 You set the CPU and memory resource allocations for the Velero pod by editing the  DataProtectionApplication custom resource (CR) manifest.
 
@@ -210,7 +417,7 @@ Use the nodeSelector field to select which nodes can run the node agent. The nod
 
 For more details, see Configuring node agents and node labels.
 
-## Enabling self-signed CA certificates
+# Enabling self-signed CA certificates
 
 You must enable a self-signed CA certificate for object storage by editing the DataProtectionApplication custom resource (CR) manifest to prevent a certificate signed by unknown authority error.
 
@@ -242,7 +449,7 @@ spec:
 Specify the Base64-encoded CA certificate string.
 The insecureSkipTLSVerify configuration can be set to either "true" or "false". If set to "true", SSL/TLS security is disabled. If set to "false", SSL/TLS security is enabled.
 
-### Using CA certificates with the velero command aliased for Velero deployment
+## Using CA certificates with the velero command aliased for Velero deployment
 
 You might want to use the Velero CLI without installing it locally on your system by creating an alias for it.
 
@@ -344,7 +551,6 @@ spec:
           resourceGroup: <azure_resource_group> 8
           storageAccount: <azure_storage_account_id> 9
           subscriptionId: <azure_subscription_id> 10
-          storageAccountKeyEnvVar: AZURE_STORAGE_ACCOUNT_ACCESS_KEY
         credential:
           key: cloud
           name: cloud-credentials-azure  11
@@ -493,6 +699,128 @@ spec:
 Specify the client-burst value. In this example, the client-burst field is set to 500.
 Specify the client-qps value. In this example, the client-qps field is set to 300.
 
+# Configuring node agents and node labels
+
+The Data Protection Application (DPA) uses the nodeSelector field to select which nodes can run the node agent. The nodeSelector field is the recommended form of node selection constraint.
+
+1. Run the node agent on any node that you choose by adding a custom label:
+
+```terminal
+$ oc label node/<node_name> node-role.kubernetes.io/nodeAgent=""
+```
+
+
+[NOTE]
+----
+Any label specified must match the labels on each node.
+----
+2. Use the same custom label in the DPA.spec.configuration.nodeAgent.podConfig.nodeSelector field, which you used for labeling nodes:
+
+```terminal
+configuration:
+  nodeAgent:
+    enable: true
+    podConfig:
+      nodeSelector:
+        node-role.kubernetes.io/nodeAgent: ""
+```
+
+
+The following example is an anti-pattern of nodeSelector and does not work unless both labels, node-role.kubernetes.io/infra: "" and node-role.kubernetes.io/worker: "", are on the node:
+
+```terminal
+    configuration:
+      nodeAgent:
+        enable: true
+        podConfig:
+          nodeSelector:
+            node-role.kubernetes.io/infra: ""
+            node-role.kubernetes.io/worker: ""
+```
+
+
+# Configuring node agent load affinity
+
+You can schedule the node agent pods on specific nodes by using the spec.podConfig.nodeSelector object of the DataProtectionApplication (DPA) custom resource (CR).
+
+See the following example in which you can schedule the node agent pods on nodes with the label label.io/role: cpu-1 and other-label.io/other-role: cpu-2.
+
+
+```yaml
+...
+spec:
+  configuration:
+    nodeAgent:
+      enable: true
+      uploaderType: kopia
+      podConfig:
+        nodeSelector:
+          label.io/role: cpu-1
+          other-label.io/other-role: cpu-2
+        ...
+```
+
+
+You can add more restrictions on the node agent pods scheduling by using the nodeagent.loadAffinity object in the DPA spec.
+
+* You must be logged in as a user with cluster-admin privileges.
+* You have installed the OADP Operator.
+* You have configured the DPA CR.
+
+* Configure the DPA spec nodegent.loadAffinity object as shown in the following example.
+
+In the example, you ensure that the node agent pods are scheduled only on nodes with the label label.io/role: cpu-1 and the label label.io/hostname matching with either node1 or node2.
+
+```yaml
+...
+spec:
+  configuration:
+    nodeAgent:
+      enable: true
+      loadAffinity: 1
+        - nodeSelector:
+            matchLabels:
+              label.io/role: cpu-1
+            matchExpressions: 2
+              - key: label.io/hostname
+                operator: In
+                values:
+                  - node1
+                  - node2
+                  ...
+```
+
+Configure the loadAffinity object by adding the matchLabels and matchExpressions objects.
+Configure the matchExpressions object to add restrictions on the node agent pods scheduling.
+
+# Node agent load affinity guidelines
+
+Use the following guidelines to configure the node agent loadAffinity object in the DataProtectionApplication (DPA) custom resource (CR).
+
+* Use the spec.nodeagent.podConfig.nodeSelector object for simple node matching.
+* Use the loadAffinity.nodeSelector object without the podConfig.nodeSelector object for more complex scenarios.
+* You can use both podConfig.nodeSelector and loadAffinity.nodeSelector objects, but the loadAffinity object must be equal or more restrictive as compared to the podConfig object. In this scenario, the podConfig.nodeSelector labels must be a subset of the labels used in the loadAffinity.nodeSelector object.
+* You cannot use the matchExpressions and matchLabels fields if you have configured both podConfig.nodeSelector and loadAffinity.nodeSelector objects in the DPA.
+* See the following example to configure both podConfig.nodeSelector and loadAffinity.nodeSelector objects in the DPA.
+
+```yaml
+...
+spec:
+  configuration:
+    nodeAgent:
+      enable: true
+      uploaderType: kopia
+      loadAffinity:
+        - nodeSelector:
+            matchLabels:
+              label.io/location: 'US'
+              label.io/gpu: 'no'
+      podConfig:
+        nodeSelector:
+          label.io/gpu: 'no'
+```
+
+
 # Configuring node agent load concurrency
 
 You can control the maximum number of node agent operations that can run simultaneously on each node within your cluster.
@@ -516,6 +844,7 @@ $ oc label node/<node_name> label.io/instance-type='large'
   configuration:
     nodeAgent:
       enable: true
+      uploaderType: kopia
       loadConcurrency:
         globalConfig: 1 1
         perNodeConfig:
@@ -528,6 +857,209 @@ $ oc label node/<node_name> label.io/instance-type='large'
 Global concurrent number. The default value is 1, which means there is no concurrency and only one load is allowed. The globalConfig value does not have a limit.
 Label for per-node concurrency.
 Per-node concurrent number. You can specify many per-node concurrent numbers, for example, based on the instance type and size. The range of per-node concurrent number is the same as the global concurrent number. If the configuration file contains a per-node concurrent number and a global concurrent number, the per-node concurrent number takes precedence.
+
+# Configuring the node agent as a non-root and non-privileged user
+
+To enhance the node agent security, you can configure the OADP Operator node agent daemonset to run as a non-root and non-privileged user by using the spec.configuration.velero.disableFsBackup setting in the DataProtectionApplication (DPA) custom resource (CR).
+
+By setting the spec.configuration.velero.disableFsBackup setting to true, the node agent security context sets the root file system to read-only and sets the privileged flag to false.
+
+
+[NOTE]
+----
+Setting spec.configuration.velero.disableFsBackup to true enhances the node agent security by removing the need for privileged containers and enforcing a read-only root file system.
+However, it also disables File System Backup (FSB) with Kopia. If your workloads rely on FSB for backing up volumes that do not support native snapshots, then you should evaluate whether the disableFsBackup configuration fits your use case.
+----
+
+* You have installed the OADP Operator.
+
+* Configure the disableFsBackup field in the DPA as shown in the following example:
+
+```yaml
+apiVersion: oadp.openshift.io/v1alpha1
+kind: DataProtectionApplication
+metadata:
+  name: ts-dpa
+  namespace: openshift-adp
+spec:
+  backupLocations:
+  - velero:
+      credential:
+        key: cloud
+        name: cloud-credentials
+      default: true
+      objectStorage:
+        bucket: <bucket_name>
+        prefix: velero
+      provider: gcp
+  configuration:
+    nodeAgent: 1
+      enable: true
+      uploaderType: kopia
+    velero:
+      defaultPlugins:
+      - csi
+      - gcp
+      - openshift
+      disableFsBackup: true 2
+```
+
+Enable the node agent in the DPA.
+Set the disableFsBackup field to true.
+
+1. Verify that the node agent security context is set to run as non-root and the root file system is readOnly by running the following command:
+
+```terminal
+$ oc get daemonset node-agent -o yaml
+```
+
+
+The example output is as following:
+
+```yaml
+apiVersion: apps/v1
+kind: DaemonSet
+metadata:
+  ...
+  name: node-agent
+  namespace: openshift-adp
+  ...
+spec:
+  ...
+  template:
+    metadata:
+      ...
+    spec:
+      containers:
+      ...
+        securityContext:
+          allowPrivilegeEscalation: false 1
+          capabilities:
+            drop:
+            - ALL
+          privileged: false 2
+          readOnlyRootFilesystem: true 3
+        ...
+      nodeSelector:
+        kubernetes.io/os: linux
+      os:
+        name: linux
+      restartPolicy: Always
+      schedulerName: default-scheduler
+      securityContext:
+        runAsNonRoot: true 4
+        seccompProfile:
+          type: RuntimeDefault
+      serviceAccount: velero
+      serviceAccountName: velero
+      ....
+```
+
+The allowPrivilegeEscalation field is false.
+The privileged field is false.
+The root file system is read-only.
+The node agent is run as a non-root user.
+
+# Configuring repository maintenance
+
+OADP repository maintenance is a background job, you can configure it independently of the node agent pods. This means that you can schedule the repository maintenance pod on a node where the node agent is or is not running.
+
+You can use the repository maintenance job affinity configurations in the DataProtectionApplication (DPA) custom resource (CR) only if you use Kopia as the backup repository.
+
+You have the option to configure the load affinity at the global level affecting all repositories. Or you can configure the load affinity for each repository. You can also use a combination of global and per-repository configuration.
+
+* You must be logged in as a user with cluster-admin privileges.
+* You have installed the OADP Operator.
+* You have configured the DPA CR.
+
+* Configure the loadAffinity object in the DPA spec by using either one or both of the following methods:
+* Global configuration: Configure load affinity for all repositories as shown in the following example:
+
+```yaml
+...
+spec:
+  configuration:
+    repositoryMaintenance: 1
+      global: 2
+        podResources:
+          cpuRequest: "100m"
+          cpuLimit: "200m"
+          memoryRequest: "100Mi"
+          memoryLimit: "200Mi"
+        loadAffinity:
+          - nodeSelector:
+              matchLabels:
+                label.io/gpu: 'no'
+              matchExpressions:
+                - key: label.io/location
+                  operator: In
+                  values:
+                    - US
+                    - EU
+```
+
+Configure the repositoryMaintenance object as shown in the example.
+Use the global object to configure load affinity for all repositories.
+* Per-repository configuration: Configure load affinity per repository as shown in the following example:
+
+```yaml
+...
+spec:
+  configuration:
+    repositoryMaintenance:
+      myrepositoryname: 1
+        loadAffinity:
+          - nodeSelector:
+              matchLabels:
+                label.io/cpu: 'yes'
+```
+
+Configure the repositoryMaintenance object for each repository.
+
+# Configuring Velero load affinity
+
+With each OADP deployment, there is one Velero pod and its main purpose is to schedule Velero workloads. To schedule the Velero pod, you can use the velero.podConfig.nodeSelector and the velero.loadAffinity objects in the DataProtectionApplication (DPA) custom resource (CR) spec.
+
+Use the podConfig.nodeSelector object to assign the Velero pod to specific nodes. You can also configure the velero.loadAffinity object for pod-level affinity and anti-affinity.
+
+The OpenShift scheduler applies the rules and performs the scheduling of the Velero pod deployment.
+
+* You must be logged in as a user with cluster-admin privileges.
+* You have installed the OADP Operator.
+* You have configured the DPA CR.
+
+* Configure the velero.podConfig.nodeSelector and the velero.loadAffinity objects in the DPA spec as shown in the following examples:
+* velero.podConfig.nodeSelector object configuration:
+
+```yaml
+...
+spec:
+  configuration:
+    velero:
+      podConfig:
+        nodeSelector:
+          some-label.io/custom-node-role: backup-core
+```
+
+* velero.loadAffinity object configuration:
+
+```yaml
+...
+spec:
+  configuration:
+    velero:
+      loadAffinity:
+        - nodeSelector:
+            matchLabels:
+              label.io/gpu: 'no'
+            matchExpressions:
+              - key: label.io/location
+                operator: In
+                values:
+                  - US
+                  - EU
+```
+
 
 # Overriding the imagePullPolicy setting in the DPA
 
@@ -583,46 +1115,6 @@ spec:
 ```
 
 Specify the value for imagePullPolicy. In this example, the imagePullPolicy field is set to Never.
-
-## Configuring node agents and node labels
-
-The Data Protection Application (DPA) uses the nodeSelector field to select which nodes can run the node agent. The nodeSelector field is the recommended form of node selection constraint.
-
-1. Run the node agent on any node that you choose by adding a custom label:
-
-```terminal
-$ oc label node/<node_name> node-role.kubernetes.io/nodeAgent=""
-```
-
-
-[NOTE]
-----
-Any label specified must match the labels on each node.
-----
-2. Use the same custom label in the DPA.spec.configuration.nodeAgent.podConfig.nodeSelector field, which you used for labeling nodes:
-
-```terminal
-configuration:
-  nodeAgent:
-    enable: true
-    podConfig:
-      nodeSelector:
-        node-role.kubernetes.io/nodeAgent: ""
-```
-
-
-The following example is an anti-pattern of nodeSelector and does not work unless both labels, node-role.kubernetes.io/infra: "" and node-role.kubernetes.io/worker: "", are on the node:
-
-```terminal
-    configuration:
-      nodeAgent:
-        enable: true
-        podConfig:
-          nodeSelector:
-            node-role.kubernetes.io/infra: ""
-            node-role.kubernetes.io/worker: ""
-```
-
 
 ## Enabling CSI in the DataProtectionApplication CR
 

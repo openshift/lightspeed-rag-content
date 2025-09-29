@@ -64,6 +64,16 @@ In the NodeNetworkState page, you can view the list of NodeNetworkState resource
 
 A NodeNetworkConfigurationPolicy (NNCP) manifest file defines policies that the Kubernetes NMState Operator uses to configure networking for nodes that exist in an Red Hat OpenShift Container Platform cluster.
 
+
+[IMPORTANT]
+----
+If you want to apply multiple NNCP CRs to a node, you must create the NNCPs in a logical order that is based on the alphanumeric sorting of the policy names. The Kubernetes NMState Operator continuously checks for a newly created NNCP CR so that the Operator can instantly apply the CR to node. Consider the following logical order issue example:
+1. You create NNCP 1 for defining the bridge interface that listens on a VLAN port, such as eth1.1000.
+2. You create NNCP 2 for defining the VLAN interface and specify the port for this interface, such as eth1.1000.
+3. You apply NNCP 1 before you apply NNCP 2 to the node.
+The node experiences a node connectivity issue because port eth1.1000 does not exist. As a result, the cluster fails.
+----
+
 After you apply a node network policy to a node, the Kubernetes NMState Operator configures the networking configuration for nodes according to the node network policy details.
 
 You can create an NNCP by using either the OpenShift CLI (`oc`) or the Red Hat OpenShift Container Platform web console. As a postinstallation task you can create an NNCP or edit an existing NNCP.
@@ -333,7 +343,7 @@ File name of the policy manifest.
 
 Before you read the different example NodeNetworkConfigurationPolicy (NNCP) manifest configurations, consider the following factors when you apply a policy to nodes so that your cluster runs under its best performance conditions:
 
-* When you need to apply a policy to more than one node, create a NodeNetworkConfigurationPolicy manifest for each target node. The Kubernetes NMState Operator applies the policy to each node with a defined NNCP in an unspecified order. Scoping a policy with this approach reduces the length of time for policy application but risks a cluster-wide outage if an error exists in the configuration of the cluster. To avoid this type of error, initially apply an NNCP to some nodes, confirm the NNCP is configured correctly for these nodes, and then proceed with applying the policy to the remaining nodes.
+* If you want to apply multiple NNCP CRs to a node, you must create the NNCPs in a logical order that is based on the alphanumeric sorting of the policy names. The Kubernetes NMState Operator continuously checks for a newly created NNCP CR so that the Operator can instantly apply the CR to node.
 * When you need to apply a policy to many nodes but you only want to create a single NNCP for all the nodes, the Kubernetes NMState Operator applies the policy to each node in sequence. You can set the speed and coverage of policy application for target nodes with the maxUnavailable parameter in the cluster's configuration file. By setting a lower percentage value for the parameter, you can reduce the risk of a cluster-wide outage if the outage impacts the small percentage of nodes that are receiving the policy application.
 * If you set the maxUnavailable parameter to 50% in two NNCP manifests, the policy configuration coverage applies to 100% of the nodes in your cluster.
 * When a node restarts, the Kubernetes NMState Operator cannot control the order to which it applies policies to nodes. The Kubernetes NMState Operator might apply interdependent policies in a sequence that results in a degraded network object.
@@ -532,6 +542,70 @@ The driver mode for the bond. This example uses active backup.
 Optional: This example uses miimon to inspect the bond link every 140ms.
 The subordinate node NICs in the bond.
 Optional: The maximum transmission unit (MTU) for the bond. If not specified, this value is set to 1500 by default.
+
+## Example: Source load balancing (SLB) on a secondary bond interface
+
+You can run the Open vSwitch (OVS) balance-slb mode on a secondary bond interface so to isolate traffic from the primary network. This configuration for managing traffic provides your cluster with high availability and traffic segmentation capabilities.
+
+The following YAML file shows an example of a manifest for a secondary bond interface. The file includes samples values that you must replace with your own information.
+
+
+```yaml
+apiVersion: nmstate.io/v1
+kind: NodeNetworkConfigurationPolicy
+metadata:
+  name: bond1-policy 1
+spec:
+  nodeSelector:
+    kubernetes.io/hostname: <node01>
+  desiredState:
+    interfaces:
+    - name: br1
+      type: ovs-interface 2
+      state: up
+      copy-mac-from: enp2s0 3
+      ipv4:
+        enabled: true
+        dhcp: true
+    - name: br1
+      type: ovs-bridge
+      state: up
+      ipv4:
+        enabled: false
+        dhcp: false
+      bridge:
+        port:
+          - name: br1 4
+          - name: bond0
+            link-aggregation:
+              mode: balance-slb 5
+              port: 6
+                - name: enp2s0
+                - name: enp3s0
+    - name: enp2s0
+      type: ethernet
+      state: up
+      ipv4:
+        enabled: false
+      ipv6:
+        enabled: false
+    - name: enp3s0
+      type: ethernet
+      state: up
+      ipv4:
+        enabled: false
+      ipv6:
+        enabled: false
+# ...
+```
+
+
+Name of the policy.
+Specifies the virtual interface managed by Open vSwitch (OVS).
+Ensures the virtual interface inherits the MAC address of the physical network interface controller (NIC), enp2s0.
+The name of the OVS bridge. Note that the br0 interface name is reserved so you cannot use that name with NMstate configurations.
+Sets the bonding mode to SLB, so that distribution of traffic happens based on the source MAC address and the VLAN.
+Lists physical interfaces that get included in the secondary bond interface.
 
 ## Example: Multiple interfaces in the same node network configuration policy
 

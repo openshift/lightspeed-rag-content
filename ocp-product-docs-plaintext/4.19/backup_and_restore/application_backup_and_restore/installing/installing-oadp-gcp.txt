@@ -650,6 +650,128 @@ spec:
 Specify the client-burst value. In this example, the client-burst field is set to 500.
 Specify the client-qps value. In this example, the client-qps field is set to 300.
 
+# Configuring node agents and node labels
+
+The Data Protection Application (DPA) uses the nodeSelector field to select which nodes can run the node agent. The nodeSelector field is the recommended form of node selection constraint.
+
+1. Run the node agent on any node that you choose by adding a custom label:
+
+```terminal
+$ oc label node/<node_name> node-role.kubernetes.io/nodeAgent=""
+```
+
+
+[NOTE]
+----
+Any label specified must match the labels on each node.
+----
+2. Use the same custom label in the DPA.spec.configuration.nodeAgent.podConfig.nodeSelector field, which you used for labeling nodes:
+
+```terminal
+configuration:
+  nodeAgent:
+    enable: true
+    podConfig:
+      nodeSelector:
+        node-role.kubernetes.io/nodeAgent: ""
+```
+
+
+The following example is an anti-pattern of nodeSelector and does not work unless both labels, node-role.kubernetes.io/infra: "" and node-role.kubernetes.io/worker: "", are on the node:
+
+```terminal
+    configuration:
+      nodeAgent:
+        enable: true
+        podConfig:
+          nodeSelector:
+            node-role.kubernetes.io/infra: ""
+            node-role.kubernetes.io/worker: ""
+```
+
+
+# Configuring node agent load affinity
+
+You can schedule the node agent pods on specific nodes by using the spec.podConfig.nodeSelector object of the DataProtectionApplication (DPA) custom resource (CR).
+
+See the following example in which you can schedule the node agent pods on nodes with the label label.io/role: cpu-1 and other-label.io/other-role: cpu-2.
+
+
+```yaml
+...
+spec:
+  configuration:
+    nodeAgent:
+      enable: true
+      uploaderType: kopia
+      podConfig:
+        nodeSelector:
+          label.io/role: cpu-1
+          other-label.io/other-role: cpu-2
+        ...
+```
+
+
+You can add more restrictions on the node agent pods scheduling by using the nodeagent.loadAffinity object in the DPA spec.
+
+* You must be logged in as a user with cluster-admin privileges.
+* You have installed the OADP Operator.
+* You have configured the DPA CR.
+
+* Configure the DPA spec nodegent.loadAffinity object as shown in the following example.
+
+In the example, you ensure that the node agent pods are scheduled only on nodes with the label label.io/role: cpu-1 and the label label.io/hostname matching with either node1 or node2.
+
+```yaml
+...
+spec:
+  configuration:
+    nodeAgent:
+      enable: true
+      loadAffinity: 1
+        - nodeSelector:
+            matchLabels:
+              label.io/role: cpu-1
+            matchExpressions: 2
+              - key: label.io/hostname
+                operator: In
+                values:
+                  - node1
+                  - node2
+                  ...
+```
+
+Configure the loadAffinity object by adding the matchLabels and matchExpressions objects.
+Configure the matchExpressions object to add restrictions on the node agent pods scheduling.
+
+# Node agent load affinity guidelines
+
+Use the following guidelines to configure the node agent loadAffinity object in the DataProtectionApplication (DPA) custom resource (CR).
+
+* Use the spec.nodeagent.podConfig.nodeSelector object for simple node matching.
+* Use the loadAffinity.nodeSelector object without the podConfig.nodeSelector object for more complex scenarios.
+* You can use both podConfig.nodeSelector and loadAffinity.nodeSelector objects, but the loadAffinity object must be equal or more restrictive as compared to the podConfig object. In this scenario, the podConfig.nodeSelector labels must be a subset of the labels used in the loadAffinity.nodeSelector object.
+* You cannot use the matchExpressions and matchLabels fields if you have configured both podConfig.nodeSelector and loadAffinity.nodeSelector objects in the DPA.
+* See the following example to configure both podConfig.nodeSelector and loadAffinity.nodeSelector objects in the DPA.
+
+```yaml
+...
+spec:
+  configuration:
+    nodeAgent:
+      enable: true
+      uploaderType: kopia
+      loadAffinity:
+        - nodeSelector:
+            matchLabels:
+              label.io/location: 'US'
+              label.io/gpu: 'no'
+      podConfig:
+        nodeSelector:
+          label.io/gpu: 'no'
+```
+
+
 # Configuring node agent load concurrency
 
 You can control the maximum number of node agent operations that can run simultaneously on each node within your cluster.
@@ -673,6 +795,7 @@ $ oc label node/<node_name> label.io/instance-type='large'
   configuration:
     nodeAgent:
       enable: true
+      uploaderType: kopia
       loadConcurrency:
         globalConfig: 1 1
         perNodeConfig:
@@ -685,6 +808,209 @@ $ oc label node/<node_name> label.io/instance-type='large'
 Global concurrent number. The default value is 1, which means there is no concurrency and only one load is allowed. The globalConfig value does not have a limit.
 Label for per-node concurrency.
 Per-node concurrent number. You can specify many per-node concurrent numbers, for example, based on the instance type and size. The range of per-node concurrent number is the same as the global concurrent number. If the configuration file contains a per-node concurrent number and a global concurrent number, the per-node concurrent number takes precedence.
+
+# Configuring the node agent as a non-root and non-privileged user
+
+To enhance the node agent security, you can configure the OADP Operator node agent daemonset to run as a non-root and non-privileged user by using the spec.configuration.velero.disableFsBackup setting in the DataProtectionApplication (DPA) custom resource (CR).
+
+By setting the spec.configuration.velero.disableFsBackup setting to true, the node agent security context sets the root file system to read-only and sets the privileged flag to false.
+
+
+[NOTE]
+----
+Setting spec.configuration.velero.disableFsBackup to true enhances the node agent security by removing the need for privileged containers and enforcing a read-only root file system.
+However, it also disables File System Backup (FSB) with Kopia. If your workloads rely on FSB for backing up volumes that do not support native snapshots, then you should evaluate whether the disableFsBackup configuration fits your use case.
+----
+
+* You have installed the OADP Operator.
+
+* Configure the disableFsBackup field in the DPA as shown in the following example:
+
+```yaml
+apiVersion: oadp.openshift.io/v1alpha1
+kind: DataProtectionApplication
+metadata:
+  name: ts-dpa
+  namespace: openshift-adp
+spec:
+  backupLocations:
+  - velero:
+      credential:
+        key: cloud
+        name: cloud-credentials
+      default: true
+      objectStorage:
+        bucket: <bucket_name>
+        prefix: velero
+      provider: gcp
+  configuration:
+    nodeAgent: 1
+      enable: true
+      uploaderType: kopia
+    velero:
+      defaultPlugins:
+      - csi
+      - gcp
+      - openshift
+      disableFsBackup: true 2
+```
+
+Enable the node agent in the DPA.
+Set the disableFsBackup field to true.
+
+1. Verify that the node agent security context is set to run as non-root and the root file system is readOnly by running the following command:
+
+```terminal
+$ oc get daemonset node-agent -o yaml
+```
+
+
+The example output is as following:
+
+```yaml
+apiVersion: apps/v1
+kind: DaemonSet
+metadata:
+  ...
+  name: node-agent
+  namespace: openshift-adp
+  ...
+spec:
+  ...
+  template:
+    metadata:
+      ...
+    spec:
+      containers:
+      ...
+        securityContext:
+          allowPrivilegeEscalation: false 1
+          capabilities:
+            drop:
+            - ALL
+          privileged: false 2
+          readOnlyRootFilesystem: true 3
+        ...
+      nodeSelector:
+        kubernetes.io/os: linux
+      os:
+        name: linux
+      restartPolicy: Always
+      schedulerName: default-scheduler
+      securityContext:
+        runAsNonRoot: true 4
+        seccompProfile:
+          type: RuntimeDefault
+      serviceAccount: velero
+      serviceAccountName: velero
+      ....
+```
+
+The allowPrivilegeEscalation field is false.
+The privileged field is false.
+The root file system is read-only.
+The node agent is run as a non-root user.
+
+# Configuring repository maintenance
+
+OADP repository maintenance is a background job, you can configure it independently of the node agent pods. This means that you can schedule the repository maintenance pod on a node where the node agent is or is not running.
+
+You can use the repository maintenance job affinity configurations in the DataProtectionApplication (DPA) custom resource (CR) only if you use Kopia as the backup repository.
+
+You have the option to configure the load affinity at the global level affecting all repositories. Or you can configure the load affinity for each repository. You can also use a combination of global and per-repository configuration.
+
+* You must be logged in as a user with cluster-admin privileges.
+* You have installed the OADP Operator.
+* You have configured the DPA CR.
+
+* Configure the loadAffinity object in the DPA spec by using either one or both of the following methods:
+* Global configuration: Configure load affinity for all repositories as shown in the following example:
+
+```yaml
+...
+spec:
+  configuration:
+    repositoryMaintenance: 1
+      global: 2
+        podResources:
+          cpuRequest: "100m"
+          cpuLimit: "200m"
+          memoryRequest: "100Mi"
+          memoryLimit: "200Mi"
+        loadAffinity:
+          - nodeSelector:
+              matchLabels:
+                label.io/gpu: 'no'
+              matchExpressions:
+                - key: label.io/location
+                  operator: In
+                  values:
+                    - US
+                    - EU
+```
+
+Configure the repositoryMaintenance object as shown in the example.
+Use the global object to configure load affinity for all repositories.
+* Per-repository configuration: Configure load affinity per repository as shown in the following example:
+
+```yaml
+...
+spec:
+  configuration:
+    repositoryMaintenance:
+      myrepositoryname: 1
+        loadAffinity:
+          - nodeSelector:
+              matchLabels:
+                label.io/cpu: 'yes'
+```
+
+Configure the repositoryMaintenance object for each repository.
+
+# Configuring Velero load affinity
+
+With each OADP deployment, there is one Velero pod and its main purpose is to schedule Velero workloads. To schedule the Velero pod, you can use the velero.podConfig.nodeSelector and the velero.loadAffinity objects in the DataProtectionApplication (DPA) custom resource (CR) spec.
+
+Use the podConfig.nodeSelector object to assign the Velero pod to specific nodes. You can also configure the velero.loadAffinity object for pod-level affinity and anti-affinity.
+
+The OpenShift scheduler applies the rules and performs the scheduling of the Velero pod deployment.
+
+* You must be logged in as a user with cluster-admin privileges.
+* You have installed the OADP Operator.
+* You have configured the DPA CR.
+
+* Configure the velero.podConfig.nodeSelector and the velero.loadAffinity objects in the DPA spec as shown in the following examples:
+* velero.podConfig.nodeSelector object configuration:
+
+```yaml
+...
+spec:
+  configuration:
+    velero:
+      podConfig:
+        nodeSelector:
+          some-label.io/custom-node-role: backup-core
+```
+
+* velero.loadAffinity object configuration:
+
+```yaml
+...
+spec:
+  configuration:
+    velero:
+      loadAffinity:
+        - nodeSelector:
+            matchLabels:
+              label.io/gpu: 'no'
+            matchExpressions:
+              - key: label.io/location
+                operator: In
+                values:
+                  - US
+                  - EU
+```
+
 
 # Overriding the imagePullPolicy setting in the DPA
 
@@ -740,46 +1066,6 @@ spec:
 ```
 
 Specify the value for imagePullPolicy. In this example, the imagePullPolicy field is set to Never.
-
-## Configuring node agents and node labels
-
-The Data Protection Application (DPA) uses the nodeSelector field to select which nodes can run the node agent. The nodeSelector field is the recommended form of node selection constraint.
-
-1. Run the node agent on any node that you choose by adding a custom label:
-
-```terminal
-$ oc label node/<node_name> node-role.kubernetes.io/nodeAgent=""
-```
-
-
-[NOTE]
-----
-Any label specified must match the labels on each node.
-----
-2. Use the same custom label in the DPA.spec.configuration.nodeAgent.podConfig.nodeSelector field, which you used for labeling nodes:
-
-```terminal
-configuration:
-  nodeAgent:
-    enable: true
-    podConfig:
-      nodeSelector:
-        node-role.kubernetes.io/nodeAgent: ""
-```
-
-
-The following example is an anti-pattern of nodeSelector and does not work unless both labels, node-role.kubernetes.io/infra: "" and node-role.kubernetes.io/worker: "", are on the node:
-
-```terminal
-    configuration:
-      nodeAgent:
-        enable: true
-        podConfig:
-          nodeSelector:
-            node-role.kubernetes.io/infra: ""
-            node-role.kubernetes.io/worker: ""
-```
-
 
 ## Enabling CSI in the DataProtectionApplication CR
 
