@@ -1,0 +1,225 @@
+# Migrating
+
+
+
+[WARNING]
+----
+The deprecated Red Hat OpenShift Distributed Tracing Platform (Jaeger) 3.5 was the last release of the Red Hat OpenShift Distributed Tracing Platform (Jaeger) that Red Hat supports.
+Support for the deprecated Red Hat OpenShift Distributed Tracing Platform (Jaeger) ends on November 3, 2025.
+The Red Hat OpenShift Distributed Tracing Platform Operator (Jaeger) will be removed from the redhat-operators catalog on November 3, 2025. For more information, see the Red Hat Knowledgebase solution Jaeger Deprecation and Removal in OpenShift.
+You must migrate to the Red Hat build of OpenTelemetry Operator and the Tempo Operator for distributed tracing collection and storage. For more information, see "Migrating" in the Red Hat build of OpenTelemetry documentation, "Installing" in the Red Hat build of OpenTelemetry documentation, and "Installing" in the Distributed Tracing Platform documentation.
+----
+If you are already using the Red Hat OpenShift Distributed Tracing Platform (Jaeger) for your applications, you can migrate to the Red Hat build of OpenTelemetry, which is based on the OpenTelemetry open-source project.
+The Red Hat build of OpenTelemetry provides a set of APIs, libraries, agents, and instrumentation to facilitate observability in distributed systems. The OpenTelemetry Collector in the Red Hat build of OpenTelemetry can ingest the Jaeger protocol, so you do not need to change the SDKs in your applications.
+Migration from the Distributed Tracing Platform (Jaeger) to the Red Hat build of OpenTelemetry requires configuring the OpenTelemetry Collector and your applications to report traces seamlessly. You can migrate sidecar and sidecarless deployments.
+
+# Migrating with sidecars
+
+The Red Hat build of OpenTelemetry Operator supports sidecar injection into deployment workloads, so you can migrate from a Distributed Tracing Platform (Jaeger) sidecar to a Red Hat build of OpenTelemetry sidecar.
+
+* The Red Hat OpenShift Distributed Tracing Platform (Jaeger) is used on the cluster.
+* The Red Hat build of OpenTelemetry is installed.
+
+1. Configure the OpenTelemetry Collector as a sidecar.
+
+```yaml
+apiVersion: opentelemetry.io/v1beta1
+kind: OpenTelemetryCollector
+metadata:
+  name: otel
+  namespace: <otel-collector-namespace>
+spec:
+  mode: sidecar
+  config:
+    receivers:
+      jaeger:
+        protocols:
+          grpc: {}
+          thrift_binary: {}
+          thrift_compact: {}
+          thrift_http: {}
+    processors:
+      batch: {}
+      memory_limiter:
+        check_interval: 1s
+        limit_percentage: 50
+        spike_limit_percentage: 30
+      resourcedetection:
+        detectors: [openshift]
+        timeout: 2s
+    exporters:
+      otlp:
+        endpoint: "tempo-<example>-gateway:8090" 1
+        tls:
+          insecure: true
+    service:
+      pipelines:
+        traces:
+          receivers: [jaeger]
+          processors: [memory_limiter, resourcedetection, batch]
+          exporters: [otlp]
+```
+
+This endpoint points to the Gateway of a TempoStack instance deployed by using the <example> Tempo Operator.
+2. Create a service account for running your application.
+
+```yaml
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: otel-collector-sidecar
+```
+
+3. Create a cluster role for the permissions needed by some processors.
+
+```yaml
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: otel-collector-sidecar
+rules:
+  1
+- apiGroups: ["config.openshift.io"]
+  resources: ["infrastructures", "infrastructures/status"]
+  verbs: ["get", "watch", "list"]
+```
+
+The resourcedetectionprocessor requires permissions for infrastructures and infrastructures/status.
+4. Create a ClusterRoleBinding to set the permissions for the service account.
+
+```yaml
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: otel-collector-sidecar
+subjects:
+- kind: ServiceAccount
+  name: otel-collector-deployment
+  namespace: otel-collector-example
+roleRef:
+  kind: ClusterRole
+  name: otel-collector
+  apiGroup: rbac.authorization.k8s.io
+```
+
+5. Deploy the OpenTelemetry Collector as a sidecar.
+6. Remove the injected Jaeger Agent from your application by removing the "sidecar.jaegertracing.io/inject": "true" annotation from your Deployment object.
+7. Enable automatic injection of the OpenTelemetry sidecar by adding the sidecar.opentelemetry.io/inject: "true" annotation to the .spec.template.metadata.annotations field of your Deployment object.
+8. Use the created service account for the deployment of your application to allow the processors to get the correct information and add it to your traces.
+
+# Migrating without sidecars
+
+You can migrate from the Distributed Tracing Platform (Jaeger) to the Red Hat build of OpenTelemetry without sidecar deployment.
+
+* The Red Hat OpenShift Distributed Tracing Platform (Jaeger) is used on the cluster.
+* The Red Hat build of OpenTelemetry is installed.
+
+1. Configure OpenTelemetry Collector deployment.
+2. Create the project where the OpenTelemetry Collector will be deployed.
+
+```yaml
+apiVersion: project.openshift.io/v1
+kind: Project
+metadata:
+  name: observability
+```
+
+3. Create a service account for running the OpenTelemetry Collector instance.
+
+```yaml
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: otel-collector-deployment
+  namespace: observability
+```
+
+4. Create a cluster role for setting the required permissions for the processors.
+
+```yaml
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: otel-collector
+rules:
+  1
+  2
+- apiGroups: ["", "config.openshift.io"]
+  resources: ["pods", "namespaces", "infrastructures", "infrastructures/status"]
+  verbs: ["get", "watch", "list"]
+```
+
+Permissions for the pods and namespaces resources are required for the k8sattributesprocessor.
+Permissions for infrastructures and infrastructures/status are required for resourcedetectionprocessor.
+5. Create a ClusterRoleBinding to set the permissions for the service account.
+
+```yaml
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: otel-collector
+subjects:
+- kind: ServiceAccount
+  name: otel-collector-deployment
+  namespace: observability
+roleRef:
+  kind: ClusterRole
+  name: otel-collector
+  apiGroup: rbac.authorization.k8s.io
+```
+
+6. Create the OpenTelemetry Collector instance.
+
+[NOTE]
+----
+This collector will export traces to a TempoStack instance. You must create your TempoStack instance by using the Red Hat Tempo Operator and place here the correct endpoint.
+----
+
+```yaml
+apiVersion: opentelemetry.io/v1beta1
+kind: OpenTelemetryCollector
+metadata:
+  name: otel
+  namespace: observability
+spec:
+  mode: deployment
+  serviceAccount: otel-collector-deployment
+  config:
+    receivers:
+      jaeger:
+        protocols:
+          grpc: {}
+          thrift_binary: {}
+          thrift_compact: {}
+          thrift_http: {}
+    processors:
+      batch: {}
+      k8sattributes: {}
+      memory_limiter:
+        check_interval: 1s
+        limit_percentage: 50
+        spike_limit_percentage: 30
+      resourcedetection:
+        detectors: [openshift]
+    exporters:
+      otlp:
+        endpoint: "tempo-example-gateway:8090"
+        tls:
+          insecure: true
+    service:
+      pipelines:
+        traces:
+          receivers: [jaeger]
+          processors: [memory_limiter, k8sattributes, resourcedetection, batch]
+          exporters: [otlp]
+```
+
+7. Point your tracing endpoint to the OpenTelemetry Operator.
+8. If you are exporting your traces directly from your application to Jaeger, change the API endpoint from the Jaeger endpoint to the OpenTelemetry Collector endpoint.
+Example of exporting traces by using the jaegerexporter with Golang
+
+```golang
+exp, err := jaeger.New(jaeger.WithCollectorEndpoint(jaeger.WithEndpoint(url))) 1
+```
+
+The URL points to the OpenTelemetry Collector API endpoint.

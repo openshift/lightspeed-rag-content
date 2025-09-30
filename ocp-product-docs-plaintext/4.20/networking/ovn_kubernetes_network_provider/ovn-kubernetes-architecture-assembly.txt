@@ -1,0 +1,669 @@
+# OVN-Kubernetes architecture
+
+
+
+# Introduction to OVN-Kubernetes architecture
+
+The following diagram shows the OVN-Kubernetes architecture.
+
+![OVN-Kubernetes architecture]
+
+The key components are:
+
+* Cloud Management System (CMS) - A platform specific client for OVN that provides a CMS specific plugin for OVN integration. The plugin translates the cloud management system's concept of the logical network configuration, stored in the CMS configuration database in a  CMS-specific  format, into an intermediate representation understood by OVN.
+* OVN Northbound database (nbdb) container - Stores the logical network configuration passed by the CMS plugin.
+* OVN Southbound database (sbdb) container - Stores the physical and logical network configuration state for Open vSwitch (OVS) system on each node, including tables that bind them.
+* OVN north daemon (ovn-northd) - This is the intermediary client between nbdb container and sbdb container. It translates  the logical network configuration in terms of conventional network concepts, taken from the nbdb container, into  logical data path flows in the sbdb container. The container name for ovn-northd daemon is northd and it runs in the ovnkube-node pods.
+* ovn-controller - This is the OVN agent that interacts with OVS and hypervisors, for any information or update that is needed for sbdb container. The ovn-controller reads logical flows from the sbdb container, translates them into OpenFlow flows and sends them to the node’s OVS daemon. The container name is ovn-controller and it runs in the ovnkube-node pods.
+
+The OVN northd, northbound database, and southbound database run on each node in the cluster and mostly contain and process information that is local to that node.
+
+The OVN northbound database has the logical network configuration passed down to it by the cloud management system (CMS).
+The OVN northbound database contains the current desired state of the network, presented as a collection of logical ports, logical switches, logical routers, and more.
+The ovn-northd (northd container) connects to the OVN northbound database and the OVN southbound database.
+It translates the logical network configuration in terms of conventional network concepts, taken from the OVN northbound database, into logical data path flows in the OVN southbound database.
+
+The OVN southbound database has physical and logical representations of the network and binding tables that link them together. It contains the chassis information of the node and other constructs like remote transit switch ports that are required to connect to the other nodes in the cluster. The OVN southbound database also contains all the logic flows. The logic flows are shared with the ovn-controller process that runs on each node and the ovn-controller turns those into OpenFlow rules to program Open vSwitch(OVS).
+
+The Kubernetes control plane nodes contain two ovnkube-control-plane pods on separate nodes, which perform the central IP address management (IPAM) allocation for each node in the cluster. At any given time, a single ovnkube-control-plane pod is the leader.
+
+# Listing all resources in the OVN-Kubernetes project
+
+Finding the resources and containers that run in the OVN-Kubernetes project is important to help you understand the OVN-Kubernetes networking implementation.
+
+* Access to the cluster as a user with the cluster-admin role.
+* The OpenShift CLI (oc) installed.
+
+1. Run the following command to get all resources, endpoints, and ConfigMaps in the OVN-Kubernetes project:
+
+```terminal
+$ oc get all,ep,cm -n openshift-ovn-kubernetes
+```
+
+Example output
+
+```terminal
+Warning: apps.openshift.io/v1 DeploymentConfig is deprecated in v4.14+, unavailable in v4.10000+
+NAME                                         READY   STATUS    RESTARTS       AGE
+pod/ovnkube-control-plane-65c6f55656-6d55h   2/2     Running   0              114m
+pod/ovnkube-control-plane-65c6f55656-fd7vw   2/2     Running   2 (104m ago)   114m
+pod/ovnkube-node-bcvts                       8/8     Running   0              113m
+pod/ovnkube-node-drgvv                       8/8     Running   0              113m
+pod/ovnkube-node-f2pxt                       8/8     Running   0              113m
+pod/ovnkube-node-frqsb                       8/8     Running   0              105m
+pod/ovnkube-node-lbxkk                       8/8     Running   0              105m
+pod/ovnkube-node-tt7bx                       8/8     Running   1 (102m ago)   105m
+
+NAME                                   TYPE        CLUSTER-IP   EXTERNAL-IP   PORT(S)             AGE
+service/ovn-kubernetes-control-plane   ClusterIP   None         <none>        9108/TCP            114m
+service/ovn-kubernetes-node            ClusterIP   None         <none>        9103/TCP,9105/TCP   114m
+
+NAME                          DESIRED   CURRENT   READY   UP-TO-DATE   AVAILABLE   NODE SELECTOR                 AGE
+daemonset.apps/ovnkube-node   6         6         6       6            6           beta.kubernetes.io/os=linux   114m
+
+NAME                                    READY   UP-TO-DATE   AVAILABLE   AGE
+deployment.apps/ovnkube-control-plane   3/3     3            3           114m
+
+NAME                                               DESIRED   CURRENT   READY   AGE
+replicaset.apps/ovnkube-control-plane-65c6f55656   3         3         3       114m
+
+NAME                                     ENDPOINTS                                               AGE
+endpoints/ovn-kubernetes-control-plane   10.0.0.3:9108,10.0.0.4:9108,10.0.0.5:9108               114m
+endpoints/ovn-kubernetes-node            10.0.0.3:9105,10.0.0.4:9105,10.0.0.5:9105 + 9 more...   114m
+
+NAME                                 DATA   AGE
+configmap/control-plane-status       1      113m
+configmap/kube-root-ca.crt           1      114m
+configmap/openshift-service-ca.crt   1      114m
+configmap/ovn-ca                     1      114m
+configmap/ovnkube-config             1      114m
+configmap/signer-ca                  1      114m
+```
+
+
+There is one ovnkube-node pod for each node in the cluster.
+The ovnkube-config config map has the {product-title} OVN-Kubernetes configurations.
+2. List all of the containers in the ovnkube-node pods by running the following command:
+
+```terminal
+$ oc get pods ovnkube-node-bcvts -o jsonpath='{.spec.containers[*].name}' -n openshift-ovn-kubernetes
+```
+
+Expected output
+
+```terminal
+ovn-controller ovn-acl-logging kube-rbac-proxy-node kube-rbac-proxy-ovn-metrics northd nbdb sbdb ovnkube-controller
+```
+
+
+The ovnkube-node pod is made up of several containers. It is responsible for hosting the northbound database (nbdb container), the southbound database (sbdb container), the north daemon (northd container), ovn-controller and the ovnkube-controller container. The ovnkube-controller container watches for API objects like pods, egress IPs, namespaces, services, endpoints, egress firewall, and network policies. It is also responsible for allocating pod IP from the available subnet pool for that node.
+3. List all the containers in the ovnkube-control-plane pods by running the following command:
+
+```terminal
+$ oc get pods ovnkube-control-plane-65c6f55656-6d55h -o jsonpath='{.spec.containers[*].name}' -n openshift-ovn-kubernetes
+```
+
+Expected output
+
+```terminal
+kube-rbac-proxy ovnkube-cluster-manager
+```
+
+
+The ovnkube-control-plane pod has a container (ovnkube-cluster-manager) that resides on each {product-title} node. The ovnkube-cluster-manager container allocates pod subnet, transit switch subnet IP and join switch subnet IP to each node in the cluster. The kube-rbac-proxy container monitors metrics for the ovnkube-cluster-manager container.
+
+# Listing the OVN-Kubernetes northbound database contents
+
+Each node is controlled by the ovnkube-controller container running in the ovnkube-node pod on that node. To understand the OVN logical networking entities you need to examine the northbound database that is running as a container inside the ovnkube-node pod on that node to see what objects are in the node you wish to see.
+
+* Access to the cluster as a user with the cluster-admin role.
+* The OpenShift CLI (oc) installed.
+
+
+[NOTE]
+----
+To run ovn nbctl or sbctl commands in a cluster you must open a remote shell into the nbdb or sbdb containers on the relevant node
+----
+
+1. List pods by running the following command:
+
+```terminal
+$ oc get po -n openshift-ovn-kubernetes
+```
+
+Example output
+
+```terminal
+NAME                                     READY   STATUS    RESTARTS      AGE
+ovnkube-control-plane-8444dff7f9-4lh9k   2/2     Running   0             27m
+ovnkube-control-plane-8444dff7f9-5rjh9   2/2     Running   0             27m
+ovnkube-node-55xs2                       8/8     Running   0             26m
+ovnkube-node-7r84r                       8/8     Running   0             16m
+ovnkube-node-bqq8p                       8/8     Running   0             17m
+ovnkube-node-mkj4f                       8/8     Running   0             26m
+ovnkube-node-mlr8k                       8/8     Running   0             26m
+ovnkube-node-wqn2m                       8/8     Running   0             16m
+```
+
+2. Optional: To list the pods with node information, run the following command:
+
+```terminal
+$ oc get pods -n openshift-ovn-kubernetes -owide
+```
+
+Example output
+
+```terminal
+NAME                                     READY   STATUS    RESTARTS      AGE   IP           NODE                                       NOMINATED NODE   READINESS GATES
+ovnkube-control-plane-8444dff7f9-4lh9k   2/2     Running   0             27m   10.0.0.3     ci-ln-t487nnb-72292-mdcnq-master-1         <none>           <none>
+ovnkube-control-plane-8444dff7f9-5rjh9   2/2     Running   0             27m   10.0.0.4     ci-ln-t487nnb-72292-mdcnq-master-2         <none>           <none>
+ovnkube-node-55xs2                       8/8     Running   0             26m   10.0.0.4     ci-ln-t487nnb-72292-mdcnq-master-2         <none>           <none>
+ovnkube-node-7r84r                       8/8     Running   0             17m   10.0.128.3   ci-ln-t487nnb-72292-mdcnq-worker-b-wbz7z   <none>           <none>
+ovnkube-node-bqq8p                       8/8     Running   0             17m   10.0.128.2   ci-ln-t487nnb-72292-mdcnq-worker-a-lh7ms   <none>           <none>
+ovnkube-node-mkj4f                       8/8     Running   0             27m   10.0.0.5     ci-ln-t487nnb-72292-mdcnq-master-0         <none>           <none>
+ovnkube-node-mlr8k                       8/8     Running   0             27m   10.0.0.3     ci-ln-t487nnb-72292-mdcnq-master-1         <none>           <none>
+ovnkube-node-wqn2m                       8/8     Running   0             17m   10.0.128.4   ci-ln-t487nnb-72292-mdcnq-worker-c-przlm   <none>           <none>
+```
+
+3. Navigate into a pod to look at the northbound database by running the following command:
+
+```terminal
+$ oc rsh -c nbdb -n openshift-ovn-kubernetes ovnkube-node-55xs2
+```
+
+4. Run the following command to show all the objects in the northbound database:
+
+```terminal
+$ ovn-nbctl show
+```
+
+
+The output is too long to list here. The list includes the NAT rules, logical switches, load balancers and so on.
+
+You can narrow down and focus on specific components by using some of the following optional commands:
+1. Run the following command to show the list of logical routers:
+
+```terminal
+$ oc exec -n openshift-ovn-kubernetes -it ovnkube-node-55xs2 \
+-c northd -- ovn-nbctl lr-list
+```
+
+Example output
+
+```terminal
+45339f4f-7d0b-41d0-b5f9-9fca9ce40ce6 (GR_ci-ln-t487nnb-72292-mdcnq-master-2)
+96a0a0f0-e7ed-4fec-8393-3195563de1b8 (ovn_cluster_router)
+```
+
+
+[NOTE]
+----
+From this output you can see there is router on each node plus an ovn_cluster_router.
+----
+2. Run the following command to show the list of logical switches:
+
+```terminal
+$ oc exec -n openshift-ovn-kubernetes -it ovnkube-node-55xs2 \
+-c nbdb -- ovn-nbctl ls-list
+```
+
+Example output
+
+```terminal
+bdd7dc3d-d848-4a74-b293-cc15128ea614 (ci-ln-t487nnb-72292-mdcnq-master-2)
+b349292d-ee03-4914-935f-1940b6cb91e5 (ext_ci-ln-t487nnb-72292-mdcnq-master-2)
+0aac0754-ea32-4e33-b086-35eeabf0a140 (join)
+992509d7-2c3f-4432-88db-c179e43592e5 (transit_switch)
+```
+
+
+[NOTE]
+----
+From this output you can see there is an ext switch for each node plus switches with the node name itself and a join switch.
+----
+3. Run the following command to show the list of load balancers:
+
+```terminal
+$ oc exec -n openshift-ovn-kubernetes -it ovnkube-node-55xs2 \
+-c nbdb -- ovn-nbctl lb-list
+```
+
+Example output
+
+```terminal
+UUID                                    LB                  PROTO      VIP                     IPs
+7c84c673-ed2a-4436-9a1f-9bc5dd181eea    Service_default/    tcp        172.30.0.1:443          10.0.0.3:6443,169.254.169.2:6443,10.0.0.5:6443
+4d663fd9-ddc8-4271-b333-4c0e279e20bb    Service_default/    tcp        172.30.0.1:443          10.0.0.3:6443,10.0.0.4:6443,10.0.0.5:6443
+292eb07f-b82f-4962-868a-4f541d250bca    Service_openshif    tcp        172.30.105.247:443      10.129.0.12:8443
+034b5a7f-bb6a-45e9-8e6d-573a82dc5ee3    Service_openshif    tcp        172.30.192.38:443       10.0.0.3:10259,10.0.0.4:10259,10.0.0.5:10259
+a68bb53e-be84-48df-bd38-bdd82fcd4026    Service_openshif    tcp        172.30.161.125:8443     10.129.0.32:8443
+6cc21b3d-2c54-4c94-8ff5-d8e017269c2e    Service_openshif    tcp        172.30.3.144:443        10.129.0.22:8443
+37996ffd-7268-4862-a27f-61cd62e09c32    Service_openshif    tcp        172.30.181.107:443      10.129.0.18:8443
+81d4da3c-f811-411f-ae0c-bc6713d0861d    Service_openshif    tcp        172.30.228.23:443       10.129.0.29:8443
+ac5a4f3b-b6ba-4ceb-82d0-d84f2c41306e    Service_openshif    tcp        172.30.14.240:9443      10.129.0.36:9443
+c88979fb-1ef5-414b-90ac-43b579351ac9    Service_openshif    tcp        172.30.231.192:9001     10.128.0.5:9001,10.128.2.5:9001,10.129.0.5:9001,10.129.2.4:9001,10.130.0.3:9001,10.131.0.3:9001
+fcb0a3fb-4a77-4230-a84a-be45dce757e8    Service_openshif    tcp        172.30.189.92:443       10.130.0.17:8440
+67ef3e7b-ceb9-4bf0-8d96-b43bde4c9151    Service_openshif    tcp        172.30.67.218:443       10.129.0.9:8443
+d0032fba-7d5e-424a-af25-4ab9b5d46e81    Service_openshif    tcp        172.30.102.137:2379     10.0.0.3:2379,10.0.0.4:2379,10.0.0.5:2379
+                                                            tcp        172.30.102.137:9979     10.0.0.3:9979,10.0.0.4:9979,10.0.0.5:9979
+7361c537-3eec-4e6c-bc0c-0522d182abd4    Service_openshif    tcp        172.30.198.215:9001     10.0.0.3:9001,10.0.0.4:9001,10.0.0.5:9001,10.0.128.2:9001,10.0.128.3:9001,10.0.128.4:9001
+0296c437-1259-410b-a6fd-81c310ad0af5    Service_openshif    tcp        172.30.198.215:9001     10.0.0.3:9001,169.254.169.2:9001,10.0.0.5:9001,10.0.128.2:9001,10.0.128.3:9001,10.0.128.4:9001
+5d5679f5-45b8-479d-9f7c-08b123c688b8    Service_openshif    tcp        172.30.38.253:17698     10.128.0.52:17698,10.129.0.84:17698,10.130.0.60:17698
+2adcbab4-d1c9-447d-9573-b5dc9f2efbfa    Service_openshif    tcp        172.30.148.52:443       10.0.0.4:9202,10.0.0.5:9202
+                                                            tcp        172.30.148.52:444       10.0.0.4:9203,10.0.0.5:9203
+                                                            tcp        172.30.148.52:445       10.0.0.4:9204,10.0.0.5:9204
+                                                            tcp        172.30.148.52:446       10.0.0.4:9205,10.0.0.5:9205
+2a33a6d7-af1b-4892-87cc-326a380b809b    Service_openshif    tcp        172.30.67.219:9091      10.129.2.16:9091,10.131.0.16:9091
+                                                            tcp        172.30.67.219:9092      10.129.2.16:9092,10.131.0.16:9092
+                                                            tcp        172.30.67.219:9093      10.129.2.16:9093,10.131.0.16:9093
+                                                            tcp        172.30.67.219:9094      10.129.2.16:9094,10.131.0.16:9094
+f56f59d7-231a-4974-99b3-792e2741ec8d    Service_openshif    tcp        172.30.89.212:443       10.128.0.41:8443,10.129.0.68:8443,10.130.0.44:8443
+08c2c6d7-d217-4b96-b5d8-c80c4e258116    Service_openshif    tcp        172.30.102.137:2379     10.0.0.3:2379,169.254.169.2:2379,10.0.0.5:2379
+                                                            tcp        172.30.102.137:9979     10.0.0.3:9979,169.254.169.2:9979,10.0.0.5:9979
+60a69c56-fc6a-4de6-bd88-3f2af5ba5665    Service_openshif    tcp        172.30.10.193:443       10.129.0.25:8443
+ab1ef694-0826-4671-a22c-565fc2d282ec    Service_openshif    tcp        172.30.196.123:443      10.128.0.33:8443,10.129.0.64:8443,10.130.0.37:8443
+b1fb34d3-0944-4770-9ee3-2683e7a630e2    Service_openshif    tcp        172.30.158.93:8443      10.129.0.13:8443
+95811c11-56e2-4877-be1e-c78ccb3a82a9    Service_openshif    tcp        172.30.46.85:9001       10.130.0.16:9001
+4baba1d1-b873-4535-884c-3f6fc07a50fd    Service_openshif    tcp        172.30.28.87:443        10.129.0.26:8443
+6c2e1c90-f0ca-484e-8a8e-40e71442110a    Service_openshif    udp        172.30.0.10:53          10.128.0.13:5353,10.128.2.6:5353,10.129.0.39:5353,10.129.2.6:5353,10.130.0.11:5353,10.131.0.9:5353
+```
+
+
+[NOTE]
+----
+From this truncated output you can see there are many OVN-Kubernetes load balancers. Load balancers in OVN-Kubernetes are representations of services.
+----
+5. Run the following command to display the options available with the command ovn-nbctl:
+
+```terminal
+$ oc exec -n openshift-ovn-kubernetes -it ovnkube-node-55xs2 \
+-c nbdb ovn-nbctl --help
+```
+
+
+# Command-line arguments for ovn-nbctl to examine northbound database contents
+
+The following table describes the command-line arguments that can be used with ovn-nbctl to examine the contents of the northbound database.
+
+
+[NOTE]
+----
+Open a remote shell in the pod you want to view the contents of and then run the ovn-nbctl commands.
+----
+
+
+
+# Listing the OVN-Kubernetes southbound database contents
+
+Each node is controlled by the ovnkube-controller container running in the ovnkube-node pod on that node. To understand the OVN logical networking entities you need to examine the northbound database that is running as a container inside the ovnkube-node pod on that node to see what objects are in the node you wish to see.
+
+* Access to the cluster as a user with the cluster-admin role.
+* The OpenShift CLI (oc) installed.
+
+
+[NOTE]
+----
+To run ovn nbctl or sbctl commands in a cluster you must open a remote shell into the nbdb or sbdb containers on the relevant node
+----
+
+1. List the pods by running the following command:
+
+```terminal
+$ oc get po -n openshift-ovn-kubernetes
+```
+
+Example output
+
+```terminal
+NAME                                     READY   STATUS    RESTARTS      AGE
+ovnkube-control-plane-8444dff7f9-4lh9k   2/2     Running   0             27m
+ovnkube-control-plane-8444dff7f9-5rjh9   2/2     Running   0             27m
+ovnkube-node-55xs2                       8/8     Running   0             26m
+ovnkube-node-7r84r                       8/8     Running   0             16m
+ovnkube-node-bqq8p                       8/8     Running   0             17m
+ovnkube-node-mkj4f                       8/8     Running   0             26m
+ovnkube-node-mlr8k                       8/8     Running   0             26m
+ovnkube-node-wqn2m                       8/8     Running   0             16m
+```
+
+2. Optional: To list the pods with node information, run the following command:
+
+```terminal
+$ oc get pods -n openshift-ovn-kubernetes -owide
+```
+
+Example output
+
+```terminal
+NAME                                     READY   STATUS    RESTARTS      AGE   IP           NODE                                       NOMINATED NODE   READINESS GATES
+ovnkube-control-plane-8444dff7f9-4lh9k   2/2     Running   0             27m   10.0.0.3     ci-ln-t487nnb-72292-mdcnq-master-1         <none>           <none>
+ovnkube-control-plane-8444dff7f9-5rjh9   2/2     Running   0             27m   10.0.0.4     ci-ln-t487nnb-72292-mdcnq-master-2         <none>           <none>
+ovnkube-node-55xs2                       8/8     Running   0             26m   10.0.0.4     ci-ln-t487nnb-72292-mdcnq-master-2         <none>           <none>
+ovnkube-node-7r84r                       8/8     Running   0             17m   10.0.128.3   ci-ln-t487nnb-72292-mdcnq-worker-b-wbz7z   <none>           <none>
+ovnkube-node-bqq8p                       8/8     Running   0             17m   10.0.128.2   ci-ln-t487nnb-72292-mdcnq-worker-a-lh7ms   <none>           <none>
+ovnkube-node-mkj4f                       8/8     Running   0             27m   10.0.0.5     ci-ln-t487nnb-72292-mdcnq-master-0         <none>           <none>
+ovnkube-node-mlr8k                       8/8     Running   0             27m   10.0.0.3     ci-ln-t487nnb-72292-mdcnq-master-1         <none>           <none>
+ovnkube-node-wqn2m                       8/8     Running   0             17m   10.0.128.4   ci-ln-t487nnb-72292-mdcnq-worker-c-przlm   <none>           <none>
+```
+
+3. Navigate into a pod to look at the southbound database:
+
+```terminal
+$ oc rsh -c sbdb -n openshift-ovn-kubernetes ovnkube-node-55xs2
+```
+
+4. Run the following command to show all the objects in the southbound database:
+
+```terminal
+$ ovn-sbctl show
+```
+
+Example output
+
+```terminal
+Chassis "5db31703-35e9-413b-8cdf-69e7eecb41f7"
+    hostname: ci-ln-9gp362t-72292-v2p94-worker-a-8bmwz
+    Encap geneve
+        ip: "10.0.128.4"
+        options: {csum="true"}
+    Port_Binding tstor-ci-ln-9gp362t-72292-v2p94-worker-a-8bmwz
+Chassis "070debed-99b7-4bce-b17d-17e720b7f8bc"
+    hostname: ci-ln-9gp362t-72292-v2p94-worker-b-svmp6
+    Encap geneve
+        ip: "10.0.128.2"
+        options: {csum="true"}
+    Port_Binding k8s-ci-ln-9gp362t-72292-v2p94-worker-b-svmp6
+    Port_Binding rtoe-GR_ci-ln-9gp362t-72292-v2p94-worker-b-svmp6
+    Port_Binding openshift-monitoring_alertmanager-main-1
+    Port_Binding rtoj-GR_ci-ln-9gp362t-72292-v2p94-worker-b-svmp6
+    Port_Binding etor-GR_ci-ln-9gp362t-72292-v2p94-worker-b-svmp6
+    Port_Binding cr-rtos-ci-ln-9gp362t-72292-v2p94-worker-b-svmp6
+    Port_Binding openshift-e2e-loki_loki-promtail-qcrcz
+    Port_Binding jtor-GR_ci-ln-9gp362t-72292-v2p94-worker-b-svmp6
+    Port_Binding openshift-multus_network-metrics-daemon-mkd4t
+    Port_Binding openshift-ingress-canary_ingress-canary-xtvj4
+    Port_Binding openshift-ingress_router-default-6c76cbc498-pvlqk
+    Port_Binding openshift-dns_dns-default-zz582
+    Port_Binding openshift-monitoring_thanos-querier-57585899f5-lbf4f
+    Port_Binding openshift-network-diagnostics_network-check-target-tn228
+    Port_Binding openshift-monitoring_prometheus-k8s-0
+    Port_Binding openshift-image-registry_image-registry-68899bd877-xqxjj
+Chassis "179ba069-0af1-401c-b044-e5ba90f60fea"
+    hostname: ci-ln-9gp362t-72292-v2p94-master-0
+    Encap geneve
+        ip: "10.0.0.5"
+        options: {csum="true"}
+    Port_Binding tstor-ci-ln-9gp362t-72292-v2p94-master-0
+Chassis "68c954f2-5a76-47be-9e84-1cb13bd9dab9"
+    hostname: ci-ln-9gp362t-72292-v2p94-worker-c-mjf9w
+    Encap geneve
+        ip: "10.0.128.3"
+        options: {csum="true"}
+    Port_Binding tstor-ci-ln-9gp362t-72292-v2p94-worker-c-mjf9w
+Chassis "2de65d9e-9abf-4b6e-a51d-a1e038b4d8af"
+    hostname: ci-ln-9gp362t-72292-v2p94-master-2
+    Encap geneve
+        ip: "10.0.0.4"
+        options: {csum="true"}
+    Port_Binding tstor-ci-ln-9gp362t-72292-v2p94-master-2
+Chassis "1d371cb8-5e21-44fd-9025-c4b162cc4247"
+    hostname: ci-ln-9gp362t-72292-v2p94-master-1
+    Encap geneve
+        ip: "10.0.0.3"
+        options: {csum="true"}
+    Port_Binding tstor-ci-ln-9gp362t-72292-v2p94-master-1
+```
+
+
+This detailed output shows the chassis and the ports that are attached to the chassis which in this case are all of the router ports and anything that runs like host networking.
+Any pods communicate out to the wider network using source network address translation (SNAT).
+Their IP address is translated into the IP address of the node that the pod is running on and then sent out into the network.
+
+In addition to the chassis information the southbound database has all the logic flows and those logic flows are then sent to the ovn-controller running on each of the nodes.
+The ovn-controller translates the logic flows into open flow rules and ultimately programs OpenvSwitch so that your pods can then follow open flow rules and make it out of the network.
+5. Run the following command to display the options available with the command ovn-sbctl:
+
+```terminal
+$ oc exec -n openshift-ovn-kubernetes -it ovnkube-node-55xs2 \
+-c sbdb ovn-sbctl --help
+```
+
+
+# Command-line arguments for ovn-sbctl to examine southbound database contents
+
+The following table describes the command-line arguments that can be used with ovn-sbctl to examine the contents of the southbound database.
+
+
+[NOTE]
+----
+Open a remote shell in the pod you wish to view the contents of and then run the ovn-sbctl commands.
+----
+
+
+
+# OVN-Kubernetes logical architecture
+
+OVN is a network virtualization solution. It creates logical switches and routers. These switches and routers are interconnected to create any network topologies. When you run ovnkube-trace with the log level set to 2 or 5 the OVN-Kubernetes logical components are exposed. The following diagram shows how the routers and switches are connected in {product-title}.
+
+![OVN-Kubernetes logical architecture]
+
+The key components involved in packet processing are:
+
+Gateway routers:: Gateway routers sometimes called L3 gateway routers, are typically used between the distributed routers and the physical network. Gateway routers including their logical patch ports are bound to a physical location (not distributed), or chassis. The patch ports on this router are known as l3gateway ports in the ovn-southbound database (ovn-sbdb).
+Distributed logical routers:: Distributed logical routers and the logical switches behind them, to which virtual machines and containers attach, effectively reside on each hypervisor.
+Join local switch:: Join local switches are used to connect the distributed router and gateway routers. It reduces the number of IP addresses needed on the distributed router.
+Logical switches with patch ports:: Logical switches with patch ports are used to virtualize the network stack. They connect remote logical ports through tunnels.
+Logical switches with localnet ports:: Logical switches with localnet ports are used to connect OVN to the physical network. They connect remote logical ports by bridging the packets to directly connected physical L2 segments using localnet ports.
+Patch ports:: Patch ports represent connectivity between logical switches and logical routers and between peer logical routers. A single connection has a pair of patch ports at each such point of connectivity, one on each side.
+l3gateway ports:: l3gateway ports are the port binding entries in the ovn-sbdb for logical patch ports used in the gateway routers. They are called l3gateway ports rather than patch ports just to portray the fact that these ports are bound to a chassis just like the gateway router itself.
+localnet ports:: localnet ports are present on the bridged logical switches that allows a connection to a locally accessible network from each ovn-controller instance. This helps model the direct connectivity to the physical network from the logical switches. A logical switch can only have a single localnet port attached to it.
+
+## Installing network-tools on local host
+
+Install network-tools on your local host to make a collection of tools available for debugging {product-title} cluster network issues.
+
+1. Clone the network-tools repository onto your workstation with the following command:
+
+```terminal
+$ git clone git@github.com:openshift/network-tools.git
+```
+
+2. Change into the directory for the repository you just cloned:
+
+```terminal
+$ cd network-tools
+```
+
+3. Optional: List all available commands:
+
+```terminal
+$ ./debug-scripts/network-tools -h
+```
+
+
+## Running network-tools
+
+Get information about the logical switches and routers by running network-tools.
+
+* You installed the OpenShift CLI (oc).
+* You are logged in to the cluster as a user with cluster-admin privileges.
+* You have installed network-tools on local host.
+
+1. List the routers by running the following command:
+
+```terminal
+$ ./debug-scripts/network-tools ovn-db-run-command ovn-nbctl lr-list
+```
+
+Example output
+
+```terminal
+944a7b53-7948-4ad2-a494-82b55eeccf87 (GR_ci-ln-54932yb-72292-kd676-worker-c-rzj99)
+84bd4a4c-4b0b-4a47-b0cf-a2c32709fc53 (ovn_cluster_router)
+```
+
+2. List the localnet ports by running the following command:
+
+```terminal
+$ ./debug-scripts/network-tools ovn-db-run-command \
+ovn-sbctl find Port_Binding type=localnet
+```
+
+Example output
+
+```terminal
+_uuid               : d05298f5-805b-4838-9224-1211afc2f199
+additional_chassis  : []
+additional_encap    : []
+chassis             : []
+datapath            : f3c2c959-743b-4037-854d-26627902597c
+encap               : []
+external_ids        : {}
+gateway_chassis     : []
+ha_chassis_group    : []
+logical_port        : br-ex_ci-ln-54932yb-72292-kd676-worker-c-rzj99
+mac                 : [unknown]
+mirror_rules        : []
+nat_addresses       : []
+options             : {network_name=physnet}
+parent_port         : []
+port_security       : []
+requested_additional_chassis: []
+requested_chassis   : []
+tag                 : []
+tunnel_key          : 2
+type                : localnet
+up                  : false
+virtual_parent      : []
+
+[...]
+```
+
+3. List the l3gateway ports by running the following command:
+
+```terminal
+$ ./debug-scripts/network-tools ovn-db-run-command \
+ovn-sbctl find Port_Binding type=l3gateway
+```
+
+Example output
+
+```terminal
+_uuid               : 5207a1f3-1cf3-42f1-83e9-387bbb06b03c
+additional_chassis  : []
+additional_encap    : []
+chassis             : ca6eb600-3a10-4372-a83e-e0d957c4cd92
+datapath            : f3c2c959-743b-4037-854d-26627902597c
+encap               : []
+external_ids        : {}
+gateway_chassis     : []
+ha_chassis_group    : []
+logical_port        : etor-GR_ci-ln-54932yb-72292-kd676-worker-c-rzj99
+mac                 : ["42:01:0a:00:80:04"]
+mirror_rules        : []
+nat_addresses       : ["42:01:0a:00:80:04 10.0.128.4"]
+options             : {l3gateway-chassis="84737c36-b383-4c83-92c5-2bd5b3c7e772", peer=rtoe-GR_ci-ln-54932yb-72292-kd676-worker-c-rzj99}
+parent_port         : []
+port_security       : []
+requested_additional_chassis: []
+requested_chassis   : []
+tag                 : []
+tunnel_key          : 1
+type                : l3gateway
+up                  : true
+virtual_parent      : []
+
+_uuid               : 6088d647-84f2-43f2-b53f-c9d379042679
+additional_chassis  : []
+additional_encap    : []
+chassis             : ca6eb600-3a10-4372-a83e-e0d957c4cd92
+datapath            : dc9cea00-d94a-41b8-bdb0-89d42d13aa2e
+encap               : []
+external_ids        : {}
+gateway_chassis     : []
+ha_chassis_group    : []
+logical_port        : jtor-GR_ci-ln-54932yb-72292-kd676-worker-c-rzj99
+mac                 : [router]
+mirror_rules        : []
+nat_addresses       : []
+options             : {l3gateway-chassis="84737c36-b383-4c83-92c5-2bd5b3c7e772", peer=rtoj-GR_ci-ln-54932yb-72292-kd676-worker-c-rzj99}
+parent_port         : []
+port_security       : []
+requested_additional_chassis: []
+requested_chassis   : []
+tag                 : []
+tunnel_key          : 2
+type                : l3gateway
+up                  : true
+virtual_parent      : []
+
+[...]
+```
+
+4. List the patch ports by running the following command:
+
+```terminal
+$ ./debug-scripts/network-tools ovn-db-run-command \
+ovn-sbctl find Port_Binding type=patch
+```
+
+Example output
+
+```terminal
+_uuid               : 785fb8b6-ee5a-4792-a415-5b1cb855dac2
+additional_chassis  : []
+additional_encap    : []
+chassis             : []
+datapath            : f1ddd1cc-dc0d-43b4-90ca-12651305acec
+encap               : []
+external_ids        : {}
+gateway_chassis     : []
+ha_chassis_group    : []
+logical_port        : stor-ci-ln-54932yb-72292-kd676-worker-c-rzj99
+mac                 : [router]
+mirror_rules        : []
+nat_addresses       : ["0a:58:0a:80:02:01 10.128.2.1 is_chassis_resident(\"cr-rtos-ci-ln-54932yb-72292-kd676-worker-c-rzj99\")"]
+options             : {peer=rtos-ci-ln-54932yb-72292-kd676-worker-c-rzj99}
+parent_port         : []
+port_security       : []
+requested_additional_chassis: []
+requested_chassis   : []
+tag                 : []
+tunnel_key          : 1
+type                : patch
+up                  : false
+virtual_parent      : []
+
+_uuid               : c01ff587-21a5-40b4-8244-4cd0425e5d9a
+additional_chassis  : []
+additional_encap    : []
+chassis             : []
+datapath            : f6795586-bf92-4f84-9222-efe4ac6a7734
+encap               : []
+external_ids        : {}
+gateway_chassis     : []
+ha_chassis_group    : []
+logical_port        : rtoj-ovn_cluster_router
+mac                 : ["0a:58:64:40:00:01 100.64.0.1/16"]
+mirror_rules        : []
+nat_addresses       : []
+options             : {peer=jtor-ovn_cluster_router}
+parent_port         : []
+port_security       : []
+requested_additional_chassis: []
+requested_chassis   : []
+tag                 : []
+tunnel_key          : 1
+type                : patch
+up                  : false
+virtual_parent      : []
+[...]
+```
+
+
+# Additional resources
+
+* Tracing Openflow with ovnkube-trace
+* OVN architecture
+* ovn-nbctl linux manual page
+* ovn-sbctl linux manual page

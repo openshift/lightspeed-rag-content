@@ -11,7 +11,6 @@ Currently, the following General Availability and Technology Preview processors 
 * Span Processor
 * Kubernetes Attributes Processor
 * Filter Processor
-* Routing Processor
 * Cumulative-to-Delta Processor
 * Group-by-Attributes Processor
 * Transform Processor
@@ -315,44 +314,6 @@ For more information about the support scope of Red Hat Technology Preview featu
 Defines the error mode. When set to ignore, ignores errors returned by conditions. When set to propagate, returns the error up the pipeline. An error causes the payload to be dropped from the Collector.
 Filters the spans that have the container.name == app_container_1 attribute.
 Filters the spans that have the host.name == localhost resource attribute.
-
-# Routing Processor
-
-The Routing Processor routes logs, metrics, or traces to specific exporters. This processor can read a header from an incoming gRPC or plain HTTP request or read a resource attribute, and then direct the trace information to relevant exporters according to the read value.
-
-
-[IMPORTANT]
-----
-{FeatureName} is a Technology Preview feature only. Technology Preview features are not supported with Red Hat production service level agreements (SLAs) and might not be functionally complete. Red Hat does not recommend using them in production. These features provide early access to upcoming product features, enabling customers to test functionality and provide feedback during the development process.
-For more information about the support scope of Red Hat Technology Preview features, see Technology Preview Features Support Scope.
-----
-
-
-```yaml
-# ...
-  config:
-    processors:
-      routing:
-        from_attribute: X-Tenant 1
-        default_exporters: 2
-        - jaeger
-        table: 3
-        - value: acme
-          exporters: [jaeger/acme]
-    exporters:
-      jaeger:
-        endpoint: localhost:14250
-      jaeger/acme:
-        endpoint: localhost:24250
-# ...
-```
-
-
-The HTTP header name for the lookup value when performing the route.
-The default exporter when the attribute value is not present in the table in the next section.
-The table that defines which values are to be routed to which exporters.
-
-Optionally, you can create an attribute_source configuration, which defines where to look for the attribute that you specify in the from_attribute field. The supported values are context for searching the context including the HTTP headers, and resource for searching the resource attributes.
 
 # Cumulative-to-Delta Processor
 
@@ -844,6 +805,78 @@ Allocates percentages of spans according to the order of applied policies. For e
 
 * Tail Sampling with OpenTelemetry: Why it’s useful, how to do it, and what to consider (OpenTelemetry Blog)
 * Gateway (OpenTelemetry Documentation)
+
+# Probabilistic Sampling Processor
+
+If you handle high volumes of telemetry data and seek to reduce costs by reducing processed data volumes, you can use the Probabilistic Sampling Processor as an alternative to the Tail Sampling Processor.
+
+The processor samples a specified percentage of trace spans or log records statelessly and per request.
+
+The processor adds the information about the used effective sampling probability into the telemetry data:
+
+* In trace spans, the processor encodes the threshold and optional randomness information in the W3C Trace Context tracestate fields.
+* In log records, the processor encodes the threshold and randomness information as attributes.
+
+The following is an example OpenTelemetryCollector custom resource configuration for the Probabilistic Sampling Processor for sampling trace spans:
+
+
+```yaml
+# ...
+  config:
+    processors:
+      probabilistic_sampler: 1
+        sampling_percentage: 15.3 2
+        mode: "proportional" 3
+        hash_seed: 22 4
+        sampling_precision: 14 5
+        fail_closed: true 6
+# ...
+service:
+  pipelines:
+    traces:
+      processors: [probabilistic_sampler]
+# ...
+```
+
+
+For trace pipelines, the source of randomness is the hashed value of the span trace ID.
+Required. Accepts a 32-bit floating-point percentage value at which spans are to be sampled.
+Optional. Accepts a supported string value for a sampling logic mode: the default hash_seed, proportional, or equalizing. The hash_seed mode applies the Fowler–Noll–Vo (FNV) hash function to the trace ID and weighs the hashed value against the sampling percentage value. You can also use the hash_seed mode with units of telemetry other than the trace ID. The proportional mode samples a strict, probability-based ratio of the total span quantity, and is based on the OpenTelemetry and World Wide Web Consortium specifications. The equalizing mode is useful for lowering the sampling probability to a minimum value across a whole pipeline or applying a uniform sampling probability in Collector deployments where client SDKs have mixed sampling configurations.
+Optional. Accepts a 32-bit unsigned integer, which is used to compute the hash algorithm. When this field is not configured, the default seed value is 0. If you use multiple tiers of Collector instances, you must configure all Collectors of the same tier to the same seed value.
+Optional. Determines the number of hexadecimal digits used to encode the sampling threshold. Accepts an integer value. The supported values are 1-14. The default value 4 causes the threshold to be rounded if it contains more than 16 significant bits, which is the case of the proportional mode that uses 56 bits. If you select the proportional mode, use a greater value for the purpose of preserving precision applied by preceding samplers.
+Optional. Rejects spans with sampling errors. Accepts a boolean value. The default value is true.
+
+The following is an example OpenTelemetryCollector custom resource configuration for the Probabilistic Sampling Processor for sampling log records:
+
+
+```yaml
+# ...
+  config:
+    processors:
+      probabilistic_sampler/logs:
+        sampling_percentage: 15.3 1
+        mode: "hash_seed" 2
+        hash_seed: 22 3
+        sampling_precision: 4 4
+        attribute_source: "record" 5
+        from_attribute: "<log_record_attribute_name>" 6
+        fail_closed: true 7
+# ...
+service:
+  pipelines:
+    logs:
+      processors: [ probabilistic_sampler/logs ]
+# ...
+```
+
+
+Required. Accepts a 32-bit floating-point percentage value at which spans are to be sampled.
+Optional. Accepts a supported string value for a sampling logic mode: the default hash_seed, equalizing, or proportional. The hash_seed mode applies the Fowler–Noll–Vo (FNV) hash function to the trace ID or a specified log record attribute and then weighs the hashed value against the sampling percentage value. You can also use hash_seed mode with other units of telemetry than trace ID, for example to use the service.instance.id resource attribute for collecting log records from a percentage of pods. The equalizing mode is useful for lowering the sampling probability to a minimum value across a whole pipeline or applying a uniform sampling probability in Collector deployments where client SDKs have mixed sampling configurations. The proportional mode samples a strict, probability-based ratio of the total span quantity, and is based on the OpenTelemetry and World Wide Web Consortium specifications.
+Optional. Accepts a 32-bit unsigned integer, which is used to compute the hash algorithm. When this field is not configured, the default seed value is 0. If you use multiple tiers of Collector instances, you must configure all Collectors of the same tier to the same seed value.
+Optional. Determines the number of hexadecimal digits used to encode the sampling threshold. Accepts an integer value. The supported values are 1-14. The default value 4 causes the threshold to be rounded if it contains more than 16 significant bits, which is the case of the proportional mode that uses 56 bits. If you select the proportional mode, use a greater value for the purpose of preserving precision applied by preceding samplers.
+Optional. Defines where to look for the log record attribute in from_attribute. The log record attribute is used as the source of randomness. Accept the default traceID value or the record value.
+Optional. The name of a log record attribute to be used to compute the sampling hash, such as a unique log record ID. Accepts a string value. The default value is "". Use this field only if you need to specify a log record attribute as the source of randomness in those situations where the trace ID is absent or trace ID sampling is disabled or the attribute_source field is set to the record value.
+Optional. Rejects spans with sampling errors. Accepts a boolean value. The default value is true.
 
 # Additional resources
 

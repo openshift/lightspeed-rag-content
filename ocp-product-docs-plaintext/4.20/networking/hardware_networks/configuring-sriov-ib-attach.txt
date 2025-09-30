@@ -1,0 +1,496 @@
+# Configuring an SR-IOV InfiniBand network attachment
+
+
+You can configure an InfiniBand (IB) network attachment for an Single Root I/O Virtualization (SR-IOV) device in the cluster.
+Before you perform any tasks in the following documentation, ensure that you installed the SR-IOV Network Operator.
+
+# InfiniBand device configuration object
+
+You can configure an InfiniBand (IB) network device by defining an SriovIBNetwork object.
+
+The following YAML describes an SriovIBNetwork object:
+
+
+```yaml
+apiVersion: sriovnetwork.openshift.io/v1
+kind: SriovIBNetwork
+metadata:
+  name: <name> 1
+  namespace: openshift-sriov-network-operator 2
+spec:
+  resourceName: <sriov_resource_name> 3
+  networkNamespace: <target_namespace> 4
+  ipam: |- 5
+    {}
+  linkState: <link_state> 6
+  capabilities: <capabilities> 7
+```
+
+
+A name for the object. The SR-IOV Network Operator creates a NetworkAttachmentDefinition object with same name.
+The namespace where the SR-IOV Operator is installed.
+The value for the spec.resourceName parameter from the SriovNetworkNodePolicy object that defines the SR-IOV hardware for this additional network.
+The target namespace for the SriovIBNetwork object. Only pods in the target namespace can attach to the network device.
+Optional: A configuration object for the IPAM CNI plugin as a YAML block scalar. The plugin manages IP address assignment for the attachment definition.
+Optional: The link state of virtual function (VF). Allowed values are enable, disable and auto.
+Optional: The capabilities to configure for this network. You can specify '{ "ips": true }' to enable IP address support or '{ "infinibandGUID": true }' to enable IB Global Unique Identifier (GUID) support.
+
+## Creating a configuration for assignment of dual-stack IP addresses dynamically
+
+Dual-stack IP address assignment can be configured with the ipRanges parameter for:
+
+* IPv4 addresses
+* IPv6 addresses
+* multiple IP address assignment
+
+1. Set type to whereabouts.
+2. Use ipRanges to allocate IP addresses as shown in the following example:
+
+```yaml
+cniVersion: operator.openshift.io/v1
+kind: Network
+=metadata:
+  name: cluster
+spec:
+  additionalNetworks:
+  - name: whereabouts-shim
+    namespace: default
+    type: Raw
+    rawCNIConfig: |-
+      {
+       "name": "whereabouts-dual-stack",
+       "cniVersion": "0.3.1,
+       "type": "bridge",
+       "ipam": {
+         "type": "whereabouts",
+         "ipRanges": [
+                  {"range": "192.168.10.0/24"},
+                  {"range": "2001:db8::/64"}
+              ]
+       }
+      }
+```
+
+3. Attach network to a pod. For more information, see "Adding a pod to a secondary network".
+4. Verify that all IP addresses are assigned.
+5. Run the following command to ensure the IP addresses are assigned as metadata.
+
+```yaml
+$ oc exec -it mypod -- ip a
+```
+
+
+## Configuration of IP address assignment for a network attachment
+
+For secondary networks, you can assign IP addresses by using an IP Address Management (IPAM) CNI plugin, which supports various assignment methods, including Dynamic Host Configuration Protocol (DHCP) and static assignment.
+
+The DHCP IPAM CNI plugin responsible for dynamic assignment of IP addresses operates with two distinct components:
+
+* CNI Plugin: Responsible for integrating with the Kubernetes networking stack to request and release IP addresses.
+* DHCP IPAM CNI Daemon: A listener for DHCP events that coordinates with existing DHCP servers in the environment to handle IP address assignment requests. This daemon is not a DHCP server itself.
+
+For networks requiring type: dhcp in their IPAM configuration, ensure the following:
+
+* A DHCP server is available and running in the environment.
+* The DHCP server is external to the cluster and you expect the server to form part of the existing network infrastructure for the customer.
+* The DHCP server is appropriately configured to serve IP addresses to the nodes.
+
+In cases where a DHCP server is unavailable in the environment, consider using the Whereabouts IPAM CNI plugin instead. The Whereabouts CNI provides similar IP address management capabilities without the need for an external DHCP server.
+
+
+[NOTE]
+----
+Use the Whereabouts CNI plugin when no external DHCP server exists or where static IP address management is preferred. The Whereabouts plugin includes a reconciler daemon to manage stale IP address allocations.
+----
+
+Ensure the periodic renewal of a DHCP lease throughout the lifetime of a container by including a separate daemon, the DHCP IPAM CNI Daemon. To deploy the DHCP IPAM CNI daemon, change the Cluster Network Operator (CNO) configuration to trigger the deployment of this daemon as part of the secondary network setup.
+
+### Static IP address assignment configuration
+
+The following table describes the configuration for static IP address assignment:
+
+
+
+The addresses array requires objects with the following fields:
+
+
+
+
+
+
+
+
+```json
+{
+  "ipam": {
+    "type": "static",
+      "addresses": [
+        {
+          "address": "191.168.1.7/24"
+        }
+      ]
+  }
+}
+```
+
+
+### Dynamic IP address (DHCP) assignment configuration
+
+A pod obtains its original DHCP lease when it is created. The lease must be periodically renewed by a minimal DHCP server deployment running on the cluster.
+
+
+[IMPORTANT]
+----
+For an Ethernet network attachment, the SR-IOV Network Operator does not create a DHCP server deployment; the Cluster Network Operator is responsible for creating the minimal DHCP server deployment.
+----
+
+To trigger the deployment of the DHCP server, you must create a shim network attachment by editing the Cluster Network Operator configuration, as in the following example:
+
+
+```yaml
+apiVersion: operator.openshift.io/v1
+kind: Network
+metadata:
+  name: cluster
+spec:
+  additionalNetworks:
+  - name: dhcp-shim
+    namespace: default
+    type: Raw
+    rawCNIConfig: |-
+      {
+        "name": "dhcp-shim",
+        "cniVersion": "0.3.1",
+        "type": "bridge",
+        "ipam": {
+          "type": "dhcp" 1
+        }
+      }
+  # ...
+```
+
+
+Specifies dynamic IP address (DHCP) assignment for the cluster.
+
+## Dynamic IP address assignment configuration with Whereabouts
+
+The Whereabouts CNI plugin helps the dynamic assignment of an IP address to a secondary network without the use of a DHCP server.
+
+The Whereabouts CNI plugin also supports overlapping IP address ranges and configuration of the same CIDR range multiple times within separate NetworkAttachmentDefinition CRDs. This provides greater flexibility and management capabilities in multitenant environments.
+
+### Dynamic IP address configuration parameters
+
+The following table describes the configuration objects for dynamic IP address assignment with Whereabouts:
+
+
+
+### Dynamic IP address assignment configuration with Whereabouts that excludes IP address ranges
+
+The following example shows a dynamic address assignment configuration in a NAD file that uses Whereabouts:
+
+
+```json
+{
+  "ipam": {
+    "type": "whereabouts",
+    "range": "192.0.2.192/27",
+    "exclude": [
+       "192.0.2.192/30",
+       "192.0.2.196/32"
+    ]
+  }
+}
+```
+
+
+### Dynamic IP address assignment that uses Whereabouts with overlapping IP address ranges
+
+The following example shows a dynamic IP address assignment that uses overlapping IP address ranges for multitenant networks.
+
+
+```json
+{
+  "ipam": {
+    "type": "whereabouts",
+    "range": "192.0.2.192/29",
+    "network_name": "example_net_common", 1
+  }
+}
+```
+
+
+Optional. If set, must match the network_name of NetworkAttachmentDefinition 2.
+
+
+```json
+{
+  "ipam": {
+    "type": "whereabouts",
+    "range": "192.0.2.192/24",
+    "network_name": "example_net_common", 1
+  }
+}
+```
+
+
+Optional. If set, must match the network_name of NetworkAttachmentDefinition 1.
+
+# Configuring SR-IOV additional network
+
+You can configure an additional network that uses SR-IOV hardware by creating an {rs} object.
+When you create an {rs} object, the SR-IOV Network Operator automatically creates a NetworkAttachmentDefinition object.
+
+
+[NOTE]
+----
+Do not modify or delete an {rs} object if it is attached to any {object} in a running state.
+----
+
+* Install the OpenShift CLI (oc).
+* Log in as a user with cluster-admin privileges.
+
+1. Create a {rs} object, and then save the YAML in the <name>.yaml file, where <name> is a name for this additional network. The object specification might resemble the following example:
+
+```yaml
+apiVersion: sriovnetwork.openshift.io/v1
+kind: {rs}
+metadata:
+  name: attach1
+  namespace: openshift-sriov-network-operator
+spec:
+  resourceName: net1
+  networkNamespace: project2
+  ipam: |-
+    {
+      "type": "host-local",
+      "subnet": "10.56.217.0/24",
+      "rangeStart": "10.56.217.171",
+      "rangeEnd": "10.56.217.181",
+      "gateway": "10.56.217.1"
+    }
+```
+
+2. To create the object, enter the following command:
+
+```terminal
+$ oc create -f <name>.yaml
+```
+
+
+where <name> specifies the name of the additional network.
+3. Optional: To confirm that the NetworkAttachmentDefinition object that is associated with the {rs} object that you created in the previous step exists, enter the following command. Replace <namespace> with the networkNamespace you specified in the {rs} object.
+
+```terminal
+$ oc get net-attach-def -n <namespace>
+```
+
+
+# Runtime configuration for an InfiniBand-based SR-IOV attachment
+
+When attaching a pod to an additional network, you can specify a runtime configuration to make specific customizations for the pod. For example, you can request a specific MAC hardware address.
+
+You specify the runtime configuration by setting an annotation in the pod specification. The annotation key is k8s.v1.cni.cncf.io/networks, and it accepts a JSON object that describes the runtime configuration.
+
+The following JSON describes the runtime configuration options for an InfiniBand-based SR-IOV network attachment.
+
+
+```json
+[
+  {
+    "name": "<network_attachment>", 1
+    "infiniband-guid": "<guid>", 2
+    "ips": ["<cidr_range>"] 3
+  }
+]
+```
+
+
+The name of the SR-IOV network attachment definition CR.
+The InfiniBand GUID for the SR-IOV device. To use this feature, you also must specify { "infinibandGUID": true } in the SriovIBNetwork object.
+The IP addresses for the SR-IOV device that is allocated from the resource type defined in the SR-IOV network attachment definition CR. Both IPv4 and IPv6 addresses are supported. To use this feature, you also must specify { "ips": true } in the SriovIBNetwork object.
+
+
+```yaml
+apiVersion: v1
+kind: Pod
+metadata:
+  name: sample-pod
+  annotations:
+    k8s.v1.cni.cncf.io/networks: |-
+      [
+        {
+          "name": "ib1",
+          "infiniband-guid": "c2:11:22:33:44:55:66:77",
+          "ips": ["192.168.10.1/24", "2001::1/64"]
+        }
+      ]
+spec:
+  containers:
+  - name: sample-container
+    image: <image>
+    imagePullPolicy: IfNotPresent
+    command: ["sleep", "infinity"]
+```
+
+
+# Adding a pod to a secondary network
+
+You can add a pod to a secondary network. The pod continues to send normal cluster-related network traffic over the default network.
+
+When a pod is created, a secondary networks is attached to the pod. However, if a pod already exists, you cannot attach a secondary network to it.
+
+The pod must be in the same namespace as the secondary network.
+
+* Install the OpenShift CLI (oc).
+* Log in to the cluster.
+
+1. Add an annotation to the Pod object. Only one of the following annotation formats can be used:
+1. To attach a secondary network without any customization, add an annotation with the following format. Replace <network> with the name of the secondary network to associate with the pod:
+
+```yaml
+metadata:
+  annotations:
+    k8s.v1.cni.cncf.io/networks: <network>[,<network>,...] 1
+```
+
+To specify more than one secondary network, separate each network with a comma. Do not include whitespace between the comma. If you specify the same secondary network multiple times, that pod will have multiple network interfaces attached to that network.
+2. To attach a secondary network with customizations, add an annotation with the following format:
+
+```yaml
+metadata:
+  annotations:
+    k8s.v1.cni.cncf.io/networks: |-
+      [
+        {
+          "name": "<network>", 1
+          "namespace": "<namespace>", 2
+          "default-route": ["<default_route>"] 3
+        }
+      ]
+```
+
+Specify the name of the secondary network defined by a NetworkAttachmentDefinition object.
+Specify the namespace where the NetworkAttachmentDefinition object is defined.
+Optional: Specify an override for the default route, such as 192.168.17.1.
+2. To create the pod, enter the following command. Replace <name> with the name of the pod.
+
+```terminal
+$ oc create -f <name>.yaml
+```
+
+3. Optional: To Confirm that the annotation exists in the Pod CR, enter the following command, replacing <name> with the name of the pod.
+
+```terminal
+$ oc get pod <name> -o yaml
+```
+
+
+In the following example, the example-pod pod is attached to the net1 secondary network:
+
+```terminal
+$ oc get pod example-pod -o yaml
+apiVersion: v1
+kind: Pod
+metadata:
+  annotations:
+    k8s.v1.cni.cncf.io/networks: macvlan-bridge
+    k8s.v1.cni.cncf.io/network-status: |- 1
+      [{
+          "name": "ovn-kubernetes",
+          "interface": "eth0",
+          "ips": [
+              "10.128.2.14"
+          ],
+          "default": true,
+          "dns": {}
+      },{
+          "name": "macvlan-bridge",
+          "interface": "net1",
+          "ips": [
+              "20.2.2.100"
+          ],
+          "mac": "22:2f:60:a5:f8:00",
+          "dns": {}
+      }]
+  name: example-pod
+  namespace: default
+spec:
+  ...
+status:
+  ...
+```
+
+The k8s.v1.cni.cncf.io/network-status parameter is a JSON array of
+objects. Each object describes the status of a secondary network attached
+to the pod. The annotation value is stored as a plain text value.
+
+## Exposing MTU for vfio-pci SR-IOV devices to pod
+
+After adding a pod to an additional network, you can check that the MTU is available for the SR-IOV network.
+
+1. Check that the pod annotation includes MTU by running the following command:
+
+```terminal
+$ oc describe pod example-pod
+```
+
+
+The following example shows the sample output:
+
+```text
+"mac": "20:04:0f:f1:88:01",
+       "mtu": 1500,
+       "dns": {},
+       "device-info": {
+         "type": "pci",
+         "version": "1.1.0",
+         "pci": {
+           "pci-address": "0000:86:01.3"
+    }
+  }
+```
+
+2. Verify that the MTU is available in /etc/podnetinfo/ inside the pod by running the following command:
+
+```terminal
+$ oc exec example-pod -n sriov-tests -- cat /etc/podnetinfo/annotations | grep mtu
+```
+
+
+The following example shows the sample output:
+
+```text
+k8s.v1.cni.cncf.io/network-status="[{
+    \"name\": \"ovn-kubernetes\",
+    \"interface\": \"eth0\",
+    \"ips\": [
+        \"10.131.0.67\"
+    ],
+    \"mac\": \"0a:58:0a:83:00:43\",
+    \"default\": true,
+    \"dns\": {}
+    },{
+    \"name\": \"sriov-tests/sriov-nic-1\",
+    \"interface\": \"net1\",
+    \"ips\": [
+        \"192.168.10.1\"
+    ],
+    \"mac\": \"20:04:0f:f1:88:01\",
+    \"mtu\": 1500,
+    \"dns\": {},
+    \"device-info\": {
+        \"type\": \"pci\",
+        \"version\": \"1.1.0\",
+        \"pci\": {
+            \"pci-address\": \"0000:86:01.3\"
+        }
+    }
+    }]"
+```
+
+
+# Additional resources
+
+* Configuring an SR-IOV network device
+* Using CPU Manager
+* Exclude SR-IOV network topology for NUMA-aware scheduling

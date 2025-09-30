@@ -1,0 +1,260 @@
+# Monitoring clusters that run on RHOSO
+
+
+You can correlate observability metrics for clusters that run on Red Hat OpenStack Services on OpenShift (RHOSO). By collecting metrics from both environments, you can monitor and troubleshoot issues across the infrastructure and application layers.
+There are two supported methods for metric correlation for clusters that run on RHOSO:
+* Remote writing to an external Prometheus instance.
+* Collecting data from the {product-title} federation endpoint to the RHOSO observability stack.
+
+# Remote writing to an external Prometheus instance
+
+Use remote write with both Red Hat OpenStack Services on OpenShift (RHOSO) and {product-title} to push their metrics to an external Prometheus instance.
+
+* You have access to an external Prometheus instance.
+* You have administrative access to RHOSO and your cluster.
+* You have certificates for secure communication with mTLS.
+* Your Prometheus instance is configured for client TLS certificates and has been set up as a remote write receiver.
+* The Cluster Observability Operator is installed on your RHOSO cluster.
+* The monitoring stack for your RHOSO cluster is configured to collect the metrics that you are interested in.
+* Telemetry is enabled in the RHOSO environment.
+
+[NOTE]
+----
+To verify that the telemetry service is operating normally, entering the following command:
+
+```shell
+$ oc -n openstack get monitoringstacks metric-storage -o yaml
+```
+
+The monitoringstacks CRD indicates whether telemetry is enabled correctly.
+----
+
+1. Configure your RHOSO management cluster to send metrics to Prometheus:
+1. Create a secret that is named mtls-bundle in the openstack namespace that contains HTTPS client certificates for authentication to Prometheus by entering the following command:
+
+```shell
+$ oc --namespace openstack \
+    create secret generic mtls-bundle \
+        --from-file=./ca.crt \
+        --from-file=osp-client.crt \
+        --from-file=osp-client.key
+```
+
+2. Open the controlplane configuration for editing by running the following command:
+
+```shell
+$ oc -n openstack edit openstackcontrolplane/controlplane
+```
+
+3. With the configuration open, replace the .spec.telemetry.template.metricStorage section so that RHOSO sends metrics to Prometheus. As an example:
+
+```yaml
+      metricStorage:
+        customMonitoringStack:
+          alertmanagerConfig:
+            disabled: false
+          logLevel: info
+          prometheusConfig:
+            scrapeInterval: 30s
+            remoteWrite:
+            - url: https://external-prometheus.example.com/api/v1/write 1
+              tlsConfig:
+                ca:
+                  secret:
+                    name: mtls-bundle
+                    key: ca.crt
+                cert:
+                  secret:
+                    name: mtls-bundle
+                    key: ocp-client.crt
+                keySecret:
+                  name: mtls-bundle
+                  key: ocp-client.key
+            replicas: 2
+          resourceSelector:
+            matchLabels:
+              service: metricStorage
+          resources:
+            limits:
+              cpu: 500m
+              memory: 512Mi
+            requests:
+              cpu: 100m
+              memory: 256Mi
+          retention: 1d 2
+        dashboardsEnabled: false
+        dataplaneNetwork: ctlplane
+        enabled: true
+        prometheusTls: {}
+```
+
+Replace this URL with the URL of your Prometheus instance.
+Set a retention period. Optionally, you can reduce retention for local metrics because of external collection.
+2. Configure the tenant cluster on which your workloads run to send metrics to Prometheus:
+1. Create a cluster monitoring config map as a YAML file. The map must include a remote write configuration and cluster identifiers. As an example:
+
+```yaml
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: cluster-monitoring-config
+  namespace: openshift-monitoring
+data:
+  config.yaml: |
+    prometheusK8s:
+      retention: 1d 1
+      remoteWrite:
+      - url: "https://external-prometheus.example.com/api/v1/write"
+        writeRelabelConfigs:
+        - sourceLabels:
+          - __tmp_openshift_cluster_id__
+          targetLabel: cluster_id
+          action: replace
+        tlsConfig:
+          ca:
+            secret:
+              name: mtls-bundle
+              key: ca.crt
+          cert:
+            secret:
+              name: mtls-bundle
+              key: ocp-client.crt
+          keySecret:
+            name: mtls-bundle
+            key: ocp-client.key
+```
+
+Set a retention period. Optionally, you can reduce retention for local metrics because of external collection.
+2. Save the config map as a file called cluster-monitoring-config.yaml.
+3. Create a secret that is named mtls-bundle in the openshift-monitoring namespace that contains HTTPS client certificates for authentication to Prometheus by entering the following command:
+
+```terminal
+$ oc --namespace openshift-monitoring \
+    create secret generic mtls-bundle \
+        --from-file=./ca.crt \
+        --from-file=ocp-client.crt \
+        --from-file=ocp-client.key
+```
+
+4. Apply the cluster monitoring configuration by running the following command:
+
+```terminal
+$ oc apply -f cluster-monitoring-config.yaml
+```
+
+
+After the changes propagate, you can see aggregated metrics in your external Prometheus instance.
+
+* Configuring remote write storage
+* Adding cluster ID labels to metrics
+
+# Collecting cluster metrics from the federation endpoint
+
+You can employ the federation endpoint of your {product-title} cluster to make metrics available to a Red Hat OpenStack Services on OpenShift (RHOSO) cluster to practice pull-based monitoring.
+
+* You have administrative access to RHOSO and the tenant cluster that is running on it.
+* Telemetry is enabled in the RHOSO environment.
+* The Cluster Observability Operator is installed on your cluster.
+* The monitoring stack for your cluster is configured.
+* Your cluster has its federation endpoint exposed.
+
+1. Connect to your cluster by using a username and password; do not log in by using a kubeconfig file that was generated by the installation program.
+2. To retrieve a token from the {product-title} cluster, run the following command on it:
+
+```terminal
+$ oc whoami -t
+```
+
+3. Make the token available as a secret in the openstack namespace in the RHOSO management cluster by running the following command:
+
+```terminal
+$ oc -n openstack create secret generic ocp-federated --from-literal=token=<the_token_fetched_previously>
+```
+
+4. To get the Prometheus federation route URL from your {product-title} cluster, run the following command:
+
+```terminal
+$ oc -n openshift-monitoring get route prometheus-k8s-federate -ojsonpath={'.status.ingress[].host'}
+```
+
+5. Write a manifest for a scrape configuration and save it as a file called cluster-scrape-config.yaml. As an example:
+
+```yaml
+apiVersion: monitoring.rhobs/v1alpha1
+kind: ScrapeConfig
+metadata:
+  labels:
+    service: metricStorage
+  name: sos1-federated
+  namespace: openstack
+spec:
+  params:
+    'match[]':
+    - '{__name__=~"kube_node_info|kube_persistentvolume_info|cluster:master_nodes"}' 1
+  metricsPath: '/federate'
+  authorization:
+    type: Bearer
+    credentials:
+      name: ocp-federated 2
+      key: token
+  scheme: HTTPS # or HTTP
+  scrapeInterval: 30s 3
+  staticConfigs:
+  - targets:
+    - prometheus-k8s-federate-openshift-monitoring.apps.openshift.example 4
+```
+
+Add metrics here. In this example, only the metrics kube_node_info, kube_persistentvolume_info, and cluster:master_nodes are requested.
+Insert the previously generated secret name here.
+Limit scraping to fewer than 1000 samples for each request with a maximum frequency of once every 30 seconds.
+Insert the URL you fetched previously here. If the endpoint is HTTPS and uses a custom certificate authority, add a tlsConfig section after it.
+6. While connected to the RHOSO management cluster, apply the manifest by running the following command:
+
+```terminal
+$ oc apply -f cluster-scrape-config.yaml
+```
+
+
+After the config propagates, the cluster metrics are accessible for querying in the {product-title} UI in RHOSO.
+
+* Querying metrics by using the federation endpoint for Prometheus
+
+# Available metrics for clusters that run on RHOSO
+
+To query metrics and identifying resources across the stack, there are helper metrics that establish a correlation between Red Hat OpenStack Services on OpenShift (RHOSO) infrastructure resources and their representations in the tenant {product-title} cluster.
+
+To map nodes with RHOSO compute instances, in the metric kube_node_info:
+
+* node is the Kubernetes node name.
+* provider_id contains the identifier of the corresponding compute service instance.
+
+To map persistent volumes with RHOSO block storage or shared filesystems shares, in the metric kube_persistentvolume_info:
+
+* persistentvolume is the volume name.
+* csi_volume_handle is the block storage volume or share identifier.
+
+By default, the compute machines that back the cluster control plane nodes are created in a server group with a soft anti-affinity policy. As a result, the compute service creates them on separate hypervisors on a best-effort basis. However, if the state of the RHOSO cluster is not appropriate for this distribution, the machines are created anyway.
+
+In combination with the default soft anti-affinity policy, you can configure an alert that activates when a hypervisor hosts more than one control plane node of a given cluster to highlight the degraded level of high availability.
+
+As an example, this PromQL query returns the number of {product-title} master nodes per RHOSP host:
+
+
+```promql
+sum by (vm_instance) (
+  group by (vm_instance, resource) (ceilometer_cpu)
+    / on (resource) group_right(vm_instance) (
+      group by (node, resource) (
+        label_replace(kube_node_info, "resource", "$1", "system_uuid", "(.+)")
+      )
+    / on (node) group_left group by (node) (
+      cluster:master_nodes
+    )
+  )
+)
+```
+
+
+# Additional resources
+
+* Cluster Observability Operator overview

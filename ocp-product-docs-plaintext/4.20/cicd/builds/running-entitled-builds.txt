@@ -1,0 +1,339 @@
+# Using Red Hat subscriptions in builds
+
+
+Use the following sections to install Red Hat subscription content within {product-title} builds.
+
+# Creating an image stream tag for the Red Hat Universal Base Image
+
+To install Red Hat Enterprise Linux (RHEL) packages within a build, you can create an image stream tag to reference the Red Hat Universal Base Image (UBI).
+
+To make the UBI available in every project in the cluster, add the image stream tag to the openshift namespace. Otherwise, to make it available in a specific project, add the image stream tag to that project.
+
+Image stream tags grant access to the UBI by using the registry.redhat.io credentials that are present in the install pull secret, without exposing the pull secret to other users. This method is more convenient than requiring each developer to install pull secrets with registry.redhat.io credentials in each project.
+
+* To create an ImageStreamTag resource in the openshift namespace, so it is available to developers in all projects, enter the following command:
+
+```terminal
+$ oc tag --source=docker registry.redhat.io/ubi9/ubi:latest ubi9:latest -n openshift
+```
+
+
+[TIP]
+----
+You can alternatively apply the following YAML to create an ImageStreamTag resource in the openshift namespace:
+
+```yaml
+apiVersion: image.openshift.io/v1
+kind: ImageStream
+metadata:
+  name: ubi9
+  namespace: openshift
+spec:
+  tags:
+  - from:
+      kind: DockerImage
+      name: registry.redhat.io/ubi9/ubi:latest
+    name: latest
+    referencePolicy:
+      type: Source
+```
+
+----
+* To create an ImageStreamTag resource in a single project, enter the following command:
+
+```terminal
+$ oc tag --source=docker registry.redhat.io/ubi9/ubi:latest ubi:latest
+```
+
+
+[TIP]
+----
+You can alternatively apply the following YAML to create an ImageStreamTag resource in a single project:
+
+```yaml
+apiVersion: image.openshift.io/v1
+kind: ImageStream
+metadata:
+  name: ubi9
+spec:
+  tags:
+  - from:
+      kind: DockerImage
+      name: registry.redhat.io/ubi9/ubi:latest
+    name: latest
+    referencePolicy:
+      type: Source
+```
+
+----
+
+# Adding subscription entitlements as a build secret
+
+Builds that use Red Hat subscriptions to install content must include the entitlement keys as a build secret.
+
+* You must have access to Red Hat Enterprise Linux (RHEL) package repositories through your subscription. The entitlement secret to access these repositories is automatically created by the Insights Operator when your cluster is subscribed.
+* You must have access to the cluster as a user with the cluster-admin role or you have permission to access secrets in the openshift-config-managed project.
+
+1. Copy the entitlement secret from the openshift-config-managed namespace to the namespace of the build by entering the following commands:
+
+```terminal
+$ cat << EOF > secret-template.txt
+kind: Secret
+apiVersion: v1
+metadata:
+  name: etc-pki-entitlement
+type: Opaque
+data: {{ range \$key, \$value := .data }}
+  {{ \$key }}: {{ \$value }} {{ end }}
+EOF
+$ oc get secret etc-pki-entitlement -n openshift-config-managed -o=go-template-file --template=secret-template.txt | oc apply -f -
+```
+
+2. Add the etc-pki-entitlement secret as a build volume in the build configuration's Docker strategy:
+
+```yaml
+strategy:
+  dockerStrategy:
+    from:
+      kind: ImageStreamTag
+      name: ubi9:latest
+    volumes:
+    - name: etc-pki-entitlement
+      mounts:
+      - destinationPath: /etc/pki/entitlement
+      source:
+        type: Secret
+        secret:
+          secretName: etc-pki-entitlement
+```
+
+
+# Running builds with Subscription Manager
+
+## Docker builds using Subscription Manager
+
+Docker strategy builds can use yum or dnf to install additional Red Hat Enterprise Linux (RHEL) packages.
+
+* The entitlement keys must be added as build strategy volumes.
+
+* Use the following as an example Dockerfile to install content with the Subscription Manager:
+
+```docker
+FROM registry.redhat.io/ubi9/ubi:latest
+RUN rm -rf /etc/rhsm-host 1
+RUN yum --enablerepo=codeready-builder-for-rhel-9-x86_64-rpms install \ 2
+    nss_wrapper \
+    uid_wrapper -y && \
+    yum clean all -y
+RUN ln -s /run/secrets/rhsm /etc/rhsm-host 3
+```
+
+You must include the command to remove the /etc/rhsm-host directory and all its contents in your Dockerfile before executing any yum or dnf commands.
+Use the Red Hat Package Browser to find the correct repositories for your installed packages.
+You must restore the /etc/rhsm-host symbolic link to keep your image compatible with other Red Hat container images.
+
+# Running builds with Red Hat Satellite subscriptions
+
+## Adding Red Hat Satellite configurations to builds
+
+Builds that use Red Hat Satellite to install content must provide appropriate configurations to obtain content from Satellite repositories.
+
+* You must provide or create a yum-compatible repository configuration file that downloads content from your Satellite instance.
+Sample repository configuration
+
+```terminal
+[test-<name>]
+name=test-<number>
+baseurl = https://satellite.../content/dist/rhel/server/7/7Server/x86_64/os
+enabled=1
+gpgcheck=0
+sslverify=0
+sslclientkey = /etc/pki/entitlement/...-key.pem
+sslclientcert = /etc/pki/entitlement/....pem
+```
+
+
+1. Create a ConfigMap object containing the Satellite repository configuration file by entering the following command:
+
+```terminal
+$ oc create configmap yum-repos-d --from-file /path/to/satellite.repo
+```
+
+2. Add the Satellite repository configuration and entitlement key as a build volumes:
+
+```yaml
+strategy:
+  dockerStrategy:
+    from:
+      kind: ImageStreamTag
+      name: ubi9:latest
+    volumes:
+    - name: yum-repos-d
+      mounts:
+      - destinationPath: /etc/yum.repos.d
+      source:
+        type: ConfigMap
+        configMap:
+          name: yum-repos-d
+    - name: etc-pki-entitlement
+      mounts:
+      - destinationPath: /etc/pki/entitlement
+      source:
+        type: Secret
+        secret:
+          secretName: etc-pki-entitlement
+```
+
+
+## Docker builds using Red Hat Satellite subscriptions
+
+Docker strategy builds can use Red Hat Satellite repositories to install subscription content.
+
+* You have added the entitlement keys and Satellite repository configurations as build volumes.
+
+* Use the following example to create a Dockerfile for installing content with Satellite:
+
+```docker
+FROM registry.redhat.io/ubi9/ubi:latest
+RUN rm -rf /etc/rhsm-host 1
+RUN yum --enablerepo=codeready-builder-for-rhel-9-x86_64-rpms install \ 2
+    nss_wrapper \
+    uid_wrapper -y && \
+    yum clean all -y
+RUN ln -s /run/secrets/rhsm /etc/rhsm-host 3
+```
+
+You must include the command to remove the /etc/rhsm-host directory and all its contents in your Dockerfile before executing any yum or dnf commands.
+Contact your Satellite system administrator to find the correct repositories for the build's installed packages.
+You must restore the /etc/rhsm-host symbolic link to keep your image compatible with other Red Hat container images.
+
+* How to use builds with Red Hat Satellite subscriptions and which certificate to use
+
+# Running builds using SharedSecret objects
+
+You can use a SharedSecret object to securely access the entitlement keys of a cluster in builds.
+
+The SharedSecret object allows you to share and synchronize secrets across namespaces.
+
+
+[IMPORTANT]
+----
+The Shared Resource CSI Driver feature is now generally available in Builds for Red Hat OpenShift 1.1. This feature is now removed in {product-title} 4.18 and later. To use this feature, ensure that you are using Builds for Red Hat OpenShift 1.1 or later.
+----
+
+* You have enabled the TechPreviewNoUpgrade feature set by using the feature gates. For more information, see Enabling features using feature gates.
+* You must have permission to perform the following actions:
+* Create build configs and start builds.
+* Discover which SharedSecret CR instances are available by entering the oc get sharedsecrets command and getting a non-empty list back.
+* Determine if the builder service account available to you in your namespace is allowed to use the given SharedSecret CR instance. In other words, you can run oc adm policy who-can use <identifier of specific SharedSecret> to see if the builder service account in your namespace is listed.
+
+
+[NOTE]
+----
+If neither of the last two prerequisites in this list are met, establish, or ask someone to establish, the necessary role-based access control (RBAC) so that you can discover SharedSecret CR instances and enable service accounts to use SharedSecret CR instances.
+----
+
+1. Use oc apply to create a SharedSecret object instance with the cluster's entitlement secret.
+
+[IMPORTANT]
+----
+You must have cluster administrator permissions to create SharedSecret objects.
+----
+Example oc apply -f command with YAML Role object definition
+
+```terminal
+$ oc apply -f - <<EOF
+kind: SharedSecret
+apiVersion: sharedresource.openshift.io/v1alpha1
+metadata:
+  name: etc-pki-entitlement
+spec:
+  secretRef:
+    name: etc-pki-entitlement
+    namespace: openshift-config-managed
+EOF
+```
+
+2. Create a role to grant the builder service account permission to access the SharedSecret object:
+Example oc apply -f command
+
+```terminal
+$ oc apply -f - <<EOF
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: builder-etc-pki-entitlement
+  namespace: build-namespace
+rules:
+  - apiGroups:
+      - sharedresource.openshift.io
+    resources:
+      - sharedsecrets
+    resourceNames:
+      - etc-pki-entitlement
+    verbs:
+      - use
+EOF
+```
+
+3. Create a RoleBinding object that grants the builder service account permission to access the SharedSecret object by running the following command:
+Example oc create rolebinding command
+
+```terminal
+$ oc create rolebinding builder-etc-pki-entitlement --role=builder-etc-pki-entitlement --serviceaccount=build-namespace:builder
+```
+
+4. Add the entitlement secret to your BuildConfig object by using a CSI volume mount:
+Example YAML BuildConfig object definition
+
+```yaml
+apiVersion: build.openshift.io/v1
+kind: BuildConfig
+metadata:
+  name: uid-wrapper-rhel9
+  namespace: build-namespace
+spec:
+  runPolicy: Serial
+  source:
+    dockerfile: |
+      FROM registry.redhat.io/ubi9/ubi:latest
+      RUN rm -rf /etc/rhsm-host 1
+      RUN yum --enablerepo=codeready-builder-for-rhel-9-x86_64-rpms install \ 2
+          nss_wrapper \
+          uid_wrapper -y && \
+          yum clean all -y
+      RUN ln -s /run/secrets/rhsm /etc/rhsm-host 3
+  strategy:
+    type: Docker
+    dockerStrategy:
+      volumes:
+        - mounts:
+            - destinationPath: "/etc/pki/entitlement"
+          name: etc-pki-entitlement
+          source:
+            csi:
+              driver: csi.sharedresource.openshift.io
+              readOnly: true 4
+              volumeAttributes:
+                sharedSecret: etc-pki-entitlement 5
+            type: CSI
+```
+
+You must include the command to remove the /etc/rhsm-host directory and all its contents in the Dockerfile before executing any yum or dnf commands.
+Use the Red Hat Package Browser to find the correct repositories for your installed packages.
+You must restore the /etc/rhsm-host symbolic link to keep your image compatible with other Red Hat container images.
+You must set readOnly to true to mount the shared resource in the build.
+Reference the name of the SharedSecret object to include it in the build.
+5. Start a build from the BuildConfig object and follow the logs using the oc command.
+
+```terminal
+$ oc start-build uid-wrapper-rhel9 -n build-namespace -F
+```
+
+
+# Additional resources
+
+* Importing simple content access certificates with Insights Operator
+* Enabling features using feature gates
+* Managing image streams
+* Build strategies

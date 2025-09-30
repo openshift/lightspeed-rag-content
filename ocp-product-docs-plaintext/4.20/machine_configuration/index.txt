@@ -1,0 +1,906 @@
+# Machine configuration overview
+
+
+There are times when you need to make changes to the operating systems running on {product-title} nodes. This can include changing settings for network time service, adding kernel arguments, or configuring journaling in a specific way.
+Aside from a few specialized features, most changes to operating systems on {product-title} nodes can be done by creating what are referred to as MachineConfig objects that are managed by the Machine Config Operator. For example, you can use the Machine Config Operator (MCO) and machine configs to manage update to systemd, CRI-O and kubelet, the kernel, Network Manager and other system features.
+Tasks in this section describe how to use features of the Machine Config Operator to configure operating system features on {product-title} nodes.
+
+[IMPORTANT]
+----
+NetworkManager stores new network configurations to /etc/NetworkManager/system-connections/ in a key file format.
+Previously, NetworkManager stored new network configurations to /etc/sysconfig/network-scripts/ in the ifcfg format. Starting with RHEL 9.0, RHEL stores new network configurations at /etc/NetworkManager/system-connections/ in a key file format. The connections configurations stored to /etc/sysconfig/network-scripts/ in the old format still work uninterrupted. Modifications in existing profiles continue updating the older files.
+----
+
+# About the Machine Config Operator
+
+{product-title} {product-version} integrates both
+operating system and cluster management. Because the cluster manages its own
+updates, including updates to Red Hat Enterprise Linux CoreOS (RHCOS) on cluster nodes,
+{product-title} provides an opinionated lifecycle management
+experience that simplifies the orchestration of node upgrades.
+
+{product-title} employs three daemon sets and controllers to
+simplify node management. These daemon sets orchestrate operating system updates
+and configuration changes to the hosts by using standard Kubernetes-style
+constructs. They include:
+
+* The machine-config-controller, which coordinates machine upgrades from the control
+plane. It monitors all of the cluster nodes and orchestrates their configuration
+updates.
+* The machine-config-daemon daemon set, which runs on
+each node in the cluster and updates a machine to configuration as defined by
+machine config and as instructed by the MachineConfigController. When the node detects
+a change, it drains off its pods, applies the update, and reboots. These changes
+come in the form of Ignition configuration files that apply the specified
+machine configuration and control kubelet configuration. The update itself is
+delivered in a container. This process is key to the success of managing
+{product-title} and RHCOS updates together.
+* The machine-config-server daemon set, which provides the Ignition config files
+to control plane nodes as they join the cluster.
+
+The machine configuration is a subset of the Ignition configuration. The
+machine-config-daemon reads the machine configuration to see if it needs to do
+an OSTree update or if it must apply a series of systemd kubelet file changes,
+configuration changes, or other changes to the operating system or {product-title}
+configuration.
+
+When you perform node management operations, you create or modify a
+KubeletConfig custom resource (CR).
+
+
+[IMPORTANT]
+----
+When changes are made to a machine configuration, the Machine Config Operator (MCO) automatically reboots all corresponding nodes in order for the changes to take effect.
+You can mitigate the disruption caused by some machine config changes by using a node disruption policy. See Understanding node restart behaviors after machine config changes.
+Alternatively, you can prevent the nodes from automatically rebooting after machine configuration changes before making the changes. Pause the autoreboot process by setting the spec.paused field to true in the corresponding machine config pool. When paused, machine configuration changes are not applied until you set the spec.paused field to false and the nodes have rebooted into the new configuration.
+The following modifications do not trigger a node reboot:
+* When the MCO detects any of the following changes, it applies the update without draining or rebooting the node:
+* Changes to the SSH key in the spec.config.passwd.users.sshAuthorizedKeys parameter of a machine config.
+* Changes to the global pull secret or pull secret in the openshift-config namespace.
+* Automatic rotation of the /etc/kubernetes/kubelet-ca.crt certificate authority (CA) by the Kubernetes API Server Operator.
+* When the MCO detects changes to the /etc/containers/registries.conf file, such as adding or editing an ImageDigestMirrorSet, ImageTagMirrorSet, or ImageContentSourcePolicy object, it drains the corresponding nodes, applies the changes, and uncordons the nodes. The node drain does not happen for the following changes:
+* The addition of a registry with the pull-from-mirror = "digest-only" parameter set for each mirror.
+* The addition of a mirror with the pull-from-mirror = "digest-only" parameter set in a registry.
+* The addition of items to the unqualified-search-registries list.
+----
+
+There might be situations where the configuration on a node does not fully match what the currently-applied machine config specifies. This state is called configuration drift. The Machine Config Daemon (MCD) regularly checks the nodes for configuration drift. If the MCD detects configuration drift, the MCO marks the node degraded until an administrator corrects the node configuration. A degraded node is online and operational, but, it cannot be updated.
+
+* About the OVN-Kubernetes network plugin
+
+# Machine config overview
+
+The Machine Config Operator (MCO) manages updates to systemd, CRI-O and Kubelet, the kernel, Network Manager and other system features. It also offers a MachineConfig CRD that can write configuration files onto the host (see machine-config-operator). Understanding what MCO does and how it interacts with other components is critical to making advanced, system-level changes to an {product-title} cluster. Here are some things you should know about MCO, machine configs, and how they are used:
+
+* A machine config can make a specific change to a file or service on the operating system of each system representing a pool of {product-title} nodes.
+* MCO applies changes to operating systems in pools of machines. All {product-title} clusters start with worker and control plane node pools. By adding more role labels, you can configure custom pools of nodes. For example, you can set up a custom pool of worker nodes that includes particular hardware features needed by an application. However, examples in this section focus on changes to the default pool types.
+
+[IMPORTANT]
+----
+A node can have multiple labels applied that indicate its type, such as master or worker, however it can be a member of only a single machine config pool.
+----
+* Machine configs are processed alphabetically, in lexicographically increasing order, by their name. The render controller uses the first machine config in the list as the base and appends the rest to the base machine config into a rendered machine config, which is then applied to the appropriate nodes.
+* When you create a machine config for the worker nodes, the changes are also applied to the nodes in all custom pools.
+
+However, as of {product-title} 4.15, any machine configs that target custom pools always override worker machine configs if the worker machine configs contain definitions for the same fields.
+* After a machine config change, the MCO updates the affected nodes alphabetically by zone, based on the topology.kubernetes.io/zone label. If a zone has more than one node, the oldest nodes are updated first. For nodes that do not use zones, such as in bare metal deployments, the nodes are upgraded by age, with the oldest nodes updated first. The MCO updates the number of nodes as specified by the maxUnavailable field on the machine configuration pool at a time.
+* Some machine configuration must be in place before {product-title} is installed to disk. In most cases, this can be accomplished by creating
+a machine config that is injected directly into the {product-title} installer process, instead of running as a postinstallation machine config. In other cases, you might need to do bare metal installation where you pass kernel arguments at {product-title} installer startup, to do such things as setting per-node individual IP addresses or advanced disk partitioning.
+* MCO manages items that are set in machine configs. Manual changes you do to your systems will not be overwritten by MCO, unless MCO is explicitly told to manage a conflicting file. In other words, MCO only makes specific updates you request, it does not claim control over the whole node.
+* Manual changes to nodes are strongly discouraged. If you need to decommission a node and start a new one, those direct changes would be lost.
+* MCO is only supported for writing to files in /etc and /var directories, although there are symbolic links to some directories that can be writeable by being symbolically linked to one of those areas. The /opt and /usr/local directories are examples.
+* Ignition is the configuration format used in MachineConfigs. See the Ignition Configuration Specification v3.5.0 for details.
+* Although Ignition config settings can be delivered directly at {product-title} installation time, and are formatted in the same way that MCO delivers Ignition configs, MCO has no way of seeing what those original Ignition configs are. Therefore, you should wrap Ignition config settings into a machine config before deploying them.
+* When a file managed by MCO changes outside of MCO, the Machine Config Daemon (MCD) sets the node as degraded. It will not overwrite the
+offending file, however, and should continue to operate in a degraded state.
+* A key reason for using a machine config is that it will be applied when you spin up new nodes for a pool in your {product-title} cluster. The machine-api-operator provisions a new machine and MCO configures it.
+
+MCO uses Ignition as the configuration format. {product-title} 4.6 moved from Ignition config specification version 2 to version 3.
+
+## What can you change with machine configs?
+
+The kinds of components that MCO can change include:
+
+* config: Create Ignition config objects (see the Ignition configuration specification) to do things like modify files, systemd services, and other features on {product-title} machines, including:
+* Configuration files: Create or overwrite files in the /var or /etc directory.
+* systemd units: Create and set the status of a systemd service or add to an existing systemd service by dropping in additional settings.
+* users and groups: Change SSH keys in the passwd section postinstallation.
+
+[IMPORTANT]
+----
+* Changing SSH keys by using a machine config is supported only for the core user.
+* Adding new users by using a machine config is not supported.
+----
+* kernelArguments: Add arguments to the kernel command line when {product-title} nodes boot.
+* kernelType: Optionally identify a non-standard kernel to use instead of the standard kernel. Use realtime to use the RT kernel (for RAN). This is only supported on select platforms. Use the 64k-pages parameter to enable the 64k page size kernel. This setting is exclusive to machines with 64-bit ARM architectures.
+* fips: Enable FIPS mode. FIPS should be set at installation-time setting and not a postinstallation procedure.
+
+[IMPORTANT]
+----
+To enable FIPS mode for your cluster, you must run the installation program from a Red Hat Enterprise Linux (RHEL) computer configured to operate in FIPS mode. For more information about configuring FIPS mode on RHEL, see Switching RHEL to FIPS mode.
+When running Red Hat Enterprise Linux (RHEL) or Red Hat Enterprise Linux CoreOS (RHCOS) booted in FIPS mode, {product-title} core components use the RHEL cryptographic libraries that have been submitted to NIST for FIPS 140-2/140-3 Validation on only the x86_64, ppc64le, and s390x architectures.
+----
+* extensions: Extend RHCOS features by adding selected pre-packaged software. For this feature, available extensions include usbguard and kernel modules.
+* Custom resources (for ContainerRuntime and Kubelet): Outside of machine configs, MCO manages two special custom resources for modifying CRI-O container runtime settings (ContainerRuntime CR) and the Kubelet service (Kubelet CR).
+
+The MCO is not the only Operator that can change operating system components on {product-title} nodes. Other Operators can modify operating system-level features as well. One example is the Node Tuning Operator, which allows you to do node-level tuning through Tuned daemon profiles.
+
+Tasks for the MCO configuration that can be done after installation are included in the following procedures. See descriptions of RHCOS bare metal installation for system configuration tasks that must be done during or before {product-title} installation. By default, many of the changes you make with the MCO require a reboot.
+
+The following modifications do not trigger a node reboot:
+
+* When the MCO detects any of the following changes, it applies the update without draining or rebooting the node:
+* Changes to the SSH key in the spec.config.passwd.users.sshAuthorizedKeys parameter of a machine config.
+* Changes to the global pull secret or pull secret in the openshift-config namespace.
+* Automatic rotation of the /etc/kubernetes/kubelet-ca.crt certificate authority (CA) by the Kubernetes API Server Operator.
+* When the MCO detects changes to the /etc/containers/registries.conf file, such as adding or editing an ImageDigestMirrorSet, ImageTagMirrorSet, or ImageContentSourcePolicy object, it drains the corresponding nodes, applies the changes, and uncordons the nodes. The node drain does not happen for the following changes:
+* The addition of a registry with the pull-from-mirror = "digest-only" parameter set for each mirror.
+* The addition of a mirror with the pull-from-mirror = "digest-only" parameter set in a registry.
+* The addition of items to the unqualified-search-registries list.
+
+In other cases, you can mitigate the disruption to your workload when the MCO makes changes by using node disruption policies. For information, see Understanding node restart behaviors after machine config changes.
+
+There might be situations where the configuration on a node does not fully match what the currently-applied machine config specifies. This state is called configuration drift. The Machine Config Daemon (MCD) regularly checks the nodes for configuration drift. If the MCD detects configuration drift, the MCO marks the node degraded until an administrator corrects the node configuration. A degraded node is online and operational, but, it cannot be updated. For more information on configuration drift, see Understanding configuration drift detection.
+
+## Node configuration management with machine config pools
+
+Machines that run control plane components or user workloads are divided into groups based on the types of resources they handle. These groups of machines are called machine config pools (MCP). Each MCP manages a set of nodes and its corresponding machine configs. The role of the node determines which MCP it belongs to; the MCP governs nodes based on its assigned node role label. Nodes in an MCP have the same configuration; this means nodes can be scaled up and torn down in response to increased or decreased workloads.
+
+By default, there are two MCPs created by the cluster when it is installed: master and worker. Each default MCP has a defined configuration applied by the Machine Config Operator (MCO), which is responsible for managing MCPs and facilitating MCP updates.
+
+For worker nodes, you can create additional MCPs, or custom pools, to manage nodes with custom use cases that extend outside of the default node types. Custom MCPs for the control plane nodes are not supported.
+
+Custom pools are pools that inherit their configurations from the worker pool. They use any machine config targeted for the worker pool, but add the ability to deploy changes only targeted at the custom pool. Since a custom pool inherits its configuration from the worker pool, any change to the worker pool is applied to the custom pool as well. Custom pools that do not inherit their configurations from the worker pool are not supported by the MCO.
+
+
+[NOTE]
+----
+A node can only be included in one MCP. If a node has multiple labels that correspond to several MCPs, like worker,infra, it is managed by the infra custom pool, not the worker pool. Custom pools take priority on selecting nodes to manage based on node labels; nodes that do not belong to a custom pool are managed by the worker pool.
+----
+
+It is recommended to have a custom pool for every node role you want to manage in your cluster. For example, if you create infra nodes to handle infra workloads, it is recommended to create a custom infra MCP to group those nodes together. If you apply an infra role label to a worker node so it has the worker,infra dual label, but do not have a custom infra MCP, the MCO considers it a worker node. If you remove the worker label from a node and apply the infra label without grouping it in a custom pool, the node is not recognized by the MCO and is unmanaged by the cluster.
+
+
+[IMPORTANT]
+----
+Any node labeled with the infra role that is only running infra workloads is not counted toward the total number of subscriptions. The MCP managing an infra node is mutually exclusive from how the cluster determines subscription charges; tagging a node with the appropriate infra role and using taints to prevent user workloads from being scheduled on that node are the only requirements for avoiding subscription charges for infra workloads.
+----
+
+The MCO applies updates for pools independently; for example, if there is an update that affects all pools, nodes from each pool update in parallel with each other. If you add a custom pool, nodes from that pool also attempt to update concurrently with the master and worker nodes.
+
+There might be situations where the configuration on a node does not fully match what the currently-applied machine config specifies. This state is called configuration drift. The Machine Config Daemon (MCD) regularly checks the nodes for configuration drift. If the MCD detects configuration drift, the MCO marks the node degraded until an administrator corrects the node configuration. A degraded node is online and operational, but, it cannot be updated.
+
+# Understanding the Machine Config Operator node drain behavior
+
+When you use a machine config to change a system feature, such as adding new config files, modifying systemd units or kernel arguments, or updating SSH keys, the Machine Config Operator (MCO) applies those changes and ensures that each node is in the desired configuration state.
+
+After you make the changes, the MCO generates a new rendered machine config. In the majority of cases, when applying the new rendered machine config, the Operator performs the following steps on each affected node until all of the affected nodes have the updated configuration:
+
+1. Cordon. The MCO marks the node as not schedulable for additional workloads.
+2. Drain. The MCO terminates all running workloads on the node, causing the workloads to be rescheduled onto other nodes.
+3. Apply. The MCO writes the new configuration to the nodes as needed.
+4. Reboot. The MCO restarts the node.
+5. Uncordon. The MCO marks the node as schedulable for workloads.
+
+Throughout this process, the MCO maintains the required number of pods based on the MaxUnavailable value set in the machine config pool.
+
+
+[NOTE]
+----
+There are conditions which can prevent the MCO from draining a node. If the MCO fails to drain a node, the Operator will be unable to reboot the node, preventing any changes made to the node through a machine config. For more information and mitigation steps, see the MCCDrainError runbook.
+----
+
+If the MCO drains pods on the master node, note the following conditions:
+
+* In single-node OpenShift clusters, the MCO skips the drain operation.
+* The MCO does not drain static pods in order to prevent interference with services, such as etcd.
+
+
+[NOTE]
+----
+In certain cases the nodes are not drained. For more information, see "About the Machine Config Operator."
+----
+
+There are ways to mitigate the disruption caused by drain and reboot cycles by using node disruption policies or disabling control plane reboots. For more information, see "Understanding node restart behaviors after machine config changes" and "Disabling the Machine Config Operator from automatically rebooting."
+
+* About the Machine Config Operator
+* Using node disruption policies to minimize disruption from machine config changes
+* Disabling the Machine Config Operator from automatically rebooting
+
+# Understanding configuration drift detection
+
+There might be situations when the on-disk state of a node differs from what is configured in the machine config. This is known as configuration drift. For example, a cluster admin might manually modify a file, a systemd unit file, or a file permission that was configured through a machine config. This causes configuration drift. Configuration drift can cause problems between nodes in a Machine Config Pool or when the machine configs are updated.
+
+The Machine Config Operator (MCO) uses the Machine Config Daemon (MCD) to check nodes for configuration drift on a regular basis. If detected, the MCO sets the node and the machine config pool (MCP) to Degraded and reports the error. A degraded node is online and operational, but, it cannot be updated.
+
+The MCD performs configuration drift detection upon each of the following conditions:
+
+* When a node boots.
+* After any of the files (Ignition files and systemd drop-in units) specified in the machine config are modified outside of the machine config.
+* Before a new machine config is applied.
+
+[NOTE]
+----
+If you apply a new machine config to the nodes, the MCD temporarily shuts down configuration drift detection. This shutdown is needed because the new machine config necessarily differs from the machine config on the nodes. After the new machine config is applied, the MCD restarts detecting configuration drift using the new machine config.
+----
+
+When performing configuration drift detection, the MCD validates that the file contents and permissions fully match what the currently-applied machine config specifies. Typically, the MCD detects configuration drift in less than a second after the detection is triggered.
+
+If the MCD detects configuration drift, the MCD performs the following tasks:
+
+* Emits an error to the console logs
+* Emits a Kubernetes event
+* Stops further detection on the node
+* Sets the node and MCP to degraded
+
+You can check if you have a degraded node by listing the MCPs:
+
+
+```terminal
+$ oc get mcp worker
+```
+
+
+If you have a degraded MCP, the DEGRADEDMACHINECOUNT field is non-zero, similar to the following output:
+
+
+```terminal
+NAME     CONFIG                                             UPDATED   UPDATING   DEGRADED   MACHINECOUNT   READYMACHINECOUNT   UPDATEDMACHINECOUNT   DEGRADEDMACHINECOUNT   AGE
+worker   rendered-worker-404caf3180818d8ac1f50c32f14b57c3   False     True       True       2              1                   1                     1                      5h51m
+```
+
+
+You can determine if the problem is caused by configuration drift by examining the machine config pool:
+
+
+```terminal
+$ oc describe mcp worker
+```
+
+
+
+```terminal
+ ...
+    Last Transition Time:  2021-12-20T18:54:00Z
+    Message:               Node ci-ln-j4h8nkb-72292-pxqxz-worker-a-fjks4 is reporting: "content mismatch for file \"/etc/mco-test-file\"" 1
+    Reason:                1 nodes are reporting degraded status on sync
+    Status:                True
+    Type:                  NodeDegraded 2
+ ...
+```
+
+
+This message shows that a node's /etc/mco-test-file file, which was added by the machine config, has changed outside of the machine config.
+The state of the node is NodeDegraded.
+
+Or, if you know which node is degraded, examine that node:
+
+
+```terminal
+$ oc describe node/ci-ln-j4h8nkb-72292-pxqxz-worker-a-fjks4
+```
+
+
+
+```terminal
+ ...
+
+Annotations:        cloud.network.openshift.io/egress-ipconfig: [{"interface":"nic0","ifaddr":{"ipv4":"10.0.128.0/17"},"capacity":{"ip":10}}]
+                    csi.volume.kubernetes.io/nodeid:
+                      {"pd.csi.storage.gke.io":"projects/openshift-gce-devel-ci/zones/us-central1-a/instances/ci-ln-j4h8nkb-72292-pxqxz-worker-a-fjks4"}
+                    machine.openshift.io/machine: openshift-machine-api/ci-ln-j4h8nkb-72292-pxqxz-worker-a-fjks4
+                    machineconfiguration.openshift.io/controlPlaneTopology: HighlyAvailable
+                    machineconfiguration.openshift.io/currentConfig: rendered-worker-67bd55d0b02b0f659aef33680693a9f9
+                    machineconfiguration.openshift.io/desiredConfig: rendered-worker-67bd55d0b02b0f659aef33680693a9f9
+                    machineconfiguration.openshift.io/reason: content mismatch for file "/etc/mco-test-file" 1
+                    machineconfiguration.openshift.io/state: Degraded 2
+ ...
+```
+
+
+The error message indicating that configuration drift was detected between the node and the listed machine config. Here the error message indicates that the contents of the /etc/mco-test-file, which was added by the machine config, has changed outside of the machine config.
+The state of the node is Degraded.
+
+You can correct configuration drift and return the node to the Ready state by performing one of the following remediations:
+
+* Ensure that the contents and file permissions of the files on the node match what is configured in the machine config. You can manually rewrite the file
+contents or change the file permissions.
+* Generate a force file on the degraded node. The force file causes the MCD to bypass the usual configuration drift detection and reapplies the current machine config.
+
+[NOTE]
+----
+Generating a force file on a node causes that node to reboot.
+----
+
+# Checking machine config pool status
+
+To see the status of the Machine Config Operator (MCO), its sub-components, and the resources it manages, use the following oc commands:
+
+1. To see the number of MCO-managed nodes available on your cluster for each machine config pool (MCP), run the following command:
+
+```terminal
+$ oc get machineconfigpool
+```
+
+Example output
+
+```terminal
+NAME      CONFIG                    UPDATED  UPDATING   DEGRADED  MACHINECOUNT  READYMACHINECOUNT  UPDATEDMACHINECOUNT DEGRADEDMACHINECOUNT  AGE
+master    rendered-master-06c9c4…   True     False      False     3             3                  3                   0                     4h42m
+worker    rendered-worker-f4b64…    False    True       False     3             2                  2                   0                     4h42m
+```
+
+where:
+UPDATED:: The True status indicates that the MCO has applied the current machine config to the nodes in that MCP. The current machine config is specified in the STATUS field in the oc get mcp output. The False status indicates a node in the MCP is updating.
+UPDATING:: The True status indicates that the MCO is applying the desired machine config, as specified in the MachineConfigPool custom resource, to at least one of the nodes in that MCP. The desired machine config is the new, edited machine config. Nodes that are updating might not be available for scheduling. The False status indicates that all nodes in the MCP are updated.
+DEGRADED:: A True status indicates the MCO is blocked from applying the current or desired machine config to at least one of the nodes in that MCP, or the configuration is failing. Nodes that are degraded might not be available for scheduling. A False status indicates that all nodes in the MCP are ready.
+MACHINECOUNT:: Indicates the total number of machines in that MCP.
+READYMACHINECOUNT:: Indicates the number of machines that are both running the current machine config and are ready for scheduling. This count is always less than or equal to the UPDATEDMACHINECOUNT number.
+UPDATEDMACHINECOUNT:: Indicates the total number of machines in that MCP that have the current machine config.
+DEGRADEDMACHINECOUNT:: Indicates the total number of machines in that MCP that are marked as degraded or unreconcilable.
+
+In the previous output, there are three control plane (master) nodes and three worker nodes. The control plane MCP and the associated nodes are updated to the current machine config. The nodes in the worker MCP are being updated to the desired machine config. Two of the nodes in the worker MCP are updated and one is still updating, as indicated by the UPDATEDMACHINECOUNT being 2. There are no issues, as indicated by the DEGRADEDMACHINECOUNT being 0 and DEGRADED being False.
+
+While the nodes in the MCP are updating, the machine config listed under CONFIG is the current machine config, which the MCP is being updated from. When the update is complete, the listed machine config is the desired machine config, which the MCP was updated to.
+
+[NOTE]
+----
+If a node is being cordoned, that node is not included in the READYMACHINECOUNT, but is included in the MACHINECOUNT. Also, the MCP status is set to UPDATING. Because the node has the current machine config, it is counted in the UPDATEDMACHINECOUNT total:
+
+```terminal
+NAME      CONFIG                    UPDATED  UPDATING   DEGRADED  MACHINECOUNT  READYMACHINECOUNT  UPDATEDMACHINECOUNT DEGRADEDMACHINECOUNT  AGE
+master    rendered-master-06c9c4…   True     False      False     3             3                  3                   0                     4h42m
+worker    rendered-worker-c1b41a…   False    True       False     3             2                  3                   0                     4h42m
+```
+
+----
+2. To check the status of the nodes in an MCP by examining the MachineConfigPool custom resource, run the following command:
+:
+
+```terminal
+$ oc describe mcp worker
+```
+
+Example output
+
+```terminal
+...
+  Degraded Machine Count:     0
+  Machine Count:              3
+  Observed Generation:        2
+  Ready Machine Count:        3
+  Unavailable Machine Count:  0
+  Updated Machine Count:      3
+Events:                       <none>
+```
+
+
+[NOTE]
+----
+If a node is being cordoned, the node is not included in the Ready Machine Count. It is included in the Unavailable Machine Count:
+
+```terminal
+...
+  Degraded Machine Count:     0
+  Machine Count:              3
+  Observed Generation:        2
+  Ready Machine Count:        2
+  Unavailable Machine Count:  1
+  Updated Machine Count:      3
+```
+
+----
+3. To see each existing MachineConfig object, run the following command:
+
+```terminal
+$ oc get machineconfigs
+```
+
+Example output
+
+```terminal
+NAME                             GENERATEDBYCONTROLLER          IGNITIONVERSION  AGE
+00-master                        2c9371fbb673b97a6fe8b1c52...   3.5.0            5h18m
+00-worker                        2c9371fbb673b97a6fe8b1c52...   3.5.0            5h18m
+01-master-container-runtime      2c9371fbb673b97a6fe8b1c52...   3.5.0            5h18m
+01-master-kubelet                2c9371fbb673b97a6fe8b1c52…     3.5.0            5h18m
+...
+rendered-master-dde...           2c9371fbb673b97a6fe8b1c52...   3.5.0            5h18m
+rendered-worker-fde...           2c9371fbb673b97a6fe8b1c52...   3.5.0            5h18m
+```
+
+
+Note that the MachineConfig objects listed as rendered are not meant to be changed or deleted.
+4. To view the contents of a particular machine config (in this case, 01-master-kubelet), run the following command:
+
+```terminal
+$ oc describe machineconfigs 01-master-kubelet
+```
+
+
+The output from the command shows that this MachineConfig object contains both configuration files (cloud.conf and kubelet.conf) and a systemd service (Kubernetes Kubelet):
+Example output
+
+```terminal
+Name:         01-master-kubelet
+...
+Spec:
+  Config:
+    Ignition:
+      Version:  3.5.0
+    Storage:
+      Files:
+        Contents:
+          Source:   data:,
+        Mode:       420
+        Overwrite:  true
+        Path:       /etc/kubernetes/cloud.conf
+        Contents:
+          Source:   data:,kind%3A%20KubeletConfiguration%0AapiVersion%3A%20kubelet.config.k8s.io%2Fv1beta1%0Aauthentication%3A%0A%20%20x509%3A%0A%20%20%20%20clientCAFile%3A%20%2Fetc%2Fkubernetes%2Fkubelet-ca.crt%0A%20%20anonymous...
+        Mode:       420
+        Overwrite:  true
+        Path:       /etc/kubernetes/kubelet.conf
+    Systemd:
+      Units:
+        Contents:  [Unit]
+Description=Kubernetes Kubelet
+Wants=rpc-statd.service network-online.target crio.service
+After=network-online.target crio.service
+
+ExecStart=/usr/bin/hyperkube \
+    kubelet \
+      --config=/etc/kubernetes/kubelet.conf \ ...
+```
+
+
+If something goes wrong with a machine config that you apply, you can always back out that change. For example, if you had run oc create -f ./myconfig.yaml to apply a machine config, you could remove that machine config by running the following command:
+
+
+```terminal
+$ oc delete -f ./myconfig.yaml
+```
+
+
+If that was the only problem, the nodes in the affected pool should return to a non-degraded state. This actually causes the rendered configuration to roll back to its previously rendered state.
+
+If you add your own machine configs to your cluster, you can use the commands shown in the previous example to check their status and the related status of the pool to which they are applied.
+
+# About checking machine config node status
+
+If you make changes to a machine config pool (MCP) that results in a new machine config, for example by using a MachineConfig or KubeletConfig object, you can get detailed information about the progress of the node updates by using the machine config nodes custom resource.
+
+The MachineConfigNode custom resource allows you to monitor the progress of individual node updates as they move through the update phases. This information can be helpful with troubleshooting if one of the nodes has an issue during the update. The custom resource reports where in the update process the node is at the moment, the phases that have completed, and the phases that are remaining.
+
+The node update process consists of the following phases and subphases that are tracked by the machine config node custom resource, explained with more detail later in this section:
+
+* Update Prepared. The MCO stops the configuration drift monitoring process and verifies that the newly-created machine config can be applied to a node.
+* Update Executed. The MCO cordons and drains the node and applies the new machine config to the node files and operating system, as needed. It contains the following sub-phases:
+* Cordoned
+* Drained
+* AppliedFilesAndOS
+* PinnedImageSetsProgressing The MCO is performing the steps needed to pin and pre-load container images.
+* PinnedImageSetsDegraded The pinned image process failed. You can view the reason for the failure by using the oc describe machineconfignode command, as described later in this section.
+* NodeDegraded The node update failed. You can view the reason for the failure by using the oc describe machineconfignode command, as described later in this section.
+* Update Post update action The MCO is reloading CRI-O, as needed.
+* Rebooted Node The MCO is rebooting the node, as needed.
+* Update Complete. The MCO is uncordoning the node, updating the node state to the cluster, and resumes producing node metrics. It contains the following sub-phase:
+* Uncordoned
+* Updated The MCO completed a node update and the current config version of the node is equal to the desired updated version.
+* Resumed. The MCO restarted the config drift monitor process and the node returns to operational state.
+
+As the update moves through these phases, you can query the MachineConfigNode custom resource, which reports one of the following conditions for each phase:
+
+* True. The phase is complete on that node.
+* False.  The phase has not yet started or will not be executed on that node.
+* Unknown. The phase is either being executed on that node or has an error. If the phase has an error, you can use the oc describe machineconfignodes command for more information, as described later in this section.
+
+For example, consider a cluster with a newly-created machine config:
+
+
+```terminal
+$ oc get machineconfig
+```
+
+
+
+```text
+NAME                                               GENERATEDBYCONTROLLER                      IGNITIONVERSION   AGE
+# ...
+rendered-master-23cf200e4ee97daa6e39fdce24c9fb67   c00e2c941bc6e236b50e0bf3988e6c790cf2bbb2   3.5.0             6d15h
+rendered-master-a386c2d1550b927d274054124f58be68   c00e2c941bc6e236b50e0bf3988e6c790cf2bbb2   3.5.0             7m26s
+# ...
+rendered-worker-01f27f752eb84eba917450e43636b210   c00e2c941bc6e236b50e0bf3988e6c790cf2bbb2   3.5.0             6d15h 1
+rendered-worker-f351f6947f15cd0380514f4b1c89f8f2   c00e2c941bc6e236b50e0bf3988e6c790cf2bbb2   3.5.0             7m26s 2
+# ...
+```
+
+
+The current machine config for the worker nodes.
+The newly-created machine config that is being applied to the worker nodes.
+
+You can watch as the nodes are updated with the new machine config:
+
+
+```terminal
+$ oc get machineconfignodes
+```
+
+
+
+```text
+NAME                                       POOLNAME      DESIREDCONFIG                                      CURRENTCONFIG                                      UPDATED   AGE
+ci-ln-ds73n5t-72292-9xsm9-master-0         master        rendered-master-a386c2d1550b927d274054124f58be68   rendered-master-a386c2d1550b927d274054124f58be68   True      27M
+ci-ln-ds73n5t-72292-9xsm9-master-1         master        rendered-master-a386c2d1550b927d274054124f58be68   rendered-master-23cf200e4ee97daa6e39fdce24c9fb67   False     27M
+ci-ln-ds73n5t-72292-9xsm9-master-2         master        rendered-master-23cf200e4ee97daa6e39fdce24c9fb67   rendered-master-23cf200e4ee97daa6e39fdce24c9fb67   True      27M
+ci-ln-ds73n5t-72292-9xsm9-worker-a-2d8tz   worker-cnf    rendered-worker-f351f6947f15cd0380514f4b1c89f8f2   rendered-worker-f351f6947f15cd0380514f4b1c89f8f2   True      20M  1
+ci-ln-ds73n5t-72292-9xsm9-worker-b-gw5sd   worker        rendered-worker-f351f6947f15cd0380514f4b1c89f8f2   rendered-worker-01f27f752eb84eba917450e43636b210   False     20M  2
+ci-ln-ds73n5t-72292-9xsm9-worker-c-t227w   worker        rendered-worker-01f27f752eb84eba917450e43636b210   rendered-worker-01f27f752eb84eba917450e43636b210   True      19M  3
+```
+
+
+This node has been updated. The new machine config, rendered-worker-f351f6947f15cd0380514f4b1c89f8f2, is shown as the desired and current machine configs.
+This node is currently being updated to the new machine config. The previous and new machine configs are shown as the desired and current machine configs, respectively.
+This node has not yet been updated to the new machine config. The previous machine config is shown as the desired and current machine configs.
+
+
+
+You can use the -o wide flag to display additional information about the updates:
+
+
+```terminal
+$ oc get machineconfignodes -o wide
+```
+
+
+
+```text
+NAME                                       POOLNAME    DESIREDCONFIG                                      CURRENTCONFIG                                         UPDATED   AGE   UPDATEPREPARED   UPDATEEXECUTED   UPDATEPOSTACTIONCOMPLETE   UPDATECOMPLETE   RESUMED   UPDATEDFILESANDOS   CORDONEDNODE   DRAINEDNODE   REBOOTEDNODE   UNCORDONEDNODE
+ci-ln-ds73n5t-72292-9xsm9-master-0         master      rendered-master-23cf200e4ee97daa6e39fdce24c9fb67   rendered-master-23cf200e4ee97daa6e39fdce24c9fb67      True      27M   False            False            False                      False            False     False               False          False         False          False
+ci-ln-ds73n5t-72292-9xsm9-master-1         master      rendered-master-23cf200e4ee97daa6e39fdce24c9fb67   rendered-master-23cf200e4ee97daa6e39fdce24c9fb67      True      27M   False            False            False                      False            False     False               False          False         False          False
+ci-ln-ds73n5t-72292-9xsm9-master-2         master      rendered-master-23cf200e4ee97daa6e39fdce24c9fb67   rendered-master-23cf200e4ee97daa6e39fdce24c9fb67      True      27M   False            False            False                      False            False     False               False          False         False          False
+ci-ln-ds73n5t-72292-9xsm9-worker-a-2d8tz   worker-cnf  rendered-worker-f351f6947f15cd0380514f4b1c89f8f2   rendered-worker-f351f6947f15cd0380514f4b1c89f8f2      True      20M   False            False            False                      False            False     False               False          False         False          False
+ci-ln-ds73n5t-72292-9xsm9-worker-b-gw5sd   worker      rendered-worker-f351f6947f15cd0380514f4b1c89f8f2   rendered-worker-01f27f752eb84eba917450e43636b210      False     20M   True             True             Unknown                    False            False     True                True           True          Unknown        False
+ci-ln-ds73n5t-72292-9xsm9-worker-c-t227w   worker      rendered-worker-01f27f752eb84eba917450e43636b210   rendered-worker-01f27f752eb84eba917450e43636b210      True      19M   False            False            False                      False            False     False               False          False         False          False
+```
+
+
+In addition to the fields defined in the previous table, the -o wide output displays the following fields:
+
+
+
+For more details on the update status, you can use the oc describe machineconfignode command:
+
+
+```terminal
+$ oc describe machineconfignode/<machine_config_node_name>
+```
+
+
+
+```text
+apiVersion: machineconfiguration.openshift.io/v1
+kind: MachineConfigNode
+metadata:
+  creationTimestamp: "2025-04-28T18:40:29Z"
+  generation: 3
+  name: <machine_config_node_name> 1
+# ...
+spec:
+  configVersion:
+    desired: rendered-master-34f96af2e41acb615410b97ce1c819e6 2
+  node:
+    name: ci-ln-921r7qk-72292-kxv95-master-0
+  pool:
+    name: master
+status:
+  conditions:
+  - lastTransitionTime: "2025-04-28T18:41:09Z"
+    message: All pinned image sets complete
+    reason: AsExpected
+    status: "False"
+    type: PinnedImageSetsProgressing
+  - lastTransitionTime: "2025-04-28T18:41:09Z"
+    message: This node has not yet entered the UpdatePrepared phase
+    reason: NotYetOccurred
+    status: "False"
+    type: UpdatePrepared
+  - lastTransitionTime: "2025-04-28T18:41:09Z"
+    message: This node has not yet entered the UpdateExecuted phase
+    reason: NotYetOccurred
+    status: "False"
+    type: UpdateExecuted
+  - lastTransitionTime: "2025-04-28T18:41:09Z"
+    message: This node has not yet entered the UpdatePostActionComplete phase
+    reason: NotYetOccurred
+    status: "False"
+    type: UpdatePostActionComplete
+  - lastTransitionTime: "2025-04-28T18:42:08Z"
+    message: 'Action during update to rendered-master-34f96af2e41acb615410b97ce1c819e6:
+      Uncordoned Node as part of completing upgrade phase'
+    reason: Uncordoned
+    status: "False"
+    type: UpdateComplete
+  - lastTransitionTime: "2025-04-28T18:42:08Z"
+    message: 'Action during update to rendered-master-34f96af2e41acb615410b97ce1c819e6:
+      In desired config . Resumed normal operations.'
+    reason: Resumed
+    status: "False"
+    type: Resumed
+  - lastTransitionTime: "2025-04-28T18:41:09Z"
+    message: This node has not yet entered the Drained phase
+    reason: NotYetOccurred
+    status: "False"
+    type: Drained
+  - lastTransitionTime: "2025-04-28T18:41:09Z"
+    message: This node has not yet entered the AppliedFilesAndOS phase
+    reason: NotYetOccurred
+    status: "False"
+    type: AppliedFilesAndOS
+  - lastTransitionTime: "2025-04-28T18:41:09Z"
+    message: This node has not yet entered the Cordoned phase
+    reason: NotYetOccurred
+    status: "False"
+    type: Cordoned
+  - lastTransitionTime: "2025-04-28T18:41:09Z"
+    message: This node has not yet entered the RebootedNode phase
+    reason: NotYetOccurred
+    status: "False"
+    type: RebootedNode
+  - lastTransitionTime: "2025-04-28T18:42:08Z"
+    message: Node ci-ln-921r7qk-72292-kxv95-master-0 Updated
+    reason: Updated
+    status: "True"
+    type: Updated
+  - lastTransitionTime: "2025-04-28T18:42:08Z"
+    message: 'Action during update to rendered-master-34f96af2e41acb615410b97ce1c819e6:
+      UnCordoned node. The node is reporting Unschedulable = false'
+    reason: UpdateCompleteUncordoned
+    status: "False"
+    type: Uncordoned
+  - lastTransitionTime: "2025-04-28T18:41:09Z"
+    message: This node has not yet entered the NodeDegraded phase
+    reason: NotYetOccurred
+    status: "False"
+    type: NodeDegraded
+  - lastTransitionTime: "2025-04-28T18:41:09Z"
+    message: All is good
+    reason: AsExpected
+    status: "False"
+    type: PinnedImageSetsDegraded
+  configVersion:
+    current: rendered-master-34f96af2e41acb615410b97ce1c819e6 3
+    desired: rendered-master-34f96af2e41acb615410b97ce1c819e6
+  observedGeneration: 4
+----
+<1> The `MachineConfigNode` object name.
+<2> The new machine configuration. This field updates after the MCO validates the machine config in the `UPDATEPREPARED` phase, then the status adds the new configuration.
+<3> The current machine config on the node.
+```
+
+
+## Checking machine config node status
+
+During the update of a machine config pool (MCP), you can monitor the progress of all of the nodes in your cluster by using the oc get machineconfignodes and oc describe machineconfignodes commands. These commands provide information that can be helpful if issues arise during the update and you need to troubleshoot a node.
+
+For more information on the meaning of these fields, see "About checking machine config node status."
+
+* View the update status of all nodes in the cluster, including the current and desired machine configurations, by running the following command:
+
+```terminal
+$ oc get machineconfignodes
+```
+
+Example output
+
+```text
+NAME                                       POOLNAME   DESIREDCONFIG                                      CURRENTCONFIG                                      UPDATED   AGE
+ci-ln-mdb23yt-72292-kzdsg-master-0         master     rendered-master-f21b093d20f68a7c06f922ed3ea5fbc8   rendered-master-1abc053eec29e6c945670f39d6dc8afa   False     27M
+ci-ln-mdb23yt-72292-kzdsg-master-1         master     rendered-master-1abc053eec29e6c945670f39d6dc8afa   rendered-master-1abc053eec29e6c945670f39d6dc8afa   True      27M
+ci-ln-mdb23yt-72292-kzdsg-master-2         master     rendered-master-1abc053eec29e6c945670f39d6dc8afa   rendered-master-1abc053eec29e6c945670f39d6dc8afa   True      27M
+ci-ln-mdb23yt-72292-kzdsg-worker-a-gfqjr   worker     rendered-worker-d0130cd74e9e576d7ba78ce166272bfb   rendered-worker-8f61bf839898a4487c3b5263a430e94a   False     20M
+ci-ln-mdb23yt-72292-kzdsg-worker-b-gknq4   worker     rendered-worker-8f61bf839898a4487c3b5263a430e94a   rendered-worker-8f61bf839898a4487c3b5263a430e94a   True      20M
+ci-ln-mdb23yt-72292-kzdsg-worker-c-mffrx   worker     rendered-worker-8f61bf839898a4487c3b5263a430e94a   rendered-worker-8f61bf839898a4487c3b5263a430e94a   True      19M
+```
+
+* View of all machine config node status fields for the nodes in your cluster by running the following command:
+
+```terminal
+$ oc get machineconfignodes -o wide
+```
+
+Example output
+
+```text
+NAME                                       POOLNAME   DESIREDCONFIG                                      CURRENTCONFIG                                      UPDATED   AGE   UPDATEPREPARED   UPDATEEXECUTED   UPDATEPOSTACTIONCOMPLETE   UPDATECOMPLETE   RESUMED   UPDATEDFILESANDOS   CORDONEDNODE   DRAINEDNODE   REBOOTEDNODE   UNCORDONEDNODE
+ci-ln-g6dr34b-72292-g9btv-master-0         master     rendered-master-d4e122320b351cdbe1df59ddb63ddcfc   rendered-master-6f2064fcb36d2a914de5b0c660dc49ff   False     27M   True             Unknown          False                      False            False     Unknown             False          False         False          False
+ci-ln-g6dr34b-72292-g9btv-master-1         master     rendered-master-6f2064fcb36d2a914de5b0c660dc49ff   rendered-master-6f2064fcb36d2a914de5b0c660dc49ff   True      27M   False            False            False                      False            False     False               False          False         False          False
+ci-ln-g6dr34b-72292-g9btv-master-2         master     rendered-master-6f2064fcb36d2a914de5b0c660dc49ff   rendered-master-6f2064fcb36d2a914de5b0c660dc49ff   True      27M   False            False            False                      False            False     False               False          False         False          False
+ci-ln-g6dr34b-72292-g9btv-worker-a-sjh5r   worker     rendered-worker-671b88c8c569fa3f60dc1a27cf9c91f2   rendered-worker-d5534cb730e5e108905fc285c2a42b6c   False     20M   True             Unknown          False                      False            False     Unknown             False          False         False          False
+ci-ln-g6dr34b-72292-g9btv-worker-b-xthbz   worker     rendered-worker-d5534cb730e5e108905fc285c2a42b6c   rendered-worker-d5534cb730e5e108905fc285c2a42b6c   True      20M   False            False            False                      False            False     False               False          False         False          False
+ci-ln-g6dr34b-72292-g9btv-worker-c-gnpd6   worker     rendered-worker-d5534cb730e5e108905fc285c2a42b6c   rendered-worker-d5534cb730e5e108905fc285c2a42b6c   True      19M   False            False            False                      False            False     False               False          False         False          False
+```
+
+* Check the update status of nodes in a specific machine config pool by running the following command:
+
+```terminal
+$ oc get machineconfignodes $(oc get machineconfignodes -o json | jq -r '.items[]|select(.spec.pool.name=="<pool_name>")|.metadata.name') 1
+```
+
+
+where:
+<pool_name>:: Specifies the name of the machine config pool.
+Example output
+
+```text
+NAME                                       POOLNAME   DESIREDCONFIG                                      CURRENTCONFIG                                      UPDATED   AGE
+ci-ln-g6dr34b-72292-g9btv-worker-a-sjh5r   worker     rendered-worker-d5534cb730e5e108905fc285c2a42b6c   rendered-worker-d5534cb730e5e108905fc285c2a42b6c   True      20M
+ci-ln-g6dr34b-72292-g9btv-worker-b-xthbz   worker     rendered-worker-d5534cb730e5e108905fc285c2a42b6c   rendered-worker-faf6b50218a8bbce21f1370866283de5   False     20M
+ci-ln-g6dr34b-72292-g9btv-worker-c-gnpd6   worker     rendered-worker-faf6b50218a8bbce21f1370866283de5   rendered-worker-faf6b50218a8bbce21f1370866283de5   True      19M
+```
+
+* Check the update status of an individual node by running the following command:
+
+```terminal
+$ oc describe machineconfignode/<node_name>
+```
+
+Example output
+
+```text
+apiVersion: machineconfiguration.openshift.io/v1
+kind: MachineConfigNode
+metadata:
+  creationTimestamp: "2025-04-28T18:52:16Z"
+  generation: 3
+  name: ci-ln-921r7qk-72292-kxv95-worker-a-zmxrr
+  ownerReferences:
+  - apiVersion: v1
+    kind: Node
+    name: ci-ln-921r7qk-72292-kxv95-worker-a-zmxrr
+    uid: e548a8d1-4f16-42cd-9234-87ac5aede6c1
+  resourceVersion: "62331"
+  uid: 11d96e07-582d-4569-a84a-9d8c5229a551
+spec:
+  configVersion:
+    desired: rendered-worker-1930ca7433b7f0153286a3f04e4cb57b
+  node:
+    name: ci-ln-921r7qk-72292-kxv95-worker-a-zmxrr
+  pool:
+    name: worker
+status:
+  conditions:
+# ...
+    lastTransitionTime: 2025-04-23T14:55:31Z
+    message: Update Compatible. Post Cfg Actions: [] Drain Required: true
+    reason: UpdatePrepared
+    status: True
+    type: UpdatePrepared
+# ...
+    lastTransitionTime: 2025-04-23T14:55:31Z
+    message: Draining node. The drain will not be complete until desired drainer drain-rendered-worker-1930ca7433b7f0153286a3f04e4cb57b
+      matches current drainer uncordon-rendered-worker-a9673968884f1ea42c26edcd914af907
+    reason: UpdateExecutedDrained
+    status: True
+    type: Drained
+# ...
+    lastTransitionTime: 2025-04-23T14:55:31Z
+    message: Cordoned node. The node is reporting Unschedulable = true
+    reason: UpdateExecutedCordoned
+    status: True
+    type: Cordoned
+# ...
+  - lastTransitionTime: "2025-04-28T18:52:16Z"
+    message: This node has not yet entered the NodeDegraded phase
+    reason: NotYetOccurred
+    status: "False"
+    type: NodeDegraded
+# ...
+  configversion:
+    current: rendered-worker-8110974a5cea69dff5b263237b58abd8
+    desired: rendered-worker-1930ca7433b7f0153286a3f04e4cb57b
+  observedgeneration:  4
+  pinnedImageSets:
+  - desiredGeneration: 1
+    name: worker-pinned-images
+# ...
+```
+
+
+* For more information about feature gates, see Enabling feature sets using the web console.
+
+# Understanding Machine Config Operator certificates
+
+Machine Config Operator certificates are used to secure connections between the Red Hat Enterprise Linux CoreOS (RHCOS) nodes and the Machine Config Server. For more information, see Machine Config Operator certificates.
+
+## Viewing and interacting with certificates
+
+The following certificates are handled in the cluster by the Machine Config Controller (MCC) and can be found in the ControllerConfig resource:
+
+* /etc/kubernetes/kubelet-ca.crt
+* /etc/kubernetes/static-pod-resources/configmaps/cloud-config/ca-bundle.pem
+* /etc/pki/ca-trust/source/anchors/openshift-config-user-ca-bundle.crt
+
+The MCC also handles the image registry certificates and its associated user bundle certificate.
+
+You can get information about the listed certificates, including the underyling bundle the certificate comes from, and the signing and subject data.
+
+* This procedure contains optional steps that require that the python-yq RPM package is installed.
+
+* Get detailed certificate information by running the following command:
+
+```terminal
+$ oc get controllerconfig/machine-config-controller -o yaml | yq -y '.status.controllerCertificates'
+```
+
+Example output
+
+```yaml
+- bundleFile: KubeAPIServerServingCAData
+  notAfter: '2034-10-23T13:13:02Z'
+  notBefore: '2024-10-25T13:13:02Z'
+  signer: CN=admin-kubeconfig-signer,OU=openshift
+  subject: CN=admin-kubeconfig-signer,OU=openshift
+- bundleFile: KubeAPIServerServingCAData
+  notAfter: '2024-10-26T13:13:05Z'
+  notBefore: '2024-10-25T13:27:14Z'
+  signer: CN=kubelet-signer,OU=openshift
+  subject: CN=kube-csr-signer_@1729862835
+- bundleFile: KubeAPIServerServingCAData
+  notAfter: '2024-10-26T13:13:05Z'
+  notBefore: '2024-10-25T13:13:05Z'
+  signer: CN=kubelet-signer,OU=openshift
+  subject: CN=kubelet-signer,OU=openshift
+# ...
+```
+
+* Get a simpler version of the information found in the ControllerConfig resource by checking the machine config pool status using the following command:
+
+```terminal
+$ oc get mcp master -o yaml | yq -y '.status.certExpirys'
+```
+
+Example output
+
+```yaml
+- bundle: KubeAPIServerServingCAData
+  expiry: '2034-10-23T13:13:02Z'
+  subject: CN=admin-kubeconfig-signer,OU=openshift
+- bundle: KubeAPIServerServingCAData
+  expiry: '2024-10-26T13:13:05Z'
+  subject: CN=kube-csr-signer_@1729862835
+- bundle: KubeAPIServerServingCAData
+  expiry: '2024-10-26T13:13:05Z'
+  subject: CN=kubelet-signer,OU=openshift
+- bundle: KubeAPIServerServingCAData
+  expiry: '2025-10-25T13:13:05Z'
+  subject: CN=kube-apiserver-to-kubelet-signer,OU=openshift
+# ...
+```
+
+
+This method is meant for {product-title} applications that already consume machine config pool information.
+* Check which image registry certificates are on the nodes:
+1. Log in to a node:
+
+```terminal
+$ oc debug node/<node_name>
+```
+
+2. Set /host as the root directory within the debug shell:
+
+```terminal
+sh-5.1# chroot /host
+```
+
+3. Look at the contents of the /etc/docker/cert.d directory:
+
+```terminal
+sh-5.1# ls /etc/docker/certs.d
+```
+
+Example output
+
+```terminal
+image-registry.openshift-image-registry.svc.cluster.local:5000
+image-registry.openshift-image-registry.svc:5000
+```

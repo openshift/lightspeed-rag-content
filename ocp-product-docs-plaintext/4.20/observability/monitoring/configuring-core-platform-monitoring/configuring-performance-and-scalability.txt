@@ -1,0 +1,442 @@
+# Configuring performance and scalability for core platform monitoring
+
+
+You can configure the monitoring stack to optimize the performance and scale of your clusters. The following documentation provides information about how to distribute the monitoring components and control the impact of the monitoring stack on CPU and memory resources.
+* About performance and scalability
+
+# Controlling the placement and distribution of monitoring components
+
+You can move the monitoring stack components to specific nodes:
+
+* Use the nodeSelector constraint with labeled nodes to move any of the monitoring stack components to specific nodes.
+* Assign tolerations to enable moving components to tainted nodes.
+
+By doing so, you control the placement and distribution of the monitoring components across a cluster.
+
+By controlling placement and distribution of monitoring components, you can optimize system resource use, improve performance, and separate workloads based on specific requirements or policies.
+
+* Using node selectors to move monitoring components
+
+## Moving monitoring components to different nodes
+
+To specify the nodes in your cluster on which monitoring stack components will run, configure the nodeSelector constraint for the components in the cluster-monitoring-config config map to match labels assigned to the nodes.
+
+
+[NOTE]
+----
+You cannot add a node selector constraint directly to an existing scheduled pod.
+----
+
+* You have access to the cluster as a user with the cluster-admin cluster role.
+* You have created the cluster-monitoring-config ConfigMap object.
+* You have installed the OpenShift CLI (`oc`).
+
+1. If you have not done so yet, add a label to the nodes on which you want to run the monitoring components:
+
+```terminal
+$ oc label nodes <node_name> <node_label> 1
+```
+
+Replace <node_name> with the name of the node where you want to add the label.
+Replace <node_label> with the name of the wanted label.
+2. Edit the {configmap-name} ConfigMap object in the {namespace-name} project:
+
+```terminal
+$ oc -n {namespace-name} edit configmap {configmap-name}
+```
+
+3. Specify the node labels for the nodeSelector constraint for the component under data/config.yaml:
+
+```yaml
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {configmap-name}
+  namespace: {namespace-name}
+data:
+  config.yaml: |
+    # ...
+    <component>: 1
+      nodeSelector:
+        <node_label_1> 2
+        <node_label_2> 3
+    # ...
+```
+
+Substitute <component> with the appropriate monitoring stack component name.
+Substitute <node_label_1> with the label you added to the node.
+Optional: Specify additional labels.
+If you specify additional labels, the pods for the component are only scheduled on the nodes that contain all of the specified labels.
+
+[NOTE]
+----
+If monitoring components remain in a Pending state after configuring the nodeSelector constraint, check the pod events for errors relating to taints and tolerations.
+----
+4. Save the file to apply the changes. The components specified in the new configuration are automatically moved to the new nodes, and the pods affected by the new configuration are redeployed.
+
+* Preparing to configure core platform monitoring stack
+* Understanding how to update labels on nodes
+* Placing pods on specific nodes using node selectors
+* nodeSelector (Kubernetes documentation)
+
+## Assigning tolerations to monitoring components
+
+You can assign tolerations to any of the monitoring stack components to enable moving them to tainted nodes.
+
+* You have access to the cluster as a user with the cluster-admin cluster role.
+* You have created the cluster-monitoring-config ConfigMap object.
+* You have installed the OpenShift CLI (`oc`).
+
+1. Edit the {configmap-name} config map in the {namespace-name} project:
+
+```terminal
+$ oc -n {namespace-name} edit configmap {configmap-name}
+```
+
+2. Specify tolerations for the component:
+
+```yaml
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {configmap-name}
+  namespace: {namespace-name}
+data:
+  config.yaml: |
+    <component>:
+      tolerations:
+        <toleration_specification>
+```
+
+
+Substitute <component> and <toleration_specification> accordingly.
+
+For example, oc adm taint nodes node1 key1=value1:NoSchedule adds a taint to node1 with the key key1 and the value value1. This prevents monitoring components from deploying pods on node1 unless a toleration is configured for that taint. The following example configures the {component} component to tolerate the example taint:
+
+```yaml
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {configmap-name}
+  namespace: {namespace-name}
+data:
+  config.yaml: |
+    {component}:
+      tolerations:
+      - key: "key1"
+        operator: "Equal"
+        value: "value1"
+        effect: "NoSchedule"
+```
+
+3. Save the file to apply the changes. The pods affected by the new configuration are automatically redeployed.
+
+* Preparing to configure core platform monitoring stack
+* Controlling pod placement using node taints
+* Taints and tolerations (Kubernetes documentation)
+
+# Setting the body size limit for metrics scraping
+
+By default, no limit exists for the uncompressed body size for data returned from scraped metrics targets.
+You can set a body size limit to help avoid situations in which Prometheus consumes excessive amounts of memory when scraped targets return a response that contains a large amount of data.
+In addition, by setting a body size limit, you can reduce the impact that a malicious target might have on Prometheus and on the cluster as a whole.
+
+After you set a value for enforcedBodySizeLimit, the alert PrometheusScrapeBodySizeLimitHit fires when at least one Prometheus scrape target replies with a response body larger than the configured value.
+
+
+[NOTE]
+----
+If metrics data scraped from a target has an uncompressed body size exceeding the configured size limit, the scrape fails.
+Prometheus then considers this target to be down and sets its up metric value to 0, which can trigger the TargetDown alert.
+----
+
+* You have access to the cluster as a user with the cluster-admin cluster role.
+* You have installed the OpenShift CLI (`oc`).
+
+1. Edit the cluster-monitoring-config ConfigMap object in the openshift-monitoring namespace:
+
+```terminal
+$ oc -n openshift-monitoring edit configmap cluster-monitoring-config
+```
+
+2. Add a value for enforcedBodySizeLimit to data/config.yaml/prometheusK8s to limit the body size that can be accepted per target scrape:
+
+```yaml
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: cluster-monitoring-config
+  namespace: openshift-monitoring
+data:
+  config.yaml: |-
+    prometheusK8s:
+      enforcedBodySizeLimit: 40MB 1
+```
+
+Specify the maximum body size for scraped metrics targets.
+This enforcedBodySizeLimit example limits the uncompressed size per target scrape to 40 megabytes.
+Valid numeric values use the Prometheus data size format: B (bytes), KB (kilobytes), MB (megabytes), GB (gigabytes), TB (terabytes), PB (petabytes), and EB (exabytes).
+The default value is 0, which specifies no limit.
+You can also set the value to automatic to calculate the limit automatically based on cluster capacity.
+3. Save the file to apply the changes. The new configuration is applied automatically.
+
+* scrape_config (Prometheus documentation)
+
+# Managing CPU and memory resources for monitoring components
+
+You can ensure that the containers that run monitoring components have enough CPU and memory resources by specifying values for resource limits and requests for those components.
+
+You can configure these limits and requests for core platform monitoring components in the openshift-monitoring namespace.
+
+## Specifying limits and requests
+
+To configure CPU and memory resources, specify values for resource limits and requests in the {configmap-name} ConfigMap object in the {namespace-name} namespace.
+
+* You have access to the cluster as a user with the cluster-admin cluster role.
+* You have created the ConfigMap object named cluster-monitoring-config.
+* You have installed the OpenShift CLI (`oc`).
+
+1. Edit the {configmap-name} config map in the {namespace-name} project:
+
+```terminal
+$ oc -n {namespace-name} edit configmap {configmap-name}
+```
+
+2. Add values to define resource limits and requests for each component you want to configure.
+
+[IMPORTANT]
+----
+Ensure that the value set for a limit is always higher than the value set for a request.
+Otherwise, an error will occur, and the container will not run.
+----
+Example of setting resource limits and requests
+
+```yaml
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {configmap-name}
+  namespace: {namespace-name}
+data:
+  config.yaml: |
+    {alertmanager}:
+      resources:
+        limits:
+          cpu: 500m
+          memory: 1Gi
+        requests:
+          cpu: 200m
+          memory: 500Mi
+    {prometheus}:
+      resources:
+        limits:
+          cpu: 500m
+          memory: 3Gi
+        requests:
+          cpu: 200m
+          memory: 500Mi
+    {thanos}:
+      resources:
+        limits:
+          cpu: 500m
+          memory: 1Gi
+        requests:
+          cpu: 200m
+          memory: 500Mi
+    prometheusOperator:
+      resources:
+        limits:
+          cpu: 500m
+          memory: 1Gi
+        requests:
+          cpu: 200m
+          memory: 500Mi
+    metricsServer:
+      resources:
+        requests:
+          cpu: 10m
+          memory: 50Mi
+        limits:
+          cpu: 50m
+          memory: 500Mi
+    kubeStateMetrics:
+      resources:
+        limits:
+          cpu: 500m
+          memory: 1Gi
+        requests:
+          cpu: 200m
+          memory: 500Mi
+    telemeterClient:
+      resources:
+        limits:
+          cpu: 500m
+          memory: 1Gi
+        requests:
+          cpu: 200m
+          memory: 500Mi
+    openshiftStateMetrics:
+      resources:
+        limits:
+          cpu: 500m
+          memory: 1Gi
+        requests:
+          cpu: 200m
+          memory: 500Mi
+    nodeExporter:
+      resources:
+        limits:
+          cpu: 50m
+          memory: 150Mi
+        requests:
+          cpu: 20m
+          memory: 50Mi
+    monitoringPlugin:
+      resources:
+        limits:
+          cpu: 500m
+          memory: 1Gi
+        requests:
+          cpu: 200m
+          memory: 500Mi
+    prometheusOperatorAdmissionWebhook:
+      resources:
+        limits:
+          cpu: 50m
+          memory: 100Mi
+        requests:
+          cpu: 20m
+          memory: 50Mi
+```
+
+3. Save the file to apply the changes. The pods affected by the new configuration are automatically redeployed.
+
+* About specifying limits and requests
+* Requests and limits (Kubernetes documentation)
+
+# Choosing a metrics collection profile
+
+To choose a metrics collection profile for core {product-title} monitoring components, edit the cluster-monitoring-config ConfigMap object.
+
+* You have installed the OpenShift CLI (`oc`).
+* You have created the cluster-monitoring-config ConfigMap object.
+* You have access to the cluster as a user with the cluster-admin cluster role.
+
+1. Edit the cluster-monitoring-config ConfigMap object in the openshift-monitoring project:
+
+```terminal
+$ oc -n openshift-monitoring edit configmap cluster-monitoring-config
+```
+
+2. Add the metrics collection profile setting under data/config.yaml/prometheusK8s:
+
+```yaml
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: cluster-monitoring-config
+  namespace: openshift-monitoring
+data:
+  config.yaml: |
+    prometheusK8s:
+      collectionProfile: <metrics_collection_profile_name> 1
+```
+
+The name of the metrics collection profile.
+The available values are full or minimal.
+If you do not specify a value or if the collectionProfile key name does not exist in the config map, the default setting of full is used.
+
+The following example sets the metrics collection profile to minimal for the core platform instance of Prometheus:
+
+```yaml
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: cluster-monitoring-config
+  namespace: openshift-monitoring
+data:
+  config.yaml: |
+    prometheusK8s:
+      collectionProfile: minimal
+```
+
+3. Save the file to apply the changes. The new configuration is applied automatically.
+
+* About metrics collection profiles
+* Viewing a list of available metrics
+* Enabling features using feature gates
+
+# Configuring pod topology spread constraints
+
+You can configure pod topology spread constraints for
+all the pods deployed by the Cluster Monitoring Operator
+to control how pod replicas are scheduled to nodes across zones.
+This ensures that the pods are highly available and run more efficiently, because workloads are spread across nodes in different data centers or hierarchical infrastructure zones.
+
+You can configure pod topology spread constraints for monitoring pods by using the {configmap-name} config map.
+
+* You have access to the cluster as a user with the cluster-admin cluster role.
+* You have created the cluster-monitoring-config ConfigMap object.
+* You have installed the OpenShift CLI (`oc`).
+
+1. Edit the {configmap-name} config map in the {namespace-name} project:
+
+```terminal
+$ oc -n {namespace-name} edit configmap {configmap-name}
+```
+
+2. Add the following settings under the data/config.yaml field to configure pod topology spread constraints:
+
+```yaml
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {configmap-name}
+  namespace: {namespace-name}
+data:
+  config.yaml: |
+    <component>: 1
+      topologySpreadConstraints:
+      - maxSkew: <n> 2
+        topologyKey: <key> 3
+        whenUnsatisfiable: <value> 4
+        labelSelector: 5
+          <match_option>
+```
+
+Specify a name of the component for which you want to set up pod topology spread constraints.
+Specify a numeric value for maxSkew, which defines the degree to which pods are allowed to be unevenly distributed.
+Specify a key of node labels for topologyKey.
+Nodes that have a label with this key and identical values are considered to be in the same topology.
+The scheduler tries to put a balanced number of pods into each domain.
+Specify a value for whenUnsatisfiable.
+Available options are DoNotSchedule and ScheduleAnyway.
+Specify DoNotSchedule if you want the maxSkew value to define the maximum difference allowed between the number of matching pods in the target topology and the global minimum.
+Specify ScheduleAnyway if you want the scheduler to still schedule the pod but to give higher priority to nodes that might reduce the skew.
+Specify labelSelector to find matching pods.
+Pods that match this label selector are counted to determine the number of pods in their corresponding topology domain.
+Example configuration for {component-name}
+
+```yaml
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {configmap-name}
+  namespace: {namespace-name}
+data:
+  config.yaml: |
+    {component}:
+      topologySpreadConstraints:
+      - maxSkew: 1
+        topologyKey: monitoring
+        whenUnsatisfiable: DoNotSchedule
+        labelSelector:
+          matchLabels:
+            app.kubernetes.io/name: {label}
+```
+
+3. Save the file to apply the changes. The pods affected by the new configuration are automatically redeployed.
+
+* About pod topology spread constraints for monitoring
+* Controlling pod placement by using pod topology spread constraints
+* Pod topology spread constraints (Kubernetes documentation)

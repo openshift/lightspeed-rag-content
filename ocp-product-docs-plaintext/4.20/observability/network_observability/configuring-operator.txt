@@ -1,0 +1,314 @@
+# Configuring the Network Observability Operator
+
+
+You can update the FlowCollector API resource to configure the Network Observability Operator and its managed components. The  FlowCollector is explicitly created during installation. Since this resource operates cluster-wide, only a single FlowCollector is allowed, and it must be named cluster. For more information, see the FlowCollector API reference.
+
+# View the FlowCollector resource
+
+You can view and edit YAML directly in the {product-title} web console.
+
+1. In the web console, navigate to Operators -> Installed Operators.
+2. Under the Provided APIs heading for the NetObserv Operator, select Flow Collector.
+3. Select cluster then select the YAML tab. There, you can modify the FlowCollector resource to configure the Network Observability Operator.
+
+The following example shows a sample FlowCollector resource for {product-title} Network Observability Operator:
+
+
+```yaml
+apiVersion: flows.netobserv.io/v1beta2
+kind: FlowCollector
+metadata:
+  name: cluster
+spec:
+  namespace: netobserv
+  deploymentModel: Direct
+  agent:
+    type: eBPF                                1
+    ebpf:
+      sampling: 50                            2
+      logLevel: info
+      privileged: false
+      resources:
+        requests:
+          memory: 50Mi
+          cpu: 100m
+        limits:
+          memory: 800Mi
+  processor:               3
+    logLevel: info
+    resources:
+      requests:
+        memory: 100Mi
+        cpu: 100m
+      limits:
+        memory: 800Mi
+    logTypes: Flows
+    advanced:
+      conversationEndTimeout: 10s
+      conversationHeartbeatInterval: 30s
+  loki:                     4
+    mode: LokiStack         5
+  consolePlugin:
+    register: true
+    logLevel: info
+    portNaming:
+      enable: true
+      portNames:
+        "3100": loki
+    quickFilters:            6
+    - name: Applications
+      filter:
+        src_namespace!: 'openshift-,netobserv'
+        dst_namespace!: 'openshift-,netobserv'
+      default: true
+    - name: Infrastructure
+      filter:
+        src_namespace: 'openshift-,netobserv'
+        dst_namespace: 'openshift-,netobserv'
+    - name: Pods network
+      filter:
+        src_kind: 'Pod'
+        dst_kind: 'Pod'
+      default: true
+    - name: Services network
+      filter:
+        dst_kind: 'Service'
+```
+
+
+The Agent specification, spec.agent.type, must be EBPF. eBPF is the only {product-title} supported option.
+You can set the Sampling specification, spec.agent.ebpf.sampling, to manage resources. Lower sampling values might consume a large amount of computational, memory and storage resources. You can mitigate this by specifying a sampling ratio value. A value of 100 means 1 flow every 100 is sampled. A value of 0 or 1 means all flows are captured. The lower the value, the increase in returned flows and the accuracy of derived metrics. By default, eBPF sampling is set to a value of 50, so 1 flow every 50 is sampled. Note that more sampled flows also means more storage needed. It is recommend to start with default values and refine empirically, to determine which setting your cluster can manage.
+The Processor specification spec.processor. can be set to enable conversation tracking. When enabled, conversation events are queryable in the web console. The spec.processor.logTypes value is Flows. The spec.processor.advanced values are Conversations, EndedConversations, or ALL. Storage requirements are highest for All and lowest for EndedConversations.
+The Loki specification, spec.loki, specifies the Loki client. The default values match the Loki install paths mentioned in the Installing the Loki Operator section. If you used another installation method for Loki, specify the appropriate client information for your install.
+The LokiStack mode automatically sets a few configurations: querierUrl, ingesterUrl and statusUrl, tenantID, and corresponding TLS configuration. Cluster roles and a cluster role binding are created for reading and writing logs to Loki. And authToken is set to Forward. You can set these manually using the Manual mode.
+The spec.quickFilters specification defines filters that show up in the web console. The Application filter keys,src_namespace and dst_namespace, are negated (!), so the Application filter shows all traffic that does not originate from, or have a destination to, any openshift- or netobserv namespaces. For more information, see Configuring quick filters below.
+
+* FlowCollector API reference
+* Working with conversation tracking
+
+# Configuring the Flow Collector resource with Kafka
+
+You can configure the FlowCollector resource to use Kafka for high-throughput and low-latency data feeds. A Kafka instance needs to be running, and a Kafka topic dedicated to {product-title} Network Observability must be created in that instance. For more information, see Kafka documentation with AMQ Streams.
+
+* Kafka is installed. Red Hat supports Kafka with AMQ Streams Operator.
+
+1. In the web console, navigate to Operators → Installed Operators.
+2. Under the Provided APIs heading for the Network Observability Operator, select Flow Collector.
+3. Select the cluster and then click the YAML tab.
+4. Modify the FlowCollector resource for {product-title} Network Observability Operator to use Kafka, as shown in the following sample YAML:
+
+
+```yaml
+apiVersion: flows.netobserv.io/v1beta2
+kind: FlowCollector
+metadata:
+  name: cluster
+spec:
+  deploymentModel: Kafka                                    1
+  kafka:
+    address: "kafka-cluster-kafka-bootstrap.netobserv"      2
+    topic: network-flows                                    3
+    tls:
+      enable: false                                         4
+```
+
+
+Set spec.deploymentModel to Kafka instead of Direct to enable the Kafka deployment model.
+spec.kafka.address refers to the Kafka bootstrap server address. You can specify a port if needed, for instance kafka-cluster-kafka-bootstrap.netobserv:9093 for using TLS on port 9093.
+spec.kafka.topic should match the name of a topic created in Kafka.
+spec.kafka.tls can be used to encrypt all communications to and from Kafka with TLS or mTLS. When enabled, the Kafka CA certificate must be available as a ConfigMap or a Secret, both in the namespace where the flowlogs-pipeline processor component is deployed (default: netobserv) and where the eBPF agents are deployed (default: netobserv-privileged). It must be referenced with spec.kafka.tls.caCert. When using mTLS, client secrets must be available in these namespaces as well (they can be generated for instance using the AMQ Streams User Operator) and referenced with spec.kafka.tls.userCert.
+
+# Export enriched network flow data
+
+You can send network flows to Kafka, IPFIX, the Red&#160;Hat build of OpenTelemetry, or all three at the same time. For Kafka or IPFIX, any processor or storage that supports those inputs, such as Splunk, Elasticsearch, or Fluentd, can consume the enriched network flow data. For OpenTelemetry, network flow data and metrics can be exported to a compatible OpenTelemetry endpoint, such as Red&#160;Hat build of OpenTelemetry, Jaeger, or Prometheus.
+
+* Your Kafka, IPFIX, or OpenTelemetry collector endpoints are available from Network Observability flowlogs-pipeline pods.
+
+1. In the web console, navigate to Operators -> Installed Operators.
+2. Under the Provided APIs heading for the NetObserv Operator, select Flow Collector.
+3. Select cluster and then select the YAML tab.
+4. Edit the FlowCollector to configure spec.exporters as follows:
+
+```yaml
+apiVersion: flows.netobserv.io/v1beta2
+kind: FlowCollector
+metadata:
+  name: cluster
+spec:
+  exporters:
+  - type: Kafka                         1
+      kafka:
+        address: "kafka-cluster-kafka-bootstrap.netobserv"
+        topic: netobserv-flows-export   2
+        tls:
+          enable: false                 3
+  - type: IPFIX                         1
+      ipfix:
+        targetHost: "ipfix-collector.ipfix.svc.cluster.local"
+        targetPort: 4739
+        transport: tcp or udp           4
+ -  type: OpenTelemetry                 1
+      openTelemetry:
+        targetHost: my-otelcol-collector-headless.otlp.svc
+        targetPort: 4317
+        type: grpc                      5
+        logs:                           6
+          enable: true
+        metrics:                        7
+          enable: true
+          prefix: netobserv
+          pushTimeInterval: 20s         8
+          expiryTime: 2m
+   #    fieldsMapping:                  9
+   #      input: SrcAddr
+   #      output: source.address
+```
+
+You can export flows to IPFIX, OpenTelemetry, and Kafka individually or concurrently.
+The Network Observability Operator exports all flows to the configured Kafka topic.
+You can encrypt all communications to and from Kafka with SSL/TLS or mTLS. When enabled, the Kafka CA certificate must be available as a ConfigMap or a Secret, both in the namespace where the flowlogs-pipeline processor component is deployed (default: netobserv). It must be referenced with spec.exporters.tls.caCert. When using mTLS, client secrets must be available in these namespaces as well (they can be generated for instance using the AMQ Streams User Operator) and referenced with spec.exporters.tls.userCert.
+You have the option to specify transport. The default value is tcp but you can also specify udp.
+The protocol of OpenTelemetry connection. The available options are http and grpc.
+OpenTelemetry configuration for exporting logs, which are the same as the logs created for Loki.
+OpenTelemetry configuration for exporting metrics, which are the same as the metrics created for Prometheus. These configurations are specified in the spec.processor.metrics.includeList parameter of the FlowCollector custom resource, along with any custom metrics you defined using the FlowMetrics custom resource.
+The time interval that metrics are sent to the OpenTelemetry collector.
+Optional:Network Observability network flows formats get automatically renamed to an OpenTelemetry compliant format. The fieldsMapping specification gives you the ability to customize the OpenTelemetry format output. For example in the YAML sample, SrcAddr is the Network Observability input field, and it is being renamed source.address in OpenTelemetry output. You can see both Network Observability and OpenTelemetry formats in the "Network flows format reference".
+
+After configuration, network flows data can be sent to an available output in a JSON format. For more information, see "Network flows format reference".
+
+* Network flows format reference
+
+# Updating the Flow Collector resource
+
+As an alternative to editing YAML in the {product-title} web console, you can configure specifications, such as eBPF sampling, by patching the flowcollector custom resource (CR):
+
+1. Run the following command to patch the flowcollector CR and update the spec.agent.ebpf.sampling value:
+
+```terminal
+$ oc patch flowcollector cluster --type=json -p "[{"op": "replace", "path": "/spec/agent/ebpf/sampling", "value": <new value>}] -n netobserv"
+```
+
+
+# Filter network flows at ingestion
+
+You can create filters to reduce the number of generated network flows. Filtering network flows can reduce the resource usage of the network observability components.
+
+You can configure two kinds of filters:
+
+* eBPF agent filters
+* Flowlogs-pipeline filters
+
+## eBPF agent filters
+
+eBPF agent filters maximize performance because they take effect at the earliest stage of the network flows collection process.
+
+To configure eBPF agent filters with the Network Observability Operator, see "Filtering eBPF flow data using multiple rules".
+
+## Flowlogs-pipeline filters
+
+Flowlogs-pipeline filters provide greater control over traffic selection because they take effect later in the network flows collection process. They are primarily used to improve data storage.
+
+Flowlogs-pipeline filters use a simple query language to filter network flow, as shown in the following example:
+
+
+```terminal
+(srcnamespace="netobserv" OR (srcnamespace="ingress" AND dstnamespace="netobserv")) AND srckind!="service"
+```
+
+
+The query language uses the following syntax:
+
+
+
+You can configure flowlogs-pipeline filters in the spec.processor.filters section of the FlowCollector resource. For example:
+
+
+```yaml
+apiVersion: flows.netobserv.io/v1beta2
+kind: FlowCollector
+metadata:
+  name: cluster
+spec:
+  namespace: netobserv
+  agent:
+  processor:
+    filters:
+      - query: |
+          (SrcK8S_Namespace="netobserv" OR (SrcK8S_Namespace="openshift-ingress" AND DstK8S_Namespace="netobserv"))
+        outputTarget: Loki  1
+        sampling: 10  2
+```
+
+
+Sends matching flows to a specific output, such as Loki, Prometheus, or an external system. When omitted, sends to all configured outputs.
+Optional. Applies a sampling ratio to limit the number of matching flows to be stored or exported. For example, sampling: 10 means 1/10 of the flows are kept.
+
+* Filtering eBPF flow data using multiple rules
+
+# Configuring quick filters
+
+You can modify the filters in the FlowCollector resource. Exact matches are possible using double-quotes around values. Otherwise, partial matches are used for textual values. The bang (!) character, placed at the end of a key, means negation. See the sample FlowCollector resource for more context about modifying the YAML.
+
+
+[NOTE]
+----
+The filter matching types "all of" or "any of" is a UI setting that the users can modify from the query options. It is not part of this resource configuration.
+----
+
+Here is a list of all available filter keys:
+
+
+
+* Universal keys filter for any of source or destination. For example, filtering name: 'my-pod' means all traffic from my-pod and all traffic to my-pod, regardless of the matching type used, whether Match all or Match any.
+
+# Resource management and performance considerations
+
+The amount of resources required by network observability depends on the size of your cluster and your requirements for the cluster to ingest and store observability data. To manage resources and set performance criteria for your cluster, consider configuring the following settings. Configuring these settings might meet your optimal setup and observability needs.
+
+The following settings can help you manage resources and performance from the outset:
+
+eBPF Sampling:: You can set the Sampling specification, spec.agent.ebpf.sampling, to manage resources. Smaller sampling values might consume a large amount of computational, memory and storage resources. You can mitigate this by specifying a sampling ratio value. A value of 100 means 1 flow every 100 is sampled. A value of 0 or 1 means all flows are captured. Smaller values result in an increase in returned flows and the accuracy of derived metrics. By default, eBPF sampling is set to a value of 50, so 1 flow every 50 is sampled. Note that more sampled flows also means more storage needed. Consider starting with the default values and refine empirically, in order to determine which setting your cluster can manage.
+eBPF features:: The more features that are enabled, the more CPU and memory are impacted. See "Observing the network traffic" for a complete list of these features.
+Without Loki:: You can reduce the amount of resources that network observability requires by not using Loki and instead relying on Prometheus. For example, when network observability is configured without Loki, the total savings of memory usage are in the 20-65% range and CPU utilization is lower by 10-30%, depending upon the sampling value. See "Network observability without Loki" for more information.
+Restricting or excluding interfaces:: Reduce the overall observed traffic by setting the values for spec.agent.ebpf.interfaces and spec.agent.ebpf.excludeInterfaces. By default, the agent fetches all the interfaces in the system, except the ones listed in excludeInterfaces and lo (local interface). Note that the interface names might vary according to the Container Network Interface (CNI) used.
+Performance fine-tuning:: The following settings can be used to fine-tune performance after the Network Observability has been running for a while:
+* Resource requirements and limits: Adapt the resource requirements and limits to the load and memory usage you expect on your cluster by using the spec.agent.ebpf.resources and spec.processor.resources specifications. The default limits of 800MB might be sufficient for most medium-sized clusters.
+* Cache max flows timeout: Control how often flows are reported by the agents by using the eBPF agent's spec.agent.ebpf.cacheMaxFlows and spec.agent.ebpf.cacheActiveTimeout specifications. A larger value results in less traffic being generated by the agents, which correlates with a lower CPU load. However, a larger value leads to a slightly higher memory consumption, and might generate more latency in the flow collection.
+
+## Resource considerations
+
+The following table outlines examples of resource considerations for clusters with certain workload sizes.
+
+
+[IMPORTANT]
+----
+The examples outlined in the table demonstrate scenarios that are tailored to specific workloads. Consider each example only as a baseline from which adjustments can be made to accommodate your workload needs.
+----
+
+
+
+1. Tested with AWS M6i instances.
+2. In addition to this worker and its controller, 3 infra nodes (size M6i.12xlarge) and 1 workload node (size M6i.8xlarge) were tested.
+
+## Total average memory and CPU usage
+
+The following table outlines averages of total resource usage for clusters with a sampling value of 1 and 50 for two different tests: Test 1 and Test 2. The tests differ in the following ways:
+
+* Test 1 takes into account high ingress traffic volume in addition to the total number of namespace, pods and services in an {product-title} cluster, places load on the eBPF agent, and represents use cases with a high number of workloads for a given cluster size. For example, Test 1 consists of 76 Namespaces, 5153 Pods, and 2305 Services with a network traffic scale of ~350 MB/s.
+* Test 2 takes into account high ingress traffic volume in addition to the total number of namespace, pods and services in an {product-title} cluster and represents use cases with a high number of workloads for a given cluster size. For example, Test 2 consists of 553 Namespaces, 6998 Pods, and 2508 Services with a network traffic scale of ~950 MB/s.
+
+Since different types of cluster use cases are exemplified in the different tests, the numbers in this table do not scale linearly when compared side-by-side. Instead, they are intended to be used as a benchmark for evaluating your personal cluster usage. The examples outlined in the table demonstrate scenarios that are tailored to specific workloads. Consider each example only as a baseline from which adjustments can be made to accommodate your workload needs.
+
+
+[NOTE]
+----
+Metrics exported to Prometheus can impact the resource usage. Cardinality values for the metrics can help determine how much resources are impacted. For more information, see "Network Flows format" in the Additional resources section.
+----
+
+
+
+Summary: This table shows average total resource usage of Network Observability, which includes Agents, FLP, Kafka, and Loki with all features enabled. For details about what features are enabled, see the features covered in "Observing the network traffic", which comprises all the features that are enabled for this testing.
+
+* Observing the network traffic from the traffic flows view
+* Network observability without Loki
+* Network Flows format reference

@@ -1,0 +1,140 @@
+# Assigning a secondary network to a VRF
+
+
+As a cluster administrator, you can configure a secondary network for a virtual routing and forwarding (VRF) domain by using the CNI VRF plugin. The virtual network that this plugin creates is associated with the physical interface that you specify.
+Using a secondary network with a VRF instance has the following advantages:
+Workload isolation:: Isolate workload traffic by configuring a VRF instance for the secondary network.
+Improved security:: Enable improved security through isolated network paths in the VRF domain.
+Multi-tenancy support:: Support multi-tenancy through network segmentation with a unique routing table in the VRF domain for each tenant.
+
+[NOTE]
+----
+Applications that use VRFs must bind to a specific device. The common usage is to use the SO_BINDTODEVICE option for a socket. The SO_BINDTODEVICE option binds the socket to the device that is specified in the passed interface name, for example, eth1. To use the SO_BINDTODEVICE option, the application must have CAP_NET_RAW capabilities.
+Using a VRF through the ip vrf exec command is not supported in {product-title} pods. To use VRF, bind applications directly to the VRF interface.
+----
+* About virtual routing and forwarding
+
+# Creating a secondary network attachment with the CNI VRF plugin
+
+The Cluster Network Operator (CNO) manages secondary network definitions. When you specify a secondary network to create, the CNO creates the NetworkAttachmentDefinition custom resource (CR) automatically.
+
+
+[NOTE]
+----
+Do not edit the NetworkAttachmentDefinition CRs that the Cluster Network Operator manages. Doing so might disrupt network traffic on your secondary network.
+----
+
+To create a secondary network attachment with the CNI VRF plugin, perform the following procedure.
+
+* Install the {product-title} CLI (oc).
+* Log in to the OpenShift cluster as a user with cluster-admin privileges.
+
+1. Create the Network custom resource (CR) for the additional network attachment and insert the rawCNIConfig configuration for the secondary network, as in the following example CR. Save the YAML as the file additional-network-attachment.yaml.
+
+```yaml
+apiVersion: operator.openshift.io/v1
+kind: Network
+metadata:
+  name: cluster
+spec:
+  additionalNetworks:
+    - name: test-network-1
+      namespace: additional-network-1
+      type: Raw
+      rawCNIConfig: '{
+        "cniVersion": "0.3.1",
+        "name": "macvlan-vrf",
+        "plugins": [  1
+        {
+          "type": "macvlan",
+          "master": "eth1",
+          "ipam": {
+              "type": "static",
+              "addresses": [
+              {
+                  "address": "191.168.1.23/24"
+              }
+              ]
+          }
+        },
+        {
+          "type": "vrf", 2
+          "vrfname": "vrf-1",  3
+          "table": 1001   4
+        }]
+      }'
+```
+
+plugins must be a list. The first item in the list must be the secondary network underpinning the VRF network. The second item in the list is the VRF plugin configuration.
+type must be set to vrf.
+vrfname is the name of the VRF that the interface is assigned to. If it does not exist in the pod, it is created.
+Optional. table is the routing table ID. By default, the tableid parameter is used. If it is not specified, the CNI assigns a free routing table ID to the VRF.
+
+[NOTE]
+----
+VRF functions correctly only when the resource is of type netdevice.
+----
+2. Create the Network resource:
+
+```terminal
+$ oc create -f additional-network-attachment.yaml
+```
+
+3. Confirm that the CNO created the NetworkAttachmentDefinition CR by running the following command. Replace <namespace> with the namespace that you specified when configuring the network attachment, for example, additional-network-1. The expected output shows the name of the NAD CR and the creation age in minutes.
+
+```terminal
+$ oc get network-attachment-definitions -n <namespace>
+```
+
+
+[NOTE]
+----
+There might be a delay before the CNO creates the CR.
+----
+
+1. Create a pod and assign it to the secondary network with the VRF instance:
+1. Create a YAML file that defines the Pod resource:
+Example pod-additional-net.yaml file
+
+```yaml
+apiVersion: v1
+kind: Pod
+metadata:
+ name: pod-additional-net
+ annotations:
+   k8s.v1.cni.cncf.io/networks: '[
+       {
+               "name": "test-network-1" 1
+       }
+ ]'
+spec:
+ containers:
+ - name: example-pod-1
+   command: ["/bin/bash", "-c", "sleep 9000000"]
+   image: centos:8
+```
+
+Specify the name of the secondary network with the VRF instance.
+2. Create the Pod resource by running the following command. The expected output shows the name of the Pod resource and the creation age in minutes.
+
+```terminal
+$ oc create -f pod-additional-net.yaml
+```
+
+2. Verify that the pod network attachment is connected to the VRF secondary network. Start a remote session with the pod and run the following command. The expected output shows the name of the VRF interface and its unique ID in the routing table.
+
+```terminal
+$ ip vrf show
+```
+
+3. Confirm that the VRF interface is the controller for the secondary interface:
+
+```terminal
+$ ip link
+```
+
+Example output
+
+```terminal
+5: net1: <BROADCAST,MULTICAST,UP,LOWER_UP> mtu 1500 qdisc noqueue master red state UP mode
+```

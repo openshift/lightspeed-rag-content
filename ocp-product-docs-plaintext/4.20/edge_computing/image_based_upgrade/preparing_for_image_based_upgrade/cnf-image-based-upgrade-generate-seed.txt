@@ -1,0 +1,170 @@
+# Generating a seed image for the image-based upgrade with the Lifecycle Agent
+
+
+Use the Lifecycle Agent to generate the seed image with the SeedGenerator custom resource (CR).
+
+# Seed image configuration
+
+The seed image targets a set of single-node OpenShift clusters with the same hardware and similar configuration.
+This means that the seed image must have all of the components and configuration that the seed cluster shares with the target clusters.
+Therefore, the seed image generated from the seed cluster cannot contain any cluster-specific configuration.
+
+The following table lists the components, resources, and configurations that you must and must not include in your seed image:
+
+
+
+1. If the seed cluster is installed in a disconnected environment, the target clusters must also be installed in a disconnected environment.
+2. The proxy configuration must be either enabled or disabled in both the seed and target clusters. However, the proxy servers configured on the clusters does not have to match.
+
+## Seed image configuration using the RAN DU profile
+
+The following table lists the components, resources, and configurations that you must and must not include in the seed image when using the RAN DU profile:
+
+
+
+
+
+# Generating a seed image with the Lifecycle Agent
+
+Use the Lifecycle Agent to generate a seed image from a managed cluster. The Operator checks for required system configurations, performs any necessary system cleanup before generating the seed image, and launches the image generation. The seed image generation includes the following tasks:
+
+* Stopping cluster Operators
+* Preparing the seed image configuration
+* Generating and pushing the seed image to the image repository specified in the SeedGenerator CR
+* Restoring cluster Operators
+* Expiring seed cluster certificates
+* Generating new certificates for the seed cluster
+* Restoring and updating the SeedGenerator CR on the seed cluster
+
+* RHACM and multicluster engine for Kubernetes Operator are not installed on the seed cluster.
+* You have configured a shared container directory on the seed cluster.
+* You have installed the minimum version of the OADP Operator and the Lifecycle Agent on the seed cluster.
+* Ensure that persistent volumes are not configured on the seed cluster.
+* Ensure that the LocalVolume CR does not exist on the seed cluster if the Local Storage Operator is used.
+* Ensure that the LVMCluster CR does not exist on the seed cluster if LVM Storage is used.
+* Ensure that the DataProtectionApplication CR does not exist on the seed cluster if OADP is used.
+
+1. Detach the managed cluster from the hub to delete any RHACM-specific resources from the seed cluster that must not be in the seed image:
+1. Manually detach the seed cluster by running the following command:
+
+```terminal
+$ oc delete managedcluster sno-worker-example
+```
+
+1. Wait until the managed cluster is removed. After the cluster is removed, create the proper SeedGenerator CR. The Lifecycle Agent cleans up the RHACM artifacts.
+2. If you are using GitOps ZTP, detach your cluster by removing the seed cluster's SiteConfig CR from the kustomization.yaml.
+1. If you have a kustomization.yaml file that references multiple SiteConfig CRs, remove your seed cluster's SiteConfig CR from the kustomization.yaml:
+
+```yaml
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+generators:
+#- example-seed-sno1.yaml
+- example-target-sno2.yaml
+- example-target-sno3.yaml
+```
+
+2. If you have a kustomization.yaml that references one SiteConfig CR, remove your seed cluster's SiteConfig CR from the kustomization.yaml and add the generators: {} line:
+
+```yaml
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+generators: {}
+```
+
+3. Commit the kustomization.yaml changes in your Git repository and push the changes to your repository.
+
+The ArgoCD pipeline detects the changes and removes the managed cluster.
+2. Create the Secret object so that you can push the seed image to your registry.
+1. Create the authentication file by running the following commands:
+
+```terminal
+$ MY_USER=myuserid
+$ AUTHFILE=/tmp/my-auth.json
+$ podman login --authfile ${AUTHFILE} -u ${MY_USER} quay.io/${MY_USER}
+```
+
+
+```terminal
+$ base64 -w 0 ${AUTHFILE} ; echo
+```
+2. Copy the output into the seedAuth field in the Secret YAML file named seedgen in the openshift-lifecycle-agent namespace:
+
+```yaml
+apiVersion: v1
+kind: Secret
+metadata:
+  name: seedgen 1
+  namespace: openshift-lifecycle-agent
+type: Opaque
+data:
+  seedAuth: <encoded_AUTHFILE> 2
+```
+
+The Secret resource must have the name: seedgen and namespace: openshift-lifecycle-agent fields.
+Specifies a base64-encoded authfile for write-access to the registry for pushing the generated seed images.
+3. Apply the Secret by running the following command:
+
+```terminal
+$ oc apply -f secretseedgenerator.yaml
+```
+
+3. Create the SeedGenerator CR:
+
+```yaml
+apiVersion: lca.openshift.io/v1
+kind: SeedGenerator
+metadata:
+  name: seedimage 1
+spec:
+  seedImage: <seed_container_image> 2
+```
+
+The SeedGenerator CR must be named seedimage.
+Specify the container image URL, for example, quay.io/example/seed-container-image:<tag>. It is recommended to use the <seed_cluster_name>:<ocp_version> format.
+4. Generate the seed image by running the following command:
+
+```terminal
+$ oc apply -f seedgenerator.yaml
+```
+
+
+[IMPORTANT]
+----
+The cluster reboots and loses API capabilities while the Lifecycle Agent generates the seed image.
+Applying the SeedGenerator CR stops the kubelet and the CRI-O operations, then it starts the image generation.
+----
+
+If you want to generate more seed images, you must provision a new seed cluster with the version that you want to generate a seed image from.
+
+* After the cluster recovers and it is available, you can check the status of the SeedGenerator CR by running the following command:
+
+```terminal
+$ oc get seedgenerator -o yaml
+```
+
+
+```yaml
+status:
+  conditions:
+  - lastTransitionTime: "2024-02-13T21:24:26Z"
+    message: Seed Generation completed
+    observedGeneration: 1
+    reason: Completed
+    status: "False"
+    type: SeedGenInProgress
+  - lastTransitionTime: "2024-02-13T21:24:26Z"
+    message: Seed Generation completed
+    observedGeneration: 1
+    reason: Completed
+    status: "True"
+    type: SeedGenCompleted 1
+  observedGeneration: 1
+```
+
+The seed image generation is complete.
+
+* Configuring a shared container partition between ostree stateroots
+* Configuring a shared container partition between ostree stateroots when using GitOps ZTP

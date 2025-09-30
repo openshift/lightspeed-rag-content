@@ -1,0 +1,705 @@
+# Troubleshooting Operator issues
+
+
+Operators are a method of packaging, deploying, and managing an {product-title} application. They act like an extension of the software vendor's engineering team, watching over an {product-title} environment and using its current state to make decisions in real time. Operators are designed to handle upgrades seamlessly, react to failures automatically, and not take shortcuts, such as skipping a software backup process to save time.
+{product-title} {product-version} includes a default set of Operators that are required for proper functioning of the cluster. These default Operators are managed by the Cluster Version Operator (CVO).
+As a cluster administrator, you can install application Operators from the OperatorHub using the {product-title} web console or the CLI. You can then subscribe the Operator to one or more namespaces to make it available for developers on your cluster. Application Operators are managed by Operator Lifecycle Manager (OLM).
+If you experience Operator issues, verify Operator subscription status. Check Operator pod health across the cluster and gather Operator logs for diagnosis.
+
+# Operator subscription condition types
+
+Subscriptions can report the following condition types:
+
+
+
+
+[NOTE]
+----
+Default {product-title} cluster Operators are managed by the Cluster Version Operator (CVO) and they do not have a Subscription object. Application Operators are managed by Operator Lifecycle Manager (OLM) and they have a Subscription object.
+----
+
+* Catalog health requirements
+
+# Viewing Operator subscription status by using the CLI
+
+You can view Operator subscription status by using the CLI.
+
+* You have access to the cluster as a user with the cluster-admin role.
+* You have installed the OpenShift CLI (oc).
+
+1. List Operator subscriptions:
+
+```terminal
+$ oc get subs -n <operator_namespace>
+```
+
+2. Use the oc describe command to inspect a Subscription resource:
+
+```terminal
+$ oc describe sub <subscription_name> -n <operator_namespace>
+```
+
+3. In the command output, find the Conditions section for the status of Operator subscription condition types. In the following example, the CatalogSourcesUnhealthy condition type has a status of false because all available catalog sources are healthy:
+Example output
+
+```terminal
+Name:         cluster-logging
+Namespace:    openshift-logging
+Labels:       operators.coreos.com/cluster-logging.openshift-logging=
+Annotations:  <none>
+API Version:  operators.coreos.com/v1alpha1
+Kind:         Subscription
+# ...
+Conditions:
+   Last Transition Time:  2019-07-29T13:42:57Z
+   Message:               all available catalogsources are healthy
+   Reason:                AllCatalogSourcesHealthy
+   Status:                False
+   Type:                  CatalogSourcesUnhealthy
+# ...
+```
+
+
+
+[NOTE]
+----
+Default {product-title} cluster Operators are managed by the Cluster Version Operator (CVO) and they do not have a Subscription object. Application Operators are managed by Operator Lifecycle Manager (OLM) and they have a Subscription object.
+----
+
+# Viewing Operator catalog source status by using the CLI
+
+You can view the status of an Operator catalog source by using the CLI.
+
+* You have access to the cluster as a user with the cluster-admin role.
+* You have installed the OpenShift CLI (oc).
+
+1. List the catalog sources in a namespace. For example, you can check the {global_ns} namespace, which is used for cluster-wide catalog sources:
+
+```terminal
+$ oc get catalogsources -n {global_ns}
+```
+
+Example output
+
+```terminal
+NAME                  DISPLAY               TYPE   PUBLISHER   AGE
+certified-operators   Certified Operators   grpc   Red Hat     55m
+community-operators   Community Operators   grpc   Red Hat     55m
+example-catalog       Example Catalog       grpc   Example Org 2m25s
+redhat-operators      Red Hat Operators     grpc   Red Hat     55m
+```
+
+2. Use the oc describe command to get more details and status about a catalog source:
+
+```terminal
+$ oc describe catalogsource example-catalog -n {global_ns}
+```
+
+Example output
+
+```terminal
+Name:         example-catalog
+Namespace:    {global_ns}
+Labels:       <none>
+Annotations:  operatorframework.io/managed-by: marketplace-operator
+              target.workload.openshift.io/management: {"effect": "PreferredDuringScheduling"}
+API Version:  operators.coreos.com/v1alpha1
+Kind:         CatalogSource
+# ...
+Status:
+  Connection State:
+    Address:              example-catalog.{global_ns}.svc:50051
+    Last Connect:         2021-09-09T17:07:35Z
+    Last Observed State:  TRANSIENT_FAILURE
+  Registry Service:
+    Created At:         2021-09-09T17:05:45Z
+    Port:               50051
+    Protocol:           grpc
+    Service Name:       example-catalog
+    Service Namespace:  {global_ns}
+# ...
+```
+
+
+In the preceding example output, the last observed state is TRANSIENT_FAILURE. This state indicates that there is a problem establishing a connection for the catalog source.
+3. List the pods in the namespace where your catalog source was created:
+
+```terminal
+$ oc get pods -n {global_ns}
+```
+
+Example output
+
+```terminal
+NAME                                    READY   STATUS             RESTARTS   AGE
+certified-operators-cv9nn               1/1     Running            0          36m
+community-operators-6v8lp               1/1     Running            0          36m
+marketplace-operator-86bfc75f9b-jkgbc   1/1     Running            0          42m
+example-catalog-bwt8z                   0/1     ImagePullBackOff   0          3m55s
+redhat-operators-smxx8                  1/1     Running            0          36m
+```
+
+
+When a catalog source is created in a namespace, a pod for the catalog source is created in that namespace. In the preceding example output, the status for the example-catalog-bwt8z pod is ImagePullBackOff. This status indicates that there is an issue pulling the catalog source&#8217;s index image.
+4. Use the oc describe command to inspect a pod for more detailed information:
+
+```terminal
+$ oc describe pod example-catalog-bwt8z -n {global_ns}
+```
+
+Example output
+
+```terminal
+Name:         example-catalog-bwt8z
+Namespace:    {global_ns}
+Priority:     0
+Node:         ci-ln-jyryyg2-f76d1-ggdbq-worker-b-vsxjd/10.0.128.2
+...
+Events:
+  Type     Reason          Age                From               Message
+  ----     ------          ----               ----               -------
+  Normal   Scheduled       48s                default-scheduler  Successfully assigned {global_ns}/example-catalog-bwt8z to ci-ln-jyryyf2-f76d1-fgdbq-worker-b-vsxjd
+  Normal   AddedInterface  47s                multus             Add eth0 [10.131.0.40/23] from openshift-sdn
+  Normal   BackOff         20s (x2 over 46s)  kubelet            Back-off pulling image "quay.io/example-org/example-catalog:v1"
+  Warning  Failed          20s (x2 over 46s)  kubelet            Error: ImagePullBackOff
+  Normal   Pulling         8s (x3 over 47s)   kubelet            Pulling image "quay.io/example-org/example-catalog:v1"
+  Warning  Failed          8s (x3 over 47s)   kubelet            Failed to pull image "quay.io/example-org/example-catalog:v1": rpc error: code = Unknown desc = reading manifest v1 in quay.io/example-org/example-catalog: unauthorized: access to the requested resource is not authorized
+  Warning  Failed          8s (x3 over 47s)   kubelet            Error: ErrImagePull
+```
+
+
+In the preceding example output, the error messages indicate that the catalog source&#8217;s index image is failing to pull successfully because of an authorization issue. For example, the index image might be stored in a registry that requires login credentials.
+
+* Operator Lifecycle Manager concepts and resources -> Catalog source
+* gRPC documentation: States of Connectivity
+* Accessing images for Operators from private registries
+
+# Querying Operator pod status
+
+You can list Operator pods within a cluster and their status. You can also collect a detailed Operator pod summary.
+
+* You have access to the cluster as a user with the cluster-admin role.
+* Your API service is still functional.
+* You have installed the OpenShift CLI (oc).
+
+1. List Operators running in the cluster. The output includes Operator version, availability, and up-time information:
+
+```terminal
+$ oc get clusteroperators
+```
+
+2. List Operator pods running in the Operator's namespace, plus pod status, restarts, and age:
+
+```terminal
+$ oc get pod -n <operator_namespace>
+```
+
+3. Output a detailed Operator pod summary:
+
+```terminal
+$ oc describe pod <operator_pod_name> -n <operator_namespace>
+```
+
+4. If an Operator issue is node-specific, query Operator container status on that node.
+1. Start a debug pod for the node:
+
+```terminal
+$ oc debug node/my-node
+```
+
+2. Set /host as the root directory within the debug shell. The debug pod mounts the host's root file system in /host within the pod. By changing the root directory to /host, you can run binaries contained in the host's executable paths:
+
+```terminal
+# chroot /host
+```
+
+
+[NOTE]
+----
+{product-title} {product-version} cluster nodes running Red Hat Enterprise Linux CoreOS (RHCOS) are immutable and rely on Operators to apply cluster changes. Accessing cluster nodes by using SSH is not recommended. However, if the {product-title} API is not available, or the kubelet is not properly functioning on the target node, oc operations will be impacted. In such situations, it is possible to access nodes using ssh core@<node>.<cluster_name>.<base_domain> instead.
+----
+3. List details about the node's containers, including state and associated pod IDs:
+
+```terminal
+# crictl ps
+```
+
+4. List information about a specific Operator container on the node. The following example lists information about the network-operator container:
+
+```terminal
+# crictl ps --name network-operator
+```
+
+5. Exit from the debug shell.
+
+# Gathering Operator logs
+
+If you experience Operator issues, you can gather detailed diagnostic information from Operator pod logs.
+
+* You have access to the cluster as a user with the cluster-admin role.
+* Your API service is still functional.
+* You have installed the OpenShift CLI (oc).
+* You have the fully qualified domain names of the control plane or control plane machines.
+
+1. List the Operator pods that are running in the Operator's namespace, plus the pod status, restarts, and age:
+
+```terminal
+$ oc get pods -n <operator_namespace>
+```
+
+2. Review logs for an Operator pod:
+
+```terminal
+$ oc logs pod/<pod_name> -n <operator_namespace>
+```
+
+
+If an Operator pod has multiple containers, the preceding command will produce an error that includes the name of each container. Query logs from an individual container:
+
+```terminal
+$ oc logs pod/<operator_pod_name> -c <container_name> -n <operator_namespace>
+```
+
+3. If the API is not functional, review Operator pod and container logs on each control plane node by using SSH instead. Replace <master-node>.<cluster_name>.<base_domain> with appropriate values.
+1. List pods on each control plane node:
+
+```terminal
+$ ssh core@<master-node>.<cluster_name>.<base_domain> sudo crictl pods
+```
+
+2. For any Operator pods not showing a Ready status, inspect the pod's status in detail. Replace <operator_pod_id> with the Operator pod's ID listed in the output of the preceding command:
+
+```terminal
+$ ssh core@<master-node>.<cluster_name>.<base_domain> sudo crictl inspectp <operator_pod_id>
+```
+
+3. List containers related to an Operator pod:
+
+```terminal
+$ ssh core@<master-node>.<cluster_name>.<base_domain> sudo crictl ps --pod=<operator_pod_id>
+```
+
+4. For any Operator container not showing a Ready status, inspect the container's status in detail. Replace <container_id> with a container ID listed in the output of the preceding command:
+
+```terminal
+$ ssh core@<master-node>.<cluster_name>.<base_domain> sudo crictl inspect <container_id>
+```
+
+5. Review the logs for any Operator containers not showing a Ready status. Replace <container_id> with a container ID listed in the output of the preceding command:
+
+```terminal
+$ ssh core@<master-node>.<cluster_name>.<base_domain> sudo crictl logs -f <container_id>
+```
+
+
+[NOTE]
+----
+{product-title} {product-version} cluster nodes running Red Hat Enterprise Linux CoreOS (RHCOS) are immutable and rely on Operators to apply cluster changes. Accessing cluster nodes by using SSH is not recommended. Before attempting to collect diagnostic data over SSH, review whether the data collected by running oc adm must gather and other oc commands is sufficient instead. However, if the {product-title} API is not available, or the kubelet is not properly functioning on the target node, oc operations will be impacted. In such situations, it is possible to access nodes using ssh core@<node>.<cluster_name>.<base_domain>.
+----
+
+# Disabling the Machine Config Operator from automatically rebooting
+
+When configuration changes are made by the Machine Config Operator (MCO), Red Hat Enterprise Linux CoreOS (RHCOS) must reboot for the changes to take effect. Whether the configuration change is automatic or manual, an RHCOS node reboots automatically unless it is paused.
+
+
+[NOTE]
+----
+The following modifications do not trigger a node reboot:
+* When the MCO detects any of the following changes, it applies the update without draining or rebooting the node:
+* Changes to the SSH key in the spec.config.passwd.users.sshAuthorizedKeys parameter of a machine config.
+* Changes to the global pull secret or pull secret in the openshift-config namespace.
+* Automatic rotation of the /etc/kubernetes/kubelet-ca.crt certificate authority (CA) by the Kubernetes API Server Operator.
+* When the MCO detects changes to the /etc/containers/registries.conf file, such as adding or editing an ImageDigestMirrorSet, ImageTagMirrorSet, or ImageContentSourcePolicy object, it drains the corresponding nodes, applies the changes, and uncordons the nodes. The node drain does not happen for the following changes:
+* The addition of a registry with the pull-from-mirror = "digest-only" parameter set for each mirror.
+* The addition of a mirror with the pull-from-mirror = "digest-only" parameter set in a registry.
+* The addition of items to the unqualified-search-registries list.
+----
+
+To avoid unwanted disruptions, you can modify the machine config pool (MCP) to prevent automatic rebooting after the Operator makes changes to the machine config.
+
+## Disabling the Machine Config Operator from automatically rebooting by using the console
+
+To avoid unwanted disruptions from changes made by the Machine Config Operator (MCO), you can use the {product-title} web console to modify the machine config pool (MCP) to prevent the MCO from making any changes to nodes in that pool. This prevents any reboots that would normally be part of the MCO update process.
+
+
+[NOTE]
+----
+See second NOTE in Disabling the Machine Config Operator from automatically rebooting.
+----
+
+* You have access to the cluster as a user with the cluster-admin role.
+
+To pause or unpause automatic MCO update rebooting:
+
+* Pause the autoreboot process:
+1. Log in to the {product-title} web console as a user with the cluster-admin role.
+2. Click Compute -> MachineConfigPools.
+3. On the MachineConfigPools page, click either master or worker, depending upon which nodes you want to pause rebooting for.
+4. On the master or worker page, click YAML.
+5. In the YAML, update the spec.paused field to true.
+Sample MachineConfigPool object
+
+```yaml
+apiVersion: machineconfiguration.openshift.io/v1
+kind: MachineConfigPool
+# ...
+spec:
+# ...
+  paused: true 1
+# ...
+```
+
+Update the spec.paused field to true to pause rebooting.
+6. To verify that the MCP is paused, return to the MachineConfigPools page.
+
+On the MachineConfigPools page, the Paused column reports True for the MCP you modified.
+
+If the MCP has pending changes while paused, the Updated column is False and Updating is False. When Updated is True and Updating is False, there are no pending changes.
+
+[IMPORTANT]
+----
+If there are pending changes (where both the Updated and Updating columns are False), it is recommended to schedule a maintenance window for a reboot as early as possible. Use the following steps for unpausing the autoreboot process to apply the changes that were queued since the last reboot.
+----
+* Unpause the autoreboot process:
+1. Log in to the {product-title} web console as a user with the cluster-admin role.
+2. Click Compute -> MachineConfigPools.
+3. On the MachineConfigPools page, click either master or worker, depending upon which nodes you want to pause rebooting for.
+4. On the master or worker page, click YAML.
+5. In the YAML, update the spec.paused field to false.
+Sample MachineConfigPool object
+
+```yaml
+apiVersion: machineconfiguration.openshift.io/v1
+kind: MachineConfigPool
+# ...
+spec:
+# ...
+  paused: false 1
+# ...
+```
+
+Update the spec.paused field to false to allow rebooting.
+
+[NOTE]
+----
+By unpausing an MCP, the MCO applies all paused changes reboots Red Hat Enterprise Linux CoreOS (RHCOS) as needed.
+----
+6. To verify that the MCP is paused, return to the MachineConfigPools page.
+
+On the MachineConfigPools page, the Paused column reports False for the MCP you modified.
+
+If the MCP is applying any pending changes, the Updated column is False and the Updating column is True. When Updated is True and Updating is False, there are no further changes being made.
+
+## Disabling the Machine Config Operator from automatically rebooting by using the CLI
+
+To avoid unwanted disruptions from changes made by the Machine Config Operator (MCO), you can modify the machine config pool (MCP) using the OpenShift CLI (oc) to prevent the MCO from making any changes to nodes in that pool. This prevents any reboots that would normally be part of the MCO update process.
+
+
+[NOTE]
+----
+See second NOTE in Disabling the Machine Config Operator from automatically rebooting.
+----
+
+* You have access to the cluster as a user with the cluster-admin role.
+* You have installed the OpenShift CLI (oc).
+
+To pause or unpause automatic MCO update rebooting:
+
+* Pause the autoreboot process:
+1. Update the MachineConfigPool custom resource to set the spec.paused field to true.
+Control plane (master) nodes
+
+```terminal
+$ oc patch --type=merge --patch='{"spec":{"paused":true}}' machineconfigpool/master
+```
+
+Worker nodes
+
+```terminal
+$ oc patch --type=merge --patch='{"spec":{"paused":true}}' machineconfigpool/worker
+```
+
+2. Verify that the MCP is paused:
+Control plane (master) nodes
+
+```terminal
+$ oc get machineconfigpool/master --template='{{.spec.paused}}'
+```
+
+Worker nodes
+
+```terminal
+$ oc get machineconfigpool/worker --template='{{.spec.paused}}'
+```
+
+Example output
+
+```terminal
+true
+```
+
+
+The spec.paused field is true and the MCP is paused.
+3. Determine if the MCP has pending changes:
+
+```terminal
+# oc get machineconfigpool
+```
+
+Example output
+
+```
+NAME     CONFIG                                             UPDATED   UPDATING
+master   rendered-master-33cf0a1254318755d7b48002c597bf91   True      False
+worker   rendered-worker-e405a5bdb0db1295acea08bcca33fa60   False     False
+```
+
+
+If the UPDATED column is False and UPDATING is False, there are pending changes. When UPDATED is True and UPDATING is False, there are no pending changes. In the previous example, the worker node has pending changes. The control plane node does not have any pending changes.
+
+[IMPORTANT]
+----
+If there are pending changes (where both the Updated and Updating columns are False), it is recommended to schedule a maintenance window for a reboot as early as possible. Use the following steps for unpausing the autoreboot process to apply the changes that were queued since the last reboot.
+----
+* Unpause the autoreboot process:
+1. Update the MachineConfigPool custom resource to set the spec.paused field to false.
+Control plane (master) nodes
+
+```terminal
+$ oc patch --type=merge --patch='{"spec":{"paused":false}}' machineconfigpool/master
+```
+
+Worker nodes
+
+```terminal
+$ oc patch --type=merge --patch='{"spec":{"paused":false}}' machineconfigpool/worker
+```
+
+
+[NOTE]
+----
+By unpausing an MCP, the MCO applies all paused changes and reboots Red Hat Enterprise Linux CoreOS (RHCOS) as needed.
+----
+2. Verify that the MCP is unpaused:
+Control plane (master) nodes
+
+```terminal
+$ oc get machineconfigpool/master --template='{{.spec.paused}}'
+```
+
+Worker nodes
+
+```terminal
+$ oc get machineconfigpool/worker --template='{{.spec.paused}}'
+```
+
+Example output
+
+```terminal
+false
+```
+
+
+The spec.paused field is false and the MCP is unpaused.
+3. Determine if the MCP has pending changes:
+
+```terminal
+$ oc get machineconfigpool
+```
+
+Example output
+
+```
+NAME     CONFIG                                   UPDATED  UPDATING
+master   rendered-master-546383f80705bd5aeaba93   True     False
+worker   rendered-worker-b4c51bb33ccaae6fc4a6a5   False    True
+```
+
+
+If the MCP is applying any pending changes, the UPDATED column is False and the UPDATING column is True. When UPDATED is True and UPDATING is False, there are no further changes being made. In the previous example, the MCO is updating the worker node.
+
+# Refreshing failing subscriptions
+
+In Operator Lifecycle Manager (OLM), if you subscribe to an Operator that references images that are not accessible on your network, you can find jobs in the openshift-marketplace namespace that are failing with the following errors:
+
+
+```terminal
+ImagePullBackOff for
+Back-off pulling image "example.com/openshift4/ose-elasticsearch-operator-bundle@sha256:6d2587129c846ec28d384540322b40b05833e7e00b25cca584e004af9a1d292e"
+```
+
+
+
+```terminal
+rpc error: code = Unknown desc = error pinging docker registry example.com: Get "https://example.com/v2/": dial tcp: lookup example.com on 10.0.0.1:53: no such host
+```
+
+
+As a result, the subscription is stuck in this failing state and the Operator is unable to install or upgrade.
+
+You can refresh a failing subscription by deleting the subscription, cluster service version (CSV), and other related objects. After recreating the subscription, OLM then reinstalls the correct version of the Operator.
+
+* You have a failing subscription that is unable to pull an inaccessible bundle image.
+* You have confirmed that the correct bundle image is accessible.
+
+1. Get the names of the Subscription and ClusterServiceVersion objects from the namespace where the Operator is installed:
+
+```terminal
+$ oc get sub,csv -n <namespace>
+```
+
+Example output
+
+```terminal
+NAME                                                       PACKAGE                  SOURCE             CHANNEL
+subscription.operators.coreos.com/elasticsearch-operator   elasticsearch-operator   redhat-operators   5.0
+
+NAME                                                                         DISPLAY                            VERSION    REPLACES   PHASE
+clusterserviceversion.operators.coreos.com/elasticsearch-operator.5.0.0-65   OpenShift Elasticsearch Operator   5.0.0-65              Succeeded
+```
+
+2. Delete the subscription:
+
+```terminal
+$ oc delete subscription <subscription_name> -n <namespace>
+```
+
+3. Delete the cluster service version:
+
+```terminal
+$ oc delete csv <csv_name> -n <namespace>
+```
+
+4. Get the names of any failing jobs and related config maps in the openshift-marketplace namespace:
+
+```terminal
+$ oc get job,configmap -n openshift-marketplace
+```
+
+Example output
+
+```terminal
+NAME                                                                        COMPLETIONS   DURATION   AGE
+job.batch/1de9443b6324e629ddf31fed0a853a121275806170e34c926d69e53a7fcbccb   1/1           26s        9m30s
+
+NAME                                                                        DATA   AGE
+configmap/1de9443b6324e629ddf31fed0a853a121275806170e34c926d69e53a7fcbccb   3      9m30s
+```
+
+5. Delete the job:
+
+```terminal
+$ oc delete job <job_name> -n openshift-marketplace
+```
+
+
+This ensures pods that try to pull the inaccessible image are not recreated.
+6. Delete the config map:
+
+```terminal
+$ oc delete configmap <configmap_name> -n openshift-marketplace
+```
+
+7. Reinstall the Operator using OperatorHub in the web console.
+
+* Check that the Operator has been reinstalled successfully:
+
+```terminal
+$ oc get sub,csv,installplan -n <namespace>
+```
+
+
+# Reinstalling Operators after failed uninstallation
+
+You must successfully and completely uninstall an Operator prior to attempting to reinstall the same Operator. Failure to fully uninstall the Operator properly can leave resources, such as a project or namespace, stuck in a "Terminating" state and cause "error resolving resource" messages. For example:
+
+
+```
+...
+    message: 'Failed to delete all resource types, 1 remaining: Internal error occurred:
+      error resolving resource'
+...
+```
+
+
+These types of issues can prevent an Operator from being reinstalled successfully.
+
+
+[WARNING]
+----
+Forced deletion of a namespace is not likely to resolve "Terminating" state issues and can lead to unstable or unpredictable cluster behavior, so it is better to try to find related resources that might be preventing the namespace from being deleted. For more information, see the Red Hat Knowledgebase Solution #4165791, paying careful attention to the cautions and warnings.
+----
+
+The following procedure shows how to troubleshoot when an Operator cannot be reinstalled because an existing custom resource definition (CRD) from a previous installation of the Operator is preventing a related namespace from deleting successfully.
+
+1. Check if there are any namespaces related to the Operator that are stuck in "Terminating" state:
+
+```terminal
+$ oc get namespaces
+```
+
+Example output
+
+```
+operator-ns-1                                       Terminating
+```
+
+2. Check if there are any CRDs related to the Operator that are still present after the failed uninstallation:
+
+```terminal
+$ oc get crds
+```
+
+
+[NOTE]
+----
+CRDs are global cluster definitions; the actual custom resource (CR) instances related to the CRDs could be in other namespaces or be global cluster instances.
+----
+3. If there are any CRDs that you know were provided or managed by the Operator and that should have been deleted after uninstallation, delete the CRD:
+
+```terminal
+$ oc delete crd <crd_name>
+```
+
+4. Check if there are any remaining CR instances related to the Operator that are still present after uninstallation, and if so, delete the CRs:
+1. The type of CRs to search for can be difficult to determine after uninstallation and can require knowing what CRDs the Operator manages. For example, if you are troubleshooting an uninstallation of the etcd Operator, which provides the EtcdCluster CRD, you can search for remaining EtcdCluster CRs in a namespace:
+
+```terminal
+$ oc get EtcdCluster -n <namespace_name>
+```
+
+
+Alternatively, you can search across all namespaces:
+
+```terminal
+$ oc get EtcdCluster --all-namespaces
+```
+
+2. If there are any remaining CRs that should be removed, delete the instances:
+
+```terminal
+$ oc delete <cr_name> <cr_instance_name> -n <namespace_name>
+```
+
+5. Check that the namespace deletion has successfully resolved:
+
+```terminal
+$ oc get namespace <namespace_name>
+```
+
+
+[IMPORTANT]
+----
+If the namespace or other Operator resources are still not uninstalled cleanly, contact Red Hat Support.
+----
+6. Reinstall the Operator using OperatorHub in the web console.
+
+* Check that the Operator has been reinstalled successfully:
+
+```terminal
+$ oc get sub,csv,installplan -n <namespace>
+```
+
+
+* Deleting Operators from a cluster
+* Adding Operators to a cluster

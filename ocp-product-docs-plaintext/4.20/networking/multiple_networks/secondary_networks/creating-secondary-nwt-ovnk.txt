@@ -1,0 +1,307 @@
+# Creating secondary networks on OVN-Kubernetes
+
+
+As a cluster administrator, you can configure a secondary network for your cluster using the NetworkAttachmentDefinition (NAD) resource.
+
+[NOTE]
+----
+Support for user-defined networks as a secondary network will be added in a future version of {product-title}.
+----
+
+# Configuration for an OVN-Kubernetes secondary network
+
+The Red Hat OpenShift Networking OVN-Kubernetes network plugin allows the configuration of secondary network interfaces for pods. To configure secondary network interfaces, you must define the configurations in the NetworkAttachmentDefinition custom resource definition (CRD).
+
+
+[NOTE]
+----
+Pod and multi-network policy creation might remain in a pending state until the OVN-Kubernetes control plane agent in the nodes processes the associated network-attachment-definition CRD.
+----
+
+You can configure an OVN-Kubernetes secondary network in layer 2, layer 3, or localnet topologies. For more information about features supported on these topologies, see "UserDefinedNetwork and NetworkAttachmentDefinition support matrix".
+
+The following sections provide example configurations for each of the topologies that OVN-Kubernetes currently allows for secondary networks.
+
+
+[NOTE]
+----
+Networks names must be unique. For example, creating multiple NetworkAttachmentDefinition CRDs with different configurations that reference the same network is unsupported.
+----
+
+## Supported platforms for OVN-Kubernetes secondary network
+
+You can use an OVN-Kubernetes secondary network with the following supported platforms:
+
+* Bare metal
+* IBM Power(R)
+* IBM Z(R)
+* IBM(R) LinuxONE
+* VMware vSphere
+* Red Hat OpenStack Platform (RHOSP)
+
+## OVN-Kubernetes network plugin JSON configuration table
+
+The following table describes the configuration parameters for the OVN-Kubernetes CNI network plugin:
+
+
+
+## Compatibility with multi-network policy
+
+The multi-network policy API, which is provided by the MultiNetworkPolicy custom resource definition (CRD) in the k8s.cni.cncf.io API group, is compatible with an OVN-Kubernetes secondary network. When defining a network policy, the network policy rules that can be used depend on whether the OVN-Kubernetes secondary network defines the subnets field. Refer to the following table for details:
+
+
+
+You can use the k8s.v1.cni.cncf.io/policy-for annotation on a MultiNetworkPolicy object to point to a NetworkAttachmentDefinition (NAD) custom resource (CR). The NAD CR defines the network to which the policy applies. The following example multi-network policy is valid only if the subnets field is defined in the secondary network CNI configuration for the secondary network named blue2:
+
+
+```yaml
+apiVersion: k8s.cni.cncf.io/v1beta1
+kind: MultiNetworkPolicy
+metadata:
+  name: allow-same-namespace
+  annotations:
+    k8s.v1.cni.cncf.io/policy-for: blue2 1
+spec:
+  podSelector:
+  ingress:
+  - from:
+    - podSelector: {}
+```
+
+
+The following example uses the ipBlock network policy selector, which is always valid for an OVN-Kubernetes secondary network:
+
+
+```yaml
+apiVersion: k8s.cni.cncf.io/v1beta1
+kind: MultiNetworkPolicy
+metadata:
+  name:  ingress-ipblock
+  annotations:
+    k8s.v1.cni.cncf.io/policy-for: default/flatl2net
+spec:
+  podSelector:
+    matchLabels:
+      name: access-control
+  policyTypes:
+  - Ingress
+  ingress:
+  - from:
+    - ipBlock:
+        cidr: 10.200.0.0/30
+```
+
+
+## Configuration for a localnet switched topology
+
+The switched localnet topology interconnects the workloads created as Network Attachment Definitions (NADs) through a cluster-wide logical switch to a physical network.
+
+You must map a secondary network to the ovs-bridge to use it as an OVN-Kubernetes secondary network. Bridge mappings allow network traffic to reach the physical network. A bridge mapping associates a physical network name, also known as an interface label, to a bridge created with Open vSwitch (OVS).
+
+You can create an NodeNetworkConfigurationPolicy (NNCP) object, part of the nmstate.io/v1 API group, to declaratively create the mapping. This API is provided by the NMState Operator. By using this API you can apply the bridge mapping to nodes that match your specified nodeSelector expression, such as node-role.kubernetes.io/worker: ''. With this declarative approach, the NMState Operator applies secondary network configuration to all nodes specified by the node selector automatically and transparently.
+
+When attaching a secondary network, you can either use the existing br-ex bridge or create a new bridge. Which approach to use depends on your specific network infrastructure. Consider the following approaches:
+
+* If your nodes include only a single network interface, you must use the existing bridge. This network interface is owned and managed by OVN-Kubernetes and you must not remove it from the br-ex bridge or alter the interface configuration. If you remove or alter the network interface, your cluster network will stop working correctly.
+* If your nodes include several network interfaces, you can attach a different network interface to a new bridge, and use that for your secondary network. This approach provides for traffic isolation from your primary cluster network.
+
+The localnet1 network is mapped to the br-ex bridge in the following example:
+
+
+```yaml
+apiVersion: nmstate.io/v1
+kind: NodeNetworkConfigurationPolicy
+metadata:
+  name: mapping 1
+spec:
+  nodeSelector:
+    node-role.kubernetes.io/worker: '' 2
+  desiredState:
+    ovn:
+      bridge-mappings:
+      - localnet: localnet1 3
+        bridge: br-ex 4
+        state: present 5
+```
+
+
+The name for the configuration object.
+A node selector that specifies the nodes to apply the node network configuration policy to.
+The name for the secondary network from which traffic is forwarded to the OVS bridge. This secondary network must match the name of the spec.config.name field of the NetworkAttachmentDefinition CRD that defines the OVN-Kubernetes secondary network.
+The name of the OVS bridge on the node. This value is required only if you specify state: present.
+The state for the mapping. Must be either present to add the bridge or absent to remove the bridge. The default value is present.
+
+The following JSON example configures a localnet secondary network that is named localnet1. Note that the value for the mtu parameter must match the MTU value that was set for the secondary network interface that is mapped to the br-ex bridge interface.
+
+```json
+{
+  "cniVersion": "0.3.1",
+  "name": "localnet1",
+  "type": "ovn-k8s-cni-overlay",
+  "topology":"localnet",
+  "physicalNetworkName": "localnet1",
+  "subnets": "202.10.130.112/28",
+  "vlanID": 33,
+  "mtu": 1500,
+  "netAttachDefName": "ns1/localnet-network",
+  "excludeSubnets": "10.100.200.0/29"
+}
+```
+
+
+In the following example, the localnet2 network interface is attached to the ovs-br1 bridge. Through this attachment, the network interface is available to the OVN-Kubernetes network plugin as a secondary network.
+
+
+```yaml
+apiVersion: nmstate.io/v1
+kind: NodeNetworkConfigurationPolicy
+metadata:
+  name: ovs-br1-multiple-networks 1
+spec:
+  nodeSelector:
+    node-role.kubernetes.io/worker: '' 2
+  desiredState:
+    interfaces:
+    - name: ovs-br1 3
+      description: |-
+        A dedicated OVS bridge with eth1 as a port
+        allowing all VLANs and untagged traffic
+      type: ovs-bridge
+      state: up
+      bridge:
+        allow-extra-patch-ports: true
+        options:
+          stp: false
+          mcast-snooping-enable: true 4
+        port:
+        - name: eth1 5
+    ovn:
+      bridge-mappings:
+      - localnet: localnet2 6
+        bridge: ovs-br1 7
+        state: present 8
+```
+
+
+Specifies the name of the configuration object.
+Specifies a node selector that identifies the nodes to which the node network configuration policy applies.
+Specifies a new OVS bridge that operates separately from the default bridge used by OVN-Kubernetes for cluster traffic.
+Specifies whether to enable multicast snooping. When enabled, multicast snooping prevents network devices from flooding multicast traffic to all network members. By default, an OVS bridge does not enable multicast snooping. The default value is false.
+Specifies the network device on the host system to associate with the new OVS bridge.
+Specifies the name of the secondary network that forwards traffic to the OVS bridge. This name must match the value of the spec.config.name field in the NetworkAttachmentDefinition CRD that defines the OVN-Kubernetes secondary network.
+Specifies the name of the OVS bridge on the node. The value is required only when state: present is set.
+Specifies the state of the mapping. Valid values are present to add the bridge or absent to remove the bridge. The default value is present.
+
+The following JSON example configures a localnet secondary network that is named localnet2. Note that the value for the mtu parameter must match the MTU value that was set for the eth1 secondary network interface.
+
+```json
+{
+  "cniVersion": "0.3.1",
+  "name": "localnet2",
+  "type": "ovn-k8s-cni-overlay",
+  "topology":"localnet",
+  "physicalNetworkName": "localnet2",
+  "subnets": "202.10.130.112/28",
+  "vlanID": 33,
+  "mtu": 1500,
+  "netAttachDefName": "ns1/localnet-network",
+  "excludeSubnets": "10.100.200.0/29"
+}
+```
+
+
+### Configuration for a layer 2 switched topology
+
+The switched (layer 2) topology networks interconnect the workloads through a cluster-wide logical switch. This configuration can be used for IPv6 and dual-stack deployments.
+
+
+[NOTE]
+----
+Layer 2 switched topology networks only allow for the transfer of data packets between pods within a cluster.
+----
+
+The following JSON example configures a switched secondary network:
+
+
+```json
+{
+  "cniVersion": "0.3.1",
+  "name": "l2-network",
+  "type": "ovn-k8s-cni-overlay",
+  "topology":"layer2",
+  "subnets": "10.100.200.0/24",
+  "mtu": 1300,
+  "netAttachDefName": "ns1/l2-network",
+  "excludeSubnets": "10.100.200.0/29"
+}
+```
+
+
+## Configuring pods for secondary networks
+
+You must specify the secondary network attachments through the k8s.v1.cni.cncf.io/networks annotation.
+
+The following example provisions a pod with two secondary attachments, one for each of the attachment configurations presented in this guide.
+
+
+```yaml
+apiVersion: v1
+kind: Pod
+metadata:
+  annotations:
+    k8s.v1.cni.cncf.io/networks: l2-network
+  name: tinypod
+  namespace: ns1
+spec:
+  containers:
+  - args:
+    - pause
+    image: k8s.gcr.io/e2e-test-images/agnhost:2.36
+    imagePullPolicy: IfNotPresent
+    name: agnhost-container
+```
+
+
+## Configuring pods with a static IP address
+
+The following example provisions a pod with a static IP address.
+
+
+[NOTE]
+----
+* You can specify the IP address for the secondary network attachment of a pod only when the secondary network attachment, a namespaced-scoped object, uses a layer 2 or localnet topology.
+* Specifying a static IP address for the pod is only possible when the attachment configuration does not feature subnets.
+----
+
+
+```yaml
+apiVersion: v1
+kind: Pod
+metadata:
+  annotations:
+    k8s.v1.cni.cncf.io/networks: '[
+      {
+        "name": "l2-network", 1
+        "mac": "02:03:04:05:06:07", 2
+        "interface": "myiface1", 3
+        "ips": [
+          "192.0.2.20/24"
+          ] 4
+      }
+    ]'
+  name: tinypod
+  namespace: ns1
+spec:
+  containers:
+  - args:
+    - pause
+    image: k8s.gcr.io/e2e-test-images/agnhost:2.36
+    imagePullPolicy: IfNotPresent
+    name: agnhost-container
+```
+
+
+The name of the network. This value must be unique across all NetworkAttachmentDefinition CRDs.
+The MAC address to be assigned for the interface.
+The name of the network interface to be created for the pod.
+The IP addresses to be assigned to the network interface.

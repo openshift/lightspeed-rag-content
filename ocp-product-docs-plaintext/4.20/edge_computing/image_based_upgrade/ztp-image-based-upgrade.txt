@@ -1,0 +1,811 @@
+# Performing an image-based upgrade for single-node OpenShift clusters using GitOps ZTP
+
+
+You can use a single resource on the hub cluster, the ImageBasedGroupUpgrade custom resource (CR), to manage an imaged-based upgrade on a selected group of managed clusters through all stages.
+Topology Aware Lifecycle Manager (TALM) reconciles the ImageBasedGroupUpgrade CR and creates the underlying resources to complete the defined stage transitions, either in a manually controlled or a fully automated upgrade flow.
+For more information about the image-based upgrade, see "Understanding the image-based upgrade for single-node OpenShift clusters".
+* Understanding the image-based upgrade for single-node OpenShift clusters
+
+# Managing the image-based upgrade at scale using the ImageBasedGroupUpgrade CR on the hub
+
+The ImageBasedGroupUpgrade CR combines the ImageBasedUpgrade and ClusterGroupUpgrade APIs.
+For example, you can define the cluster selection and rollout strategy with the ImageBasedGroupUpgrade API in the same way as the ClusterGroupUpgrade API.
+The stage transitions are different from the ImageBasedUpgrade API.
+The ImageBasedGroupUpgrade API allows you to combine several stage transitions, also called actions, into one step that share one rollout strategy.
+
+
+```yaml
+apiVersion: lcm.openshift.io/v1alpha1
+kind: ImageBasedGroupUpgrade
+metadata:
+  name: <filename>
+  namespace: default
+spec:
+  clusterLabelSelectors: 1
+    - matchExpressions:
+      - key: name
+        operator: In
+        values:
+        - spoke1
+        - spoke4
+        - spoke6
+  ibuSpec:
+    seedImageRef: 2
+      image: quay.io/seed/image:4.19.0-rc.1
+      version: 4.19.0-rc.1
+      pullSecretRef:
+        name: "<seed_pull_secret>"
+    extraManifests: 3
+      - name: example-extra-manifests
+        namespace: openshift-lifecycle-agent
+    oadpContent: 4
+      - name: oadp-cm
+        namespace: openshift-adp
+  plan: 5
+    - actions: ["Prep", "Upgrade", "FinalizeUpgrade"]
+      rolloutStrategy:
+        maxConcurrency: 200 6
+        timeout: 2400 7
+```
+
+
+Clusters to upgrade.
+Target platform version, the seed image to be used, and the secret required to access the image.
+
+[NOTE]
+----
+If you add the seed image pull secret in the hub cluster, in the same namespace as the ImageBasedGroupUpgrade resource, the secret is added to the manifest list for the Prep stage. The secret is recreated in each spoke cluster in the openshift-lifecycle-agent namespace.
+----
+Optional: Applies additional manifests, which are not in the seed image, to the target cluster. Also applies ConfigMap objects for custom catalog sources.
+ConfigMap resources that contain the OADP Backup and Restore CRs.
+Upgrade plan details.
+Number of clusters to update in a batch.
+Timeout limit to complete the action in minutes.
+
+## Supported action combinations
+
+Actions are the list of stage transitions that TALM completes in the steps of an upgrade plan for the selected group of clusters.
+Each action entry in the ImageBasedGroupUpgrade CR is a separate step and a step contains one or several actions that share the same rollout strategy.
+You can achieve more control over the rollout strategy for each action by separating actions into steps.
+
+These actions can be combined differently in your upgrade plan and you can add subsequent steps later.
+Wait until the previous steps either complete or fail before adding a step to your plan.
+The first action of an added step for clusters that failed a previous steps must be either Abort or Rollback.
+
+
+[IMPORTANT]
+----
+You cannot remove actions or steps from an ongoing plan.
+----
+
+The following table shows example plans for different levels of control over the rollout strategy:
+
+
+
+
+[IMPORTANT]
+----
+Clusters that fail one of the actions will skip the remaining actions in the same step.
+----
+
+The ImageBasedGroupUpgrade API accepts the following actions:
+
+Prep:: Start preparing the upgrade resources by moving to the Prep stage.
+Upgrade:: Start the upgrade by moving to the Upgrade stage.
+FinalizeUpgrade:: Finalize the upgrade on selected clusters that completed the Upgrade action by moving to the Idle stage.
+Rollback:: Start a rollback only on successfully upgraded clusters by moving to the Rollback stage.
+FinalizeRollback:: Finalize the rollback by moving to the Idle stage.
+AbortOnFailure:: Cancel the upgrade on selected clusters that failed the Prep or Upgrade actions by moving to the Idle stage.
+Abort:: Cancel an ongoing upgrade only on clusters that are not yet upgraded by moving to the Idle stage.
+
+The following action combinations are supported. A pair of brackets signifies one step in the plan section:
+
+* ["Prep"], ["Abort"]
+* ["Prep", "Upgrade", "FinalizeUpgrade"]
+* ["Prep"], ["AbortOnFailure"], ["Upgrade"], ["AbortOnFailure"], ["FinalizeUpgrade"]
+* ["Rollback", "FinalizeRollback"]
+
+Use one of the following combinations when you need to resume or cancel an ongoing upgrade from a completely new ImageBasedGroupUpgrade CR:
+
+* ["Upgrade","FinalizeUpgrade"]
+* ["FinalizeUpgrade"]
+* ["FinalizeRollback"]
+* ["Abort"]
+* ["AbortOnFailure"]
+
+## Labeling for cluster selection
+
+Use the spec.clusterLabelSelectors field for initial cluster selection.
+In addition, TALM labels the managed clusters according to the results of their last stage transition.
+
+When a stage completes or fails, TALM marks the relevant clusters with the following labels:
+
+* lcm.openshift.io/ibgu-<stage>-completed
+* lcm.openshift.io/ibgu-<stage>-failed
+
+Use these cluster labels to cancel or roll back an upgrade on a group of clusters after troubleshooting issues that you might encounter.
+
+
+[IMPORTANT]
+----
+If you are using the ImageBasedGroupUpgrade CR to upgrade your clusters, ensure that the lcm.openshift.io/ibgu-<stage>-completed or lcm.openshift.io/ibgu-<stage>-failed cluster labels are updated properly after performing troubleshooting or recovery steps on the managed clusters.
+This ensures that the TALM continues to manage the image-based upgrade for the cluster.
+----
+
+For example, if you want to cancel the upgrade for all managed clusters except for clusters that successfully completed the upgrade, you can add an Abort action to your plan.
+The Abort action moves back the ImageBasedUpgrade CR to the Idle stage, which cancels the upgrade on clusters that are not yet upgraded.
+Adding a separate Abort action ensures that the TALM does not perform the Abort action on clusters that have the lcm.openshift.io/ibgu-upgrade-completed label.
+
+The cluster labels are removed after successfully canceling or finalizing the upgrade.
+
+## Status monitoring
+
+The ImageBasedGroupUpgrade CR ensures a better monitoring experience with a comprehensive status reporting for all clusters that is aggregated in one place.
+You can monitor the following actions:
+
+status.clusters.completedActions:: Shows all completed actions defined in the plan section.
+status.clusters.currentAction:: Shows all actions that are currently in progress.
+status.clusters.failedActions:: Shows all failed actions along with a detailed error message.
+
+# Performing an image-based upgrade on managed clusters at scale in several steps
+
+For use cases when you need better control of when the upgrade interrupts your service, you can upgrade a set of your managed clusters by using the ImageBasedGroupUpgrade CR with adding actions after the previous step is complete.
+After evaluating the results of the previous steps, you can move to the next upgrade stage or troubleshoot any failed steps throughout the procedure.
+
+
+[IMPORTANT]
+----
+Only certain action combinations are supported and listed in Supported action combinations.
+----
+
+* You have logged in to the hub cluster as a user with cluster-admin privileges.
+* You have created policies and ConfigMap objects for resources used in the image-based upgrade.
+* You have installed the Lifecycle Agent and OADP Operators on all managed clusters through the hub cluster.
+
+1. Create a YAML file on the hub cluster that contains the ImageBasedGroupUpgrade CR:
+
+```yaml
+apiVersion: lcm.openshift.io/v1alpha1
+kind: ImageBasedGroupUpgrade
+metadata:
+  name: <filename>
+  namespace: default
+spec:
+  clusterLabelSelectors: 1
+    - matchExpressions:
+      - key: name
+        operator: In
+        values:
+        - spoke1
+        - spoke4
+        - spoke6
+  ibuSpec:
+    seedImageRef: 2
+      image: quay.io/seed/image:4.16.0-rc.1
+      version: 4.16.0-rc.1
+      pullSecretRef:
+        name: "<seed_pull_secret>"
+    extraManifests: 3
+      - name: example-extra-manifests
+        namespace: openshift-lifecycle-agent
+    oadpContent: 4
+      - name: oadp-cm
+        namespace: openshift-adp
+  plan: 5
+    - actions: ["Prep"]
+      rolloutStrategy:
+        maxConcurrency: 2
+        timeout: 2400
+```
+
+Clusters to upgrade.
+Target platform version, the seed image to be used, and the secret required to access the image.
+
+[NOTE]
+----
+If you add the seed image pull secret in the hub cluster, in the same namespace as the ImageBasedGroupUpgrade resource, the secret is added to the manifest list for the Prep stage. The secret is recreated in each spoke cluster in the openshift-lifecycle-agent namespace.
+----
+Optional: Applies additional manifests, which are not in the seed image, to the target cluster. Also applies ConfigMap objects for custom catalog sources.
+List of ConfigMap resources that contain the OADP Backup and Restore CRs.
+Upgrade plan details.
+2. Apply the created file by running the following command on the hub cluster:
+
+```terminal
+$ oc apply -f <filename>.yaml
+```
+
+3. Monitor the status updates by running the following command on the hub cluster:
+
+```terminal
+$ oc get ibgu -o yaml
+```
+
+
+```yaml
+# ...
+status:
+  clusters:
+  - completedActions:
+    - action: Prep
+    name: spoke1
+  - completedActions:
+    - action: Prep
+    name: spoke4
+  - failedActions:
+    - action: Prep
+    name: spoke6
+# ...
+```
+
+The previous output of an example plan starts with the Prep stage only and you add actions to the plan based on the results of the previous step.
+TALM adds a label to the clusters to mark if the upgrade succeeded or failed.
+For example, the lcm.openshift.io/ibgu-prep-failed is applied to clusters that failed the Prep stage.
+After investigating the failure, you can add the AbortOnFailure step to your upgrade plan.
+It moves the clusters labeled with lcm.openshift.io/ibgu-<action>-failed back to the Idle stage.
+Any resources that are related to the upgrade on the selected clusters are deleted.
+4. Optional: Add the AbortOnFailure action to your existing ImageBasedGroupUpgrade CR by running the following command:
+
+```terminal
+$ oc patch ibgu <filename> --type=json -p \
+'[{"op": "add", "path": "/spec/plan/-", "value": {"actions": ["AbortOnFailure"], "rolloutStrategy": {"maxConcurrency": 5, "timeout": 10}}}]'
+```
+
+1. Continue monitoring the status updates by running the following command:
+
+```terminal
+$ oc get ibgu -o yaml
+```
+
+5. Add the action to your existing ImageBasedGroupUpgrade CR by running the following command:
+
+```terminal
+$ oc patch ibgu <filename> --type=json -p \
+'[{"op": "add", "path": "/spec/plan/-", "value": {"actions": ["Upgrade"], "rolloutStrategy": {"maxConcurrency": 2, "timeout": 30}}}]'
+```
+
+6. Optional: Add the AbortOnFailure action to your existing ImageBasedGroupUpgrade CR by running the following command:
+
+```terminal
+$ oc patch ibgu <filename> --type=json -p \
+'[{"op": "add", "path": "/spec/plan/-", "value": {"actions": ["AbortOnFailure"], "rolloutStrategy": {"maxConcurrency": 5, "timeout": 10}}}]'
+```
+
+1. Continue monitoring the status updates by running the following command:
+
+```terminal
+$ oc get ibgu -o yaml
+```
+
+7. Add the action to your existing ImageBasedGroupUpgrade CR by running the following command:
+
+```terminal
+$ oc patch ibgu <filename> --type=json -p \
+'[{"op": "add", "path": "/spec/plan/-", "value": {"actions": ["FinalizeUpgrade"], "rolloutStrategy": {"maxConcurrency": 10, "timeout": 3}}}]'
+```
+
+
+* Monitor the status updates by running the following command:
+
+```terminal
+$ oc get ibgu -o yaml
+```
+
+
+```yaml
+# ...
+status:
+  clusters:
+  - completedActions:
+    - action: Prep
+    - action: AbortOnFailure
+    failedActions:
+    - action: Upgrade
+    name: spoke1
+  - completedActions:
+    - action: Prep
+    - action: Upgrade
+    - action: FinalizeUpgrade
+    name: spoke4
+  - completedActions:
+    - action: AbortOnFailure
+    failedActions:
+    - action: Prep
+    name: spoke6
+# ...
+```
+
+* Configuring a shared container partition between ostree stateroots when using GitOps ZTP
+* Creating ConfigMap objects for the image-based upgrade with Lifecycle Agent using GitOps ZTP
+* About backup and snapshot locations and their secrets
+* Creating a Backup CR
+* Creating a Restore CR
+* Supported action combinations
+
+# Performing an image-based upgrade on managed clusters at scale in one step
+
+For use cases when service interruption is not a concern, you can upgrade a set of your managed clusters by using the ImageBasedGroupUpgrade CR with several actions combined in one step with one rollout strategy.
+With one rollout strategy, the upgrade time can be reduced but you can only troubleshoot failed clusters after the upgrade plan is complete.
+
+* You have logged in to the hub cluster as a user with cluster-admin privileges.
+* You have created policies and ConfigMap objects for resources used in the image-based upgrade.
+* You have installed the Lifecycle Agent and OADP Operators on all managed clusters through the hub cluster.
+
+1. Create a YAML file on the hub cluster that contains the ImageBasedGroupUpgrade CR:
+
+```yaml
+apiVersion: lcm.openshift.io/v1alpha1
+kind: ImageBasedGroupUpgrade
+metadata:
+  name: <filename>
+  namespace: default
+spec:
+  clusterLabelSelectors: 1
+    - matchExpressions:
+      - key: name
+        operator: In
+        values:
+        - spoke1
+        - spoke4
+        - spoke6
+  ibuSpec:
+    seedImageRef: 2
+      image: quay.io/seed/image:4.19.0-rc.1
+      version: 4.19.0-rc.1
+      pullSecretRef:
+        name: "<seed_pull_secret>"
+    extraManifests: 3
+      - name: example-extra-manifests
+        namespace: openshift-lifecycle-agent
+    oadpContent: 4
+      - name: oadp-cm
+        namespace: openshift-adp
+  plan: 5
+    - actions: ["Prep", "Upgrade", "FinalizeUpgrade"]
+      rolloutStrategy:
+        maxConcurrency: 200 6
+        timeout: 2400 7
+```
+
+Clusters to upgrade.
+Target platform version, the seed image to be used, and the secret required to access the image.
+
+[NOTE]
+----
+If you add the seed image pull secret in the hub cluster, in the same namespace as the ImageBasedGroupUpgrade resource, the secret is added to the manifest list for the Prep stage. The secret is recreated in each spoke cluster in the openshift-lifecycle-agent namespace.
+----
+Optional: Applies additional manifests, which are not in the seed image, to the target cluster. Also applies ConfigMap objects for custom catalog sources.
+ConfigMap resources that contain the OADP Backup and Restore CRs.
+Upgrade plan details.
+Number of clusters to update in a batch.
+Timeout limit to complete the action in minutes.
+2. Apply the created file by running the following command on the hub cluster:
+
+```terminal
+$ oc apply -f <filename>.yaml
+```
+
+
+* Monitor the status updates by running the following command:
+
+```terminal
+$ oc get ibgu -o yaml
+```
+
+
+```yaml
+# ...
+status:
+  clusters:
+  - completedActions:
+    - action: Prep
+    failedActions:
+    - action: Upgrade
+    name: spoke1
+  - completedActions:
+    - action: Prep
+    - action: Upgrade
+    - action: FinalizeUpgrade
+    name: spoke4
+  - failedActions:
+    - action: Prep
+    name: spoke6
+# ...
+```
+
+# Canceling an image-based upgrade on managed clusters at scale
+
+You can cancel the upgrade on a set of managed clusters that completed the Prep stage.
+
+
+[IMPORTANT]
+----
+Only certain action combinations are supported and listed in Supported action combinations.
+----
+
+* You have logged in to the hub cluster as a user with cluster-admin privileges.
+
+1. Create a separate YAML file on the hub cluster that contains the ImageBasedGroupUpgrade CR:
+
+```yaml
+apiVersion: lcm.openshift.io/v1alpha1
+kind: ImageBasedGroupUpgrade
+metadata:
+  name: <filename>
+  namespace: default
+spec:
+  clusterLabelSelectors:
+    - matchExpressions:
+      - key: name
+        operator: In
+        values:
+        - spoke4
+  ibuSpec:
+    seedImageRef:
+      image: quay.io/seed/image:4.16.0-rc.1
+      version: 4.16.0-rc.1
+      pullSecretRef:
+        name: "<seed_pull_secret>"
+    extraManifests:
+      - name: example-extra-manifests
+        namespace: openshift-lifecycle-agent
+    oadpContent:
+      - name: oadp-cm
+        namespace: openshift-adp
+  plan:
+    - actions: ["Abort"]
+      rolloutStrategy:
+        maxConcurrency: 5
+        timeout: 10
+```
+
+
+All managed clusters that completed the Prep stage are moved back to the Idle stage.
+2. Apply the created file by running the following command on the hub cluster:
+
+```terminal
+$ oc apply -f <filename>.yaml
+```
+
+
+* Monitor the status updates by running the following command:
+
+```terminal
+$ oc get ibgu -o yaml
+```
+
+Example output
+
+```yaml
+# ...
+status:
+  clusters:
+  - completedActions:
+    - action: Prep
+    currentActions:
+    - action: Abort
+    name: spoke4
+# ...
+```
+
+
+* Supported action combinations
+
+# Rolling back an image-based upgrade on managed clusters at scale
+
+Roll back the changes on a set of managed clusters if you encounter unresolvable issues after a successful upgrade.
+You need to create a separate ImageBasedGroupUpgrade CR and define the set of managed clusters that you want to roll back.
+
+
+[IMPORTANT]
+----
+Only certain action combinations are supported and listed in Supported action combinations.
+----
+
+* You have logged in to the hub cluster as a user with cluster-admin privileges.
+
+1. Create a separate YAML file on the hub cluster that contains the ImageBasedGroupUpgrade CR:
+
+```yaml
+apiVersion: lcm.openshift.io/v1alpha1
+kind: ImageBasedGroupUpgrade
+metadata:
+  name: <filename>
+  namespace: default
+spec:
+  clusterLabelSelectors:
+    - matchExpressions:
+      - key: name
+        operator: In
+        values:
+        - spoke4
+  ibuSpec:
+    seedImageRef:
+      image: quay.io/seed/image:4.19.0-rc.1
+      version: 4.19.0-rc.1
+      pullSecretRef:
+        name: "<seed_pull_secret>"
+    extraManifests:
+      - name: example-extra-manifests
+        namespace: openshift-lifecycle-agent
+    oadpContent:
+      - name: oadp-cm
+        namespace: openshift-adp
+  plan:
+    - actions: ["Rollback", "FinalizeRollback"]
+      rolloutStrategy:
+        maxConcurrency: 200
+        timeout: 2400
+```
+
+2. Apply the created file by running the following command on the hub cluster:
+
+```terminal
+$ oc apply -f <filename>.yaml
+```
+
+All managed clusters that match the defined labels are moved back to the Rollback and then the Idle stages to finalize the rollback.
+
+* Monitor the status updates by running the following command:
+
+```terminal
+$ oc get ibgu -o yaml
+```
+
+
+```yaml
+# ...
+status:
+  clusters:
+  - completedActions:
+    - action: Rollback
+    - action: FinalizeRollback
+    name: spoke4
+# ...
+```
+
+* Supported action combinations
+* Recovering from expired control plane certificates
+
+# Troubleshooting image-based upgrades with Lifecycle Agent
+
+Perform troubleshooting steps on the managed clusters that are affected by an issue.
+
+
+[IMPORTANT]
+----
+If you are using the ImageBasedGroupUpgrade CR to upgrade your clusters, ensure that the lcm.openshift.io/ibgu-<stage>-completed or lcm.openshift.io/ibgu-<stage>-failed cluster labels are updated properly after performing troubleshooting or recovery steps on the managed clusters.
+This ensures that the TALM continues to manage the image-based upgrade for the cluster.
+----
+
+## Collecting logs
+
+You can use the oc adm must-gather CLI to collect information for debugging and troubleshooting.
+
+* Collect data about the Operators by running the following command:
+
+```terminal
+$  oc adm must-gather \
+  --dest-dir=must-gather/tmp \
+  --image=$(oc -n openshift-lifecycle-agent get deployment.apps/lifecycle-agent-controller-manager -o jsonpath='{.spec.template.spec.containers[?(@.name == "manager")].image}') \
+  --image=quay.io/konveyor/oadp-must-gather:latest \// 1
+  --image=quay.io/openshift/origin-must-gather:latest 2
+```
+
+Optional: Add this option if you need to gather more information from the OADP Operator.
+Optional: Add this option if you need to gather more information from the SR-IOV Operator.
+
+## AbortFailed or FinalizeFailed error
+
+Issue:: 
+During the finalize stage or when you stop the process at the Prep stage, Lifecycle Agent cleans up the following resources:
+* Stateroot that is no longer required
+* Precaching resources
+* OADP CRs
+* ImageBasedUpgrade CR
+If the Lifecycle Agent fails to perform the above steps, it transitions to the AbortFailed or FinalizeFailed states.
+The condition message and log show which steps failed.
+
+```yaml
+message: failed to delete all the backup CRs. Perform cleanup manually then add 'lca.openshift.io/manual-cleanup-done' annotation to ibu CR to transition back to Idle
+      observedGeneration: 5
+      reason: AbortFailed
+      status: "False"
+      type: Idle
+```
+Resolution:: 
+1. Inspect the logs to determine why the failure occurred.
+2. To prompt Lifecycle Agent to retry the cleanup, add the lca.openshift.io/manual-cleanup-done annotation to the ImageBasedUpgrade CR.
+
+After observing this annotation, Lifecycle Agent retries the cleanup and, if it is successful, the ImageBasedUpgrade stage transitions to Idle.
+
+If the cleanup fails again, you can manually clean up the resources.
+
+### Cleaning up stateroot manually
+
+Issue:: Stopping at the Prep stage, Lifecycle Agent cleans up the new stateroot. When finalizing after a successful upgrade or a rollback, Lifecycle Agent cleans up the old stateroot.
+If this step fails, it is recommended that you inspect the logs to determine why the failure occurred.
+Resolution:: 
+1. Check if there are any existing deployments in the stateroot by running the following command:
+
+```terminal
+$ ostree admin status
+```
+
+2. If there are any, clean up the existing deployment by running the following command:
+
+```terminal
+$ ostree admin undeploy <index_of_deployment>
+```
+
+3. After cleaning up all the deployments of the stateroot, wipe the stateroot directory by running the following commands:
+
+[WARNING]
+----
+Ensure that the booted deployment is not in this stateroot.
+----
+
+```terminal
+$ stateroot="<stateroot_to_delete>"
+```
+
+
+```terminal
+$ unshare -m /bin/sh -c "mount -o remount,rw /sysroot && rm -rf /sysroot/ostree/deploy/${stateroot}"
+```
+
+### Cleaning up OADP resources manually
+
+Issue:: Automatic cleanup of OADP resources can fail due to connection issues between Lifecycle Agent and the S3 backend. By restoring the connection and adding the lca.openshift.io/manual-cleanup-done annotation, the Lifecycle Agent can successfully cleanup backup resources.
+Resolution:: 
+
+1. Check the backend connectivity by running the following command:
+
+```terminal
+$ oc get backupstoragelocations.velero.io -n openshift-adp
+```
+
+Example output
+
+```terminal
+NAME                          PHASE       LAST VALIDATED   AGE   DEFAULT
+dataprotectionapplication-1   Available   33s              8d    true
+```
+
+2. Remove all backup resources and then add the lca.openshift.io/manual-cleanup-done annotation to the ImageBasedUpgrade CR.
+
+## LVM Storage volume contents not restored
+
+When LVM Storage is used to provide dynamic persistent volume storage, LVM Storage might not restore the persistent volume contents if it is configured incorrectly.
+
+### Missing LVM Storage-related fields in Backup CR
+
+Issue:: Your Backup CRs might be missing fields that are needed to restore your persistent volumes.
+You can check for events in your application pod to determine if you have this issue by running the following:
+
+```terminal
+$ oc describe pod <your_app_name>
+```
+
+
+```terminal
+Events:
+  Type     Reason            Age                From               Message
+  ----     ------            ----               ----               -------
+  Warning  FailedScheduling  58s (x2 over 66s)  default-scheduler  0/1 nodes are available: pod has unbound immediate PersistentVolumeClaims. preemption: 0/1 nodes are available: 1 Preemption is not helpful for scheduling..
+  Normal   Scheduled         56s                default-scheduler  Successfully assigned default/db-1234 to sno1.example.lab
+  Warning  FailedMount       24s (x7 over 55s)  kubelet            MountVolume.SetUp failed for volume "pvc-1234" : rpc error: code = Unknown desc = VolumeID is not found
+```
+Resolution:: You must include logicalvolumes.topolvm.io in the application Backup CR.
+Without this resource, the application restores its persistent volume claims and persistent volume manifests correctly, however, the logicalvolume associated with this persistent volume is not restored properly after pivot.
+Example Backup CR
+
+```yaml
+apiVersion: velero.io/v1
+kind: Backup
+metadata:
+  labels:
+    velero.io/storage-location: default
+  name: small-app
+  namespace: openshift-adp
+spec:
+  includedNamespaces:
+  - test
+  includedNamespaceScopedResources:
+  - secrets
+  - persistentvolumeclaims
+  - deployments
+  - statefulsets
+  includedClusterScopedResources: 1
+  - persistentVolumes
+  - volumesnapshotcontents
+  - logicalvolumes.topolvm.io
+```
+
+To restore the persistent volumes for your application, you must configure this section as shown.
+
+### Missing LVM Storage-related fields in Restore CR
+
+Issue:: The expected resources for the applications are restored but the persistent volume contents are not preserved after upgrading.
+1. List the persistent volumes for you applications by running the following command before pivot:
+
+```terminal
+$ oc get pv,pvc,logicalvolumes.topolvm.io -A
+```
+
+
+```terminal
+NAME                        CAPACITY   ACCESS MODES   RECLAIM POLICY   STATUS   CLAIM            STORAGECLASS   REASON   AGE
+persistentvolume/pvc-1234   1Gi        RWO            Retain           Bound    default/pvc-db   lvms-vg1                4h45m
+
+NAMESPACE   NAME                           STATUS   VOLUME     CAPACITY   ACCESS MODES   STORAGECLASS   AGE
+default     persistentvolumeclaim/pvc-db   Bound    pvc-1234   1Gi        RWO            lvms-vg1       4h45m
+
+NAMESPACE   NAME                                AGE
+            logicalvolume.topolvm.io/pvc-1234   4h45m
+```
+2. List the persistent volumes for you applications by running the following command after pivot:
+
+```terminal
+$ oc get pv,pvc,logicalvolumes.topolvm.io -A
+```
+
+
+```terminal
+NAME                        CAPACITY   ACCESS MODES   RECLAIM POLICY   STATUS   CLAIM            STORAGECLASS   REASON   AGE
+persistentvolume/pvc-1234   1Gi        RWO            Delete           Bound    default/pvc-db   lvms-vg1                19s
+
+NAMESPACE   NAME                           STATUS   VOLUME     CAPACITY   ACCESS MODES   STORAGECLASS   AGE
+default     persistentvolumeclaim/pvc-db   Bound    pvc-1234   1Gi        RWO            lvms-vg1       19s
+
+NAMESPACE   NAME                                AGE
+            logicalvolume.topolvm.io/pvc-1234   18s
+```
+Resolution:: The reason for this issue is that the logicalvolume status is not preserved in the Restore CR.
+This status is important because it is required for Velero to reference the volumes that must be preserved after pivoting.
+You must include the following fields in the application Restore CR:
+Example Restore CR
+
+```yaml
+apiVersion: velero.io/v1
+kind: Restore
+metadata:
+  name: sample-vote-app
+  namespace: openshift-adp
+  labels:
+    velero.io/storage-location: default
+  annotations:
+    lca.openshift.io/apply-wave: "3"
+spec:
+  backupName:
+    sample-vote-app
+  restorePVs: true 1
+  restoreStatus: 2
+    includedResources:
+      - logicalvolumes
+```
+
+To preserve the persistent volumes for your application, you must set restorePVs to true.
+To preserve the persistent volumes for your application, you must configure this section as shown.
+
+## Debugging failed Backup and Restore CRs
+
+Issue:: The backup or restoration of artifacts failed.
+Resolution:: You can debug Backup and Restore CRs and retrieve logs with the Velero CLI tool.
+The Velero CLI tool provides more detailed information than the OpenShift CLI tool.
+1. Describe the Backup CR that contains errors by running the following command:
+
+```terminal
+$ oc exec -n openshift-adp velero-7c87d58c7b-sw6fc -c velero -- ./velero describe backup -n openshift-adp backup-acm-klusterlet --details
+```
+
+2. Describe the Restore CR that contains errors by running the following command:
+
+```terminal
+$ oc exec -n openshift-adp velero-7c87d58c7b-sw6fc -c velero -- ./velero describe restore -n openshift-adp restore-acm-klusterlet --details
+```
+
+3. Download the backed up resources to a local directory by running the following command:
+
+```terminal
+$ oc exec -n openshift-adp velero-7c87d58c7b-sw6fc -c velero -- ./velero backup download -n openshift-adp backup-acm-klusterlet -o ~/backup-acm-klusterlet.tar.gz
+```
