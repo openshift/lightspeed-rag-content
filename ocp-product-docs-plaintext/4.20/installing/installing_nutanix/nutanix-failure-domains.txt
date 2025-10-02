@@ -1,0 +1,475 @@
+# Fault tolerant deployments using multiple Prism Elements
+
+
+By default, the installation program installs control plane and compute machines into a single Nutanix Prism Element (cluster). To improve the fault tolerance of your {product-title} cluster, you can specify that these machines be distributed across multiple Nutanix clusters by configuring failure domains.
+A failure domain represents an additional Prism Element instance that is available to {product-title} machine pools during and after installation.
+
+# Installation method and failure domain configuration
+
+The {product-title} installation method determines how and when you configure failure domains:
+
+* If you deploy using installer-provisioned infrastructure, you can configure failure domains in the installation configuration file before deploying the cluster. For more information, see Configuring failure domains.
+
+You can also configure failure domains after the cluster is deployed. For more information about configuring failure domains post-installation, see Adding failure domains to an existing Nutanix cluster.
+* If you deploy using infrastructure that you manage (user-provisioned infrastructure) no additional configuration is required. After the cluster is deployed, you can manually distribute control plane and compute machines across failure domains.
+
+# Adding failure domains to an existing Nutanix cluster
+
+By default, the installation program installs control plane and compute machines into a single Nutanix Prism Element (cluster). After an {product-title} cluster is deployed, you can improve its fault tolerance by adding additional Prism Element instances to the deployment using failure domains.
+
+A failure domain represents a single Prism Element instance where new control plane and compute machines can be deployed and existing control plane and compute machines can be distributed.
+
+## Failure domain requirements
+
+When planning to use failure domains, consider the following requirements:
+
+* All Nutanix Prism Element instances must be managed by the same instance of Prism Central. A deployment that is comprised of multiple Prism Central instances is not supported.
+* The machines that make up the Prism Element clusters must reside on the same Ethernet network for failure domains to be able to communicate with each other.
+* A subnet is required in each Prism Element that will be used as a failure domain in the {product-title} cluster. When defining these subnets, they must share the same IP address prefix (CIDR) and should contain the virtual IP addresses that the {product-title} cluster uses.
+
+## Adding failure domains to the Infrastructure CR
+
+You add failure domains to an existing Nutanix cluster by modifying its Infrastructure custom resource (CR) (infrastructures.config.openshift.io).
+
+
+[TIP]
+----
+To ensure high-availability, configure three failure domains.
+----
+
+1. Edit the Infrastructure CR by running the following command:
+
+```terminal
+$ oc edit infrastructures.config.openshift.io cluster
+```
+
+2. Configure the failure domains.
+Example Infrastructure CR with Nutanix failure domains
+
+```yaml
+spec:
+  cloudConfig:
+    key: config
+    name: cloud-provider-config
+#...
+  platformSpec:
+    nutanix:
+      failureDomains:
+      - cluster:
+         type: UUID
+         uuid: <uuid>
+        name: <failure_domain_name>
+        subnets:
+        - type: UUID
+          uuid: <network_uuid>
+      - cluster:
+         type: UUID
+         uuid: <uuid>
+        name: <failure_domain_name>
+        subnets:
+        - type: UUID
+          uuid: <network_uuid>
+      - cluster:
+          type: UUID
+          uuid: <uuid>
+        name: <failure_domain_name>
+        subnets:
+        - type: UUID
+          uuid: <network_uuid>
+# ...
+```
+
+
+where:
+<uuid>:: Specifies the universally unique identifier (UUID) of the Prism Element.
+<failure_domain_name>:: Specifies a unique name for the failure domain. The name is limited to 64 or fewer characters, which can include lower-case letters, digits, and a dash (-). The dash cannot be in the leading or ending position of the name.
+<network_uuid>:: Specifies one or more UUID for the Prism Element subnet object.
+The CIDR IP address prefix for one of the specified subnets must contain the virtual IP addresses that the {product-title} cluster uses.
+
+[IMPORTANT]
+----
+Configuring multiple subnets is a Technology Preview feature only. Technology Preview features are not supported with Red Hat production service level agreements (SLAs) and might not be functionally complete. Red Hat does not recommend using them in production. These features provide early access to upcoming product features, enabling customers to test functionality and provide feedback during the development process.
+For more information about the support scope of Red Hat Technology Preview features, see Technology Preview Features Support Scope.
+----
+
+To configure multiple subnets in the Infrastructure CR, you must enable the NutanixMultiSubnets feature gate.
+A maximum of 32 subnets for each failure domain (Prism Element) in an {product-title} cluster is supported.
+All subnet UUID values must be unique.
+3. Save the CR to apply the changes.
+
+## Distributing control planes across failure domains
+
+You distribute control planes across Nutanix failure domains by modifying the control plane machine set custom resource (CR).
+
+* You have configured the failure domains in the cluster's Infrastructure custom resource (CR).
+* The control plane machine set custom resource (CR) is in an active state.
+
+For more information on checking the control plane machine set custom resource state, see "Additional resources".
+
+1. Edit the control plane machine set CR by running the following command:
+
+```terminal
+$ oc edit controlplanemachineset.machine.openshift.io cluster -n openshift-machine-api
+```
+
+2. Configure the control plane machine set to use failure domains by adding a spec.template.machines_v1beta1_machine_openshift_io.failureDomains stanza.
+Example control plane machine set with Nutanix failure domains
+
+```yaml
+apiVersion: machine.openshift.io/v1
+kind: ControlPlaneMachineSet
+  metadata:
+    creationTimestamp: null
+    labels:
+      machine.openshift.io/cluster-api-cluster: <cluster_name>
+    name: cluster
+    namespace: openshift-machine-api
+spec:
+# ...
+  template:
+    machineType: machines_v1beta1_machine_openshift_io
+    machines_v1beta1_machine_openshift_io:
+      failureDomains:
+        platform: Nutanix
+        nutanix:
+        - name: <failure_domain_name_1>
+        - name: <failure_domain_name_2>
+        - name: <failure_domain_name_3>
+# ...
+```
+
+3. Save your changes.
+
+By default, the control plane machine set propagates changes to your control plane configuration automatically. If the cluster is configured to use the OnDelete update strategy, you must replace your control planes manually. For more information, see "Additional resources".
+
+* Checking the control plane machine set custom resource state
+* Replacing a control plane machine
+
+## Distributing compute machines across failure domains
+
+You can distribute compute machines across Nutanix failure domains one of the following ways:
+
+* Editing existing compute machine sets allows you to distribute compute machines across Nutanix failure domains as a minimal configuration update.
+* Replacing existing compute machine sets ensures that the specification is immutable and all your machines are the same.
+
+### Editing compute machine sets to implement failure domains
+
+To distribute compute machines across Nutanix failure domains by using an existing compute machine set, you update the compute machine set with your configuration and then use scaling to replace the existing compute machines.
+
+* You have configured the failure domains in the cluster's Infrastructure custom resource (CR).
+
+1. Run the following command to view the cluster's Infrastructure CR.
+
+```terminal
+$ oc describe infrastructures.config.openshift.io cluster
+```
+
+2. For each failure domain (platformSpec.nutanix.failureDomains), note the cluster's UUID, name, and subnet object UUID. These values are required to add a failure domain to a compute machine set.
+3. List the compute machine sets in your cluster by running the following command:
+
+```terminal
+$ oc get machinesets -n openshift-machine-api
+```
+
+Example output
+
+```terminal
+NAME                   DESIRED   CURRENT   READY   AVAILABLE   AGE
+<machine_set_name_1>   1         1         1       1           55m
+<machine_set_name_2>   1         1         1       1           55m
+```
+
+4. Edit the first compute machine set by running the following command:
+
+```terminal
+$ oc edit machineset <machine_set_name_1> -n openshift-machine-api
+```
+
+5. Configure the compute machine set to use the first failure domain by updating the following to the spec.template.spec.providerSpec.value stanza.
+
+[NOTE]
+----
+Be sure that the values you specify for the cluster and subnets fields match the values that were configured in the failureDomains stanza in the cluster's Infrastructure CR.
+----
+Example compute machine set with Nutanix failure domains
+
+```yaml
+apiVersion: machine.openshift.io/v1
+kind: MachineSet
+metadata:
+  creationTimestamp: null
+  labels:
+    machine.openshift.io/cluster-api-cluster: <cluster_name>
+  name: <machine_set_name_1>
+  namespace: openshift-machine-api
+spec:
+  replicas: 2
+# ...
+  template:
+    spec:
+# ...
+      providerSpec:
+        value:
+          apiVersion: machine.openshift.io/v1
+          failureDomain:
+            name: <failure_domain_name_1>
+          cluster:
+            type: uuid
+            uuid: <prism_element_uuid_1>
+          subnets:
+          - type: uuid
+            uuid: <prism_element_network_uuid_1>
+# ...
+```
+
+6. Note the value of spec.replicas, because you need it when scaling the compute machine set to apply the changes.
+7. Save your changes.
+8. List the machines that are managed by the updated compute machine set by running the following command:
+
+```terminal
+$ oc get -n openshift-machine-api machines \
+  -l machine.openshift.io/cluster-api-machineset=<machine_set_name_1>
+```
+
+Example output
+
+```text
+NAME                        PHASE     TYPE   REGION    ZONE                 AGE
+<machine_name_original_1>   Running   AHV    Unnamed   Development-STS   4h
+<machine_name_original_2>   Running   AHV    Unnamed   Development-STS   4h
+```
+
+9. For each machine that is managed by the updated compute machine set, set the delete annotation by running the following command:
+
+```terminal
+$ oc annotate machine/<machine_name_original_1> \
+  -n openshift-machine-api \
+  machine.openshift.io/delete-machine="true"
+```
+
+10. To create replacement machines with the new configuration, scale the compute machine set to twice the number of replicas by running the following command:
+
+```terminal
+$ oc scale --replicas=<twice_the_number_of_replicas> \1
+  machineset <machine_set_name_1> \
+  -n openshift-machine-api
+```
+
+For example, if the original number of replicas in the compute machine set is 2, scale the replicas to 4.
+11. List the machines that are managed by the updated compute machine set by running the following command:
+
+```terminal
+$ oc get -n openshift-machine-api machines -l machine.openshift.io/cluster-api-machineset=<machine_set_name_1>
+```
+
+
+When the new machines are in the Running phase, you can scale the compute machine set to the original number of replicas.
+12. To remove the machines that were created with the old configuration, scale the compute machine set to the original number of replicas by running the following command:
+
+```terminal
+$ oc scale --replicas=<original_number_of_replicas> \1
+  machineset <machine_set_name_1> \
+  -n openshift-machine-api
+```
+
+For example, if the original number of replicas in the compute machine set was 2, scale the replicas to 2.
+13. As required, continue to modify machine sets to reference the additional failure domains that are available to the deployment.
+
+* Modifying a compute machine set
+
+### Replacing compute machine sets to implement failure domains
+
+To distribute compute machines across Nutanix failure domains by replacing a compute machine set, you create a new compute machine set with your configuration, wait for the machines that it creates to start, and then delete the old compute machine set.
+
+* You have configured the failure domains in the cluster's Infrastructure custom resource (CR).
+
+1. Run the following command to view the cluster's Infrastructure CR.
+
+```terminal
+$ oc describe infrastructures.config.openshift.io cluster
+```
+
+2. For each failure domain (platformSpec.nutanix.failureDomains), note the cluster's UUID, name, and subnet object UUID. These values are required to add a failure domain to a compute machine set.
+3. List the compute machine sets in your cluster by running the following command:
+
+```terminal
+$ oc get machinesets -n openshift-machine-api
+```
+
+Example output
+
+```text
+NAME                            DESIRED   CURRENT   READY   AVAILABLE   AGE
+<original_machine_set_name_1>   1         1         1       1           55m
+<original_machine_set_name_2>   1         1         1       1           55m
+```
+
+4. Note the names of the existing compute machine sets.
+5. Create a YAML file that contains the values for your new compute machine set custom resource (CR) by using one of the following methods:
+* Copy an existing compute machine set configuration into a new file by running the following command:
+
+```terminal
+$ oc get machineset <original_machine_set_name_1> \
+  -n openshift-machine-api -o yaml > <new_machine_set_name_1>.yaml
+```
+
+
+You can edit this YAML file with your preferred text editor.
+* Create a blank YAML file named <new_machine_set_name_1>.yaml with your preferred text editor and include the required values for your new compute machine set.
+
+If you are not sure which value to set for a specific field, you can view values of an existing compute machine set CR by running the following command:
+
+```terminal
+$ oc get machineset <original_machine_set_name_1> \
+  -n openshift-machine-api -o yaml
+```
+
+
+```yaml
+apiVersion: machine.openshift.io/v1beta1
+kind: MachineSet
+metadata:
+  labels:
+    machine.openshift.io/cluster-api-cluster: <infrastructure_id> 1
+  name: <infrastructure_id>-<role> 2
+  namespace: openshift-machine-api
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      machine.openshift.io/cluster-api-cluster: <infrastructure_id>
+      machine.openshift.io/cluster-api-machineset: <infrastructure_id>-<role>
+  template:
+    metadata:
+      labels:
+        machine.openshift.io/cluster-api-cluster: <infrastructure_id>
+        machine.openshift.io/cluster-api-machine-role: <role>
+        machine.openshift.io/cluster-api-machine-type: <role>
+        machine.openshift.io/cluster-api-machineset: <infrastructure_id>-<role>
+    spec:
+      providerSpec: 3
+        ...
+```
+
+The cluster infrastructure ID.
+A default node label.
+
+[NOTE]
+----
+For clusters that have user-provisioned infrastructure, a compute machine set can only create machines with a worker or infra role.
+----
+The values in the <providerSpec> section of the compute machine set CR are platform-specific. For more information about <providerSpec> parameters in the CR, see the sample compute machine set CR configuration for your provider.
+6. Configure the new compute machine set to use the first failure domain by updating or adding the following to the spec.template.spec.providerSpec.value stanza in the <new_machine_set_name_1>.yaml file.
+
+[NOTE]
+----
+Be sure that the values you specify for the cluster and subnets fields match the values that were configured in the failureDomains stanza in the cluster's Infrastructure CR.
+----
+Example compute machine set with Nutanix failure domains
+
+```yaml
+apiVersion: machine.openshift.io/v1
+kind: MachineSet
+metadata:
+  creationTimestamp: null
+  labels:
+    machine.openshift.io/cluster-api-cluster: <cluster_name>
+  name: <new_machine_set_name_1>
+  namespace: openshift-machine-api
+spec:
+  replicas: 2
+# ...
+  template:
+    spec:
+# ...
+      providerSpec:
+        value:
+          apiVersion: machine.openshift.io/v1
+          failureDomain:
+            name: <failure_domain_name_1>
+          cluster:
+            type: uuid
+            uuid: <prism_element_uuid_1>
+          subnets:
+          - type: uuid
+            uuid: <prism_element_network_uuid_1>
+# ...
+```
+
+7. Save your changes.
+8. Create a compute machine set CR by running the following command:
+
+```terminal
+$ oc create -f <new_machine_set_name_1>.yaml
+```
+
+9. As required, continue to create compute machine sets to reference the additional failure domains that are available to the deployment.
+10. List the machines that are managed by the new compute machine sets by running the following command for each new compute machine set:
+
+```terminal
+$ oc get -n openshift-machine-api machines -l machine.openshift.io/cluster-api-machineset=<new_machine_set_name_1>
+```
+
+Example output
+
+```text
+NAME                             PHASE          TYPE   REGION    ZONE                 AGE
+<machine_from_new_1>             Provisioned    AHV    Unnamed   Development-STS   25s
+<machine_from_new_2>             Provisioning   AHV    Unnamed   Development-STS   25s
+```
+
+
+When the new machines are in the Running phase, you can delete the old compute machine sets that do not include the failure domain configuration.
+11. When you have verified that the new machines are in the Running phase, delete the old compute machine sets by running the following command for each:
+
+```terminal
+$ oc delete machineset <original_machine_set_name_1> -n openshift-machine-api
+```
+
+
+* To verify that the compute machine sets without the updated configuration are deleted, list the compute machine sets in your cluster by running the following command:
+
+```terminal
+$ oc get machinesets -n openshift-machine-api
+```
+
+Example output
+
+```text
+NAME                       DESIRED   CURRENT   READY   AVAILABLE   AGE
+<new_machine_set_name_1>   1         1         1       1           4m12s
+<new_machine_set_name_2>   1         1         1       1           4m12s
+```
+
+* To verify that the compute machines without the updated configuration are deleted, list the machines in your cluster by running the following command:
+
+```terminal
+$ oc get -n openshift-machine-api machines
+```
+
+Example output while deletion is in progress
+
+```text
+NAME                        PHASE           TYPE     REGION      ZONE                 AGE
+<machine_from_new_1>        Running         AHV      Unnamed     Development-STS   5m41s
+<machine_from_new_2>        Running         AHV      Unnamed     Development-STS   5m41s
+<machine_from_original_1>   Deleting        AHV      Unnamed     Development-STS   4h
+<machine_from_original_2>   Deleting        AHV      Unnamed     Development-STS   4h
+```
+
+Example output when deletion is complete
+
+```text
+NAME                        PHASE           TYPE     REGION      ZONE                 AGE
+<machine_from_new_1>        Running         AHV      Unnamed     Development-STS   6m30s
+<machine_from_new_2>        Running         AHV      Unnamed     Development-STS   6m30s
+```
+
+* To verify that a machine created by the new compute machine set has the correct configuration, examine the relevant fields in the CR for one of the new machines by running the following command:
+
+```terminal
+$ oc describe machine <machine_from_new_1> -n openshift-machine-api
+```
+
+
+* Creating a compute machine set on Nutanix

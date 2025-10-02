@@ -104,23 +104,25 @@ You might need to change the maximum transmission unit (MTU) value for the clust
 
 ## About the cluster MTU
 
-During installation the maximum transmission unit (MTU) for the cluster network is detected automatically based on the MTU of the primary network interface of nodes in the cluster. You do not usually need to override the detected MTU.
+During installation, the cluster network MTU is set automatically based on the primary network interface MTU of cluster nodes. You do not usually need to override the detected MTU.
 
-You might want to change the MTU of the cluster network for several reasons:
+You might want to change the MTU of the cluster network for one of the following reasons:
 
 * The MTU detected during cluster installation is not correct for your infrastructure.
 * Your cluster infrastructure now requires a different MTU, such as from the addition of nodes that need a different MTU for optimal performance.
 
+Only the OVN-Kubernetes network plugin supports changing the MTU value.
+
 ### Service interruption considerations
 
-When you initiate an MTU change on your cluster the following effects might impact service availability:
+When you initiate a maximum transmission unit (MTU) change on your cluster the following effects might impact service availability:
 
 * At least two rolling reboots are required to complete the migration to a new MTU. During this time, some nodes are not available as they restart.
 * Specific applications deployed to the cluster with shorter timeout intervals than the absolute TCP timeout interval might experience disruption during the MTU change.
 
 ### MTU value selection
 
-When planning your MTU migration there are two related but distinct MTU values to consider.
+When planning your maximum transmission unit (MTU) migration there are two related but distinct MTU values to consider.
 
 * Hardware MTU: This MTU value is set based on the specifics of your network infrastructure.
 * Cluster network MTU: This MTU value is always less than your hardware MTU to account for the cluster network overlay overhead. The specific overhead is determined by your network plugin. For OVN-Kubernetes, the overhead is 100 bytes. For OpenShift SDN, the overhead is 50 bytes.
@@ -139,7 +141,7 @@ The following table summarizes the migration process by segmenting between the u
 
 
 
-### Changing the cluster network MTU
+## Changing the cluster network MTU
 
 As a cluster administrator, you can increase or decrease the maximum transmission unit (MTU) for your cluster.
 
@@ -261,6 +263,136 @@ $ oc patch Network.operator.openshift.io cluster --type=merge --patch \
 ```
 
 6. After finalizing the MTU migration, each machine config pool node is rebooted one by one. You must wait until all the nodes are updated. Check the machine config pool status by entering the following command:
+
+```terminal
+$ oc get machineconfigpools
+```
+
+
+A successfully updated node has the following status: UPDATED=true, UPDATING=false, DEGRADED=false.
+
+* Verify that the node in your cluster uses the MTU that you specified by entering the following command:
+
+```terminal
+$ oc describe network.config cluster
+```
+
+
+### Checking the current cluster MTU value
+
+Use the following procedure to obtain the current maximum transmission unit (MTU) for the cluster network.
+
+* To obtain the current MTU for the cluster network, enter the following command:
+
+```terminal
+$ oc describe network.config cluster
+```
+
+Example output
+
+```text
+...
+Status:
+  Cluster Network:
+    Cidr:               10.217.0.0/22
+    Host Prefix:        23
+  Cluster Network MTU:  1400
+  Network Type:         OVNKubernetes
+  Service Network:
+    10.217.4.0/23
+...
+```
+
+
+### Beginning the MTU migration
+
+Use the following procedure to start the MTU migration.
+
+1. To begin the MTU migration, specify the migration configuration by entering the following command. The Machine Config Operator performs a rolling reboot of the nodes in the cluster in preparation for the MTU change.
+
+```terminal
+$ oc patch Network.operator.openshift.io cluster --type=merge --patch \
+  '{"spec": { "migration": { "mtu": { "network": { "from": <overlay_from>, "to": <overlay_to> } , "machine": { "to" : <machine_to> } } } } }'
+```
+
+where:
+<overlay_from>:: Specifies the current cluster network MTU value.
+<overlay_to>:: Specifies the target MTU for the cluster network. This value is set relative to the value of <machine_to>. For OVN-Kubernetes, this value must be 100 less than the value of <machine_to>.
+<machine_to>:: Specifies the MTU for the primary network interface on the underlying host network.
+
+```terminal
+$ oc patch Network.operator.openshift.io cluster --type=merge --patch \
+  '{"spec": { "migration": { "mtu": { "network": { "from": 1400, "to": 9000 } , "machine": { "to" : 9100} } } } }'
+```
+
+2. As the Machine Config Operator updates machines in each machine config pool, the Operator reboots each node one by one. You must wait until all the nodes are updated. Check the machine config pool status by entering the following command:
+
+```terminal
+$ oc get machineconfigpools
+```
+
+
+A successfully updated node has the following status: UPDATED=true, UPDATING=false, DEGRADED=false.
+
+[NOTE]
+----
+By default, the Machine Config Operator updates one machine per pool at a time, causing the total time the migration takes to increase with the size of the cluster.
+----
+
+### Verifying the machine configuration
+
+Use the following procedure to verify the machine configuration.
+
+* Confirm the status of the new machine configuration on the hosts:
+1. To list the machine configuration state and the name of the applied machine configuration, enter the following command:
+
+```terminal
+$ oc describe node | egrep "hostname|machineconfig"
+```
+
+Example output
+
+```text
+kubernetes.io/hostname=master-0
+machineconfiguration.openshift.io/currentConfig: rendered-master-c53e221d9d24e1c8bb6ee89dd3d8ad7b
+machineconfiguration.openshift.io/desiredConfig: rendered-master-c53e221d9d24e1c8bb6ee89dd3d8ad7b
+machineconfiguration.openshift.io/reason:
+machineconfiguration.openshift.io/state: Done
+```
+
+2. Verify that the following statements are true:
+* The value of machineconfiguration.openshift.io/state field is Done.
+* The value of the machineconfiguration.openshift.io/currentConfig field is equal to the value of the machineconfiguration.openshift.io/desiredConfig field.
+3. To confirm that the machine config is correct, enter the following command:
+
+```terminal
+$ oc get machineconfig <config_name> -o yaml | grep ExecStart
+```
+
+where:
+<config_name>:: Specifies the name of the machine config from the machineconfiguration.openshift.io/currentConfig field.
+
+The machine config must include the following update to the systemd configuration:
+
+```plain
+ExecStart=/usr/local/bin/mtu-migration.sh
+```
+
+
+### Finalizing the MTU migration
+
+Use the following procedure to finalize the MTU migration.
+
+1. To finalize the MTU migration, enter the following command for the OVN-Kubernetes network plugin:
+
+```terminal
+$ oc patch Network.operator.openshift.io cluster --type=merge --patch \
+  '{"spec": { "migration": null, "defaultNetwork":{ "ovnKubernetesConfig": { "mtu": <mtu> }}}}'
+```
+
+where:
+<mtu>:: Specifies the new cluster network MTU that you specified with <overlay_to>.
+2. After finalizing the MTU migration, each machine config pool node is rebooted one by one. You must wait until all the nodes are updated. Check the machine config pool status by entering the following command:
 
 ```terminal
 $ oc get machineconfigpools

@@ -1,0 +1,1005 @@
+# Dynamic Accelerator Slicer (DAS) Operator
+
+
+
+[IMPORTANT]
+----
+Dynamic Accelerator Slicer Operator is a Technology Preview feature only. Technology Preview features are not supported with Red Hat production service level agreements (SLAs) and might not be functionally complete. Red Hat does not recommend using them in production. These features provide early access to upcoming product features, enabling customers to test functionality and provide feedback during the development process.
+For more information about the support scope of Red Hat Technology Preview features, see Technology Preview Features Support Scope.
+----
+The Dynamic Accelerator Slicer (DAS) Operator allows you to dynamically slice GPU accelerators in {product-title}, instead of relying on statically sliced GPUs defined when the node is booted. This allows you to dynamically slice GPUs based on specific workload demands, ensuring efficient resource utilization.
+Dynamic slicing is useful if you do not know all the accelerator partitions needed in advance on every node on the cluster.
+The DAS Operator currently includes a reference implementation for NVIDIA Multi-Instance GPU (MIG) and is designed to support additional technologies such as NVIDIA MPS or GPUs from other vendors in the future.
+The following limitations apply when using the Dynamic Accelerator Slicer Operator:
+* You need to identify potential incompatibilities and ensure the system works seamlessly with various GPU drivers and operating systems.
+* The Operator only works with specific MIG compatible NVIDIA GPUs and drivers, such as H100 and A100.
+* The Operator cannot use only a subset of the GPUs of a node.
+* The NVIDIA device plugin cannot be used together with the Dynamic Accelerator Slicer Operator to manage the GPU resources of a cluster.
+
+[NOTE]
+----
+The DAS Operator is designed to work with MIG-enabled GPUs. It allocates MIG slices instead of whole GPUs. Installing the DAS Operator prevents the use of the standard resource request through the NVIDIA device plugin such as nvidia.com/gpu: "1", for allocating the entire GPU.
+----
+
+# Installing the Dynamic Accelerator Slicer Operator
+
+As a cluster administrator, you can install the Dynamic Accelerator Slicer (DAS) Operator  by using the {product-title} web console or the OpenShift CLI.
+
+## Installing the Dynamic Accelerator Slicer Operator using the web console
+
+As a cluster administrator, you can install the Dynamic Accelerator Slicer (DAS) Operator using the {product-title} web console.
+
+* You have access to an {product-title} cluster using an account with cluster-admin permissions.
+* You have installed the required prerequisites:
+* cert-manager Operator for Red Hat OpenShift
+* Node Feature Discovery (NFD) Operator
+* NVIDIA GPU Operator
+* NodeFeatureDiscovery CR
+
+1. Configure the NVIDIA GPU Operator for MIG support:
+1. In the {product-title} web console, navigate to Operators -> Installed Operators.
+2. Select the NVIDIA GPU Operator from the list of installed operators.
+3. Click the ClusterPolicy tab and then click Create ClusterPolicy.
+4. In the YAML editor, replace the default content with the following cluster policy configuration to disable the default NVIDIA device plugin and enable MIG support:
+
+```yaml
+apiVersion: nvidia.com/v1
+kind: ClusterPolicy
+metadata:
+  name: gpu-cluster-policy
+spec:
+  daemonsets:
+    rollingUpdate:
+      maxUnavailable: "1"
+    updateStrategy: RollingUpdate
+  dcgm:
+    enabled: true
+  dcgmExporter:
+    config:
+      name: ""
+    enabled: true
+    serviceMonitor:
+      enabled: true
+  devicePlugin:
+    config:
+      default: ""
+      name: ""
+    enabled: false
+    mps:
+      root: /run/nvidia/mps
+  driver:
+    certConfig:
+      name: ""
+    enabled: true
+    kernelModuleConfig:
+      name: ""
+    licensingConfig:
+      configMapName: ""
+      nlsEnabled: true
+    repoConfig:
+      configMapName: ""
+    upgradePolicy:
+      autoUpgrade: true
+      drain:
+        deleteEmptyDir: false
+        enable: false
+        force: false
+        timeoutSeconds: 300
+      maxParallelUpgrades: 1
+      maxUnavailable: 25%
+      podDeletion:
+        deleteEmptyDir: false
+        force: false
+        timeoutSeconds: 300
+      waitForCompletion:
+        timeoutSeconds: 0
+    useNvidiaDriverCRD: false
+    useOpenKernelModules: false
+    virtualTopology:
+      config: ""
+  gdrcopy:
+    enabled: false
+  gds:
+    enabled: false
+  gfd:
+    enabled: true
+  mig:
+    strategy: mixed
+  migManager:
+    config:
+      default: ""
+      name: default-mig-parted-config
+    enabled: true
+    env:
+      - name: WITH_REBOOT
+        value: 'true'
+      - name: MIG_PARTED_MODE_CHANGE_ONLY
+        value: 'true'
+  nodeStatusExporter:
+    enabled: true
+  operator:
+    defaultRuntime: crio
+    initContainer: {}
+    runtimeClass: nvidia
+    use_ocp_driver_toolkit: true
+  sandboxDevicePlugin:
+    enabled: true
+  sandboxWorkloads:
+    defaultWorkload: container
+    enabled: false
+  toolkit:
+    enabled: true
+    installDir: /usr/local/nvidia
+  validator:
+    plugin:
+      env:
+      - name: WITH_WORKLOAD
+        value: "false"
+    cuda:
+      env:
+      - name: WITH_WORKLOAD
+        value: "false"
+  vfioManager:
+    enabled: true
+  vgpuDeviceManager:
+    enabled: true
+  vgpuManager:
+    enabled: false
+```
+
+5. Click Create to apply the cluster policy.
+6. Navigate to Workloads -> Pods and select the nvidia-gpu-operator namespace to monitor the cluster policy deployment.
+7. Wait for the NVIDIA GPU Operator cluster policy to reach the Ready state. You can monitor this by:
+1. Navigating to Operators -> Installed Operators -> NVIDIA GPU Operator.
+2. Clicking the ClusterPolicy tab and checking that the status shows ready.
+8. Verify that all pods in the NVIDIA GPU Operator namespace are running by selecting the nvidia-gpu-operator namespace and navigating to Workloads -> Pods.
+9. Label nodes with MIG-capable GPUs to enable MIG mode:
+1. Navigate to Compute -> Nodes.
+2. Select a node that has MIG-capable GPUs.
+3. Click Actions -> Edit Labels.
+4. Add the label nvidia.com/mig.config=all-enabled.
+5. Click Save.
+6. Repeat for each node with MIG-capable GPUs.
+
+[IMPORTANT]
+----
+After applying the MIG label, the labeled nodes will reboot to enable MIG mode. Wait for the nodes to come back online before proceeding.
+----
+10. Verify that MIG mode is successfully enabled on the GPU nodes by checking that the nvidia.com/mig.config=all-enabled label appears in the Labels section. To locate the label, navigate to Compute → Nodes, select the GPU node, and click the Details tab.
+2. In the {product-title} web console, click Operators -> OperatorHub.
+3. Search for Dynamic Accelerator Slicer or DAS in the filter box to locate the DAS Operator.
+4. Select the Dynamic Accelerator Slicer and click Install.
+5. On the Install Operator page:
+1. Select All namespaces on the cluster (default) for the installation mode.
+2. Select Installed Namespace -> Operator recommended Namespace: Project  das-operator.
+3. If creating a new namespace, enter das-operator as the namespace name.
+4. Select an update channel.
+5. Select Automatic or Manual for the approval strategy.
+6. Click Install.
+7. In the {product-title} web console, click Operators -> Installed Operators.
+8. Select DAS Operator from the list.
+9. In the Provided APIs table column, click DASOperator. This takes you to the DASOperator tab of the Operator details page.
+10. Click Create DASOperator. This takes you to the Create DASOperator YAML view.
+11. In the YAML editor, paste the following example:
+Example DASOperator CR
+
+```yaml
+apiVersion: inference.redhat.com/v1alpha1
+kind: DASOperator
+metadata:
+  name: cluster 1
+  namespace: das-operator
+spec:
+  logLevel: Normal
+  operatorLogLevel: Normal
+  managementState: Managed
+```
+
+The name of the DASOperator CR must be cluster.
+12. Click Create.
+
+To verify that the DAS Operator installed successfully:
+
+1. Navigate to the Operators -> Installed Operators page.
+2. Ensure that Dynamic Accelerator Slicer is listed in the das-operator namespace with a Status of Succeeded.
+
+To verify that the DASOperator CR installed successfully:
+
+* After you create the DASOperator CR, the web console brings you to the DASOperator list view. The Status field of the CR changes to Available when all of the components are running.
+* Optional. You can verify that the DASOperator CR installed successfully by running the following command in the OpenShift CLI:
+
+```terminal
+$ oc get dasoperator -n das-operator
+```
+
+Example output
+
+```terminal
+NAME     	STATUS    	AGE
+cluster  	Available	3m
+```
+
+
+
+[NOTE]
+----
+During installation an Operator might display a Failed status. If the installation later succeeds with an Succeeded message, you can ignore the Failed message.
+----
+
+You can also verify the installation by checking the pods:
+
+1. Navigate to the Workloads -> Pods page and select the das-operator namespace.
+2. Verify that all DAS Operator component pods are running:
+* das-operator pods (main operator controllers)
+* das-operator-webhook pods (webhook servers)
+* das-scheduler pods (scheduler plugins)
+* das-daemonset pods (only on nodes with MIG-compatible GPUs)
+
+
+[NOTE]
+----
+The das-daemonset pods will only appear on nodes that have MIG-compatible GPU hardware. If you do not see any daemonset pods, verify that your cluster has nodes with supported GPU hardware and that the NVIDIA GPU Operator is properly configured.
+----
+
+Use the following procedure if the Operator does not appear to be installed:
+
+1. Navigate to the Operators -> Installed Operators page and inspect the Operator Subscriptions and Install Plans tabs for any failure or errors under Status.
+2. Navigate to the Workloads -> Pods page and check the logs for pods in the das-operator namespace.
+
+* cert-manager Operator for Red Hat OpenShift
+* Node Feature Discovery (NFD) Operator
+* NVIDIA GPU Operator
+* NodeFeatureDiscovery CR
+
+## Installing the Dynamic Accelerator Slicer Operator using the CLI
+
+As a cluster administrator, you can install the Dynamic Accelerator Slicer (DAS) Operator using the OpenShift CLI.
+
+* You have access to an {product-title} cluster using an account with cluster-admin permissions.
+* You have installed the OpenShift CLI (oc).
+* You have installed the required prerequisites:
+* cert-manager Operator for Red Hat OpenShift
+* Node Feature Discovery (NFD) Operator
+* NVIDIA GPU Operator
+* NodeFeatureDiscovery CR
+
+1. Configure the NVIDIA GPU Operator for MIG support:
+1. Apply the following cluster policy to disable the default NVIDIA device plugin and enable MIG support. Create a file named gpu-cluster-policy.yaml with the following content:
+
+```yaml
+apiVersion: nvidia.com/v1
+kind: ClusterPolicy
+metadata:
+  name: gpu-cluster-policy
+spec:
+  daemonsets:
+    rollingUpdate:
+      maxUnavailable: "1"
+    updateStrategy: RollingUpdate
+  dcgm:
+    enabled: true
+  dcgmExporter:
+    config:
+      name: ""
+    enabled: true
+    serviceMonitor:
+      enabled: true
+  devicePlugin:
+    config:
+      default: ""
+      name: ""
+    enabled: false
+    mps:
+      root: /run/nvidia/mps
+  driver:
+    certConfig:
+      name: ""
+    enabled: true
+    kernelModuleConfig:
+      name: ""
+    licensingConfig:
+      configMapName: ""
+      nlsEnabled: true
+    repoConfig:
+      configMapName: ""
+    upgradePolicy:
+      autoUpgrade: true
+      drain:
+        deleteEmptyDir: false
+        enable: false
+        force: false
+        timeoutSeconds: 300
+      maxParallelUpgrades: 1
+      maxUnavailable: 25%
+      podDeletion:
+        deleteEmptyDir: false
+        force: false
+        timeoutSeconds: 300
+      waitForCompletion:
+        timeoutSeconds: 0
+    useNvidiaDriverCRD: false
+    useOpenKernelModules: false
+    virtualTopology:
+      config: ""
+  gdrcopy:
+    enabled: false
+  gds:
+    enabled: false
+  gfd:
+    enabled: true
+  mig:
+    strategy: mixed
+  migManager:
+    config:
+      default: ""
+      name: default-mig-parted-config
+    enabled: true
+    env:
+      - name: WITH_REBOOT
+        value: 'true'
+      - name: MIG_PARTED_MODE_CHANGE_ONLY
+        value: 'true'
+  nodeStatusExporter:
+    enabled: true
+  operator:
+    defaultRuntime: crio
+    initContainer: {}
+    runtimeClass: nvidia
+    use_ocp_driver_toolkit: true
+  sandboxDevicePlugin:
+    enabled: true
+  sandboxWorkloads:
+    defaultWorkload: container
+    enabled: false
+  toolkit:
+    enabled: true
+    installDir: /usr/local/nvidia
+  validator:
+    plugin:
+      env:
+      - name: WITH_WORKLOAD
+        value: "false"
+    cuda:
+      env:
+      - name: WITH_WORKLOAD
+        value: "false"
+  vfioManager:
+    enabled: true
+  vgpuDeviceManager:
+    enabled: true
+  vgpuManager:
+    enabled: false
+```
+
+2. Apply the cluster policy by running the following command:
+
+```terminal
+$ oc apply -f gpu-cluster-policy.yaml
+```
+
+3. Verify the NVIDIA GPU Operator cluster policy reaches the Ready state by running the following command:
+
+```terminal
+$ oc get clusterpolicies.nvidia.com gpu-cluster-policy -w
+```
+
+
+Wait until the STATUS column shows ready.
+Example output
+
+```terminal
+NAME                 STATUS   AGE
+gpu-cluster-policy   ready    2025-08-14T08:56:45Z
+```
+
+4. Verify that all pods in the NVIDIA GPU Operator namespace are running by running the following command:
+
+```terminal
+$ oc get pods -n nvidia-gpu-operator
+```
+
+
+All pods should show a Running or Completed status.
+5. Label nodes with MIG-capable GPUs to enable MIG mode by running the following command:
+
+```terminal
+$ oc label node $NODE_NAME nvidia.com/mig.config=all-enabled --overwrite
+```
+
+
+Replace $NODE_NAME with the name of each node that has MIG-capable GPUs.
+
+[IMPORTANT]
+----
+After applying the MIG label, the labeled nodes reboot to enable MIG mode. Wait for the nodes to come back online before proceeding.
+----
+6. Verify that the nodes have successfully enabled MIG mode by running the following command:
+
+```terminal
+$ oc get nodes -l nvidia.com/mig.config=all-enabled
+```
+
+2. Create a namespace for the DAS Operator:
+1. Create the following Namespace custom resource (CR) that defines the das-operator namespace, and save the YAML in the das-namespace.yaml file:
+
+```yaml
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: das-operator
+  labels:
+    name: das-operator
+    openshift.io/cluster-monitoring: "true"
+```
+
+2. Create the namespace by running the following command:
+
+```terminal
+$ oc create -f das-namespace.yaml
+```
+
+3. Install the DAS Operator in the namespace you created in the previous step by creating the following objects:
+1. Create the following OperatorGroup CR and save the YAML in the das-operatorgroup.yaml file:
+
+```yaml
+apiVersion: operators.coreos.com/v1
+kind: OperatorGroup
+metadata:
+  generateName: das-operator-
+  name: das-operator
+  namespace: das-operator
+```
+
+2. Create the OperatorGroup CR by running the following command:
+
+```terminal
+$ oc create -f das-operatorgroup.yaml
+```
+
+3. Create the following Subscription CR and save the YAML in the das-sub.yaml file:
+Example Subscription
+
+```yaml
+apiVersion: operators.coreos.com/v1alpha1
+kind: Subscription
+metadata:
+  name: das-operator
+  namespace: das-operator
+spec:
+  channel: "stable"
+  installPlanApproval: Automatic
+  name: das-operator
+  source: redhat-operators
+  sourceNamespace: openshift-marketplace
+```
+
+4. Create the subscription object by running the following command:
+
+```terminal
+$ oc create -f das-sub.yaml
+```
+
+5. Change to the das-operator project:
+
+```terminal
+$ oc project das-operator
+```
+
+6. Create the following DASOperator CR and save the YAML in the das-dasoperator.yaml file:
+Example DASOperator CR
+
+```yaml
+apiVersion: inference.redhat.com/v1alpha1
+kind: DASOperator
+metadata:
+  name: cluster 1
+  namespace: das-operator
+spec:
+  managementState: Managed
+  logLevel: Normal
+  operatorLogLevel: Normal
+```
+
+The name of the DASOperator CR must be cluster.
+7. Create the dasoperator CR by running the following command:
+
+```terminal
+oc create -f das-dasoperator.yaml
+```
+
+
+* Verify that the Operator deployment is successful by running the following command:
+
+```terminal
+$ oc get pods
+```
+
+Example output
+
+```terminal
+NAME                                    READY   STATUS    RESTARTS   AGE
+das-daemonset-6rsfd                     1/1     Running   0          5m16s
+das-daemonset-8qzgf                     1/1     Running   0          5m16s
+das-operator-5946478b47-cjfcp           1/1     Running   0          5m18s
+das-operator-5946478b47-npwmn           1/1     Running   0          5m18s
+das-operator-webhook-59949d4f85-5n9qt   1/1     Running   0          68s
+das-operator-webhook-59949d4f85-nbtdl   1/1     Running   0          68s
+das-scheduler-6cc59dbf96-4r85f          1/1     Running   0          68s
+das-scheduler-6cc59dbf96-bf6ml          1/1     Running   0          68s
+```
+
+
+A successful deployment shows all pods with a Running status. The deployment includes:
+das-operator:: Main Operator controller pods
+das-operator-webhook:: Webhook server pods for mutating pod requests
+das-scheduler:: Scheduler plugin pods for MIG slice allocation
+das-daemonset:: Daemonset pods that run only on nodes with MIG-compatible GPUs
+
+[NOTE]
+----
+The das-daemonset pods only appear on nodes that have MIG-compatible GPU hardware. If you do not see any daemonset pods, verify that your cluster has nodes with supported GPU hardware and that the NVIDIA GPU Operator is properly configured.
+----
+
+* cert-manager Operator for Red Hat OpenShift
+* Node Feature Discovery (NFD) Operator
+* NVIDIA GPU Operator
+* NodeFeatureDiscovery CR
+
+# Uninstalling the Dynamic Accelerator Slicer Operator
+
+Use one of the following procedures to uninstall the Dynamic Accelerator Slicer (DAS) Operator, depending on how the Operator was installed.
+
+## Uninstalling the Dynamic Accelerator Slicer Operator using the web console
+
+You can uninstall the Dynamic Accelerator Slicer (DAS) Operator using the {product-title} web console.
+
+* You have access to an {product-title} cluster using an account with cluster-admin permissions.
+* The DAS Operator is installed in your cluster.
+
+1. In the {product-title} web console, navigate to Operators -> Installed Operators.
+2. Locate the Dynamic Accelerator Slicer in the list of installed Operators.
+3. Click the Options menu  for the DAS Operator and select Uninstall Operator.
+4. In the confirmation dialog, click Uninstall to confirm the removal.
+5. Navigate to Home -> Projects.
+6. Search for das-operator in the search box to locate the DAS Operator project.
+7. Click the Options menu  next to the das-operator project, and select Delete Project.
+8. In the confirmation dialog, type das-operator in the dialog box, and click Delete to confirm the deletion.
+
+1. Navigate to the Operators -> Installed Operators page.
+2. Verify that the Dynamic Accelerator Slicer (DAS) Operator is no longer listed.
+3. Optional. Verify that the das-operator namespace and its resources have been removed by running the following command:
+
+```terminal
+$ oc get namespace das-operator
+```
+
+
+The command should return an error indicating that the namespace is not found.
+
+
+[WARNING]
+----
+Uninstalling the DAS Operator removes all GPU slice allocations and might cause running workloads that depend on GPU slices to fail. Ensure that no critical workloads are using GPU slices before proceeding with the uninstallation.
+----
+
+## Uninstalling the Dynamic Accelerator Slicer Operator using the CLI
+
+You can uninstall the Dynamic Accelerator Slicer (DAS) Operator using the OpenShift CLI.
+
+* You have access to an {product-title} cluster using an account with cluster-admin permissions.
+* You have installed the OpenShift CLI (oc).
+* The DAS Operator is installed in your cluster.
+
+1. List the installed operators to find the DAS Operator subscription by running the following command:
+
+```terminal
+$ oc get subscriptions -n das-operator
+```
+
+Example output
+
+```terminal
+NAME           PACKAGE        SOURCE             CHANNEL
+das-operator   das-operator   redhat-operators   stable
+```
+
+2. Delete the subscription by running the following command:
+
+```terminal
+$ oc delete subscription das-operator -n das-operator
+```
+
+3. List and delete the cluster service version (CSV) by running the following commands:
+
+```terminal
+$ oc get csv -n das-operator
+```
+
+
+```terminal
+$ oc delete csv <csv-name> -n das-operator
+```
+
+4. Remove the operator group by running the following command:
+
+```terminal
+$ oc delete operatorgroup das-operator -n das-operator
+```
+
+5. Delete any remaining AllocationClaim resources by running the following command:
+
+```terminal
+$ oc delete allocationclaims --all -n das-operator
+```
+
+6. Remove the DAS Operator namespace by running the following command:
+
+```terminal
+$ oc delete namespace das-operator
+```
+
+
+1. Verify that the DAS Operator resources have been removed by running the following command:
+
+```terminal
+$ oc get namespace das-operator
+```
+
+
+The command should return an error indicating that the namespace is not found.
+2. Verify that no AllocationClaim custom resource definitions remain by running the following command:
+
+```terminal
+$ oc get crd | grep allocationclaim
+```
+
+
+The command should return an error indicating that no custom resource definitions are found.
+
+
+[WARNING]
+----
+Uninstalling the DAS Operator removes all GPU slice allocations and might cause running workloads that depend on GPU slices to fail. Ensure that no critical workloads are using GPU slices before proceeding with the uninstallation.
+----
+
+# Deploying GPU workloads with the Dynamic Accelerator Slicer Operator
+
+You can deploy workloads that request GPU slices managed by the Dynamic Accelerator Slicer (DAS) Operator. The Operator dynamically partitions GPU accelerators and schedules workloads to available GPU slices.
+
+* You have MIG supported GPU hardware available in your cluster.
+* The NVIDIA GPU Operator is installed and the ClusterPolicy shows a Ready state.
+* You have installed the DAS Operator.
+
+1. Create a namespace by running the following command:
+
+```terminal
+oc new-project cuda-workloads
+```
+
+2. Create a deployment that requests GPU resources using the NVIDIA MIG resource:
+
+```yaml
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: cuda-vectoradd
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: cuda-vectoradd
+  template:
+    metadata:
+      labels:
+        app: cuda-vectoradd
+    spec:
+      restartPolicy: Always
+      containers:
+      - name: cuda-vectoradd
+        image: nvcr.io/nvidia/k8s/cuda-sample:vectoradd-cuda12.5.0-ubi8
+        resources:
+          limits:
+            nvidia.com/mig-1g.5gb: "1"
+        command:
+          - sh
+          - -c
+          - |
+            env && /cuda-samples/vectorAdd && sleep 3600
+```
+
+3. Apply the deployment configuration by running the following command:
+
+```terminal
+$ oc apply -f cuda-vectoradd-deployment.yaml
+```
+
+4. Verify that the deployment is created and pods are scheduled by running the following command:
+
+```terminal
+$ oc get deployment cuda-vectoradd
+```
+
+Example output
+
+```terminal
+NAME             READY   UP-TO-DATE   AVAILABLE   AGE
+cuda-vectoradd   2/2     2            2           2m
+```
+
+5. Check the status of the pods by running the following command:
+
+```terminal
+$ oc get pods -l app=cuda-vectoradd
+```
+
+Example output
+
+```terminal
+NAME                              READY   STATUS    RESTARTS   AGE
+cuda-vectoradd-6b8c7d4f9b-abc12   1/1     Running   0          2m
+cuda-vectoradd-6b8c7d4f9b-def34   1/1     Running   0          2m
+```
+
+
+1. Check that AllocationClaim resources were created for your deployment pods by running the following command:
+
+```terminal
+$ oc get allocationclaims -n das-operator
+```
+
+Example output
+
+```terminal
+NAME                                                                                           AGE
+13950288-57df-4ab5-82bc-6138f646633e-harpatil000034jma-qh5fm-worker-f-57md9-cuda-vectoradd-0   2m
+ce997b60-a0b8-4ea4-9107-cf59b425d049-harpatil000034jma-qh5fm-worker-f-fl4wg-cuda-vectoradd-0   2m
+```
+
+2. Verify that the GPU slices are properly allocated by checking one of the pod's resource allocation by running the following command:
+
+```terminal
+$ oc describe pod -l app=cuda-vectoradd
+```
+
+3. Check the logs to verify the CUDA sample application runs successfully by running the following command:
+
+```terminal
+$ oc logs -l app=cuda-vectoradd
+```
+
+Example output
+
+```terminal
+[Vector addition of 50000 elements]
+Copy input data from the host memory to the CUDA device
+CUDA kernel launch with 196 blocks of 256 threads
+Copy output data from the CUDA device to the host memory
+Test PASSED
+```
+
+4. Check the environment variables to verify that the GPU devices are properly exposed to the container by running the following command:
+
+```terminal
+$ oc exec deployment/cuda-vectoradd -- env | grep -E "(NVIDIA_VISIBLE_DEVICES|CUDA_VISIBLE_DEVICES)"
+```
+
+Example output
+
+```terminal
+NVIDIA_VISIBLE_DEVICES=MIG-d8ac9850-d92d-5474-b238-0afeabac1652
+CUDA_VISIBLE_DEVICES=MIG-d8ac9850-d92d-5474-b238-0afeabac1652
+```
+
+
+These environment variables indicate that the GPU MIG slice has been properly allocated and is visible to the CUDA runtime within the container.
+
+# Troubleshooting the Dynamic Accelerator Slicer Operator
+
+If you experience issues with the Dynamic Accelerator Slicer (DAS) Operator, use the following troubleshooting steps to diagnose and resolve problems.
+
+* You have installed the DAS Operator.
+* You have access to the {product-title} cluster as a user with the cluster-admin role.
+
+## Debugging DAS Operator components
+
+1. Check the status of all DAS Operator components by running the following command:
+
+```terminal
+$ oc get pods -n das-operator
+```
+
+Example output
+
+```terminal
+NAME                                    READY   STATUS    RESTARTS   AGE
+das-daemonset-6rsfd                     1/1     Running   0          5m16s
+das-daemonset-8qzgf                     1/1     Running   0          5m16s
+das-operator-5946478b47-cjfcp           1/1     Running   0          5m18s
+das-operator-5946478b47-npwmn           1/1     Running   0          5m18s
+das-operator-webhook-59949d4f85-5n9qt   1/1     Running   0          68s
+das-operator-webhook-59949d4f85-nbtdl   1/1     Running   0          68s
+das-scheduler-6cc59dbf96-4r85f          1/1     Running   0          68s
+das-scheduler-6cc59dbf96-bf6ml          1/1     Running   0          68s
+```
+
+2. Inspect the logs of the DAS Operator controller by running the following command:
+
+```terminal
+$ oc logs -n das-operator deployment/das-operator
+```
+
+3. Check the logs of the webhook server by running the following command:
+
+```terminal
+$ oc logs -n das-operator deployment/das-operator-webhook
+```
+
+4. Check the logs of the scheduler plugin by running the following command:
+
+```terminal
+$ oc logs -n das-operator deployment/das-scheduler
+```
+
+5. Check the logs of the device plugin daemonset by running the following command:
+
+```terminal
+$ oc logs -n das-operator daemonset/das-daemonset
+```
+
+
+## Monitoring AllocationClaims
+
+1. Inspect active AllocationClaim resources by running the following command:
+
+```terminal
+$ oc get allocationclaims -n das-operator
+```
+
+Example output
+
+```terminal
+NAME                                                                                           AGE
+13950288-57df-4ab5-82bc-6138f646633e-harpatil000034jma-qh5fm-worker-f-57md9-cuda-vectoradd-0   5m
+ce997b60-a0b8-4ea4-9107-cf59b425d049-harpatil000034jma-qh5fm-worker-f-fl4wg-cuda-vectoradd-0   5m
+```
+
+2. View detailed information about a specific AllocationClaim by running the following command:
+
+```terminal
+$ oc get allocationclaims -n das-operator -o yaml
+```
+
+Example output (truncated)
+
+```yaml
+apiVersion: inference.redhat.com/v1alpha1
+kind: AllocationClaim
+metadata:
+  name: 13950288-57df-4ab5-82bc-6138f646633e-harpatil000034jma-qh5fm-worker-f-57md9-cuda-vectoradd-0
+  namespace: das-operator
+spec:
+  gpuUUID: GPU-9003fd9c-1ad1-c935-d8cd-d1ae69ef17c0
+  migPlacement:
+    size: 1
+    start: 0
+  nodename: harpatil000034jma-qh5fm-worker-f-57md9
+  podRef:
+    kind: Pod
+    name: cuda-vectoradd-f4b84b678-l2m69
+    namespace: default
+    uid: 13950288-57df-4ab5-82bc-6138f646633e
+  profile: 1g.5gb
+status:
+  conditions:
+  - lastTransitionTime: "2025-08-06T19:28:48Z"
+    message: Allocation is inUse
+    reason: inUse
+    status: "True"
+    type: State
+  state: inUse
+```
+
+3. Check for claims in different states by running the following command:
+
+```terminal
+$ oc get allocationclaims -n das-operator -o jsonpath='{range .items[*]}{.metadata.name}{"\t"}{.status.state}{"\n"}{end}'
+```
+
+Example output
+
+```terminal
+13950288-57df-4ab5-82bc-6138f646633e-harpatil000034jma-qh5fm-worker-f-57md9-cuda-vectoradd-0	inUse
+ce997b60-a0b8-4ea4-9107-cf59b425d049-harpatil000034jma-qh5fm-worker-f-fl4wg-cuda-vectoradd-0	inUse
+```
+
+4. View events related to AllocationClaim resources by running the following command:
+
+```terminal
+$ oc get events -n das-operator --field-selector involvedObject.kind=AllocationClaim
+```
+
+5. Check NodeAccelerator resources to verify GPU hardware detection by running the following command:
+
+```terminal
+$ oc get nodeaccelerator -n das-operator
+```
+
+Example output
+
+```terminal
+NAME                                     AGE
+harpatil000034jma-qh5fm-worker-f-57md9   96m
+harpatil000034jma-qh5fm-worker-f-fl4wg   96m
+```
+
+
+The NodeAccelerator resources represent the GPU-capable nodes detected by the DAS Operator.
+
+The AllocationClaim custom resource tracks the following information:
+
+GPU UUID:: The unique identifier of the GPU device.
+Slice position:: The position of the MIG slice on the GPU.
+Pod reference:: The pod that requested the GPU slice.
+State:: The current state of the claim (staged, created, or released).
+
+Claims start in the staged state and transition to created when all requests are satisfied. When a pod is deleted, the associated claim is automatically cleaned up.
+
+## Verifying GPU device availability
+
+1. On a node with GPU hardware, verify that CDI devices were created by running the following command:
+
+```terminal
+$ oc debug node/<node-name>
+```
+
+
+```terminal
+sh-4.4# chroot /host
+sh-4.4# ls -l /var/run/cdi/
+```
+
+2. Check the NVIDIA GPU Operator status by running the following command:
+
+```terminal
+$ oc get clusterpolicies.nvidia.com -o jsonpath='{.items[0].status.state}'
+```
+
+
+The output should show ready.
+
+## Increasing log verbosity
+
+To get more detailed debugging information:
+
+1. Edit the DASOperator resource to increase log verbosity by running the following command:
+
+```terminal
+$ oc edit dasoperator -n das-operator
+```
+
+2. Set the operatorLogLevel field to Debug or Trace:
+
+```yaml
+spec:
+  operatorLogLevel: Debug
+```
+
+3. Save the changes and verify that the operator pods restart with increased verbosity.
+
+## Common issues and solutions
+
+
+[NOTE]
+----
+Due to kubernetes/kubernetes#128043, pods might enter an UnexpectedAdmissionError state if admission fails. Pods managed by higher level controllers such as Deployments are recreated automatically. Naked pods, however, must be cleaned up manually with oc delete pod. Using controllers is recommended until the upstream issue is resolved.
+----
+
+If the DAS Operator fails to start or function properly, verify that all prerequisites are installed:
+
+* Cert-manager
+* Node Feature Discovery (NFD) Operator
+* NVIDIA GPU Operator
+
+* Kubernetes issue #128043
+* Node Feature Discovery Operator
+* NVIDIA GPU Operator troubleshooting

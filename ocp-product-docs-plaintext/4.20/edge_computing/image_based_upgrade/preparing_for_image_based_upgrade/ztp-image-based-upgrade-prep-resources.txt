@@ -1,0 +1,358 @@
+# Creating ConfigMap objects for the image-based upgrade with the Lifecycle Agent using GitOps ZTP
+
+
+Create your OADP resources, extra manifests, and custom catalog sources wrapped in a ConfigMap object to prepare for the image-based upgrade.
+
+# Creating OADP resources for the image-based upgrade with GitOps ZTP
+
+Prepare your OADP resources to restore your application after an upgrade.
+
+* You have provisioned one or more managed clusters with GitOps ZTP.
+* You have logged in as a user with cluster-admin privileges.
+* You have generated a seed image from a compatible seed cluster.
+* You have created a separate partition on the target cluster for the container images that is shared between stateroots. For more information, see "Configuring a shared container partition between ostree stateroots when using GitOps ZTP".
+* You have deployed a version of Lifecycle Agent that is compatible with the version used with the seed image.
+* You have installed the OADP Operator, the DataProtectionApplication CR, and its secret on the target cluster.
+* You have created an S3-compatible storage solution and a ready-to-use bucket with proper credentials configured. For more information, see "Installing and configuring the OADP Operator with GitOps ZTP".
+* The openshift-adp namespace for the OADP ConfigMap object must exist on all managed clusters and the hub for the OADP ConfigMap to be generated and copied to the clusters.
+
+1. Ensure that your Git repository that you use with the ArgoCD policies application contains the following directory structure:
+
+```terminal
+├── source-crs/
+│   ├── ibu/
+│   │    ├── ImageBasedUpgrade.yaml
+│   │    ├── PlatformBackupRestore.yaml
+│   │    ├── PlatformBackupRestoreLvms.yaml
+│   │    ├── PlatformBackupRestoreWithIBGU.yaml
+├── ...
+├── kustomization.yaml
+```
+
+The source-crs/ibu/PlatformBackupRestoreWithIBGU.yaml file is provided in the ZTP container image.
+
+```yaml
+apiVersion: velero.io/v1
+kind: Backup
+metadata:
+  name: acm-klusterlet
+  annotations:
+    lca.openshift.io/apply-label: "apps/v1/deployments/open-cluster-management-agent/klusterlet,v1/secrets/open-cluster-management-agent/bootstrap-hub-kubeconfig,rbac.authorization.k8s.io/v1/clusterroles/klusterlet,v1/serviceaccounts/open-cluster-management-agent/klusterlet,scheduling.k8s.io/v1/priorityclasses/klusterlet-critical,rbac.authorization.k8s.io/v1/clusterroles/open-cluster-management:klusterlet-work:ibu-role,rbac.authorization.k8s.io/v1/clusterroles/open-cluster-management:klusterlet-admin-aggregate-clusterrole,rbac.authorization.k8s.io/v1/clusterrolebindings/klusterlet,operator.open-cluster-management.io/v1/klusterlets/klusterlet,apiextensions.k8s.io/v1/customresourcedefinitions/klusterlets.operator.open-cluster-management.io,v1/secrets/open-cluster-management-agent/open-cluster-management-image-pull-credentials" 1
+  labels:
+    velero.io/storage-location: default
+  namespace: openshift-adp
+spec:
+  includedNamespaces:
+  - open-cluster-management-agent
+  includedClusterScopedResources:
+  - klusterlets.operator.open-cluster-management.io
+  - clusterroles.rbac.authorization.k8s.io
+  - clusterrolebindings.rbac.authorization.k8s.io
+  - priorityclasses.scheduling.k8s.io
+  includedNamespaceScopedResources:
+  - deployments
+  - serviceaccounts
+  - secrets
+  excludedNamespaceScopedResources: []
+---
+apiVersion: velero.io/v1
+kind: Restore
+metadata:
+  name: acm-klusterlet
+  namespace: openshift-adp
+  labels:
+    velero.io/storage-location: default
+  annotations:
+    lca.openshift.io/apply-wave: "1"
+spec:
+  backupName:
+    acm-klusterlet
+```
+
+If your multiclusterHub CR does not have .spec.imagePullSecret defined and the secret does not exist on the open-cluster-management-agent namespace in your hub cluster, remove v1/secrets/open-cluster-management-agent/open-cluster-management-image-pull-credentials.
+
+[NOTE]
+----
+If you perform the image-based upgrade directly on managed clusters, use the PlatformBackupRestore.yaml file.
+----
+If you use LVM Storage to create persistent volumes, you can use the source-crs/ibu/PlatformBackupRestoreLvms.yaml provided in the ZTP container image to back up your LVM Storage resources.
+
+```yaml
+apiVersion: velero.io/v1
+kind: Backup
+metadata:
+  labels:
+    velero.io/storage-location: default
+  name: lvmcluster
+  namespace: openshift-adp
+spec:
+  includedNamespaces:
+    - openshift-storage
+  includedNamespaceScopedResources:
+    - lvmclusters
+    - lvmvolumegroups
+    - lvmvolumegroupnodestatuses
+---
+apiVersion: velero.io/v1
+kind: Restore
+metadata:
+  name: lvmcluster
+  namespace: openshift-adp
+  labels:
+    velero.io/storage-location: default
+  annotations:
+    lca.openshift.io/apply-wave: "2" 1
+spec:
+  backupName:
+    lvmcluster
+```
+
+The lca.openshift.io/apply-wave value must be lower than the values specified in the application Restore CRs.
+2. If you need to restore applications after the upgrade, create the OADP Backup and Restore CRs for your application in the openshift-adp namespace:
+1. Create the OADP CRs for cluster-scoped application artifacts in the openshift-adp namespace:
+Example OADP CRs for cluster-scoped application artifacts for LSO and LVM Storage
+
+```yaml
+apiVersion: velero.io/v1
+kind: Backup
+metadata:
+  annotations:
+    lca.openshift.io/apply-label: "apiextensions.k8s.io/v1/customresourcedefinitions/test.example.com,security.openshift.io/v1/securitycontextconstraints/test,rbac.authorization.k8s.io/v1/clusterroles/test-role,rbac.authorization.k8s.io/v1/clusterrolebindings/system:openshift:scc:test" 1
+  name: backup-app-cluster-resources
+  labels:
+    velero.io/storage-location: default
+  namespace: openshift-adp
+spec:
+  includedClusterScopedResources:
+  - customresourcedefinitions
+  - securitycontextconstraints
+  - clusterrolebindings
+  - clusterroles
+  excludedClusterScopedResources:
+  - Namespace
+---
+apiVersion: velero.io/v1
+kind: Restore
+metadata:
+  name: test-app-cluster-resources
+  namespace: openshift-adp
+  labels:
+    velero.io/storage-location: default
+  annotations:
+    lca.openshift.io/apply-wave: "3" 2
+spec:
+  backupName:
+    backup-app-cluster-resources
+```
+
+Replace the example resource name with your actual resources.
+The lca.openshift.io/apply-wave value must be higher than the value in the platform Restore CRs and lower than the value in the application namespace-scoped Restore CR.
+2. Create the OADP CRs for your namespace-scoped application artifacts in the source-crs/custom-crs directory:
+
+```yaml
+apiVersion: velero.io/v1
+kind: Backup
+metadata:
+  labels:
+    velero.io/storage-location: default
+  name: backup-app
+  namespace: openshift-adp
+spec:
+  includedNamespaces:
+  - test
+  includedNamespaceScopedResources:
+  - secrets
+  - persistentvolumeclaims
+  - deployments
+  - statefulsets
+  - configmaps
+  - cronjobs
+  - services
+  - job
+  - poddisruptionbudgets
+  - <application_custom_resources> 1
+  excludedClusterScopedResources:
+  - persistentVolumes
+---
+apiVersion: velero.io/v1
+kind: Restore
+metadata:
+  name: test-app
+  namespace: openshift-adp
+  labels:
+    velero.io/storage-location: default
+  annotations:
+    lca.openshift.io/apply-wave: "4"
+spec:
+  backupName:
+    backup-app
+```
+
+Define custom resources for your application.
+
+```yaml
+apiVersion: velero.io/v1
+kind: Backup
+metadata:
+  labels:
+    velero.io/storage-location: default
+  name: backup-app
+  namespace: openshift-adp
+spec:
+  includedNamespaces:
+  - test
+  includedNamespaceScopedResources:
+  - secrets
+  - persistentvolumeclaims
+  - deployments
+  - statefulsets
+  - configmaps
+  - cronjobs
+  - services
+  - job
+  - poddisruptionbudgets
+  - <application_custom_resources> 1
+  includedClusterScopedResources:
+  - persistentVolumes 2
+  - logicalvolumes.topolvm.io 3
+  - volumesnapshotcontents 4
+---
+apiVersion: velero.io/v1
+kind: Restore
+metadata:
+  name: test-app
+  namespace: openshift-adp
+  labels:
+    velero.io/storage-location: default
+  annotations:
+    lca.openshift.io/apply-wave: "4"
+spec:
+  backupName:
+    backup-app
+  restorePVs: true
+  restoreStatus:
+    includedResources:
+    - logicalvolumes 5
+```
+
+Define custom resources for your application.
+Required field.
+Required field
+Optional if you use LVM Storage volume snapshots.
+Required field.
+
+[IMPORTANT]
+----
+The same version of the applications must function on both the current and the target release of {product-title}.
+----
+3. Create a kustomization.yaml with the following content:
+
+```yaml
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+configMapGenerator: 1
+- files:
+  - source-crs/ibu/PlatformBackupRestoreWithIBGU.yaml
+  #- source-crs/custom-crs/ApplicationClusterScopedBackupRestore.yaml
+  #- source-crs/custom-crs/ApplicationApplicationBackupRestoreLso.yaml
+  name: oadp-cm
+  namespace: openshift-adp 2
+generatorOptions:
+  disableNameSuffixHash: true
+```
+
+Creates the oadp-cm ConfigMap object on the hub cluster with Backup and Restore CRs.
+The namespace must exist on all managed clusters and the hub for the OADP ConfigMap to be generated and copied to the clusters.
+4. Push the changes to your Git repository.
+
+* Configuring a shared container partition between ostree stateroots when using GitOps ZTP
+* Installing and configuring the OADP Operator with GitOps ZTP
+
+# Labeling extra manifests for the image-based upgrade with GitOps ZTP
+
+Label your extra manifests so that the Lifecycle Agent can extract resources that are labeled with the lca.openshift.io/target-ocp-version: <target_version> label.
+
+* You have provisioned one or more managed clusters with GitOps ZTP.
+* You have logged in as a user with cluster-admin privileges.
+* You have generated a seed image from a compatible seed cluster.
+* You have created a separate partition on the target cluster for the container images that is shared between stateroots. For more information, see "Configuring a shared container directory between ostree stateroots when using GitOps ZTP".
+* You have deployed a version of Lifecycle Agent that is compatible with the version used with the seed image.
+
+1. Label your required extra manifests with the lca.openshift.io/target-ocp-version: <target_version> label in your existing site PolicyGenTemplate CR:
+
+```yaml
+apiVersion: ran.openshift.io/v1
+kind: PolicyGenTemplate
+metadata:
+  name: example-sno
+spec:
+  bindingRules:
+    sites: "example-sno"
+    du-profile: "4.15"
+  mcp: "master"
+  sourceFiles:
+    - fileName: SriovNetwork.yaml
+      policyName: "config-policy"
+      metadata:
+        name: "sriov-nw-du-fh"
+        labels:
+          lca.openshift.io/target-ocp-version: "4.15" 1
+      spec:
+        resourceName: du_fh
+        vlan: 140
+    - fileName: SriovNetworkNodePolicy.yaml
+      policyName: "config-policy"
+      metadata:
+        name: "sriov-nnp-du-fh"
+        labels:
+          lca.openshift.io/target-ocp-version: "4.15"
+      spec:
+        deviceType: netdevice
+        isRdma: false
+        nicSelector:
+          pfNames: ["ens5f0"]
+        numVfs: 8
+        priority: 10
+        resourceName: du_fh
+    - fileName: SriovNetwork.yaml
+      policyName: "config-policy"
+      metadata:
+        name: "sriov-nw-du-mh"
+        labels:
+          lca.openshift.io/target-ocp-version: "4.15"
+      spec:
+        resourceName: du_mh
+        vlan: 150
+    - fileName: SriovNetworkNodePolicy.yaml
+      policyName: "config-policy"
+      metadata:
+        name: "sriov-nnp-du-mh"
+        labels:
+          lca.openshift.io/target-ocp-version: "4.15"
+      spec:
+        deviceType: vfio-pci
+        isRdma: false
+        nicSelector:
+          pfNames: ["ens7f0"]
+        numVfs: 8
+        priority: 10
+        resourceName: du_mh
+    - fileName: DefaultCatsrc.yaml 2
+      policyName: "config-policy"
+      metadata:
+        name: default-cat-source
+        namespace: openshift-marketplace
+        labels:
+            lca.openshift.io/target-ocp-version: "4.15"
+      spec:
+          displayName: default-cat-source
+          image: quay.io/example-org/example-catalog:v1
+```
+
+Ensure that the lca.openshift.io/target-ocp-version label matches either the y-stream or the z-stream of the target {product-title} version that is specified in the spec.seedImageRef.version field of the ImageBasedUpgrade CR. The Lifecycle Agent only applies the CRs that match the specified version.
+If you do not want to use custom catalog sources, remove this entry.
+2. Push the changes to your Git repository.
+
+* Configuring a shared container partition between ostree stateroots when using GitOps ZTP
+* Performing an image-based upgrade for single-node OpenShift clusters using GitOps ZTP

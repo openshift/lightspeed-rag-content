@@ -1,0 +1,507 @@
+# About image-based deployments for managed single-node OpenShift
+
+
+When a host preinstalled with single-node OpenShift using an image-based installation arrives at a remote site, a technician can easily reconfigure and deploy the host in a matter of minutes.
+For clusters with a hub-and-spoke architecture, to complete the deployment of a preinstalled host, you must first define site-specific configuration resources on the hub cluster for each host. These resources contain configuration information such as the properties of the bare-metal host, authentication details, and other deployment and networking information.
+The Image Based Install (IBI) Operator creates a configuration ISO from these resources, and then boots the host with the configuration ISO attached. The host mounts the configuration ISO and runs the reconfiguration process. When the reconfiguration completes, the single-node OpenShift cluster is ready.
+
+[NOTE]
+----
+You must create distinct configuration resources for each bare-metal host.
+----
+See the following high-level steps to deploy a preinstalled host in a cluster with a hub-and-spoke architecture:
+1. Install the IBI Operator on the hub cluster.
+2. Create site-specific configuration resources in the hub cluster for each host.
+3. The IBI Operator creates a configuration ISO from these resources and boots the target host with the configuration ISO attached.
+4. The host mounts the configuration ISO and runs the reconfiguration process. When the reconfiguration completes, the single-node OpenShift cluster is ready.
+
+[NOTE]
+----
+Alternatively, you can manually deploy a preinstalled host for a cluster without using a hub cluster. You must define an ImageBasedConfig resource and an installation manifest, and provide these as inputs to the openshift-install installation program. For more information, see "Deploying a single-node OpenShift cluster using the openshift-install program".
+----
+* Deploying a single-node OpenShift cluster using the openshift-install program
+
+# Installing the Image Based Install Operator
+
+The Image Based Install (IBI) Operator is part of the image-based deployment workflow for preinstalled single-node OpenShift on bare-metal hosts.
+
+
+[NOTE]
+----
+The IBI Operator is part of the multicluster engine for Kubernetes Operator from MCE version 2.7.
+----
+
+* You logged in as a user with cluster-admin privileges.
+* You deployed a Red Hat Advanced Cluster Management (RHACM) hub cluster or you deployed the multicluster engine for Kubernetes Operator.
+* You reviewed the required versions of software components in the section "Software prerequisites for an image-based installation".
+
+* Set the enabled specification to true for the image-based-install-operator component in the MultiClusterEngine resource by running the following command:
+
+```terminal
+$ oc patch multiclusterengines.multicluster.openshift.io multiclusterengine --type json \
+--patch '[{"op": "add", "path":"/spec/overrides/components/-", "value": {"name":"image-based-install-operator","enabled": true}}]'
+```
+
+
+* Check that the Image Based Install Operator pod is running by running the following command:
+
+```terminal
+$ oc get pods -A | grep image-based
+```
+
+Example output
+
+```terminal
+multicluster-engine             image-based-install-operator-57fb8sc423-bxdj8             2/2     Running     0               5m
+```
+
+
+# Deploying a managed single-node OpenShift cluster using the IBI Operator
+
+Create the site-specific configuration resources in the hub cluster to initiate the image-based deployment of a preinstalled host.
+
+When you create these configuration resources in the hub cluster, the Image Based Install (IBI) Operator generates a configuration ISO and attaches it to the target host to begin the site-specific configuration  process. When the configuration process completes, the single-node OpenShift cluster is ready.
+
+
+[NOTE]
+----
+For more information about the configuration resources that you must configure in the hub cluster, see "Cluster configuration resources for deploying a preinstalled host".
+----
+
+* You preinstalled a host with single-node OpenShift using an image-based installation.
+* You logged in as a user with cluster-admin privileges.
+* You deployed a Red Hat Advanced Cluster Management (RHACM) hub cluster or you deployed the multicluster engine for Kubernetes operator (MCE).
+* You installed the IBI Operator on the hub cluster.
+* You created a pull secret to authenticate pull requests. For more information, see "Using image pull secrets".
+
+1. Create the ibi-ns namespace by running the following command:
+
+```terminal
+$ oc create namespace ibi-ns
+```
+
+2. Create the Secret resource for your image registry:
+1. Create a YAML file that defines the Secret resource for your image registry:
+Example secret-image-registry.yaml file
+
+```yaml
+apiVersion: v1
+kind: Secret
+metadata:
+  name: ibi-image-pull-secret
+  namespace: ibi-ns
+stringData:
+  .dockerconfigjson: <base64-docker-auth-code> 1
+type: kubernetes.io/dockerconfigjson
+```
+
+You must provide base64-encoded credential details. See the "Additional resources" section for more information about using image pull secrets.
+2. Create the Secret resource for your image registry by running the following command:
+
+```terminal
+$ oc create -f secret-image-registry.yaml
+```
+
+3. Optional: Configure static networking for the host:
+1. Create a Secret resource containing the static network configuration in nmstate format:
+Example host-network-config-secret.yaml file
+
+```yaml
+apiVersion: v1
+kind: Secret
+metadata:
+ name: host-network-config-secret 1
+ namespace: ibi-ns
+type: Opaque
+stringData:
+ nmstate: | 2
+  interfaces:
+    - name: ens1f0 3
+      type: ethernet
+      state: up
+      ipv4:
+        enabled: true
+        address:
+          - ip: 192.168.200.25
+            prefix-length: 24
+        dhcp: false 4
+      ipv6:
+        enabled: false
+  dns-resolver:
+    config:
+      server:
+        - 192.168.15.47 5
+        - 192.168.15.48
+  routes:
+    config: 6
+      - destination: 0.0.0.0/0
+        metric: 150
+        next-hop-address: 192.168.200.254
+        next-hop-interface: ens1f0
+        table-id: 254
+```
+
+Specify the name for the Secret resource.
+Define the static network configuration in nmstate format.
+Specify the name of the interface on the host. The name of the interface must match the actual NIC name as shown in the operating system. To use your MAC address for NIC matching, set the identifier field to mac-address.
+You must specify dhcp: false to ensure nmstate assigns the static IP address to the interface.
+Specify one or more DNS servers that the system will use to resolve domain names.
+In this example, the default route is configured through the ens1f0 interface to the next hop IP address 192.168.200.254.
+4. Create the BareMetalHost and Secret resources:
+1. Create a YAML file that defines the BareMetalHost and Secret resources:
+Example ibi-bmh.yaml file
+
+```yaml
+apiVersion: metal3.io/v1alpha1
+kind: BareMetalHost
+metadata:
+  name: ibi-bmh 1
+  namespace: ibi-ns
+spec:
+  online: false 2
+  bootMACAddress: 00:a5:12:55:62:64 3
+  bmc:
+    address: redfish-virtualmedia+http://192.168.111.1:8000/redfish/v1/Systems/8a5babac-94d0-4c20-b282-50dc3a0a32b5 4
+    credentialsName: ibi-bmh-bmc-secret 5
+  preprovisioningNetworkDataName: host-network-config-secret 6
+  automatedCleaningMode: disabled 7
+  externallyProvisioned: true 8
+---
+apiVersion: v1
+kind: Secret
+metadata:
+  name: ibi-bmh-secret 9
+  namespace: ibi-ns
+type: Opaque
+data:
+  username: <user_name> 10
+  password: <password> 11
+```
+
+Specify the name for the BareMetalHost resource.
+Specify if the host should be online.
+Specify the host boot MAC address.
+Specify the BMC address. You can only use bare-metal host drivers that support virtual media networking booting, for example redfish-virtualmedia and idrac-virtualmedia.
+Specify the name of the bare-metal host Secret resource.
+Optional: If you require static network configuration for the host, specify the name of the Secret resource containing the configuration.
+You must specify automatedCleaningMode:disabled to prevent the provisioning service from deleting all preinstallation artifacts, such as the seed image, during disk inspection.
+You must specify externallyProvisioned: true to enable the host to boot from the preinstalled disk, instead of the configuration ISO.
+Specify the name for the Secret resource.
+Specify the username.
+Specify the password.
+2. Create the BareMetalHost and Secret resources by running the following command:
+
+```terminal
+$ oc create -f ibi-bmh.yaml
+```
+
+5. Create the ClusterImageSet resource:
+1. Create a YAML file that defines the ClusterImageSet resource:
+Example ibi-cluster-image-set.yaml file
+
+```yaml
+apiVersion: hive.openshift.io/v1
+kind: ClusterImageSet
+metadata:
+  name: ibi-img-version-arch 1
+spec:
+  releaseImage: ibi.example.com:path/to/release/images:version-arch 2
+```
+
+Specify the name for the ClusterImageSet resource.
+Specify the address for the release image to use for the deployment. If you use a different image registry compared to the image registry used during seed image generation, ensure that the {product-title} version for the release image remains the same.
+2. Create the ClusterImageSet resource by running the following command:
+
+```terminal
+$ oc apply -f ibi-cluster-image-set.yaml
+```
+
+6. Create the ImageClusterInstall resource:
+1. Create a YAML file that defines the ImageClusterInstall resource:
+Example ibi-image-cluster-install.yaml file
+
+```yaml
+apiVersion: extensions.hive.openshift.io/v1alpha1
+kind: ImageClusterInstall
+metadata:
+  name: ibi-image-install 1
+  namespace: ibi-ns
+spec:
+  bareMetalHostRef:
+    name: ibi-bmh 2
+    namespace: ibi-ns
+  clusterDeploymentRef:
+    name: ibi-cluster-deployment 3
+  hostname: ibi-host 4
+  imageSetRef:
+    name: ibi-img-version-arch 5
+  machineNetworks: 6
+  - cidr: 10.0.0.0/24
+  #- cidr: fd01::/64
+  proxy: 7
+    httpProxy: "http://proxy.example.com:8080"
+    #httpsProxy: "http://proxy.example.com:8080"
+    #noProxy: "no_proxy.example.com"
+```
+
+Specify the name for the ImageClusterInstall resource.
+Specify the BareMetalHost resource that you want to target for the image-based installation.
+Specify the name of the ClusterDeployment resource that you want to use for the image-based installation of the target host.
+Specify the hostname for the cluster.
+Specify the name of the ClusterImageSet resource you used to define the container release images to use for deployment.
+Specify the public Classless Inter-Domain Routing (CIDR) of the external network. For dual-stack networking, you can specify both IPv4 and IPv6 CIDRs using a list format. Regardless of the list order, the IPv4 family becomes the primary address family.
+Optional: Specify a proxy to use for the cluster deployment.
+
+[IMPORTANT]
+----
+If your cluster deployment requires a proxy configuration, you must do the following:
+* Create a seed image from a seed cluster featuring a proxy configuration. The proxy configurations do not have to match.
+* Configure the machineNetwork field in your installation manifest.
+----
+2. Create the ImageClusterInstall resource by running the following command:
+
+```terminal
+$ oc create -f ibi-image-cluster-install.yaml
+```
+
+7. Create the ClusterDeployment resource:
+1. Create a YAML file that defines the ClusterDeployment resource:
+Example ibi-cluster-deployment.yaml file
+
+```yaml
+apiVersion: hive.openshift.io/v1
+kind: ClusterDeployment
+metadata:
+  name: ibi-cluster-deployment 1
+  namespace: ibi-ns 2
+spec:
+  baseDomain: example.com 3
+  clusterInstallRef:
+    group: extensions.hive.openshift.io
+    kind: ImageClusterInstall
+    name: ibi-image-install 4
+    version: v1alpha1
+  clusterName: ibi-cluster 5
+  platform:
+    none: {}
+  pullSecretRef:
+    name: ibi-image-pull-secret 6
+```
+
+Specify the name for the ClusterDeployment resource.
+Specify the namespace for the ClusterDeployment resource.
+Specify the base domain that the cluster should belong to.
+Specify the name of the ImageClusterInstall in which you defined the container images to use for the image-based installation of the target host.
+Specify a name for the cluster.
+Specify the secret to use for pulling images from your image registry.
+2. Create the ClusterDeployment resource by running the following command:
+
+```terminal
+$ oc apply -f ibi-cluster-deployment.yaml
+```
+
+8. Create the ManagedCluster resource:
+1. Create a YAML file that defines the ManagedCluster resource:
+Example ibi-managed.yaml file
+
+```yaml
+apiVersion: cluster.open-cluster-management.io/v1
+kind: ManagedCluster
+metadata:
+  name: sno-ibi 1
+spec:
+  hubAcceptsClient: true 2
+```
+
+Specify the name for the ManagedCluster resource.
+Specify true to enable RHACM to manage the cluster.
+2. Create the ManagedCluster resource by running the following command:
+
+```terminal
+$ oc apply -f ibi-managed.yaml
+```
+
+
+1. Check the status of the ImageClusterInstall in the hub cluster to monitor the progress of the target host installation by running the following command:
+
+```terminal
+$ oc get imageclusterinstall
+```
+
+Example output
+
+```terminal
+NAME       REQUIREMENTSMET           COMPLETED                     BAREMETALHOSTREF
+target-0   HostValidationSucceeded   ClusterInstallationSucceeded  ibi-bmh
+```
+
+
+[WARNING]
+----
+If the ImageClusterInstall resource is deleted, the IBI Operator reattaches the BareMetalHost resource and reboots the machine.
+----
+2. When the installation completes, you can retrieve the kubeconfig secret to log in to the managed cluster by running the following command:
+
+```terminal
+$ oc extract secret/<cluster_name>-admin-kubeconfig -n <cluster_namespace>  --to - > <directory>/<cluster_name>-kubeconfig
+```
+
+* <cluster_name> is the name of the cluster.
+* <cluster_namespace> is the namespace of the cluster.
+* <directory> is the directory in which to create the file.
+
+* Using image pull secrets
+* Cluster configuration resources for deploying a preinstalled host
+
+## Cluster configuration resources for deploying a preinstalled host
+
+To complete a deployment for a preinstalled host at a remote site, you must configure the following site-specifc cluster configuration resources in the hub cluster for each bare-metal host.
+
+
+
+## ImageClusterInstall resource API specifications
+
+The following content describes the API specifications for the ImageClusterInstall resource. This resource is the endpoint for the Image Based Install Operator.
+
+
+
+
+
+# ConfigMap resources for extra manifests
+
+You can optionally create a ConfigMap resource to define additional manifests in an image-based deployment for managed single-node OpenShift clusters.
+
+After you create the ConfigMap resource, reference it in the ImageClusterInstall resource. During deployment, the IBI Operator includes the extra manifests in the deployment.
+
+## Creating a ConfigMap resource to add extra manifests in an image-based deployment
+
+You can use a ConfigMap resource to add extra manifests to the image-based deployment for single-node OpenShift clusters.
+
+The following example adds an single-root I/O virtualization (SR-IOV) network to the deployment.
+
+
+[NOTE]
+----
+Filenames for extra manifests must not exceed 30 characters. Longer filenames might cause deployment failures.
+----
+
+* You preinstalled a host with single-node OpenShift using an image-based installation.
+* You logged in as a user with cluster-admin privileges.
+
+1. Create the SriovNetworkNodePolicy and SriovNetwork resources:
+1. Create a YAML file that defines the resources:
+Example sriov-extra-manifest.yaml file
+
+```yaml
+apiVersion: sriovnetwork.openshift.io/v1
+kind: SriovNetworkNodePolicy
+metadata:
+  name: "example-sriov-node-policy"
+  namespace: openshift-sriov-network-operator
+spec:
+  deviceType: vfio-pci
+  isRdma: false
+  nicSelector:
+    pfNames: [ens1f0]
+  nodeSelector:
+    node-role.kubernetes.io/master: ""
+  mtu: 1500
+  numVfs: 8
+  priority: 99
+  resourceName: example-sriov-node-policy
+---
+apiVersion: sriovnetwork.openshift.io/v1
+kind: SriovNetwork
+metadata:
+  name: "example-sriov-network"
+  namespace: openshift-sriov-network-operator
+spec:
+  ipam: |-
+    {
+    }
+  linkState: auto
+  networkNamespace: sriov-namespace
+  resourceName: example-sriov-node-policy
+  spoofChk: "on"
+  trust: "off"
+```
+
+2. Create the ConfigMap resource by running the following command:
+
+```terminal
+$ oc create configmap sr-iov-extra-manifest --from-file=sriov-extra-manifest.yaml -n ibi-ns 1
+```
+
+Specify the namespace that has the ImageClusterInstall resource.
+Example output
+
+```terminal
+configmap/sr-iov-extra-manifest created
+```
+
+
+[NOTE]
+----
+If you add more than one extra manifest, and the manifests must be applied in a specific order, you must prefix the filenames of the manifests with numbers that represent the required order. For example, 00-namespace.yaml, 01-sriov-extra-manifest.yaml, and so on.
+----
+2. Reference the ConfigMap resource in the spec.extraManifestsRefs field of the ImageClusterInstall resource:
+
+```yaml
+#...
+  spec:
+    extraManifestsRefs:
+    - name: sr-iov-extra-manifest
+#...
+```
+
+
+## Creating a ConfigMap resource to add a CA bundle in an image-based deployment
+
+You can use a ConfigMap resource to add a certificate authority (CA) bundle to the host to ensure trusted communications for cluster services.
+
+After you create the ConfigMap resource, reference it in the spec.caBundleRef field of the ImageClusterInstall resource.
+
+* You preinstalled a host with single-node OpenShift using an image-based installation.
+* You logged in as a user with cluster-admin privileges.
+
+1. Create a CA bundle file called tls-ca-bundle.pem:
+Example tls-ca-bundle.pem file
+
+```text
+-----BEGIN CERTIFICATE-----
+MIIDXTCCAkWgAwIBAgIJAKmjYKJbIyz3MA0GCSqGSIb3DQEBCwUAMEUxCzAJBgNV
+...Custom CA certificate bundle...
+4WPl0Qb27Sb1xZyAsy1ww6MYb98EovazUSfjYr2EVF6ThcAPu4/sMxUV7He2J6Jd
+cA8SMRwpUbz3LXY=
+-----END CERTIFICATE-----
+```
+
+2. Create the ConfigMap object by running the following command:
+
+```terminal
+$ oc create configmap custom-ca --from-file=tls-ca-bundle.pem -n ibi-ns
+```
+
+* custom-ca specifies the name for the ConfigMap resource.
+* tls-ca-bundle.pem defines the key for the data entry in the ConfigMap resource. You must include a data entry with the tls-ca-bundle.pem key.
+* ibi-ns specifies the namespace that has the ImageClusterInstall resource.
+Example output
+
+```terminal
+configmap/custom-ca created
+```
+
+3. Reference the ConfigMap resource in the spec.caBundleRef field of the ImageClusterInstall resource:
+
+```yaml
+#...
+  spec:
+    caBundleRef:
+      name: custom-ca
+#...
+```
+
+
+* About the BareMetalHost resource
+* Using image pull secrets
+* Reference specifications for the image-based-config.yaml manifest

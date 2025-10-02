@@ -1,0 +1,262 @@
+# Integrating the cert-manager Operator for Red Hat OpenShift with Istio-CSR
+
+
+
+[IMPORTANT]
+----
+Istio-CSR integration for cert-manager Operator for Red Hat OpenShift is a Technology Preview feature only. Technology Preview features are not supported with Red Hat production service level agreements (SLAs) and might not be functionally complete. Red Hat does not recommend using them in production. These features provide early access to upcoming product features, enabling customers to test functionality and provide feedback during the development process.
+For more information about the support scope of Red Hat Technology Preview features, see Technology Preview Features Support Scope.
+----
+The cert-manager Operator for Red Hat OpenShift provides enhanced support for securing workloads and control plane components in Red Hat OpenShift Service Mesh or Istio. This includes support for certificates enabling mutual TLS (mTLS), which are signed, delivered, and renewed using cert-manager issuers. You can secure Istio workloads and control plane components by using the cert-manager Operator for Red Hat OpenShift managed Istio-CSR agent.
+With this Istio-CSR integration, Istio can now obtain certificates from the cert-manager Operator for Red Hat OpenShift, simplifying security and certificate management.
+
+# Installing the Istio-CSR agent through cert-manager Operator for Red Hat OpenShift
+
+## Enabling the Istio-CSR feature
+
+Use this procedure to enable the Istio-CSR feature in cert-manager Operator for Red Hat OpenShift.
+
+* You have access to the cluster as a user with the cluster-admin role.
+
+* Update the deployment for the cert-manager Operator for Red Hat OpenShift to use the config map by running the following command:
+
+```terminal
+$ oc -n cert-manager-operator patch subscription openshift-cert-manager-operator --type='merge' -p '{"spec":{"config":{"env":[{"name":"UNSUPPORTED_ADDON_FEATURES","value":"IstioCSR=true"}]}}}'
+```
+
+
+1. Verify that the deployments have finished rolling out by running the following command:
+
+```terminal
+$ oc rollout status deployment/cert-manager-operator-controller-manager -n cert-manager-operator
+```
+
+Example output
+
+```terminal
+deployment "cert-manager-operator-controller-manager" successfully rolled out
+```
+
+
+## Creating a root CA issuer for the Istio-CSR agent
+
+Use this procedure to create the root CA issuer for Istio-CSR agent.
+
+
+[NOTE]
+----
+Other supported issuers can be used, except for the ACME issuer, which is not supported. For more information, see "cert-manager Operator for Red Hat OpenShift issuer providers".
+----
+
+1. Create a YAML file that defines the Issuer and Certificate objects:
+Example issuer.yaml file
+
+```yaml
+apiVersion: cert-manager.io/v1
+kind: Issuer 1
+metadata:
+  name: selfsigned
+  namespace: <istio_project_name> 2
+spec:
+  selfSigned: {}
+---
+apiVersion: cert-manager.io/v1
+kind: Certificate
+metadata:
+  name: istio-ca
+  namespace: <istio_project_name>
+spec:
+  isCA: true
+  duration: 87600h # 10 years
+  secretName: istio-ca
+  commonName: istio-ca
+  privateKey:
+    algorithm: ECDSA
+    size: 256
+  subject:
+    organizations:
+      - cluster.local
+      - cert-manager
+  issuerRef:
+    name: selfsigned
+    kind: Issuer 1
+    group: cert-manager.io
+---
+apiVersion: cert-manager.io/v1
+kind: Issuer 1
+metadata:
+  name: istio-ca
+  namespace: <istio_project_name> 2
+spec:
+  ca:
+    secretName: istio-ca
+```
+
+Specify the Issuer or ClusterIssuer.
+Specify the name of the Istio project.
+
+* Verify that the Issuer is created and ready to use by running the following command:
+
+```terminal
+$ oc get issuer istio-ca -n <istio_project_name>
+```
+
+Example output
+
+```terminal
+NAME       READY   AGE
+istio-ca   True    3m
+```
+
+
+* cert-manager Operator for Red Hat OpenShift issuer providers
+
+## Creating the IstioCSR custom resource
+
+Use this procedure to install the Istio-CSR agent through cert-manager Operator for Red Hat OpenShift.
+
+* You have access to the cluster with cluster-admin privileges.
+* You have enabled the Istio-CSR feature.
+* You have created the Issuer or ClusterIssuer resources required for generating certificates for the Istio-CSR agent.
+
+[NOTE]
+----
+If you are using Issuer resource, create the Issuer and Certificate resources in the Red Hat OpenShift Service Mesh or Istiod namespace. Certificate requests are generated in the same namespace, and role-based access control (RBAC) is configured accordingly.
+----
+
+1. Create a new project for installing Istio-CSR by running the following command. If you have an existing project for installing Istio-CSR, skip this step.
+
+```terminal
+$ oc new-project <istio_csr_project_name>
+```
+
+2. Create the IstioCSR custom resource to enable Istio-CSR agent managed by the cert-manager Operator for Red Hat OpenShift for processing Istio workload and control plane certificate signing requests.
+
+[NOTE]
+----
+Only one IstioCSR custom resource (CR) is supported at a time. If multiple IstioCSR CRs are created, only one will be active. Use the status sub-resource of IstioCSR to check if a resource is unprocessed.
+* If multiple IstioCSR CRs are created simultaneously, none will be processed.
+* If multiple IstioCSR CRs are created sequentially, only the first one will be processed.
+* To prevent new requests from being rejected, delete any unprocessed IstioCSR CRs.
+* The Operator does not automatically remove objects created for IstioCSR. If an active IstioCSR resource is deleted and a new one is created in a different namespace without removing the previous deployments, multiple istio-csr deployments may remain active. This behavior is not recommended and is not supported.
+----
+1. Create a YAML file that defines the IstioCSR object:
+Example IstioCSR CR
+
+```yaml
+apiVersion: operator.openshift.io/v1alpha1
+kind: IstioCSR
+metadata:
+  name: default
+  namespace: <istio_csr_project_name>
+spec:
+  istioCSRConfig:
+    certManager:
+      issuerRef:
+        name: istio-ca  1
+        kind: Issuer 2
+        group: cert-manager.io
+    istiodTLSConfig:
+      trustDomain: cluster.local
+    istio:
+      namespace: <istio_project_name>
+```
+
+Specify the Issuer or ClusterIssuer name. It should be the same name as the CA issuer defined in the issuer.yaml file.
+Specify the Issuer or ClusterIssuer kind. It should be the same kind as the CA issuer defined in the issuer.yaml file.
+2. Create the IstioCSR custom resource by running the following command:
+
+```terminal
+$ oc create -f IstioCSR.yaml
+```
+
+
+1. Verify that the Istio-CSR deployment is ready by running the following command:
+
+```terminal
+$ oc get deployment -n <istio_csr_project_name>
+```
+
+Example output
+
+```terminal
+NAME                     READY   UP-TO-DATE   AVAILABLE   AGE
+cert-manager-istio-csr   1/1     1            1           24s
+```
+
+2. Verify that the Istio-CSR pods are running by running the following command:
+
+```terminal
+$ oc get pod -n <istio_csr_project_name>
+```
+
+Example output
+
+```terminal
+NAME                                  	 READY   STATUS	  RESTARTS    AGE
+cert-manager-istio-csr-5c979f9b7c-bv57w  1/1     Running  0           45s
+```
+
+* Verify that the Istio-CSR pod is not reporting any errors in the logs by running the following command:
+
+```terminal
+$ oc -n <istio_csr_project_name> logs <istio_csr_pod_name>
+```
+
+* Verify that the cert-manager Operator for Red Hat OpenShift pod is not reporting any errors by running the following command:
+
+```terminal
+$ oc -n cert-manager-operator logs <cert_manager_operator_pod_name>
+```
+
+
+# Uninstalling the Istio-CSR agent managed by cert-manager Operator for Red Hat OpenShift
+
+Use this procedure to uninstall the Istio-CSR agent managed by cert-manager Operator for Red Hat OpenShift.
+
+* You have access to the cluster with cluster-admin privileges.
+* You have enabled the Istio-CSR feature.
+* You have created the IstioCSR custom resource.
+
+1. Remove the IstioCSR custom resource by running the following command:
+
+```terminal
+$ oc -n <istio_csr_project_name> delete istiocsrs.operator.openshift.io default
+```
+
+2. Remove related resources:
+
+[IMPORTANT]
+----
+To avoid disrupting any Red Hat OpenShift Service Mesh or Istio components, ensure that no component is referencing the Istio-CSR service or the certificates issued for Istio before removing the following resources.
+----
+1. List the cluster scoped-resources by running the following command and save the names of the listed resources for later reference:
+
+```terminal
+$ oc get clusterrolebindings,clusterroles -l "app=cert-manager-istio-csr,app.kubernetes.io/name=cert-manager-istio-csr"
+```
+
+2. List the resources in Istio-csr deployed namespace by running the following command and save the names of the listed resources for later reference:
+
+```terminal
+$ oc get certificate,deployments,services,serviceaccounts -l "app=cert-manager-istio-csr,app.kubernetes.io/name=cert-manager-istio-csr" -n <istio_csr_project_name>
+```
+
+3. List the resources in Red Hat OpenShift Service Mesh or Istio deployed namespaces by running the following command and save the names of the listed resources for later reference:
+
+```terminal
+$ oc get roles,rolebindings -l "app=cert-manager-istio-csr,app.kubernetes.io/name=cert-manager-istio-csr" -n <istio_csr_project_name>
+```
+
+4. For each resource listed in previous steps, delete the resource by running the following command:
+
+```terminal
+$ oc -n <istio_csr_project_name> delete <resource_type>/<resource_name>
+```
+
+
+Repeat this process until all of the related resources have been deleted.
+
+# Upgrading the cert-manager Operator for Red Hat OpenShift with Istio-CSR feature enabled
+
+When the Istio-CSR TechPreview feature gate is enabled, the Operator cannot be upgraded. To use to the next available version, you must uninstall the cert-manager Operator for Red Hat OpenShift and remove all Istio-CSR resources before reinstalling it.
