@@ -178,9 +178,34 @@ Replace <insights_operator_pod_name> with the pod name output from the preceding
 
 The recent Insights Operator archives are now available in the insights-data directory.
 
-# Running an Insights Operator gather operation
+# Running an Insights Operator gather operation on-demand
 
-You can run Insights Operator data gather operations on demand. The following procedures describe how to run the default list of gather operations using the OpenShift web console or CLI. You can customize the on demand gather function to exclude any gather operations you choose. Disabling gather operations from the default list degrades Insights Advisor&#8217;s ability to offer effective recommendations for your cluster. If you have previously disabled Insights Operator gather operations in your cluster, this procedure will override those parameters.
+Instead of waiting for the next periodic data gather operation, you can run a custom on-demand Insights Operator data gather operation by using the {product-title} web console or command-line interface (CLI).
+
+A periodic data gather operation uses the InsightsDataGather custom resource definition (CRD) for configuration instructions, whereas an on-demand equivalent requires a DataGather CRD to be configured.
+
+An on-demand DataGather operation is:
+
+* Useful for one-off data collections that require different CRD configurations to the periodic data gathering (InsightsDataGather) specification.
+* Independent from the periodic data gathering. When you create an on-demand DataGather CRD, the configuration is independent from the InsightsDataGather CRD specification of your periodic data gathering job.
+
+Custom specification options
+
+You can optionally customize the following items for the on-demand data gather operation:
+
+* Enable and define data obfuscation: By defining the DataGather dataPolicy specification, you can enable additional obfuscation of the Insights archive data, for example, the IP address or workload names.
+* Enable persistant storage: By default, the Insights Operator uses ephemeral storage, which means that a new pod will be created for each gather operation and the history of gather operations and data collected is not retained. You can switch to persistent storage to retain the data and history for up to the last 10 gather operations by defining the DataGather storage specification in the CRD.
+* Exclude specific data gather operations:  You can choose to disable specific gather operations from running by defining the DataGather gatherers specification. For example, you can choose to disable the cluster authentication operation or the workload data operation.
+
+
+[IMPORTANT]
+----
+Excluding gather operations from the default list might reduce or limit the  recommendations offered by the Insights Advisor for your cluster.
+----
+
+If you do not configure any custom specification options in the DataGather CRD, the default Insights Operator data collection job will run. This means that all gather operations will run, the collected data will be unobfuscated and the archive file will not be retained.
+
+When you run a gather operation on-demand, any configuration that was previously applied to disable Insights Operator gather operations for your cluster will be overridden.
 
 
 [IMPORTANT]
@@ -218,87 +243,205 @@ The file contains a list of Insights Operator gather operations:
 duration_in_ms is the amount of time in milliseconds for each gather operation.
 2. Inspect each gather operation for abnormalities.
 
-## Running an Insights Operator gather operation from the web console
+## Gathering data on demand with the Insights Operator from the web console
 
-To collect data, you can run an Insights Operator gather operation by using the {product-title} web console.
+You can run a custom Insights Operator gather operation on-demand from the {product-title} web console. An on-demand DataGather operation is useful for one-off data collections that require different configurations to the periodic data gathering (InsightsDataGather) specification.
+
+Use the following procedure to create a DataGather custom resource definition (CRD), and then run the data gather operation on demand from the web console.
 
 * You are logged in to the {product-title} web console as a user with the cluster-admin role.
 
-1. On the console, select Administration -> CustomResourceDefinitions.
+1. On the console, select Administration > CustomResourceDefinitions.
 2. On the CustomResourceDefinitions page, in the Search by name field, find the DataGather resource definition, and then click it.
 3. On the CustomResourceDefinition details page, click the Instances tab.
 4. Click Create DataGather.
-5. To create a new DataGather operation, edit the following configuration file and then save your changes.
+5. To create a new DataGather operation where all gather operations will run, complete the following YAML specification, and then save your changes.
 
 ```yaml
-apiVersion: insights.openshift.io/v1alpha1
+apiVersion: insights.openshift.io/v1alpha2
 kind: DataGather
 metadata:
-  name: <your_data_gather> 1
+  name: <your_data_gather>
 spec:
- gatherers: 2
-   - name: workloads
-     state: Disabled
+# Gatherers configuration
+  gatherers:
+    mode: All # Options: All, Custom
+# ...
 ```
-
-Under metadata, replace <your_data_gather> with a unique name for the gather operation.
-Under gatherers, specify any individual gather operations that you intend to disable. In the example provided, workloads is the only data gather operation that is disabled and all of the other default operations are set to run.
-When the spec parameter is empty, all of the default gather operations run.
 
 
 [IMPORTANT]
 ----
-Do not add a prefix of periodic-gathering- to the name of your gather operation because this string is reserved for other administrative operations and might impact the intended gather operation.
+* The name you specify for your gather operation, <your_data_gather>, must be unique and must not include a prefix of periodic-gathering- because this string is reserved for other administrative operations and might impact the intended gather operation.
+* If the spec of DataGather CRD is undefined, the default Insights Operator data collection job will run. This means that all gather operations will run, the collected data will be unobfuscated and the archive file will not be retained.
 ----
+6. Optional: To customize the data gather operation, you can configure any of the following options in your DataGather YAML file:
+* To disable specific gatherers, change the value of mode to Custom, and then specify the individual gatherer that you intend to disable. For example, to disable the workload gatherer, add the following example:
 
-1. On the console, select to Workloads -> Pods.
+```yaml
+apiVersion: insights.openshift.io/v1alpha2
+kind: DataGather
+metadata:
+  name: <your_data_gather>
+spec:
+    # Gatherers configuration
+  gatherers:
+    mode: Custom  # Options: All, Custom
+    custom:
+      configs:
+        # Essential cluster configuration gatherers
+        - name: clusterconfig/authentication
+          state: Enabled
+        - name: clusterconfig/clusteroperators
+          state: Enabled
+        - name: workloads
+          state: Disabled
+```
+
+* To enable persistent storage to retain the data archive file and history for up to the last 10 data gathering jobs, define the storage specification. Set type to PersistentVolume, and define the mountPath and name of the volume, as outlined in the following example:
+
+```yaml
+apiVersion: insights.openshift.io/v1alpha2
+kind: DataGather
+metadata:
+  name: <your_data_gather>
+spec:
+  storage:
+    type: PersistentVolume
+    mountPath: /data
+    persistentVolume:
+      claim:
+        name: on-demand-gather-pvc
+```
+
+
+[IMPORTANT]
+----
+Ensure that the volume name specified matches the existing PersistentVolumeClaim value in the openshift-insights namespace. For more information, see Persistent volume claims.
+----
+* To enable data obfuscation, define the dataPolicy key and required values. For example, to obfuscate IP addresses and workload names, add the following configuration:
+
+```yaml
+apiVersion: insights.openshift.io/v1alpha2
+kind: DataGather
+metadata:
+  name: <your_data_gather>
+spec:
+  dataPolicy:
+    - ObfuscateNetworking
+    - WorkloadNames
+```
+
+
+1. On the console, select to Workloads > Pods.
 2. On the Pods page, go to the Project pull-down menu, and then select Show default projects.
 3. Select the openshift-insights project from the Project pull-down menu.
 4. Check that your new gather operation is prefixed with your chosen name under the list of pods in the openshift-insights project. Upon completion, the Insights Operator automatically uploads the data to Red Hat for processing.
 
-## Running an Insights Operator gather operation from the OpenShift CLI
+## Gathering data on demand with the Insights Operator from the OpenShift CLI
 
-You can run an Insights Operator gather operation by using the {product-title} command-line interface.
+You can run a custom Insights Operator gather operation on-demand from the  {product-title} command-line interface (CLI).
+An on-demand DataGather operation is useful for one-off data collections that require different configurations to the periodic data gathering (InsightsDataGather) specification.
+
+Use the following procedure to create a DataGather custom resource definition (CRD), and then run the data gather operation on demand from the CLI.
 
 * You are logged in to {product-title} as a user with the cluster-admin role.
 
-* Enter the following command to run the gather operation:
-
-```terminal
-$ oc apply -f <your_datagather_definition>.yaml
-```
-
-
-Replace <your_datagather_definition>.yaml with a configuration file that contains the following parameters:
+1. Create a YAML file with the following DataGather specification:
 
 ```yaml
-apiVersion: insights.openshift.io/v1alpha1
+apiVersion: insights.openshift.io/v1alpha2
 kind: DataGather
 metadata:
-  name: <your_data_gather> 1
+  name: <your_data_gather>
 spec:
- gatherers: 2
-   - name: workloads
-     state: Disabled
+# Gatherers configuration
+  gatherers:
+    mode: All # Options: All, Custom
+# ...
 ```
-
-Under metadata, replace <your_data_gather> with a unique name for the gather operation.
-Under gatherers, specify any individual gather operations that you intend to disable. In the example provided, workloads is the only data gather operation that is disabled and all of the other default operations are set to run.
-When the spec parameter is empty, all of the default gather operations run.
 
 
 [IMPORTANT]
 ----
-Do not add a prefix of periodic-gathering- to the name of your gather operation because this string is reserved for other administrative operations and might impact the intended gather operation.
+* The name you specify for your gather operation, <your_data_gather>, must be unique and must not include a prefix of periodic-gathering- because this string is reserved for other administrative operations and might impact the intended gather operation.
+* If the spec of DataGather CRD is undefined, the default Insights Operator data collection job will run. This means that all gather operations will run, the collected data will be unobfuscated and the archive file will not be retained.
 ----
+2. Optional: To customize the data gather operation, you can configure any of the following options in your DataGather YAML file:
+* To disable specific gatherers, change the value of mode to Custom, and then specify the individual gatherer that you intend to disable. For example, to disable the workload gatherer, add the following example:
+
+```yaml
+apiVersion: insights.openshift.io/v1alpha2
+kind: DataGather
+metadata:
+  name: <your_data_gather>
+spec:
+    # Gatherers configuration
+  gatherers:
+    mode: Custom  # Options: All, Custom
+    custom:
+      configs:
+        # Essential cluster configuration gatherers
+        - name: clusterconfig/authentication
+          state: Enabled
+        - name: clusterconfig/clusteroperators
+          state: Enabled
+        - name: workloads
+          state: Disabled
+```
+
+* To enable persistent storage to retain the data archive file and history for up to the last 10 data gathering jobs, define the storage specification. Set type to PersistentVolume, and define the mountPath and name of the volume, as outlined in the following example:
+
+```yaml
+apiVersion: insights.openshift.io/v1alpha2
+kind: DataGather
+metadata:
+  name: <your_data_gather>
+spec:
+  storage:
+    type: PersistentVolume
+    mountPath: /data
+    persistentVolume:
+      claim:
+        name: on-demand-gather-pvc
+```
+
+
+[IMPORTANT]
+----
+Ensure that the volume name specified matches the existing PersistentVolumeClaim value in the openshift-insights namespace. For more information, see Persistent volume claims.
+----
+* To enable data obfuscation, define the dataPolicy key and required values. For example, to obfuscate IP addresses and workload names, add the following configuration:
+
+```yaml
+apiVersion: insights.openshift.io/v1alpha2
+kind: DataGather
+metadata:
+  name: <your_data_gather>
+spec:
+  dataPolicy:
+    - ObfuscateNetworking
+    - WorkloadNames
+```
+
+3. On the {product-title} CLI, enter the following command to run the gather operation:
+
+```terminal
+$ oc apply -f <your_data_gather_definition>.yaml
+```
+
 
 * Check that your new gather operation is prefixed with your chosen name under the list of pods in the openshift-insights project. Upon completion, the Insights Operator automatically uploads the data to Red Hat for processing.
 
 * Insights Operator Gathered Data GitHub repository
 
-## Disabling the Insights Operator gather operations
+## Disabling the Insights Operator periodic gather operations
 
-You can disable the Insights Operator gather operations. Disabling the gather operations gives you the ability to increase privacy for your organization as Insights Operator will no longer gather and send Insights cluster reports to Red Hat. This will disable Insights analysis and recommendations for your cluster without affecting other core functions that require communication with Red Hat such as cluster transfers. You can view a list of attempted gather operations for your cluster from the /insights-operator/gathers.json file in your Insights Operator archive. Be aware that some gather operations only occur when certain conditions are met and might not appear in your most recent archive.
+You can optionally disable the periodic InsightsDataGather operations that the Insights Operator runs every 2 hours by default. Disabling the periodic data gather operations increases privacy for your organization as Insights Operator will no longer gather and send Insights cluster reports to Red&#160;Hat.
+
+Disabling gather operations will also disable Insights analysis and recommendations for your cluster without affecting other core functions that require communication with Red&#160;Hat such as cluster transfers.
+
+You can view a list of attempted gather operations for your cluster from the /insights-operator/gathers.json file in your Insights Operator archive. Be aware that some gather operations occur only when certain conditions are met and might not show in your most recent archive.
 
 
 [IMPORTANT]
@@ -315,52 +458,59 @@ If you enable Technology Preview in your cluster, the Insights Operator runs gat
 
 * You are logged in to the {product-title} web console as a user with the cluster-admin role.
 
-1. Navigate to Administration -> CustomResourceDefinitions.
-2. On the CustomResourceDefinitions page, use the Search by name field to find the InsightsDataGather resource definition and click it.
+1. Navigate to Administration > CustomResourceDefinitions.
+2. On the CustomResourceDefinitions page, use the Search by name field to find the InsightsDataGather custom resource definition (CRD), and click to open.
 3. On the CustomResourceDefinition details page, click the Instances tab.
 4. Click cluster, and then click the YAML tab.
-5. Disable the gather operations by performing one of the following edits to the InsightsDataGather configuration file:
-1. To disable all the gather operations, enter all under the disabledGatherers key:
+5. Edit the InsightsDataGather CRD, and complete one of the following steps:
+* To disable all the gather operations and data collection, define the gatherers specification and set the mode to None as outlined in the following example extract:
 
 ```yaml
-apiVersion: config.openshift.io/v1alpha1
+apiVersion: insights.openshift.io/v1alpha2
 kind: InsightsDataGather
 metadata:
-....
-
-spec: 1
-  gatherConfig:
-    disabledGatherers:
-      - all 2
+  name: cluster
+spec:
+# Gatherers configuration
+  gatherers:
+    mode: None # Options: All, None, Custom
 ```
 
-The spec parameter specifies gather configurations.
-The all value disables all gather operations.
-2. To disable individual gather operations, enter their values under the disabledGatherers key:
+* To disable individual gather operations, under gatherers, set the mode to Custom and then specify the individual gatherer that you intend to disable. For example, to disable the workload gatherer, define the following specification:
 
 ```yaml
+apiVersion: insights.openshift.io/v1alpha2
+kind: InsightsDataGather
+metadata:
+  name: cluster
 spec:
-  gatherConfig:
-    disabledGatherers:
-      - clusterconfig/container_images 1
-      - clusterconfig/host_subnets
-      - workloads/workload_info
+    # Gatherers configuration
+  gatherers:
+    mode: Custom  # Options: All, None, Custom
+    custom:
+      configs:
+        # Essential cluster configuration gatherers
+        - name: clusterconfig/authentication
+          state: Enabled
+        - name: clusterconfig/clusteroperators
+          state: Enabled
+        - name: workloads
+          state: Disabled
 ```
 
-Example individual gather operation
 6. Click Save.
 
-After you save the changes, the Insights Operator gather configurations are updated and the operations will no longer occur.
+After you save the changes, the Insights Operator gather configurations are updated and the operations that you disabled in the configuration will no longer occur.
 
 
 [NOTE]
 ----
-Disabling gather operations degrades the Insights advisor service's ability to offer effective recommendations for your cluster.
+Disabling gather operations restricts the ability of the Insights Advisor service to offer effective recommendations for your cluster.
 ----
 
-## Enabling the Insights Operator gather operations
+## Re-enabling the Insights Operator periodic gather operations
 
-You can enable the Insights Operator gather operations, if the gather operations have been disabled.
+If you disabled the default InsightsDataGather data gather operations, you can enable them again so that the Insights Operator resumes the periodic data collection, and sends the resulting Insights cluster reports to Red Hat.
 
 
 [IMPORTANT]
@@ -371,37 +521,46 @@ For more information about the support scope of Red Hat Technology Preview featu
 
 * You are logged in to the {product-title} web console as a user with the cluster-admin role.
 
-1. Navigate to Administration -> CustomResourceDefinitions.
-2. On the CustomResourceDefinitions page, use the Search by name field to find the InsightsDataGather resource definition and click it.
+1. Navigate to Administration > CustomResourceDefinitions.
+2. On the CustomResourceDefinitions page, use the Search by name field to find the InsightsDataGather custom resource definition (CRD), and click to open.
 3. On the CustomResourceDefinition details page, click the Instances tab.
 4. Click cluster, and then click the YAML tab.
-5. Enable the gather operations by performing one of the following edits:
-* To enable all disabled gather operations, remove the gatherConfig stanza:
+5. Edit the InsightsDataGather CRD, and complete one of the following steps:
+* To enable all disabled gather operations, under the gatherers specification, set the mode back to All as outlined in the following example extract:
 
 ```yaml
-apiVersion: config.openshift.io/v1alpha1
+apiVersion: insights.openshift.io/v1alpha2
 kind: InsightsDataGather
 metadata:
-....
-
+  name: cluster
 spec:
-  gatherConfig: 1
-    disabledGatherers: all
+# Gatherers configuration
+  gatherers:
+    mode: All # Options: All, None, Custom
 ```
 
-Remove the gatherConfig stanza to enable all gather operations.
-* To enable individual gather operations, remove their values under the disabledGatherers key:
+* To enable individual gather operations that were previously disabled, find the name of the gatherer operation under the gatherers:custom:configs key section and change the state to Enabled. Alternatively, under the config specification, remove the name and state configuration lines for the operation you want to enable.
 
 ```yaml
+apiVersion: insights.openshift.io/v1alpha2
+kind: InsightsDataGather
+metadata:
+  name: cluster
 spec:
-  gatherConfig:
-    disabledGatherers:
-      - clusterconfig/container_images 1
-      - clusterconfig/host_subnets
-      - workloads/workload_info
+    # Gatherers configuration
+  gatherers:
+    mode: Custom  # Options: All, None, Custom
+    custom:
+      configs:
+        # Essential cluster configuration gatherers
+        - name: clusterconfig/authentication
+          state: Enabled
+        - name: clusterconfig/clusteroperators
+          state: Enabled
+        - name: workloads
+          state: Enabled
 ```
 
-Remove one or more gather operations.
 6. Click Save.
 
 After you save the changes, the Insights Operator gather configurations are updated and the affected gather operations start.
@@ -409,7 +568,7 @@ After you save the changes, the Insights Operator gather configurations are upda
 
 [NOTE]
 ----
-Disabling gather operations degrades Insights Advisor's ability to offer effective recommendations for your cluster.
+Disabling gather operations restricts the ability of the Insights Advisor service to offer effective recommendations for your cluster.
 ----
 
 # Obfuscating Deployment Validation Operator data
