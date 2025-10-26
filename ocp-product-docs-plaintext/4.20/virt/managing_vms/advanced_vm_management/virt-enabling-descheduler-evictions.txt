@@ -5,23 +5,17 @@ You can use the descheduler to evict pods so that the pods can be rescheduled on
 
 # Descheduler profiles
 
-Use the DevKubeVirtRelieveAndMigrate or LongLifecycle profile to enable the descheduler on a virtual machine.
+Use the KubeVirtRelieveAndMigrate or LongLifecycle profile to enable the descheduler on a virtual machine.
 
 
 [IMPORTANT]
 ----
-You can not have both DevKubeVirtRelieveAndMigrate and LongLifeCycle enabled at the same time.
+You cannot have both KubeVirtRelieveAndMigrate and LongLifeCycle enabled at the same time.
 ----
 
-DevKubeVirtRelieveAndMigrate:: This profile is an enhanced version of the LongLifeCycle profile.
+KubeVirtRelieveAndMigrate:: This profile is an enhanced version of the LongLifeCycle profile.
 
-[IMPORTANT]
-----
-The DevKubeVirtRelieveAndMigrate profile is a Technology Preview feature only. Technology Preview features are not supported with Red Hat production service level agreements (SLAs) and might not be functionally complete. Red Hat does not recommend using them in production. These features provide early access to upcoming product features, enabling customers to test functionality and provide feedback during the development process.
-For more information about the support scope of Red Hat Technology Preview features, see Technology Preview Features Support Scope.
-----
-
-The DevKubeVirtRelieveAndMigrate profile evicts pods from high-cost nodes to reduce overall resource expenses and enable workload migration. It also periodically rebalances workloads to help maintain similar spare capacity across nodes, which supports better handling of sudden workload spikes. Nodes can experience the following costs:
+The KubeVirtRelieveAndMigrate profile evicts pods from high-cost nodes to reduce overall resource expenses and enable workload migration. It also periodically rebalances workloads to help maintain similar spare capacity across nodes, which supports better handling of sudden workload spikes. Nodes can experience the following costs:
 
 * Resource utilization: Increased resource pressure raises the overhead for running applications.
 * Node maintenance: A higher number of containers on a node increases resource consumption and maintenance costs.
@@ -42,14 +36,14 @@ spec:
   deschedulingIntervalSeconds: 30
   mode: "Automatic"
   profiles:
-    - DevKubeVirtRelieveAndMigrate
+    - KubeVirtRelieveAndMigrate
   profileCustomizations:
     devEnableSoftTainter: true
     devDeviationThresholds: AsymmetricLow
     devActualUtilizationProfile: PrometheusCPUCombined
 ```
 
-The DevKubeVirtRelieveAndMigrate profile requires PSI metrics to be enabled on all worker nodes. You can enable this by applying the following MachineConfig custom resource (CR):
+The KubeVirtRelieveAndMigrate profile requires PSI metrics to be enabled on all worker nodes. You can enable this by applying the following MachineConfig custom resource (CR):
 
 ```yaml
 apiVersion: machineconfiguration.openshift.io/v1
@@ -63,6 +57,11 @@ spec:
     - psi=1
 ```
 
+
+[NOTE]
+----
+The name of the MachineConfig object is significant because machine configs are processed in lexicographical order. By default, a config that starts with 98- disables PSI. To ensure that PSI is enabled, name your config with a higher prefix, such as 99-openshift-machineconfig-worker-psi-karg.
+----
 You can use this profile with the SoftTopologyAndDuplicates profile to also rebalance pods based on soft topology constraints, which can be useful in hosted control plane environments.
 LongLifecycle:: This profile balances resource usage between nodes and enables the following strategies:
 
@@ -113,26 +112,14 @@ The only profile currently available for OpenShift Virtualization is LongLifecyc
 
 You can also configure the profiles and settings for the descheduler later using the OpenShift CLI (oc).
 
-# Enabling descheduler evictions on a virtual machine (VM)
+# Configuring descheduler evictions for virtual machines
 
-After the descheduler is installed, you can enable descheduler evictions on your VM by adding an annotation to the VirtualMachine custom resource (CR).
+After the descheduler is installed and configured, all migratable virtual machines (VMs) are eligible for eviction by default. You can configure the descheduler to manage VM evictions across the cluster and optionally exclude specific VMs from eviction.
 
 * Install the descheduler in the {product-title} web console or OpenShift CLI (oc).
-* Ensure that the VM is not running.
 
-1. Before starting the VM, add the descheduler.alpha.kubernetes.io/evict annotation to the VirtualMachine CR:
-
-```yaml
-apiVersion: kubevirt.io/v1
-kind: VirtualMachine
-spec:
-  template:
-    metadata:
-      annotations:
-        descheduler.alpha.kubernetes.io/evict: "true"
-```
-
-2. Configure the KubeDescheduler object with the LongLifecycle profile and enable background evictions for improved VM eviction stability during live migration:
+1. Stop the VM.
+2. Configure the KubeDescheduler object with the KubeVirtRelieveAndMigrate profile and enable background evictions for improved VM eviction stability during live migration:
 
 ```yaml
 apiVersion: operator.openshift.io/v1
@@ -141,19 +128,51 @@ metadata:
   name: cluster
   namespace: openshift-kube-descheduler-operator
 spec:
-  deschedulingIntervalSeconds: 3600
+  deschedulingIntervalSeconds: 60
   profiles:
-  - LongLifecycle 1
-  mode: Predictive 2
-  profileCustomizations:
-    devEnableEvictionsInBackground: true 3
+  - KubeVirtRelieveAndMigrate
+  mode: Automatic
 ```
 
-You can only set the LongLifecycle profile. This profile balances resource usage between nodes.
-By default, the descheduler does not evict pods. To evict pods, set mode to Automatic.
-Enabling devEnableEvictionsInBackground allows evictions to occur in the background, improving stability and mitigating oscillatory behavior during live migrations.
+3. Optional: To evict pods, set the mode field value to Automatic. By default, the descheduler does not evict pods.
+4. Optional: Configure limits for the number of parallel evictions to improve stability in large clusters.
 
-The descheduler is now enabled on the VM.
+The descheduler can limit the number of concurrent evictions per node and across the cluster by using the evictionLimits field. Set these limits to match the migration limits configured in the HyperConverged custom resource (CR).
+
+```yaml
+spec:
+  evictionLimits:
+    node: 2
+    total: 5
+```
+
+
+Set values that correspond to the migration limits in the HyperConverged CR:
+
+```yaml
+spec:
+  liveMigrationConfig:
+    parallelMigrationsPerCluster: 5
+    parallelOutboundMigrationsPerNode: 2
+```
+
+5. Optional: To exclude the VM from eviction, add the descheduler.alpha.kubernetes.io/prefer-no-eviction annotation to the spec.template.metadata.annotations field. The change is applied dynamically and is propagated to the VirtualMachineInstance (VMI) object and the virt-launcher pod.
+
+Only the presence of the annotation is checked. The value is not evaluated, so "true" and "false" have the same effect.
+
+```yaml
+apiVersion: kubevirt.io/v1
+kind: VirtualMachine
+spec:
+  template:
+    metadata:
+      annotations:
+        descheduler.alpha.kubernetes.io/prefer-no-eviction: "true"
+```
+
+6. Start the VM.
+
+The VM is now configured according to the descheduler settings.
 
 # Additional resources
 
