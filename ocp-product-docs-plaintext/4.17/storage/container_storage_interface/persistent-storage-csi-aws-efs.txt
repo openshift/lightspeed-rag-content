@@ -217,98 +217,153 @@ A cluster admin can create several StorageClass objects, each using a different 
 
 Cross account support allows you to have an Red Hat OpenShift Container Platform cluster in one AWS account and mount your file system in another AWS account using the AWS Elastic File System (EFS) Container Storage Interface (CSI) driver.
 
-
-[NOTE]
-----
-Both the Red Hat OpenShift Container Platform cluster and EFS file system must be in the same region.
-----
-
-* Access to an Red Hat OpenShift Container Platform cluster with administrator rights
+* Access to
+ an Red Hat OpenShift Container Platform cluster
+with administrator rights
 * Two valid AWS accounts
+* The EFS CSI Operator has been installed. For information about installing the EFS CSI Operator, see the Installing the AWS EFS CSI Driver Operator section.
+* Both the Red Hat OpenShift Container Platform cluster and EFS file system must be located in the same AWS region.
+* Ensure that the two virtual private clouds (VPCs) used in the following procedure use different network Classless Inter-Domain Routing (CIDR) ranges.
+* Access to Red Hat OpenShift Container Platform CLI (oc).
+* Access to AWS CLI.
+* Access to jq command-line JSON processor.
 
-The following procedure demonstrates how to set up:
+The following procedure explains how to set up:
 
-* Red Hat OpenShift Container Platform cluster in AWS account A
-* Mount an AWS EFS file system in account B
+* Red Hat OpenShift Container Platform AWS Account A: Contains a Red Hat Red Hat OpenShift Container Platform cluster v4.16, or later, deployed within a VPC
+* AWS Account B: Contains a VPC (including subnets, route tables, and network connectivity). The EFS filesystem will be created in this VPC.
 
 To use AWS EFS across accounts:
 
-1. Install Red Hat OpenShift Container Platform cluster with AWS account A and install the EFS CSI Driver Operator.
-2. Create an EFS volume in AWS account B:
-1. Create a virtual private cloud (VPC) called, for example, "my-efs-vpc” with CIDR, for example, “172.20.0.0/16” and subnet for the AWS EFS volume.
-2. On the AWS console, go to https://console.aws.amazon.com/efs.
-3. Click Create new filesystem:
-1. Create a filesystem named, for example, "my-filesystem”.
-2. Select the VPC created earlier (“my-efs-vpc”).
-3. Accept the default for the remaining settings.
-4. Ensure that the volume and Mount Targets have been created:
-1. Check https://console.aws.amazon.com/efs#/file-systems.
-2. Click your volume, and on the Network tab wait for all Mount Targets to be available (approximately 1-2 minutes).
-5. On the Network tab, copy the Security Group ID. You will need it for the next step.
-3. Configure networking access to the AWS EFS volume on AWS account B:
-1. Go to https://console.aws.amazon.com/ec2/v2/home#SecurityGroups.
-2. Find the Security Group used by the AWS EFS volume by filtering for the group ID copied earlier.
-3. On the Inbound rules tab, click  Edit inbound rules, and then add a new rule to allow Red Hat OpenShift Container Platform nodes to access the AWS EFS volumes (that is, use NFS ports from the cluster):
-* Type: NFS
-* Protocol: TCP
-* Port range: 2049
-* Source: Custom/IP address range of your Red Hat OpenShift Container Platform cluster nodes (for example, “10.0.0.0/16”)
-4. Save the rule.
+1. Set up the environment:
+1. Configure environment variables by running the following commands:
 
-[NOTE]
-----
-If you encounter mounting issues, re-check the port number, IP address range, and verify that the AWS EFS volume uses the expected security group.
-----
-4. Create VPC peering between the Red Hat OpenShift Container Platform cluster VPC in AWS account A and the AWS EFS VPC in AWS account B:
+```terminal
+export CLUSTER_NAME="<CLUSTER_NAME>" 1
+export AWS_REGION="<AWS_REGION>" 2
+export AWS_ACCOUNT_A_ID="<ACCOUNT_A_ID>" 3
+export AWS_ACCOUNT_B_ID="<ACCOUNT_B_ID>" 4
+export AWS_ACCOUNT_A_VPC_CIDR="<VPC_A_CIDR>" 5
+export AWS_ACCOUNT_B_VPC_CIDR="<VPC_B_CIDR>" 6
+export AWS_ACCOUNT_A_VPC_ID="<VPC_A_ID>" 7
+export AWS_ACCOUNT_B_VPC_ID="<VPC_B_ID>" 8
+export SCRATCH_DIR="<WORKING_DIRECTORY>" 9
+export CSI_DRIVER_NAMESPACE="openshift-cluster-csi-drivers" 10
+export AWS_PAGER="" 11
+```
 
-Ensure the two VPCs are using different network CIDRs, and after creating the VPC peering, add routes in each VPC to connect the two VPC networks.
-1. Create a peering connection called, for example, “my-efs-crossaccount-peering-connection” in account B. For the local VPC ID, use the EFS-located VPC. To peer with the VPC for account A, for the VPC ID use the Red Hat OpenShift Container Platform cluster VPC ID.
-2. Accept the peer connection in AWS account A.
-3. Modify the route table of each subnet (EFS-volume used subnets) in AWS account B:
-1. On the left pane, under Virtual private cloud, click the down arrow to expand the available options.
-2. Under Virtual private cloud, click Route tables".
-3. Click the Routes tab.
-4. Under Destination, enter 10.0.0.0/16.
-5. Under Target, use the peer connection type point from the created peer connection.
-4. Modify the route table of each subnet (Red Hat OpenShift Container Platform cluster nodes used subnets) in AWS account A:
-1. On the left pane, under Virtual private cloud, click the down arrow to expand the available options.
-2. Under Virtual private cloud, click Route tables".
-3. Click the Routes tab.
-4. Under Destination, enter the CIDR for the VPC in account B, which for this example is 172.20.0.0/16.
-5. Under Target, use the peer connection type point from the created peer connection.
-5. Create an IAM role, for example, “my-efs-acrossaccount-role” in AWS account B, which has a trust relationship with AWS account A, and add an inline AWS EFS policy with permissions to call “my-efs-acrossaccount-driver-policy”.
+Cluster name of choice.
+AWS region of choice.
+AWS Account A ID.
+AWS Account B ID.
+CIDR range of VPC in Account A.
+CIDR range of VPC in Account B.
+VPC ID in Account A (cluster)
+VPC ID in Account B (EFS cross account)
+Any writeable directory of choice to use to store temporary files.
+If your driver is installed in a non-default namespace, change this value.
+Makes AWS CLI output everything directly to stdout.
+2. Create the working directory by running the following command:
 
-This role is used by the CSI driver&#8217;s controller service running on the Red Hat OpenShift Container Platform cluster in AWS account A to determine the mount targets for your file system in AWS account B.
+```terminal
+mkdir -p $SCRATCH_DIR
+```
 
-```json
-# Trust relationships trusted entity trusted account A configuration on my-efs-acrossaccount-role in account B
+3. Verify cluster connectivity by running the following command in the Red Hat OpenShift Container Platform CLI:
 
+```terminal
+$ oc whoami
+```
+
+4. Determine the Red Hat OpenShift Container Platform cluster type and set node selector:
+
+The EFS cross account feature requires assigning AWS IAM policies to nodes running EFS CSI controller pods. However, this is
+not consistent for every Red Hat OpenShift Container Platform type.
+* If your cluster is deployed as a Hosted Control Plane (HyperShift), set the NODE_SELECTOR environment variable to hold the worker node label by running the following command:
+
+```terminal
+export NODE_SELECTOR=node-role.kubernetes.io/worker
+```
+
+* For all other Red Hat OpenShift Container Platform types, set the NODE_SELECTOR environment variable to hold the master node label by running the following command:
+
+```terminal
+export NODE_SELECTOR=node-role.kubernetes.io/master
+```
+
+5. Configure AWS CLI profiles as environment variables for account switching by running the following commands:
+
+```terminal
+export AWS_ACCOUNT_A="<ACCOUNT_A_NAME>"
+export AWS_ACCOUNT_B="<ACCOUNT_B_NAME>"
+```
+
+6. Ensure that your AWS CLI is configured with JSON output format as the default for both accounts by running the following commands:
+
+```terminal
+export AWS_DEFAULT_PROFILE=${AWS_ACCOUNT_A}
+aws configure get output
+export AWS_DEFAULT_PROFILE=${AWS_ACCOUNT_B}
+aws configure get output
+```
+
+
+If the preceding commands return:
+* No value: The default output format is already set to JSON and no changes are required.
+* Any value: Reconfigure your AWS CLI to use JSON format. For information about changing output formats, see Setting the output format in the AWS CLI in the AWS documentation.
+7. Unset AWS_PROFILE in your shell to prevent conflicts with AWS_DEFAULT_PROFILE by running the following command:
+
+```terminal
+unset AWS_PROFILE
+```
+
+2. Configure the AWS Account B IAM roles and policies:
+1. Switch to your Account B profile by running the following command:
+
+```terminal
+export AWS_DEFAULT_PROFILE=${AWS_ACCOUNT_B}
+```
+
+2. Define the IAM role name for the EFS CSI Driver Operator by running the following command:
+
+```terminal
+export ACCOUNT_B_ROLE_NAME=${CLUSTER_NAME}-cross-account-aws-efs-csi-operator
+```
+
+3. Create the IAM trust policy file by running the following command:
+
+```terminal
+cat <<EOF > $SCRATCH_DIR/AssumeRolePolicyInAccountB.json
 {
     "Version": "2012-10-17",
     "Statement": [
         {
             "Effect": "Allow",
             "Principal": {
-                "AWS": "arn:aws:iam::301721915996:root"
+                "AWS": "arn:aws:iam::${AWS_ACCOUNT_A_ID}:root"
             },
             "Action": "sts:AssumeRole",
             "Condition": {}
         }
     ]
 }
+EOF
+```
 
-# my-cross-account-assume-policy policy attached to my-efs-acrossaccount-role in account B
+4. Create the IAM role for the EFS CSI Driver Operator by running the following command:
 
-{
-    "Version": "2012-10-17",
-    "Statement": {
-        "Effect": "Allow",
-        "Action": "sts:AssumeRole",
-        "Resource": "arn:aws:iam::589722580343:role/my-efs-acrossaccount-role"
-    }
-}
+```terminal
+ACCOUNT_B_ROLE_ARN=$(aws iam create-role \
+  --role-name "${ACCOUNT_B_ROLE_NAME}" \
+  --assume-role-policy-document file://$SCRATCH_DIR/AssumeRolePolicyInAccountB.json \
+  --query "Role.Arn" --output text) \
+&& echo $ACCOUNT_B_ROLE_ARN
+```
 
-# my-efs-acrossaccount-driver-policy attached to my-efs-acrossaccount-role in account B
+5. Create the IAM policy file by running the following command:
+
+```terminal
+cat << EOF > $SCRATCH_DIR/EfsPolicyInAccountB.json
 
 {
     "Version": "2012-10-17",
@@ -333,146 +388,257 @@ This role is used by the CSI driver&#8217;s controller service running on the Re
                 "elasticfilesystem:ClientWrite",
                 "elasticfilesystem:ClientRootAccess",
                 "elasticfilesystem:DescribeFileSystems",
-                "elasticfilesystem:CreateAccessPoint"
+                "elasticfilesystem:CreateAccessPoint",
+                "elasticfilesystem:TagResource"
             ],
-            "Resource": [
-                "arn:aws:elasticfilesystem:*:589722580343:access-point/*",
-                "arn:aws:elasticfilesystem:*:589722580343:file-system/*"
-            ]
+            "Resource": "*"
         }
     ]
 }
+EOF
 ```
 
-6. In AWS account A, attach an inline policy to the IAM role of the AWS EFS CSI driver's controller service account with the necessary permissions to perform Security Token Service (STS) assume role on the IAM role created earlier.
+6. Create the IAM policy by running the following command:
 
-```json
-# my-cross-account-assume-policy policy attached to Openshift cluster efs csi driver user in account A
+```terminal
+ACCOUNT_B_POLICY_ARN=$(aws iam create-policy --policy-name "${CLUSTER_NAME}-efs-csi-policy" \
+   --policy-document file://$SCRATCH_DIR/EfsPolicyInAccountB.json \
+   --query 'Policy.Arn' --output text) \
+&& echo ${ACCOUNT_B_POLICY_ARN}
+```
 
+7. Attach the policy to the role by running the following command:
+
+```terminal
+aws iam attach-role-policy \
+   --role-name "${ACCOUNT_B_ROLE_NAME}" \
+   --policy-arn "${ACCOUNT_B_POLICY_ARN}"
+```
+
+3. Configure the AWS Account A IAM roles and policies:
+1. Switch to your Account A profile by running the following command:
+
+```terminal
+export AWS_DEFAULT_PROFILE=${AWS_ACCOUNT_A}
+```
+
+2. Create the IAM policy document by running the following command:
+
+```terminal
+cat << EOF > $SCRATCH_DIR/AssumeRoleInlinePolicyPolicyInAccountA.json
 {
-    "Version": "2012-10-17",
-    "Statement": {
-        "Effect": "Allow",
-        "Action": "sts:AssumeRole",
-        "Resource": "arn:aws:iam::589722580343:role/my-efs-acrossaccount-role"
+  "Version": "2012-10-17",
+  "Statement": [
+    {
+      "Effect": "Allow",
+      "Action": "sts:AssumeRole",
+      "Resource": "${ACCOUNT_B_ROLE_ARN}"
     }
+  ]
 }
+EOF
 ```
 
-7. In AWS account A, attach the AWS-managed policy “AmazonElasticFileSystemClientFullAccess” to Red Hat OpenShift Container Platform cluster master role. The role name is in the form <clusterID>-master-role (for example, my-0120ef-czjrl-master-role).
-8. Create a Kubernetes secret with awsRoleArn as the key and the role created earlier as the value:
+3. In AWS Account A, attach the AWS-managed policy "AmazonElasticFileSystemClientFullAccess" to the Red Hat OpenShift Container Platform cluster master role by running the following command:
 
-```cli
-$ oc -n openshift-cluster-csi-drivers create secret generic my-efs-cross-account --from-literal=awsRoleArn='arn:aws:iam::589722580343:role/my-efs-acrossaccount-role'
+```terminal
+EFS_CLIENT_FULL_ACCESS_BUILTIN_POLICY_ARN=arn:aws:iam::aws:policy/AmazonElasticFileSystemClientFullAccess
+declare -A ROLE_SEEN
+for NODE in $(oc get nodes --selector="${NODE_SELECTOR}" -o jsonpath='{.items[*].metadata.name}'); do
+    INSTANCE_PROFILE=$(aws ec2 describe-instances \
+        --filters "Name=private-dns-name,Values=${NODE}" \
+        --query 'Reservations[].Instances[].IamInstanceProfile.Arn' \
+        --output text | awk -F'/' '{print $NF}' | xargs)
+    MASTER_ROLE_ARN=$(aws iam get-instance-profile \
+        --instance-profile-name "${INSTANCE_PROFILE}" \
+        --query 'InstanceProfile.Roles[0].Arn' \
+        --output text | xargs)
+    MASTER_ROLE_NAME=$(echo "${MASTER_ROLE_ARN}" | awk -F'/' '{print $NF}' | xargs)
+    echo "Checking role: '${MASTER_ROLE_NAME}'"
+    if [[ -n "${ROLE_SEEN[$MASTER_ROLE_NAME]:-}" ]]; then
+        echo "Already processed role: '${MASTER_ROLE_NAME}', skipping."
+        continue
+    fi
+    ROLE_SEEN["$MASTER_ROLE_NAME"]=1
+    echo "Assigning policy ${EFS_CLIENT_FULL_ACCESS_BUILTIN_POLICY_ARN} to role ${MASTER_ROLE_NAME}"
+    aws iam attach-role-policy --role-name "${MASTER_ROLE_NAME}" --policy-arn "${EEFS_CLIENT_FULL_ACCESS_BUILTIN_POLICY_ARN}"
+done
+```
+
+4. Attach the policy to the IAM entity to allow role assumption:
+
+This step depends on your cluster configuration. In both of the following scenarios, the EFS CSI Driver Operator uses an entity to authenticate to AWS, and this entity must be granted permission to assume roles in Account B.
+
+If your cluster:
+* Does not have STS enabled: The EFS CSI Driver Operator uses an IAM User entity for AWS authentication. Continue with the step "Attach policy to IAM User to allow role assumption".
+* Has STS enabled: The EFS CSI Driver Operator uses an IAM role entity for AWS authentication. Continue with the step "Attach policy to IAM Role to allow role assumption".
+5. Attach policy to IAM User to allow role assumption
+1. Identify the IAM User used by the EFS CSI Driver Operator by running the following command:
+
+```terminal
+EFS_CSI_DRIVER_OPERATOR_USER=$(oc -n openshift-cloud-credential-operator get credentialsrequest/openshift-aws-efs-csi-driver -o json | jq -r '.status.providerStatus.user')
+```
+
+2. Attach the policy to the IAM user by running the following command:
+
+```terminal
+aws iam put-user-policy \
+    --user-name "${EFS_CSI_DRIVER_OPERATOR_USER}"  \
+    --policy-name efs-cross-account-inline-policy \
+    --policy-document file://$SCRATCH_DIR/AssumeRoleInlinePolicyPolicyInAccountA.json
+```
+
+6. Attach the policy to the IAM role to allow role assumption:
+1. Identify the IAM role name currently used by the EFS CSI Driver Operator by running the following command:
+
+```terminal
+EFS_CSI_DRIVER_OPERATOR_ROLE=$(oc -n ${CSI_DRIVER_NAMESPACE} get secret/aws-efs-cloud-credentials -o jsonpath='{.data.credentials}' | base64 -d | grep role_arn | cut -d'/' -f2) && echo ${EFS_CSI_DRIVER_OPERATOR_ROLE}
+```
+
+2. Attach the policy to the IAM role used by the EFS CSI Driver Operator by running the following command:
+
+```terminal
+ aws iam put-role-policy \
+    --role-name "${EFS_CSI_DRIVER_OPERATOR_ROLE}"  \
+    --policy-name efs-cross-account-inline-policy \
+    --policy-document file://$SCRATCH_DIR/AssumeRoleInlinePolicyPolicyInAccountA.json
+```
+
+7. Configure VPC peering:
+1. Initiate a peering request from Account A to Account B by running the following command:
+
+```terminal
+export AWS_DEFAULT_PROFILE=${AWS_ACCOUNT_A}
+PEER_REQUEST_ID=$(aws ec2 create-vpc-peering-connection --vpc-id "${AWS_ACCOUNT_A_VPC_ID}" --peer-vpc-id "${AWS_ACCOUNT_B_VPC_ID}" --peer-owner-id "${AWS_ACCOUNT_B_ID}" --query VpcPeeringConnection.VpcPeeringConnectionId --output text)
+```
+
+2. Accept the peering request from Account B by running the following command:
+
+```terminal
+export AWS_DEFAULT_PROFILE=${AWS_ACCOUNT_B}
+aws ec2 accept-vpc-peering-connection --vpc-peering-connection-id "${PEER_REQUEST_ID}"
+```
+
+3. Retrieve the route table IDs for Account A and add routes to the Account B VPC by running the following command:
+
+```terminal
+export AWS_DEFAULT_PROFILE=${AWS_ACCOUNT_A}
+for NODE in $(oc get nodes --selector=node-role.kubernetes.io/worker | tail -n +2 | awk '{print $1}')
+do
+    SUBNET=$(aws ec2 describe-instances --filters "Name=private-dns-name,Values=$NODE" --query 'Reservations[*].Instances[*].NetworkInterfaces[*].SubnetId' | jq -r '.[0][0][0]')
+    echo SUBNET is ${SUBNET}
+    ROUTE_TABLE_ID=$(aws ec2 describe-route-tables --filters "Name=association.subnet-id,Values=${SUBNET}" --query 'RouteTables[*].RouteTableId' | jq -r '.[0]')
+    echo Route table ID is $ROUTE_TABLE_ID
+    aws ec2 create-route --route-table-id ${ROUTE_TABLE_ID} --destination-cidr-block ${AWS_ACCOUNT_B_VPC_CIDR} --vpc-peering-connection-id ${PEER_REQUEST_ID}
+done
+```
+
+4. Retrieve the route table IDs for Account B and add routes to the Account A VPC by running the following command:
+
+```terminal
+export AWS_DEFAULT_PROFILE=${AWS_ACCOUNT_B}
+for ROUTE_TABLE_ID in $(aws ec2 describe-route-tables   --filters "Name=vpc-id,Values=${AWS_ACCOUNT_B_VPC_ID}"   --query "RouteTables[].RouteTableId" | jq -r '.[]')
+do
+    echo Route table ID is $ROUTE_TABLE_ID
+    aws ec2 create-route --route-table-id ${ROUTE_TABLE_ID} --destination-cidr-block ${AWS_ACCOUNT_A_VPC_CIDR} --vpc-peering-connection-id ${PEER_REQUEST_ID}
+done
+```
+
+8. Configure security groups in Account B to allow NFS traffic from Account A to EFS:
+1. Switch to your Account B profile by running the following command:
+
+```terminal
+export AWS_DEFAULT_PROFILE=${AWS_ACCOUNT_B}
+```
+
+2. Configure the VPC security groups for EFS access by running the following command:
+
+```terminal
+SECURITY_GROUP_ID=$(aws ec2 describe-security-groups --filters Name=vpc-id,Values="${AWS_ACCOUNT_B_VPC_ID}" | jq -r '.SecurityGroups[].GroupId')
+aws ec2 authorize-security-group-ingress \
+ --group-id "${SECURITY_GROUP_ID}" \
+ --protocol tcp \
+ --port 2049 \
+ --cidr "${AWS_ACCOUNT_A_VPC_CIDR}" | jq .
+```
+
+9. Create a region-wide EFS filesystem in Account B:
+1. Switch to your Account B profile by running the following command:
+
+```terminal
+export AWS_DEFAULT_PROFILE=${AWS_ACCOUNT_B}
+```
+
+2. Create a region-wide EFS file system by running the following command:
+
+```terminal
+CROSS_ACCOUNT_FS_ID=$(aws efs create-file-system --creation-token efs-token-1 \
+--region ${AWS_REGION} \
+--encrypted | jq -r '.FileSystemId') \
+&& echo $CROSS_ACCOUNT_FS_ID
+```
+
+3. Configure region-wide mount targets for EFS by running the following command:
+
+```terminal
+for SUBNET in $(aws ec2 describe-subnets \
+  --filters "Name=vpc-id,Values=${AWS_ACCOUNT_B_VPC_ID}" \
+  --region ${AWS_REGION} \
+  | jq -r '.Subnets.[].SubnetId'); do \
+    MOUNT_TARGET=$(aws efs create-mount-target --file-system-id ${CROSS_ACCOUNT_FS_ID} \
+    --subnet-id ${SUBNET} \
+    --region ${AWS_REGION} \
+    | jq -r '.MountTargetId'); \
+    echo ${MOUNT_TARGET}; \
+done
 ```
 
 
-Since the driver controller needs to get the cross account role information from the secret, you need to add the secret role binding to the AWS EFS CSI driver controller ServiceAccount (SA):
+This creates a mount point in each subnet of your VPC.
+10. Configure the EFS Operator for cross-account access:
+1. Define custom names for the secret and storage class that you will create in subsequent steps by running the following command:
 
-```cli
-$ oc -n openshift-cluster-csi-drivers create role access-secrets --verb=get,list,watch --resource=secrets
-
-$ oc -n openshift-cluster-csi-drivers create rolebinding --role=access-secrets default-to-secrets --serviceaccount=openshift-cluster-csi-drivers:aws-efs-csi-driver-controller-sa
+```terminal
+export SECRET_NAME=my-efs-cross-account
+export STORAGE_CLASS_NAME=efs-sc-cross
 ```
 
-9. Create a filesystem policy for the file system (AWS EFS volume) in account B, which allows AWS account A to perform a mount on it.
+2. Create a secret that references the role ARN in Account B by running the following command in the Red Hat OpenShift Container Platform CLI:
 
-```
-This step is not mandatory, but can be safer for AWS EFS volume usage.
-```
-
-
-```json
-# EFS volume filesystem policy in account B
-{
-    "Version": "2012-10-17",
-    "Id": "efs-policy-wizard-8089bf4a-9787-40f0-958e-bc2363012ace",
-    "Statement": [
-        {
-            "Sid": "efs-statement-bd285549-cfa2-4f8b-861e-c372399fd238",
-            "Effect": "Allow",
-            "Principal": {
-                "AWS": "*"
-            },
-            "Action": [
-                "elasticfilesystem:ClientRootAccess",
-                "elasticfilesystem:ClientWrite",
-                "elasticfilesystem:ClientMount"
-            ],
-            "Resource": "arn:aws:elasticfilesystem:us-east-2:589722580343:file-system/fs-091066a9bf9becbd5",
-            "Condition": {
-                "Bool": {
-                    "elasticfilesystem:AccessedViaMountTarget": "true"
-                }
-            }
-        },
-        {
-            "Sid": "efs-statement-03646e39-d80f-4daf-b396-281be1e43bab",
-            "Effect": "Allow",
-            "Principal": {
-                "AWS": "arn:aws:iam::589722580343:role/my-efs-acrossaccount-role"
-            },
-            "Action": [
-                "elasticfilesystem:ClientRootAccess",
-                "elasticfilesystem:ClientWrite",
-                "elasticfilesystem:ClientMount"
-            ],
-            "Resource": "arn:aws:elasticfilesystem:us-east-2:589722580343:file-system/fs-091066a9bf9becbd5"
-        }
-    ]
-}
+```terminal
+oc create secret generic ${SECRET_NAME} -n ${CSI_DRIVER_NAMESPACE} --from-literal=awsRoleArn="${ACCOUNT_B_ROLE_ARN}"
 ```
 
-10. Create an AWS EFS volume storage class using a similar configuration to the following:
+3. Grant the CSI driver controller access to the newly created secret by running the following commands in the Red Hat OpenShift Container Platform CLI:
 
-```yaml
-# The cross account efs volume storageClass
+```terminal
+oc -n ${CSI_DRIVER_NAMESPACE} create role access-secrets --verb=get,list,watch --resource=secrets
+oc -n ${CSI_DRIVER_NAMESPACE} create rolebinding --role=access-secrets default-to-secrets --serviceaccount=${CSI_DRIVER_NAMESPACE}:aws-efs-csi-driver-controller-sa
+```
+
+4. Create a new storage class that references the EFS ID from Account B and the secret created previously by running the following command in the Red Hat OpenShift Container Platform CLI:
+
+```terminal
+cat << EOF | oc apply -f -
 kind: StorageClass
 apiVersion: storage.k8s.io/v1
 metadata:
-  name: efs-cross-account-mount-sc
+  name: ${STORAGE_CLASS_NAME}
 provisioner: efs.csi.aws.com
-mountOptions:
-  - tls
 parameters:
   provisioningMode: efs-ap
-  fileSystemId: fs-00f6c3ae6f06388bb
+  fileSystemId: ${CROSS_ACCOUNT_FS_ID}
   directoryPerms: "700"
   gidRangeStart: "1000"
   gidRangeEnd: "2000"
-  basePath: "/account-a-data"
-  csi.storage.k8s.io/provisioner-secret-name: my-efs-cross-account
-  csi.storage.k8s.io/provisioner-secret-namespace: openshift-cluster-csi-drivers
-volumeBindingMode: Immediate
+  basePath: "/dynamic_provisioning"
+  csi.storage.k8s.io/provisioner-secret-name: ${SECRET_NAME}
+  csi.storage.k8s.io/provisioner-secret-namespace: ${CSI_DRIVER_NAMESPACE}
+EOF
 ```
 
 
-# Creating and configuring access to EFS volumes in AWS
-
-This procedure explains how to create and configure EFS volumes in AWS so that you can use them in Red Hat OpenShift Container Platform.
-
-* AWS account credentials
-
-To create and configure access to an EFS volume in AWS:
-
-1. On the AWS console, open https://console.aws.amazon.com/efs.
-2. Click Create file system:
-* Enter a name for the file system.
-* For Virtual Private Cloud (VPC), select your Red Hat OpenShift Container Platform's' virtual private cloud (VPC).
-* Accept default settings for all other selections.
-3. Wait for the volume and mount targets to finish being fully created:
-1. Go to https://console.aws.amazon.com/efs#/file-systems.
-2. Click your volume, and on the Network tab wait for all mount targets to become available (~1-2 minutes).
-4. On the Network tab, copy the Security Group ID (you will need this in the next step).
-5. Go to https://console.aws.amazon.com/ec2/v2/home#SecurityGroups, and find the Security Group used by the EFS volume.
-6. On the Inbound rules tab, click Edit inbound rules, and then add a new rule with the following settings to allow Red Hat OpenShift Container Platform nodes to access EFS volumes :
-* Type: NFS
-* Protocol: TCP
-* Port range: 2049
-* Source: Custom/IP address range of your nodes (for example: “10.0.0.0/16”)
-
-This step allows Red Hat OpenShift Container Platform to use NFS ports from the cluster.
-7. Save the rule.
+* Setting the output format in the AWS CLI
 
 # Dynamic provisioning for Amazon Elastic File Storage
 
@@ -511,7 +677,6 @@ spec:
 
 If you have problems setting up dynamic provisioning, see AWS EFS troubleshooting.
 
-* Creating and configuring access to AWS EFS volume(s)
 * Creating the AWS EFS storage class
 
 # Creating static PVs with Amazon Elastic File Storage

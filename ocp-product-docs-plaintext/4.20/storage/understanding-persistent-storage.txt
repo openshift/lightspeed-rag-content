@@ -237,10 +237,6 @@ The following table lists the access modes:
 
 
 
-1. RWOP uses the SELinux mount feature. This feature is driver dependent, and enabled by default in AWS EBS
-, Azure Disk, GCP PD, IBM Cloud Block Storage volume, Cinder, vSphere,
-and Red Hat OpenShift Data Foundation. For third-party drivers, contact your storage vendor.
-
 
 
 1. ReadWriteOnce (RWO) volumes cannot be mounted on multiple nodes. If a node fails, the system does not allow the attached RWO volume to be mounted on a new node because it is already assigned to the failed node. If you encounter a multi-attach error message as a result, force delete the pod on a shutdown or crashed node to avoid data loss in critical workloads, such as when dynamic persistent volumes are attached.
@@ -774,32 +770,218 @@ match the name of the PVC as expected.
 Unspecified values result in the default value of Filesystem.
 ----
 
-# Using fsGroup to reduce pod timeouts
+# Reducing pod timeouts using fsGroup
 
-If a storage volume contains many files (~1,000,000 or greater), you may experience pod timeouts.
+If a storage volume contains many files (for example, a million or more), you might experience pod timeouts.
 
-This can occur because, by default, {product-title} recursively changes ownership and permissions for the contents of each volume to match the fsGroup specified in a pod&#8217;s securityContext when that volume is mounted. For large volumes, checking and changing ownership and permissions can be time consuming, slowing pod startup. You can use the fsGroupChangePolicy field inside a securityContext to control the way that {product-title} checks and manages ownership and permissions for a volume.
+This can occur because, by default, {product-title} recursively changes ownership and permissions for the contents of each volume to match the fsGroup specified in a pod&#8217;s securityContext when that volume is mounted. For volumes with many files, checking and changing ownership and permissions can be time consuming, slowing pod startup. You can use the fsGroupChangePolicy field inside a securityContext to control the way that {product-title} checks and manages ownership and permissions for a volume.
 
 fsGroupChangePolicy defines behavior for changing ownership and permission of the volume before being exposed inside a pod. This field only applies to volume types that support fsGroup-controlled ownership and permissions. This field has two possible values:
 
 * OnRootMismatch: Only change permissions and ownership if permission and ownership of root directory does not match with expected permissions of the volume. This can help shorten the time it takes to change ownership and permission of a volume to reduce pod timeouts.
-* Always: Always change permission and ownership of the volume when a volume is mounted.
-
-
-```yaml
-securityContext:
-  runAsUser: 1000
-  runAsGroup: 3000
-  fsGroup: 2000
-  fsGroupChangePolicy: "OnRootMismatch" 1
-  ...
-```
-
-
-OnRootMismatch specifies skipping recursive permission change, thus helping to avoid pod timeout problems.
+* Always: (Default) Always change permission and ownership of the volume when a volume is mounted.
 
 
 [NOTE]
 ----
-The fsGroupChangePolicyfield has no effect on ephemeral volume types, such as secret, configMap, and emptydir.
+The fsGroupChangePolicy field has no effect on ephemeral volume types, such as secret, configMap, and emptydir.
 ----
+
+You can set fsGroupChangePolicy at either the namespace or pod level.
+
+## Changing fsGroup at the namespace level
+
+After applying the desired setting for fsGroupChangePolicy at the namespace level, all subsequently created pods in that namespace inherit the setting. However, if desired, you can override the inherited fsGroupChangePolicy setting for individual pods. Setting fsGroupChangePolicy at the pod level overrides inheritance from the namespace level setting for that pod.
+
+* Logged in to a running {product-title} cluster with administrator privileges.
+* Access to the {product-title} console.
+
+To set fsGroupChangePolicy per namespace:
+
+1. Select the desired namespace:
+1. Click Administration > Namespaces.
+2. On the Namespaces page, click the desired namespace. The Namespace details page appears.
+2. Add the fsGroupChangePolicy label to the namespace:
+1. On the Namespace details page, next to Labels, click Edit.
+2. In the Edit labels dialog, add the label storage.openshift.io/fsgroup-change-policy and set it equal to either:
+* OnRootMismatch: Specifies only changing permissions and ownership if the permission and the ownership of root directory does not match with expected permissions of the volume, thus helping to avoid pod timeout problems.
+* Always: (Default) Specifies always changing permission and ownership of the volume when a volume is mounted.
+3. Click Save.
+
+Start up a pod in the previously edited namespace and observe that the parameter spec.securityContext.fsGroupChangePolicy contains the value that you set for the namespace.
+
+
+```yaml
+securityContext:
+  seLinuxOptions:
+    level: 's0:c27,c24'
+  runAsNonRoot: true
+  fsGroup: 1000750000
+  fsGroupChangePolicy: OnRootMismatch 1
+  ...
+```
+
+
+This value is inherited from the namespace.
+
+## Changing fsGroup at the pod level
+
+You can set the set the fsGroupChangePolicy parameter in a new or existing deployment, and then the pods that it manages will have this parameter value. You can similarly do this for a statefulset. You cannot edit an existing pod to set fsGroupChangePolicy; however, you can set this parameter when creating a new pod.
+
+This procedure describes how to set the fsGroupChangePolicy parameter in an existing deployment.
+
+* Access to the {product-title} console.
+
+To set the fsGroupChangePolicy parameter in an existing deployment:
+
+1. Click Workloads > Deployments.
+2. On the Deployment page, click the desired deployment.
+3. On the Deployment details page, click the YAML tab.
+4. Edit the deployment's YAML file under spec.template.spec.securityContext using the following example file:
+Example deployment YAML file setting fsGroupChangePolicy
+
+```yaml
+...
+spec:
+replicas: 3
+selector:
+matchLabels:
+app: my-app
+template:
+metadata:
+creationTimestamp: null
+labels:
+app: my-app
+spec:
+containers:
+- name: container
+image: 'image-registry.openshift-image-registry.svc:5000/openshift/httpd:latest'
+ports:
+- containerPort: 8080
+protocol: TCP
+resources: {}
+terminationMessagePath: /dev/termination-log
+terminationMessagePolicy: File
+imagePullPolicy: Always
+restartPolicy: Always
+terminationGracePeriodSeconds: 30
+dnsPolicy: ClusterFirst
+securityContext:
+  fsGroupChangePolicy: OnRootMismatch 1
+...
+```
+
+OnRootMismatch specifies skipping recursive permission change, thus helping to avoid pod timeout problems. The default value is Always, which always changes permission and ownership of the volume when a volume is mounted.
+5. Click Save.
+
+# Reducing pod timeouts using seLinuxChangePolicy
+
+SELinux (Security-Enhanced Linux) is a security mechanism that assigns security labels (contexts) to all objects (files, processes, network ports, etc.) on a system. These labels determine what a process can access. In {product-title}, SELinux helps prevent containers from escaping and accessing the host system or other containers.
+
+When a pod starts, the container runtime recursively relabels all files on a volume to match the pod&#8217;s SELinux context. For volumes with many files, this can significantly increase pod startup times.
+
+Mount option specifies avoiding recursive relabeling of all files by attempting to mount the volume with the correct SELinux label directly using the -o context mount option, thus helping to avoid pod timeout problems.
+
+ReadWriteOncePod (RWOP) persistent volumes use the SELinux mount feature by default.
+
+The mount option feature is driver dependent, and enabled by default in AWS EBS
+, Azure Disk, GCP PD, IBM Cloud Block Storage volume, Cinder, vSphere,
+and Red Hat OpenShift Data Foundation. For third-party drivers, contact your storage vendor.
+
+ReadWriteOnce (RWO) and ReadWriteMany (RWX) volumes use recursive relabeling by default.
+
+
+[IMPORTANT]
+----
+In a future {product-title} version, RWO and RWX volumes will use mount option by default.
+----
+
+To assist you with the upcoming move to the mount option default, {product-title} 4.20 reports SELinux-related conflicts when creating pods, and on running pods, to make you aware of potential conflicts, and to help you resolve them. For more information about this reporting, see this Kowledge Base article.
+
+If you are unable to resolve the SELinux-related conflicts, you can proactively opt-out of the future move to mount option as default for selected pods or namespaces. To opt out, see Opting out of the SELinux mount option default.
+
+## Testing the RWO and RWX and SELinux mount option feature
+
+In {product-title} 4.20, you can evaluate the mount option feature for RWO and RWX volumes as a Technology Preview feature.
+
+
+[IMPORTANT]
+----
+{FeatureName} is a Technology Preview feature only. Technology Preview features are not supported with Red Hat production service level agreements (SLAs) and might not be functionally complete. Red Hat does not recommend using them in production. These features provide early access to upcoming product features, enabling customers to test functionality and provide feedback during the development process.
+For more information about the support scope of Red Hat Technology Preview features, see Technology Preview Features Support Scope.
+----
+
+To evaluate the mount option feature:
+
+* Enable Feature Gates. For information about enabling Feature Gates, see Section Enabling features using feature gates.
+
+RWO and RWX volumes now have mount option as the default behavior.
+
+Carefully test your applications and observe how they are using storage. Consult this Knowledge Base article and consider opting out from using mount option if you are experiencing issues. See Section Opting out of the SELinux mount option default.
+
+## Opting out of the SELinux mount option default
+
+If you want to opt out of the future move to mount option as default, you can affirmatively set the  seLinuxChangePolicy parameter to Recursive at either the individual pod or namespace level.
+
+### Changing seLinuxChangePolicy at the namespace level
+
+After applying the desired setting for seLinuxChangePolicy at the namespace level, all subsequently created pods in that namespace inherit the setting. However, if desired, you can override the inherited seLinuxChangePolicy setting for individual pods. Setting seLinuxChangePolicy at the pod level overrides inheritance from the namespace level setting for that pod.
+
+* Logged in to a running {product-title} cluster with administrator privileges.
+* Access to the {product-title} console.
+
+To set SELinuxChangePolicy per namespace:
+
+1. Select the desired namespace:
+1. Click Administration > Namespaces.
+2. On the Namespaces page, click the desired namespace. The Namespace details page appears.
+2. Add the seLinuxChangePolicy label to the namespace:
+1. On the Namespace details page, next to Labels, click Edit.
+2. In the Edit labels dialog, add the label storage.openshift.io/selinux-change-policy=Recursive.
+
+This specifies recursively relabeling all files on pod volumes to the appropriate SELinux context.
+3. Click Save.
+
+Start up a pod in the previously edited namespace and observe that the parameter spec.securityContext.seLinuxChangePolicy is set to Recursive.
+
+
+```yaml
+securityContext:
+    seLinuxOptions:
+      level: 's0:c27,c19'
+    runAsNonRoot: true
+    fsGroup: 1000740000
+    seccompProfile:
+      type: RuntimeDefault
+    seLinuxChangePolicy: Recursive 1
+  ...
+```
+
+
+This value is inherited from the namespace.
+
+### Changing seLinuxChangePolicy at the pod level
+
+You can set the set the seLinuxChangePolicy parameter in a new or existing Deployment, and then the pods that it manages will have this parameter value. You can similarly do this for a StatefulSet. You cannot edit an existing pod to set seLinuxChangePolicy; however, you can set this parameter when creating a new pod.
+
+This procedure describes how to set the seLinuxChangePolicy parameter in an existing deployment.
+
+* Access to the {product-title} console.
+
+To set the seLinuxChangePolicy parameter in an existing deployment:
+
+1. Click Workloads > Deployments.
+2. On the Deployment page, click the desired deployment.
+3. On the Deployment details page, click the YAML tab.
+4. Edit the deployment's YAML file under spec.template.spec.securityContext as per the following example file:
+Example deployment YAML file setting seLinuxChangePolicy
+
+```yaml
+  ...
+securityContext:
+  seLinuxChangePolicy: Recursive 1
+  ...
+```
+
+Specifies recursively relabeling all files on all pod volumes to the appropriate SELinux context.
+5. Click Save.

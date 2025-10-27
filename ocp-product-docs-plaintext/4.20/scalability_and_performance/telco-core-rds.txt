@@ -11,14 +11,14 @@ These functions generally require scalability, complex networking support, resil
 
 # About the telco core cluster use model
 
-The telco core cluster use model is designed for clusters that run on commodity hardware.
+The telco core cluster use model is designed for clusters running on commodity hardware.
 Telco core clusters support large scale telco applications including control plane functions like signaling, aggregation, session border controller (SBC), and centralized data plane functions such as 5G user plane functions (UPF).
 Telco core cluster functions require scalability, complex networking support, resilient software-defined storage, and support performance requirements that are less stringent and constrained than far-edge RAN deployments.
 
 Networking requirements for telco core functions vary widely across a range of networking features and performance points.
 IPv6 is a requirement and dual-stack is common.
 Some functions need maximum throughput and transaction rate and require support for user-plane DPDK networking.
-Other functions use more typical cloud-native patterns and can rely on OVN-Kubernetes, kernel networking, and load balancing.
+Other functions use typical cloud-native patterns and can rely on OVN-Kubernetes, kernel networking, and load balancing.
 
 Telco core clusters are configured as standard with three control plane and one or more worker nodes configured with the stock (non-RT) kernel.
 In support of workloads with varying networking and performance requirements, you can segment worker nodes by using MachineConfigPool custom resources (CR), for example, for non-user data plane or high-throughput use cases.
@@ -72,14 +72,18 @@ Red Hat prioritizes the servicing of requests for deviations based on partner en
 The following configurations and use models are applicable to all telco core use cases.
 The telco core use cases build on this common baseline of features.
 
-Cluster topology:: Telco core clusters conform to the following requirements:
-* High availability control plane (three or more control plane nodes)
-* Non-schedulable control plane nodes
-* Multiple machine config pools
-Storage:: Telco core use cases require persistent storage as provided by OpenShift Data Foundation.
+Cluster topology:: The telco core reference design supports two distinct cluster configuration variants:
+* A non-schedulable control plane variant, where user workloads are strictly prohibited from running on master nodes.
+* A schedulable control plane variant, which allows for user workloads to run on master nodes to optimize resource utilization. This variant is only applicable to bare-metal control plane nodes and must be configured at installation time.
+
+All clusters, regardless of the variant, must conform to the following requirements:
+* A highly available control plane consisting of three or more nodes.
+* The use of multiple machine config pools.
+Storage:: Telco core use cases require highly available persistent storage as provided by an external storage solution.
+OpenShift Data Foundation might be used to manage access to the external storage.
 Networking:: Telco core cluster networking conforms to the following requirements:
 * Dual stack IPv4/IPv6 (IPv4 primary).
-* Fully disconnected – clusters do not have access to public networking at any point in their lifecycle.
+* Fully disconnected - clusters do not have access to public networking at any point in their lifecycle.
 * Supports multiple networks.
 Segmented networking provides isolation between operations, administration and maintenance (OAM), signaling, and storage traffic.
 * Cluster network type is OVN-Kubernetes as required for IPv6 support.
@@ -97,19 +101,20 @@ Use the initial configuration to configure MACVLAN virtual network interfaces.
 * Application workload layer.
 User plane networking runs in cloud-native network functions (CNFs).
 Service Mesh:: Telco CNFs can use Service Mesh.
-All telco core clusters require a Service Mesh implementation.
+Telco core clusters typically include a Service Mesh implementation.
 The choice of implementation and configuration is outside the scope of this specification.
 
 # Deployment planning
-
-Worker nodes and machine config pools
 
 MachineConfigPools (MCPs) custom resource (CR) enable the subdivision of worker nodes in telco core clusters into different node groups based on customer planning parameters.
 Careful deployment planning using MCPs is crucial to minimize deployment and upgrade time and, more importantly, to minimize interruption of telco-grade services during cluster upgrades.
 
 Description
 
-Telco core clusters can use MCPs to split worker nodes into additional separate roles, for example, due to different hardware profiles. This allows custom tuning for each role and also plays a critical function in speeding up a telco core cluster deployment or upgrade. More importantly, multiple MCPs allow you to properly plan cluster upgrades across one or many maintenance windows. This is crucial because telco-grade services may otherwise be affected if careful planning is not considered.
+Telco core clusters can use MachineConfigPools (MCPs) to split worker nodes into additional separate roles, for example, due to different hardware profiles.
+This allows custom tuning for each role and also plays a critical function in speeding up a telco core cluster deployment or upgrade.
+Multiple MCPs can be used to properly plan cluster upgrades across one or multiple maintenance windows.
+This is crucial because telco-grade services might otherwise be affected if careful planning is not considered.
 
 During cluster upgrades, you can pause MCPs while you upgrade the control plane. See "Performing a canary rollout update" for more information. This ensures that worker nodes are not rebooted and running workloads remain unaffected until the MCP is unpaused.
 
@@ -117,16 +122,21 @@ Using careful MCP planning, you can control the timing and order of which set of
 
 Before beginning the initial deployment, keep the following engineering considerations in mind regarding MCPs:
 
-When using PerformanceProfile definitions, remember that each MCP must be linked to exactly one PerformanceProfile definition or tuned profile definition.
+PerformanceProfile and Tuned profile association:
+
+When using PerformanceProfiles, remember that each Machine Config Pool (MCP) must be linked to exactly one PerformanceProfile or Tuned profile definition.
 Consequently, even if the desired configuration is identical for multiple MCPs, each MCP still requires its own dedicated PerformanceProfile definition.
 
-Plan your MCP labeling with an appropriate strategy to split your worker nodes depending on considerations such as:
+Planning your MCP labeling strategy:
 
-* The worker node type: identifying a group of nodes with equivalent hardware profile, for example, workers for control plane Network Functions (NFs) and workers for user data plane NFs.
+Plan your MCP labeling with an appropriate strategy to split your worker nodes depending on parameters
+such as:
+
+* The worker node type: identifying a group of nodes with equivalent hardware profile, for example workers for control plane Network Functions (NFs) and workers for user data plane NFs.
 * The number of worker nodes per worker node type.
 * The minimum number of MCPs required for an equivalent hardware profile is 1, but could be larger for larger clusters.
 For example, you may design for more MCPs per hardware profile to support a more granular upgrade where a smaller percentage of the cluster capacity is affected with each step.
-* The strategy for performing updates on nodes within an MCP is shaped by upgrade requirements and the chosen maxUnavailable value:
+* The update strategy for nodes within an MCP is by upgrade requirements and the chosen maxUnavailable value:
 * Number of maintenance windows allowed.
 * Duration of a maintenance window.
 * Total number of worker nodes.
@@ -135,7 +145,37 @@ For example, you may design for more MCPs per hardware profile to support a more
 * Minimum availability per Pod required during an upgrade, configured with a pod disruption budget (PDB). PDBs are crucial to maintain telco service level Agreements (SLAs) during upgrades. For more information about PDB, see "Understanding how to use pod disruption budgets to specify the number of pods that must be up".
 * Minimum true high availability required per Pod, such that each replica runs on separate hardware.
 * Pod affinity and anti-affinity link: For more information about how to use pod affinity and anti-affinity, see "Placing pods relative to other pods using affinity and anti-affinity rules".
-* Duration and frequency of upgrade maintenance windows during which telco-grade services may be affected.
+* Duration and number of upgrade maintenance windows during which telco-grade services might be affected.
+
+# Zones
+
+Designing the cluster to support disruption of multiple nodes simultaneously is critical for high availability (HA) and reduced upgrade times.
+{product-title} and Kubernetes use the well known label topology.kubernetes.io/zone to create pools of nodes that are subject to a common failure domain.
+Annotating nodes for topology (availability) zones allows high-availability workloads to spread such that each zone holds only one replica from a set of HA replicated pods.
+With this spread the loss of a single zone will not violate HA constraints and minimum service availability will be maintained.
+{product-title} and Kubernetes applies a default TopologySpreadConstraint to all replica constructs (Service, ReplicaSet, StatefulSet or ReplicationController) that spreads the replicas based on the topology.kubernetes.io/zone label.
+This default allows zone based spread to apply without any change to your workload pod specs.
+
+Cluster upgrades typically result in node disruption as the underlying OS is updated.
+In large clusters it is necessary to update multiple nodes concurrently to complete upgrades quickly and in as few maintenance windows as possible.
+By using zones to ensure pod spread, an upgrade can be applied to all nodes in a zone simultaneously (assuming sufficient spare capacity) while maintaining high availability and service availability.
+The recommended cluster design is to partition nodes into multiple MCPs based on the considerations earlier and label all nodes in a single MCP as a single zone which is distinct from zones attached to other MCPs.
+Using this strategy all nodes in an MCP can be updated simultaneously.
+
+Lifecycle hooks (readiness, liveness, startup and pre-stop) play an important role in ensuring application availability. For upgrades in particular the pre-stop hook allows applications to take necessary steps to prepare for disruption before being evicted from the node.
+
+Limits and requirements:: 
+* The default TopologySpreadConstraints (TSC) only apply when an explicit TSC is not given. If your pods have explicit TSC ensure that spread based on zones is included.
+* The cluster must have sufficient spare capacity to tolerate simultaneous update of an MCP. Otherwise the maxUnavailable of the MCP must be set to less than 100%.
+* The ability to update all nodes in an MCP simultaneously further depends on workload design and ability to maintain required service levels with that level of disruption.
+Engineering Considerations:: 
+* Pod drain times can significantly impact node update times. Ensure the workload design allows pods to be drained quickly.
+* PodDisruptionBudgets (PDB) are used to enforce high availability requirements.
+* To guarantee continuous application availability, a cluster design must use enough separate zones to spread the workload's pods.
+* If pods are spread across sufficient zones, the loss of one zone won't take down more pods than permitted by the Pod Disruption Budget (PDB).
+* If pods are not adequately distributed—either due to too few zones or restrictive scheduling constraints—a zone failure will violate the PDB, causing an outage.
+* Furthermore, this poor distribution can force upgrades that typically run in parallel to execute slowly and sequentially (partial serialization) to avoid violating the PDB, significantly extending maintenance time.
+* PDB with 0 disruptable pods will block node drain and require administrator intervention. This pattern should be avoided for fast and automated upgrades.
 
 * Performing a canary rollout update
 * Applying MachineConfigPool labels to nodes before the update
@@ -146,9 +186,10 @@ For example, you may design for more MCPs per hardware profile to support a more
 
 * Cluster workloads are detailed in "Application workloads".
 * Worker nodes should run on either of the following CPUs:
-* Intel 3rd Generation Xeon (IceLake) CPUs or newer when supported by {product-title}, or CPUs with the silicon security bug (Spectre and similar) mitigations turned off.
-Skylake and older CPUs can experience 40% transaction performance drops when Spectre and similar mitigations are enabled. When Skylake and older CPUs change power states, this can cause latency.
-* AMD EPYC Zen 4 CPUs (Genoa, Bergamo).
+* Intel 3rd Generation Xeon (IceLake) CPUs or better when supported by {product-title}, or CPUs with the silicon security bug (Spectre and similar) mitigations turned off.
+Skylake and older CPUs can experience 40% transaction performance drops when Spectre and similar mitigations are enabled.
+* AMD EPYC Zen 4 CPUs (Genoa, Bergamo) or AMD EPYC Zen 5 CPUs (Turin) when supported by {product-title}.
+* Intel Sierra Forest CPUs when supported by the {product-title}.
 * IRQ balancing is enabled on worker nodes.
 The PerformanceProfile CR sets the globallyDisableIrqLoadBalancing parameter to a value of false.
 Guaranteed QoS pods are annotated to ensure isolation as described in "CPU partitioning and performance tuning".
@@ -187,9 +228,10 @@ Pods should request multiples of 2 CPUs when the entire core (2 hyper-threads) m
 
 Pods running network functions that do not require high throughput or low latency networking should be scheduled with best-effort or burstable QoS pods and do not require dedicated or isolated CPU cores.
 
-Engineering considerations:: 
-Use the following information to plan telco core workloads and cluster resources:
-* As of {product-title} 4.19, cgroup v1 is no longer supported and has been removed. All workloads must now be compatible with cgroup v2. For more information, see Red Hat Enterprise Linux 9 changes in the context of Red Hat OpenShift workloads.
+Engineering considerations:: Plan telco core workloads and cluster resources by using the following information:
+* As of {product-title} 4.19, cgroup v1 is no longer supported and has been removed.
+All workloads must now be compatible with cgroup v2.
+For more information, see Red Hat Enterprise Linux 9 changes in the context of Red Hat OpenShift workloads.
 * CNF applications should conform to the latest version of Red Hat Best Practices for Kubernetes.
 * Use a mix of best-effort and burstable QoS pods as required by your applications.
 * Use guaranteed QoS pods with proper configuration of reserved or isolated CPUs in the PerformanceProfile CR that configures the node.
@@ -197,17 +239,14 @@ Use the following information to plan telco core workloads and cluster resources
 * Best effort and burstable pods are not guaranteed exclusive CPU use.
 Workloads can be preempted by other workloads, operating system daemons, or kernel tasks.
 * Use exec probes sparingly and only when no other suitable option is available.
-* Do not use exec probes if a CNF uses CPU pinning.
-Use other probe implementations, for example, httpGet or tcpSocket.
-* When you need to use exec probes, limit the exec probe frequency and quantity.
-The maximum number of exec probes must be kept below 10, and the frequency must not be set to less than 10 seconds.
-* You can use startup probes, because they do not use significant resources at steady-state operation.
-The limitation on exec probes applies primarily to liveness and readiness probes.
-Exec probes cause much higher CPU usage on management cores compared to other probe types because they require process forking.
+* Do not use exec probes if a CNF uses CPU pinning. Use other probe implementations, for example, httpGet or tcpSocket.
+* When you need to use exec probes, limit the exec probe frequency and quantity. The maximum number of exec probes must be kept below 10, and the frequency must not be set to less than 10 seconds.
+* You can use startup probes, because they do not use significant resources at steady-state operation. The limitation on exec probes applies primarily to liveness and readiness probes. Exec probes cause much higher CPU usage on management cores compared to other probe types because they require process forking.
+* Use pre-stop hooks to allow the application workload to perform required actions before pod disruption, such as during an upgrade or node maintenance. The hooks enable a pod to save state to persistent storage, offload traffic from a Service, or signal other Pods.
 
 ## Signaling workloads
 
-Signaling workloads typically use SCTP, REST, gRPC or similar TCP or UDP protocols.
+Signaling workloads typically use SCTP, REST, gRPC, or similar TCP or UDP protocols.
 Signaling workloads support hundreds of thousands of transactions per second (TPS) by using a secondary multus CNI configured as MACVLAN or SR-IOV interface.
 These workloads can run in pods with either guaranteed or burstable QoS.
 
@@ -218,7 +257,10 @@ The following sections describe the various {product-title} components and confi
 ## CPU partitioning and performance tuning
 
 New in this release:: 
-* No reference design updates in this release.
+* Disable RPS - resource use for pod networking should be accounted for on application CPUs
+* Better isolation of control plane on schedulable control-plane nodes
+* Support for schedulable control-plane in the NUMA Resources Operator
+* Additional guidance on upgrade for Telco Core clusters
 Description:: CPU partitioning improves performance and reduces latency by separating sensitive workloads from general-purpose tasks, interrupts, and driver work queues.
 The CPUs allocated to those auxiliary processes are referred to as reserved in the following sections.
 In a system with Hyper-Threading enabled, a CPU is one hyper-thread.
@@ -229,16 +271,21 @@ Limits and requirements::
 * The set of reserved and isolated cores must include all CPU cores.
 * Core 0 of each NUMA node must be included in the reserved CPU set.
 * Low latency workloads require special configuration to avoid being affected by interrupts, kernel scheduler, or other parts of the platform.
+
 For more information, see "Creating a performance profile".
+
 Engineering considerations:: 
-* As of {product-title} 4.19, cgroup v1 is no longer supported and has been removed. All workloads must now be compatible with cgroup v2. For more information, see Red Hat Enterprise Linux 9 changes in the context of Red Hat OpenShift workloads(Red Hat Knowledgebase).
-* The minimum reserved capacity (systemReserved) required can be found by following the guidance in the Red Hat Knowledgebase solution Which amount of CPU and memory are recommended to reserve for the system in OCP 4 nodes?
+* As of OpenShift 4.19, cgroup v1 is no longer supported and has been removed.
+All workloads must now be compatible with cgroup v2.
+For more information, see Red Hat Enterprise Linux 9 changes in the context of Red Hat OpenShift workloads.
+* The minimum reserved capacity (systemReserved) required can be found by following the guidance in Which amount of CPU and memory are recommended to reserve for the system in OCP 4 nodes?.
+* For schedulable control planes, the minimum recommended reserved capacity is at least 16 CPUs.
 * The actual required reserved CPU capacity depends on the cluster configuration and workload attributes.
 * The reserved CPU value must be rounded up to a full core (2 hyper-threads) alignment.
 * Changes to CPU partitioning cause the nodes contained in the relevant machine config pool to be drained and rebooted.
 * The reserved CPUs reduce the pod density, because the reserved CPUs are removed from the allocatable capacity of the {product-title} node.
 * The real-time workload hint should be enabled for real-time capable workloads.
-* Applying the real time workloadHint setting results in the nohz_full kernel command line parameter being applied to improve performance of high performance applications.
+* Applying the real-time workloadHint setting results in the nohz_full kernel command line parameter being applied to improve performance of high performance applications.
 When you apply the workloadHint setting, any isolated or burstable pods that do not have the cpu-quota.crio.io: "disable" annotation and a proper runtimeClassName value, are subject to CRI-O rate limiting.
 When you set the workloadHint parameter, be aware of the tradeoff between increased performance and the potential impact of CRI-O rate limiting.
 Ensure that required pods are correctly annotated.
@@ -249,22 +296,44 @@ You do not need to reserve an additional CPU for handling high network throughpu
 * If workloads running on the cluster use kernel level networking, the RX/TX queue count for the participating NICs should be set to 16 or 32 queues if the hardware permits it.
 Be aware of the default queue count.
 With no configuration, the default queue count is one RX/TX queue per online CPU; which can result in too many interrupts being allocated.
-* The irdma kernel module may result in the allocation of too many interrupt vectors on systems with high core counts. To prevent this condition the reference configuration excludes this kernel module from loading through a kernel commandline argument in the PerformanceProfile. Typically core workloads do not require this kernel module.
+* The irdma kernel module might result in the allocation of too many interrupt vectors on systems with high core counts.
+To prevent this condition the reference configuration excludes this kernel module from loading through a kernel commandline argument in the PerformanceProfile resource.
+Typically Core workloads do not require this kernel module.
 
 [NOTE]
 ----
 Some drivers do not deallocate the interrupts even after reducing the queue count.
 ----
 
+## Workloads on schedulable control planes
+
+Enabling workloads on control plane nodes:: You can enable schedulable control planes to run workloads on control plane nodes, utilizing idle CPU capacity on bare-metal machines for potential cost savings. This feature is only applicable to clusters with bare-metal control plane nodes.
+
+There are two distinct parts to this functionality:
+1. Allowing workloads on control plane nodes: This feature can be configured after initial cluster installation, allowing you to enable it when you need to run workloads on those nodes.
+2. Enabling workload partitioning: This is a critical isolation measure that protects the control plane from interference by regular workloads, ensuring cluster stability and reliability. Workload partitioning must be configured during the initial "day zero" cluster installation and cannot be enabled later.
+
+If you plan to run workloads on your control plane nodes, you must first enable workload partitioning during the initial setup. You can then enable the schedulable control plane feature at a later time.
+
+Workload characterization and limitations:: You must test and verify workloads to ensure that applications do not interfere with core cluster functions. It is recommended that you start with lightweight containers that do not heavily load the CPU or networking.
+
+Certain workloads are not permitted on control plane nodes due to the risk to cluster stability. This includes any workload that reconfigures kernel arguments or system global sysctls, as this can lead to unpredictable outcomes for the cluster.
+
+To ensure stability, you must adhere to the following:
+* Make sure all non-trivial workloads have memory limits defined. This protects the control plane in case of a memory leak.
+* Avoid excessively loading reserved CPUs, for example, by heavy use of exec probes.
+* Avoid heavy kernel-based networking usage, as it can increase reserved CPU load through software networking components such as OVS.
+NUMA Resources Operator support:: The NUMA Resources Operator is supported for use on control plane nodes. Functional behavior of the Operator remains unchanged.
+
 * Creating a performance profile
 * Configuring host firmware for low latency and high performance
 
-## Service mesh
+## Service Mesh
 
-Description:: Telco core cloud-native functions (CNFs) typically require a service mesh implementation.
-Specific service mesh features and performance requirements are dependent on the application.
-The selection of service mesh implementation and configuration is outside the scope of this documentation.
-You must account for the impact of service mesh on cluster resource usage and performance, including additional latency introduced in pod networking, in your implementation.
+Description:: Telco core cloud-native functions (CNFs) typically require a Service Mesh implementation.
+Specific Service Mesh features and performance requirements are dependent on the application.
+The selection of Service Mesh implementation and configuration is outside the scope of this documentation.
+The implementation must account for the impact of Service Mesh on cluster resource usage and performance, including additional latency introduced in pod networking.
 
 * About OpenShift Service Mesh
 
@@ -275,8 +344,7 @@ The following diagram describes the telco core reference design networking confi
 ![Overview of the telco core reference design networking configuration]
 
 New in this release:: 
-* Extend telco core validation with pod-level bonding.
-* Support moving failed policy in resource injector to failed for SR-IOV operator.
+* No reference design updates in this release
 
 
 [NOTE]
@@ -298,12 +366,11 @@ They do not share the same base interface.
 For more information, see "Cluster Network Operator".
 * SR-IOV VFs are managed by the SR-IOV Network Operator.
 * To ensure consistent source IP addresses for pods behind a LoadBalancer Service, configure an EgressIP CR and specify the podSelector parameter.
+EgressIP is further discussed in the "Cluster Network Operator" section.
 * You can implement service traffic separation by doing the following:
 1. Configure VLAN interfaces and specific kernel IP routes on the nodes using NodeNetworkConfigurationPolicy CRs.
 2. Create a MetalLB BGPPeer CR for each VLAN to establish peering with the remote BGP router.
-3. Define a MetalLB BGPAdvertisement CR to specify which IP address pools should be advertised to a selected list of BGPPeer resources.
-The following diagram illustrates how specific service IP addresses are advertised to the outside via specific VLAN interfaces.
-Services routes are defined in BGPAdvertisement CRs and configured with values for IPAddressPool1 and BGPPeer1 fields.
+3. Define a MetalLB BGPAdvertisement CR to specify which IP address pools should be advertised to a selected list of BGPPeer resources. The following diagram illustrates how specific service IP addresses are advertised externally through specific VLAN interfaces. Services routes are defined in BGPAdvertisement CRs and configured with values for IPAddressPool1 and BGPPeer1 fields.
 
 ![Telco core reference design MetalLB service separation]
 
@@ -313,10 +380,14 @@ Services routes are defined in BGPAdvertisement CRs and configured with values f
 
 New in this release:: 
 * No reference design updates in this release
-Description:: 
-The Cluster Network Operator (CNO) deploys and manages the cluster network components including the default OVN-Kubernetes network plugin during cluster installation. The CNO allows for configuring primary interface MTU settings, OVN gateway configurations to use node routing tables for pod egress, and additional secondary networks such as MACVLAN.
+Description:: The Cluster Network Operator (CNO) deploys and manages the cluster network components including the default OVN-Kubernetes network plugin during cluster installation.
+The CNO allows configuration of primary interface MTU settings, OVN gateway modes to use node routing tables for pod egress, and additional secondary networks such as MACVLAN.
+
 In support of network traffic separation, multiple network interfaces are configured through the CNO.
-Traffic steering to these interfaces is configured through static routes applied by using the NMState Operator. To ensure that pod traffic is properly routed, OVN-K is configured with the routingViaHost option enabled. This setting uses the kernel routing table and the applied static routes rather than OVN for pod egress traffic.
+Traffic steering to these interfaces is configured through static routes applied by using the NMState Operator.
+To ensure that pod traffic is properly routed, OVN-K is configured with the routingViaHost option enabled.
+This setting uses the kernel routing table and the applied static routes rather than OVN for pod egress traffic.
+
 The Whereabouts CNI plugin is used to provide dynamic IPv4 and IPv6 addressing for additional pod network interfaces without the use of a DHCP server.
 Limits and requirements:: 
 * OVN-Kubernetes is required for IPv6 support.
@@ -330,14 +401,20 @@ Review the source code for more details:
 * linux/v6.10.2/source/drivers/net/macvlan.c#L1260
 * Alternative NIC configurations include splitting the shared NIC into multiple NICs or using a single dual-port NIC, though they have not been tested and validated.
 * Clusters with single-stack IP configuration are not validated.
-* The reachabilityTotalTimeoutSeconds parameter in the Network CR configures the EgressIP node reachability check total timeout in seconds.
-The recommended value is 1 second.
+* EgressIP
+* EgressIP failover time depends on the reachabilityTotalTimeoutSeconds parameter in the Network CR.
+This parameter determines the frequency of probes used to detect when the selected egress node is unreachable.
+The recommended value of this parameter is 1 second.
+* When EgressIP is configured with multiple egress nodes, the failover time is expected to be on the order of seconds or longer.
+* On nodes with additional network interfaces EgressIP traffic will egress through the interface on which the EgressIP address has been assigned.
+See the "Configuring an egress IP address".
 * Pod-level SR-IOV bonding mode must be set to active-backup and a value in miimon must be set (100 is recommended).
 Engineering considerations:: 
-* Pod egress traffic is handled by kernel routing table using the routingViaHost option.
+* Pod egress traffic is managed by kernel routing table using the routingViaHost option.
 Appropriate static routes must be configured in the host.
 
 * Cluster Network Operator
+* Configuring an egress IP address
 
 ### Load balancer
 
@@ -358,12 +435,11 @@ Where necessary, you can use an external third party load balancer.
 Selection and configuration of an external load balancer is outside the scope of this specification.
 When an external third-party load balancer is used, the integration effort must include enough analysis to ensure all performance and resource utilization requirements are met.
 Limits and requirements:: 
-* Stateful load balancing is not supported by MetalLB.
-An alternate load balancer implementation must be used if this is a requirement for workload CNFs.
+* Stateful load balancing is not supported by MetalLB. An alternate load balancer implementation must be used if this is a requirement for workload CNFs.
 * You must ensure that the external IP address is routable from clients to the host network for the cluster.
 Engineering considerations:: 
 * MetalLB is used in BGP mode only for telco core use models.
-* For telco core use models, MetalLB is supported only when you set routingViaHost=true in the ovnKubernetesConfig.gatewayConfig specification of the OVN-Kubernetes network plugin.
+* For telco core use models, MetalLB is supported only with the OVN-Kubernetes network provider used in local gateway mode.
 See routingViaHost in "Cluster Network Operator".
 * BGP configuration in MetalLB is expected to vary depending on the requirements of the network and peers.
 * You can configure address pools with variations in addresses, aggregation length, auto assignment, and so on.
@@ -376,7 +452,7 @@ Other parameters in the BFD profile should remain close to the defaults as short
 ### SR-IOV
 
 New in this release:: 
-* Support moving failed policy in resource injector to failed for SR-IOV operator
+* No reference design updates in this release.
 Description:: SR-IOV enables physical functions (PFs) to be divided into multiple virtual functions (VFs).
 VFs can then be assigned to multiple pods to achieve higher throughput performance while keeping the pods isolated.
 The SR-IOV Network Operator provisions and manages SR-IOV CNI, network device plugin, and other components of the SR-IOV stack.
@@ -469,24 +545,27 @@ Only nodes directly attached to the storage network should be allowed to gain ac
 ### OpenShift Data Foundation
 
 New in this release:: 
-* Clarification on internal compared to external mode and RDS recommendations.
-Description:: 
-OpenShift Data Foundation is a software-defined storage service for containers.
+* No reference design updates in this release.
+Description:: OpenShift Data Foundation is a software-defined storage service for containers.
 OpenShift Data Foundation can be deployed in one of two modes:
 * Internal mode, where OpenShift Data Foundation software components are deployed as software containers directly on the {product-title} cluster nodes, together with other containerized applications.
 * External mode, where OpenShift Data Foundation is deployed on a dedicated storage cluster, which is usually a separate Red Hat Ceph Storage cluster running on Red Hat Enterprise Linux (RHEL).
 These storage services are running externally to the application workload cluster.
+
 For telco core clusters, storage support is provided by OpenShift Data Foundation storage services running in external mode, for several reasons:
+
 * Separating dependencies between {product-title} and Ceph operations allows for independent {product-title} and OpenShift Data Foundation updates.
 * Separation of operations functions for the Storage and {product-title} infrastructure layers, is a typical customer requirement for telco core use cases.
 * External Red Hat Ceph Storage clusters can be re-used by multiple {product-title} clusters deployed in the same region.
+
 OpenShift Data Foundation supports separation of storage traffic using secondary CNI networks.
+
 Limits and requirements:: 
 * In an IPv4/IPv6 dual-stack networking environment, OpenShift Data Foundation uses IPv4 addressing.
 For more information, see IPv6 support.
 Engineering considerations:: 
 * OpenShift Data Foundation network traffic should be isolated from other traffic on a dedicated network, for example, by using VLAN isolation.
-* Workload requirements must be scoped before attaching multiple {product-title} clusters to an external OpenShift Data Foundation cluster to ensure sufficient throughput, bandwidth, and performance KPIs.
+* Workload requirements must be scoped before attaching multiple {product-title} clusters to an external OpenShift Data Foundation cluster to ensure enough throughput, bandwidth, and performance KPIs.
 
 ### Additional storage solutions
 
@@ -525,7 +604,7 @@ RHACM hub templating allows you to apply a consistent set of policies to cluster
 
 New in this release:: 
 * No reference design updates in this release.
-Description:: TALM is an Operator which runs only on the hub cluster.
+Description:: TALM is an Operator that runs only on the hub cluster.
 TALM manages how changes including cluster and Operator upgrades, configurations, and so on, are rolled out to managed clusters in the network.
 TALM has the following core features:
 * Provides sequenced updates of cluster configurations and upgrades ({product-title} and Operators) as defined by cluster policies.
@@ -537,6 +616,17 @@ Limits and requirements::
 Engineering considerations:: 
 * Only policies with the ran.openshift.io/ztp-deploy-wave annotation are applied by TALM during initial cluster installation.
 * Any policy can be remediated by TALM under control of a user created ClusterGroupUpgrade CR.
+* Set the MachineConfigPool (mcp) CR paused field to true during a cluster upgrade maintenance window and set the maxUnavailable field to the maximum tolerable value.
+This prevents multiple cluster node reboots during upgrade, which results in a shorter overall upgrade.
+When you unpause the mcp CR, all the configuration changes are applied with a single reboot.
+
+[NOTE]
+----
+During installation, custom mcp CRs can be paused along with setting maxUnavailable to 100% to improve installation times.
+----
+* Orchestration of an upgrade, including {product-title}, day-2 OLM operators and custom configuration can be done using a ClusterGroupUpgrade (CGU) CR containing policies describing these updates.
+* An EUS to EUS upgrade can be orchestrated using chained CGU CRs
+* Control of MCP pause can be managed through policy in the CGU CRs for a full control plane and worker node rollout of upgrades.
 
 * Updating managed clusters with the Topology Aware Lifecycle Manager
 
@@ -588,17 +678,18 @@ When file names overlap in multiple directory paths, the last file found in the 
 
 New in this release:: 
 * No reference design updates in this release.
-Description:: 
-The Cluster Monitoring Operator (CMO) is included by default in {product-title} and provides monitoring (metrics, dashboards, and alerting) for the platform components and optionally user projects.
+Description:: The Cluster Monitoring Operator (CMO) is included by default in {product-title} and provides monitoring (metrics, dashboards, and alerting) for the platform components and optionally user projects.
 You can customize the default log retention period, custom alert rules, and so on.
-The default handling of pod CPU and memory metrics, based on upstream Kubernetes and cAdvisor, makes a tradeoff favoring stale data over metric accuracy.
-This leads to spikes in reporting, which can create false alerts, depending on the user-specified thresholds.
-{product-title} supports an opt-in Dedicated Service Monitor feature that creates an additional set of pod CPU and memory metrics which do not suffer from this behavior.
-For more information, see the Red Hat Knowledgebase solution Dedicated Service Monitors - Questions and Answers.
+
+Configuration of the monitoring stack is done through a single string value in the cluster-monitoring-config ConfigMap. The reference tuning tuning merges content from two requirements:
+* Prometheus configuration is extended to forward alerts to the ACM hub cluster for alert aggregation.
+If desired this configuration can be extended to forward to additional locations.
+* Prometheus retention period is reduced from the default.
+The primary metrics storage is expected to be external to the cluster.
+Metrics storage on the Core cluster is expected to be a backup to that central store and available for local troubleshooting purposes.
+
 In addition to the default configuration, the following metrics are expected to be configured for telco core clusters:
 * Pod CPU and memory metrics and alerts for user workloads
-Limits and requirements:: 
-* You must enable the Dedicated Service Monitor feature for accurate representation of pod metrics.
 Engineering considerations:: 
 * The Prometheus retention period is specified by the user.
 The value used is a tradeoff between operational requirements for maintaining historical data on the cluster against CPU and storage resources.
@@ -610,21 +701,22 @@ Longer retention periods increase the need for storage and require additional CP
 
 New in this release:: 
 * No reference design updates in this release.
-Description:: 
-The scheduler is a cluster-wide component responsible for selecting the right node for a given workload.
+Description:: The scheduler is a cluster-wide component responsible for selecting the right node for a given workload.
 It is a core part of the platform and does not require any specific configuration in the common deployment scenarios.
 However, there are few specific use cases described in the following section.
+
 NUMA-aware scheduling can be enabled through the NUMA Resources Operator.
 For more information, see "Scheduling NUMA-aware workloads".
 Limits and requirements:: 
 * The default scheduler does not understand the NUMA locality of workloads.
 It only knows about the sum of all free resources on a worker node.
-This might cause workloads to be rejected when scheduled to a node with the topology manager policy set to single-numa-node or restricted. For more information, see "Topology Manager policies".
-
-For example, consider a pod requesting 6 CPUs and being scheduled to an empty node that has 4 CPUs per NUMA node.
+This might cause workloads to be rejected when scheduled to a node with the topology manager policy set to single-numa-node or restricted.
+For more information, see "Topology Manager policies"..
+* For example, consider a pod requesting 6 CPUs and being scheduled to an empty node that has 4 CPUs per NUMA node.
 The total allocatable capacity of the node is 8 CPUs. The scheduler places the pod on the empty node.
 The node local admission fails, as there are only 4 CPUs available in each of the NUMA nodes.
-* All clusters with multi-NUMA nodes are required to use the NUMA Resources Operator. See "Installing the NUMA Resources Operator" for more information.
+* All clusters with multi-NUMA nodes are required to use the NUMA Resources Operator.
+See "Installing the NUMA Resources Operator" for more information.
 Use the machineConfigPoolSelector field in the KubeletConfig CR to select all nodes where NUMA aligned scheduling is required.
 * All machine config pools must have consistent hardware configuration.
 For example, all nodes are expected to have the same NUMA zone count.
@@ -643,7 +735,6 @@ New in this release::
 * No reference design updates in this release.
 Limits and requirements:: 
 * Analyze additional kernel modules to determine impact on CPU load, system performance, and ability to meet KPIs.
-Additional kernel modules
 
 
 * Automatic kernel crash dumps with kdump
@@ -662,16 +753,38 @@ When secure boot is enabled, only signed kernel modules are loaded by the kernel
 Out-of-tree drivers are not supported.
 ----
 
+## Kubelet Settings
+
+Some CNF workloads make use of sysctls which are not in the list of system-wide safe sysctls. Generally network sysctls are namespaced and can be enabled by using the kubeletconfig.experimental annotation in the PerformanceProfile as a string of JSON in the form allowedUnsafeSysctls.
+
+
+```yaml
+apiVersion: performance.openshift.io/v2
+kind: PerformanceProfile
+metadata:
+  name: {{ .metadata.name }}
+  annotations:kubeletconfig.experimental: |
+      {"allowedUnsafeSysctls":["net.ipv6.conf.all.accept_ra"]}
+# ...
+```
+
+
+
+[NOTE]
+----
+Although these are namespaced they may allow a pod to consume memory or other resources beyond any limits specified in the pod description. You must ensure that these sysctls do not exhaust platform resources.
+----
+
 ## Disconnected environment
 
 New in this release:: 
 * No reference design updates in this release.
-Descrption:: Telco core clusters are expected to be installed in networks without direct access to the internet.
+Description:: Telco core clusters are expected to be installed in networks without direct access to the internet.
 All container images needed to install, configure, and operate the cluster must be available in a disconnected registry.
 This includes {product-title} images, Day 2 OLM Operator images, and application workload images.
 The use of a disconnected environment provides multiple benefits, including:
 * Security - limiting access to the cluster
-* Curated content – the registry is populated based on curated and approved updates for clusters
+* Curated content - the registry is populated based on curated and approved updates for clusters
 Limits and requirements:: 
 * A unique name is required for all custom CatalogSource resources.
 Do not reuse the default catalog names.
@@ -679,25 +792,27 @@ Engineering considerations::
 * A valid time source must be configured as part of cluster installation
 
 * About cluster updates in a disconnected environment
+* Using sysctl in containers
 
 ## Agent-based Installer
 
 New in this release:: 
 * No reference design updates in this release.
-Description:: 
-Telco core clusters can be installed using the Agent-based Installer.
-This method allows you to install {product-title} on bare-metal servers without requiring additional servers or VMs for managing the installation.
-The Agent-based Installer can be run on any system (for example, from a laptop) to generate an ISO installation image.
-The ISO is used as the installation media for the cluster supervisor nodes.
-Progress can be monitored using the Agent-based Installer from any system with network connectivity to the supervisor node's API interfaces.
-Agent-based Installer supports the following:
-* Installation from declarative CRs.
-* Installation in disconnected environments.
-* Installation without the use of additional servers to support installation, for example, the bastion node.
+Description:: The recommended method for Telco Core cluster installation is using Red Hat Advanced Cluster Management.
+The Agent Based Installer (ABI) is a separate installation flow for Openshift in environments without existing infrastructure for running cluster deployments.
+Use the ABI to install {product-title} on bare-metal servers without requiring additional servers or VMs for managing the installation, but does not provide ongoing lifecycle management, monitoring or automations.
+The ABI can be run on any system for example, from a laptop to generate an ISO installation image.
+The ISO is used as the installation media for the cluster control plane nodes.
+You can monitor the progress by using the ABI from any system with network connectivity to the control plane node's API interfaces.
+
+ABI supports the following:
+* Installation from declarative CRs
+* Installation in disconnected environments
+* No additional servers required to support installation, for example, the bastion node is no longer needed
 Limits and requirements:: 
 * Disconnected installation requires a registry with all required content mirrored and reachable from the installed host.
 Engineering considerations:: 
-* Networking configuration should be applied as NMState configuration during installation. Day 2 networking configuration using the NMState Operator is not supported.
+* Networking configuration should be applied as NMState configuration during installation as opposed to Day 2 configuration using the NMState Operator.
 
 * Installing an {product-title} cluster with the Agent-based Installer
 
@@ -716,14 +831,14 @@ With this feature, a conformant DPDK pod can be run without requiring root privi
 Rootless DPDK pods create a tap device in a rootless pod that injects traffic from a DPDK application to the kernel.
 * Storage: The storage network should be isolated and non-routable to other cluster networks.
 See the "Storage" section for additional details.
-See the Red Hat Knowledgebase solution article Custom nftable firewall rules in OpenShift for a supported method for implementing custom nftables firewall rules in {product-title} cluster nodes. This article is intended for cluster administrators who are responsible for managing network security policies in {product-title} environments.
+See the Red Hat Knowledgebase solution article Custom nftable firewall rules in {product-title} for a supported method for implementing custom nftables firewall rules in {product-title} cluster nodes. This article is intended for cluster administrators who are responsible for managing network security policies in {product-title} environments.
 It is crucial to carefully consider the operational implications before deploying this method, including:
 * Early application: The rules are applied at boot time, before the network is fully operational.
 Ensure the rules don't inadvertently block essential services required during the boot process.
 * Risk of misconfiguration: Errors in your custom rules can lead to unintended consequences, potentially leading to performance impact or blocking legitimate traffic or isolating nodes.
 Thoroughly test your rules in a non-production environment before deploying them to your main cluster.
 * External endpoints: {product-title} requires access to external endpoints to function.
-For more information about the firewall allowlist, see "Configuring your firewall for {product-title}". Ensure that cluster nodes are permitted access to those endpoints.
+For more information about the firewall allowlist, see "Configuring your firewall for {product-title}". Ensure that cluster nodes are permitted access to those endpoints. Ensure that cluster nodes are permitted access to those endpoints.
 * Node reboot: Unless node disruption policies are configured, applying the MachineConfig CR with the required firewall settings causes a node reboot.
 Be aware of this impact and schedule a maintenance window accordingly. For more information, see "Using node disruption policies to minimize disruption from machine config changes".
 
@@ -742,7 +857,7 @@ This helps you to identify and address potential compatibility issues related to
 Limits and requirements:: 
 * Rootless DPDK pods requires the following additional configuration:
 * Configure the container_t SELinux context for the tap plugin.
-* Enable the container_use_devices SELinux boolean for the cluster host
+* Enable the container_use_devices SELinux boolean for the cluster host.
 Engineering considerations:: 
 * For rootless DPDK pod support, enable the SELinux container_use_devices boolean on the host to allow the tap device to be created.
 This introduces an acceptable security risk.
@@ -895,7 +1010,7 @@ $ mkdir -p ./out
 
 
 ```terminal
-$ podman run -it registry.redhat.io/openshift4/openshift-telco-core-rds-rhel9:v4.19 | base64 -d | tar xv -C out
+$ podman run -it registry.redhat.io/openshift4/openshift-telco-core-rds-rhel9:v4.20 | base64 -d | tar xv -C out
 ```
 
 
@@ -1054,3 +1169,7 @@ The list of patched CRs.
 
 The Red&#160;Hat telco core {product-version} solution has been validated using the following Red&#160;Hat software products for {product-title} clusters.
 
+
+
+* Red Hat Advanced Cluster Management (RHACM) will be updated to 2.15 when the aligned Red Hat Advanced Cluster Management (RHACM) version is released.
+* OpenShift Data Foundation will be updated to 4.20 when the aligned OpenShift Data Foundation version (4.20) is released.

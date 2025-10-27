@@ -1,0 +1,272 @@
+# Preparing to install a two-node OpenShift cluster with fencing
+
+
+
+[IMPORTANT]
+----
+Two-node OpenShift cluster with fencing is a Technology Preview feature only. Technology Preview features are not supported with Red Hat production service level agreements (SLAs) and might not be functionally complete. Red Hat does not recommend using them in production. These features provide early access to upcoming product features, enabling customers to test functionality and provide feedback during the development process.
+For more information about the support scope of Red Hat Technology Preview features, see Technology Preview Features Support Scope.
+----
+A two-node OpenShift cluster with fencing provides high availability (HA) with a reduced hardware footprint. This configuration is designed for distributed or edge environments where deploying a full three-node control plane cluster is not practical.
+A two-node cluster does not include compute nodes. The two control plane machines run user workloads in addition to managing the cluster.
+Fencing is managed by Pacemaker, which can isolate an unresponsive node by using the Baseboard Management Console (BMC) of the node. After the unresponsive node is fenced, the remaining node can safely continue operating the cluster without the risk of resource corruption.
+
+[NOTE]
+----
+You can deploy a two-node OpenShift cluster with fencing by using either the user-provisioned infrastructure  method or the installer-provisioned infrastructure method.
+----
+The two-node OpenShift cluster with fencing requires the following hosts:
+
+The bootstrap and control plane machines must use Red Hat Enterprise Linux CoreOS (RHCOS) as the operating system. For instructions on installing RHCOS and starting the bootstrap process, see Installing RHCOS and starting the {product-title} bootstrap process
+
+[NOTE]
+----
+The requirement to use RHCOS applies only to user-provisioned infrastructure deployments. For installer-provisioned infrastructure deployments, the bootstrap and control plane machines are provisioned automatically by the installation program, and you do not need to manually install RHCOS.
+----
+
+# Minimum resource requirements for installing the two-node OpenShift cluster with fencing
+
+Each cluster machine must meet the following minimum requirements:
+
+
+
+1. One CPU is equivalent to one physical core when simultaneous multithreading (SMT), or Hyper-Threading, is not enabled. When enabled, use the following formula to calculate the corresponding ratio: (threads per core × cores) × sockets = CPUs.
+2. {product-title} and Kubernetes are sensitive to disk performance, and faster storage is recommended, particularly for etcd on the control plane nodes. Note that on many cloud platforms, storage size and IOPS scale together, so you might need to over-allocate storage volume to obtain sufficient performance.
+
+# User-provisioned DNS requirements
+
+In {product-title} deployments, DNS name resolution is required for the following components:
+
+* The Kubernetes API
+* The {product-title} application wildcard
+* The bootstrap and control plane machines
+
+Reverse DNS resolution is also required for the Kubernetes API, the bootstrap machine, and the control plane machines.
+
+DNS A/AAAA or CNAME records are used for name resolution and PTR records are used for reverse name resolution. The reverse records are important because Red Hat Enterprise Linux CoreOS (RHCOS) uses the reverse records to set the hostnames for all the nodes, unless the hostnames are provided by DHCP. Additionally, the reverse records are used to generate the certificate signing requests (CSR) that {product-title} needs to operate.
+
+
+[NOTE]
+----
+It is recommended to use a DHCP server to provide the hostnames to each cluster node. See the DHCP recommendations for user-provisioned infrastructure section for more information.
+----
+
+The following DNS records are required for a user-provisioned {product-title} cluster and they must be in place before installation. In each record, <cluster_name> is the cluster name and <base_domain> is the base domain that you specify in the install-config.yaml file. A complete DNS record takes the form: <component>.<cluster_name>.<base_domain>..
+
+
+
+
+[NOTE]
+----
+In {product-title} 4.4 and later, you do not need to specify etcd host and SRV records in your DNS configuration.
+----
+
+
+[TIP]
+----
+You can use the dig command to verify name and reverse name resolution. See the section on Validating DNS resolution for user-provisioned infrastructure for detailed validation steps.
+----
+
+## Example DNS configuration for user-provisioned clusters
+
+This section provides A and PTR record configuration samples that meet the DNS requirements for deploying {product-title} on user-provisioned infrastructure. The samples are not meant to provide advice for choosing one DNS solution over another.
+
+In the examples, the cluster name is ocp4 and the base domain is example.com.
+
+
+[NOTE]
+----
+In a two-node cluster with fencing, the control plane machines are also schedulable worker nodes. The DNS configuration must therefore include only the two control plane nodes. If you later add compute machines, provide corresponding A and PTR records for them as in a standard user-provisioned installation.
+----
+
+The following example is a BIND zone file that shows sample A records for name resolution in a user-provisioned cluster.
+
+
+```text
+$TTL 1W
+@	IN	SOA	ns1.example.com.	root (
+			2019070700	; serial
+			3H		; refresh (3 hours)
+			30M		; retry (30 minutes)
+			2W		; expiry (2 weeks)
+			1W )		; minimum (1 week)
+	IN	NS	ns1.example.com.
+	IN	MX 10	smtp.example.com.
+;
+;
+ns1.example.com.		IN	A	192.168.1.5
+smtp.example.com.		IN	A	192.168.1.5
+;
+helper.example.com.		IN	A	192.168.1.5
+helper.ocp4.example.com.	IN	A	192.168.1.5
+;
+api.ocp4.example.com.		IN	A	192.168.1.5
+api-int.ocp4.example.com.	IN	A	192.168.1.5
+;
+*.apps.ocp4.example.com.	IN	A	192.168.1.5
+;
+bootstrap.ocp4.example.com.	IN	A	192.168.1.96
+;
+control-plane0.ocp4.example.com.	IN	A	192.168.1.97
+control-plane1.ocp4.example.com.	IN	A	192.168.1.98
+;
+;
+;EOF
+```
+
+* api.ocp4.example.com.: Provides name resolution for the Kubernetes API. The record refers to the IP address of the API load balancer.
+* api-int.ocp4.example.com.: Provides name resolution for the Kubernetes API. The record refers to the IP address of the API load balancer and is used for internal cluster communications.
+* *.apps.ocp4.example.com.: Provides name resolution for the wildcard routes. The record refers to the IP address of the application ingress load balancer. The application ingress load balancer targets the machines that run the Ingress Controller pods.
+
+[NOTE]
+----
+In the example, the same load balancer is used for the Kubernetes API and application ingress traffic. In production scenarios, you can deploy the API and application ingress load balancers separately so that you can scale the load balancer infrastructure for each in isolation.
+----
+* bootstrap.ocp4.example.com.: Provides name resolution for the bootstrap machine.
+* control-plane0.ocp4.example.com.: Provides name resolution for the control plane machines.
+
+The following example BIND zone file shows sample PTR records for reverse name resolution in a user-provisioned cluster.
+
+
+```text
+$TTL 1W
+@	IN	SOA	ns1.example.com.	root (
+			2019070700	; serial
+			3H		; refresh (3 hours)
+			30M		; retry (30 minutes)
+			2W		; expiry (2 weeks)
+			1W )		; minimum (1 week)
+	IN	NS	ns1.example.com.
+;
+5.1.168.192.in-addr.arpa.	IN	PTR	api.ocp4.example.com.
+5.1.168.192.in-addr.arpa.	IN	PTR	api-int.ocp4.example.com.
+;
+96.1.168.192.in-addr.arpa.	IN	PTR	bootstrap.ocp4.example.com.
+;
+97.1.168.192.in-addr.arpa.	IN	PTR	control-plane0.ocp4.example.com.
+98.1.168.192.in-addr.arpa.	IN	PTR	control-plane1.ocp4.example.com.
+;
+;
+;EOF
+```
+
+* api.ocp4.example.com.: Provides reverse DNS resolution for the Kubernetes API. The PTR record refers to the record name of the API load balancer.
+* api-int.ocp4.example.com.: Provides reverse DNS resolution for the Kubernetes API. The PTR record refers to the record name of the API load balancer and is used for internal cluster communications.
+* bootstrap.ocp4.example.com.: Provides reverse DNS resolution for the bootstrap machine.
+* control-plane0.ocp4.example.com.: Provides rebootstrap.ocp4.example.com.verse DNS resolution for the control plane machines.
+
+
+[NOTE]
+----
+A PTR record is not required for the {product-title} application wildcard.
+----
+
+# Installer-provisioned DNS requirements
+
+Clients access the {product-title} cluster nodes over the baremetal network. A network administrator must configure a subdomain or subzone where the canonical name extension is the cluster name.
+
+
+```text
+<cluster_name>.<base_domain>
+```
+
+
+For example:
+
+
+```text
+test-cluster.example.com
+```
+
+
+{product-title} includes functionality that uses cluster membership information to generate A/AAAA records. This resolves the node names to their IP addresses. After the nodes are registered with the API, the cluster can disperse node information without using CoreDNS-mDNS. This eliminates the network traffic associated with multicast DNS.
+
+CoreDNS requires both TCP and UDP connections to the upstream DNS server to function correctly. Ensure the upstream DNS server can receive both TCP and UDP connections from {product-title} cluster nodes.
+
+In {product-title} deployments, DNS name resolution is required for the following components:
+
+* The Kubernetes API
+* The {product-title} application wildcard ingress API
+
+A/AAAA records are used for name resolution and PTR records are used for reverse name resolution. Red Hat Enterprise Linux CoreOS (RHCOS) uses the reverse records or DHCP to set the hostnames for all the nodes.
+
+Installer-provisioned installation includes functionality that uses cluster membership information to generate A/AAAA records. This resolves the node names to their IP addresses. In each record, <cluster_name> is the cluster name and <base_domain> is the base domain that you specify in the install-config.yaml file. A complete DNS record takes the form: <component>.<cluster_name>.<base_domain>..
+
+
+
+
+[TIP]
+----
+You can use the dig command to verify DNS resolution.
+----
+
+# Configuring an Ingress load balancer for a two-node cluster with fencing
+
+You must configure an external Ingress load balancer (LB) before you install a two-node OpenShift cluster with fencing. The Ingress LB forwards external application traffic to the Ingress Controller pods that run on the control plane nodes. Both nodes can actively receive traffic.
+
+* You have two control plane nodes with fencing enabled.
+* You have network connectivity from the load balancer to both control plane nodes.
+* You created DNS records for api.<cluster_name>.<base_domain> and *.apps.<cluster_name>.<base_domain>.
+* You have an external load balancer that supports health checks on endpoints.
+
+1. Configure the load balancer to forward traffic for the following ports:
+* 6443: Kubernetes API server
+* 80 and 443: Application ingress
+
+You must forward traffic to both control plane nodes.
+2. Configure health checks on the load balancer. You must monitor the backend endpoints so that the load balancer only sends traffic to nodes that respond.
+3. Configure the load balancer to forward traffic to both control plane nodes. The following example shows how to configure two control plane nodes:
+
+```terminal
+frontend api_frontend
+    bind *:6443
+    mode tcp
+    default_backend api_backend
+
+backend api_backend
+    mode tcp
+    balance roundrobin
+    server cp0 <cp0_ip>:6443 check
+    server cp1 <cp1_ip>:6443 check
+
+frontend ingress_frontend
+    bind *:80
+    bind *:443
+    mode tcp
+    default_backend ingress_backend
+
+backend ingress_backend
+    mode tcp
+    balance roundrobin
+    server cp0 <cp0_ip>:80 check
+    server cp1 <cp1_ip>:80 check
+    server cp0 <cp0_ip>:443 check
+    server cp1 <cp1_ip>:443 check
+```
+
+4. Verify the load balancer configuration:
+1. From an external client, run the following command:
+
+```terminal
+$ curl -k https://api.<cluster_name>.<base_domain>:6443/version
+```
+
+2. From an external client, access an application route by running the following command:
+
+```terminal
+$ curl https://<app>.<cluster_name>.<base_domain>
+```
+
+
+You can shut down a control plane node and verify that the load balancer stops sending traffic to that node while the other node continues to serve requests.
+
+# Creating a manifest object for a customized br-ex bridge
+
+You must create a manifest object to modify the cluster’s network configuration after installation. The manifest configures the br-ex bridge, which manages external network connectivity for the cluster.
+
+For instructions on creating this manifest, "Creating a manifest file for a customized br-ex bridge".
+
+# Additional resources
+
+* Creating a manifest file for a customized br-ex bridge
+* Configuring and managing high availability clusters in RHEL.

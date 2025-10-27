@@ -1,0 +1,506 @@
+# Post-installation troubleshooting and recovery
+
+
+
+[IMPORTANT]
+----
+Two-node OpenShift cluster with fencing is a Technology Preview feature only. Technology Preview features are not supported with Red Hat production service level agreements (SLAs) and might not be functionally complete. Red Hat does not recommend using them in production. These features provide early access to upcoming product features, enabling customers to test functionality and provide feedback during the development process.
+For more information about the support scope of Red Hat Technology Preview features, see Technology Preview Features Support Scope.
+----
+Use the following sections help you with recovering from issues in a two-node OpenShift cluster with fencing.
+
+# Manually recovering from a disruption event when automated recovery is unavailable
+
+You might need to perform manual recovery steps if a disruption event prevents fencing from functioning correctly. In this case, you can run commands directly on the control plane nodes to recover the cluster. There are four main recovery scenarios, which should be attempted in the following order:
+
+1. Update fencing secrets:  Refresh the Baseboard Management Console (BMC) credentials if they are incorrect or outdated.
+2. Recover from a single-node failure: Restore functionality when only one control plane node is down.
+3. Recover from a complete node failure: Restore functionality when both control plane nodes are down.
+4. Replace a control plane node that cannot be recovered: Replace the node to restore cluster functionality.
+
+* You have administrative access to the control plane nodes.
+* You can connect to the nodes by using SSH.
+
+
+[NOTE]
+----
+Do an etcd backup before proceeding to ensure that you can restore the cluster if any issues occur.
+----
+
+1. Update the fencing secrets:
+1. If the Cluster API is unavilable, update fencing secret by running the following command on one of the cluster nodes:
+
+```terminal
+$ sudo pcs stonith update <node_name>_redfish username=<user_name> password=<password>
+```
+
+
+After the Cluster API recovers, or the Cluster API is already available, update fencing secret in the cluster to ensure it stays in sync, as described in the following step.
+2. Edit the username and password for the existing fencing secret for the control plane node by running the following commads:
+
+```terminal
+$ oc project openshift-etcd
+```
+
+
+```terminal
+$ oc edit secret <node_name>-fencing
+```
+
+
+If the cluster recovers after updating the fencing secrets, no further action is required. If the issue persists, proceed to the next step.
+2. Recover from a single-node failure:
+1. Gather initial diagnostics by running the following command:
+
+```terminal
+$ sudo pcs status --full
+```
+
+
+This command provides a detailed view of the current cluster and resource states. You can use the output to identify issues with fencing or etcd startup.
+2. Run the following additional diagnostic commands, if necessary:
+
+Reset the resources on your cluster and instruct Pacemaker to attempt to start them fresh by running the following command:
+
+```terminal
+$ sudo pcs resource cleanup
+```
+
+
+Review all Pacemaker activity on the node by running the following command:
+
+```terminal
+$ sudo journalctl -u pacemaker
+```
+
+
+Diagnose etcd resource startup issues by running the following command:
+
+```terminal
+$ sudo journalctl -u pacemaker | grep podman-etcd
+```
+
+3. View the fencing configuration for the node by running the following command:
+
+```terminal
+$ sudo pcs stonith config <node_name>_redfish
+```
+
+
+If fencing is required but is not functioning, ensure that the Redfish fencing endpoint is accessible and verify that the credentials are correct.
+4. If etcd is not starting despite fencing being operational, restore etcd from a backup by running the following commands:
+
+```terminal
+$ sudo cp -r /var/lib/etcd-backup/* /var/lib/etcd/
+```
+
+
+```terminal
+$ sudo chown -R etcd:etcd /var/lib/etcd
+```
+
+
+If the recovery is successful, no further action is required. If the issue persists, proceed to the next step.
+3. Recover from a complete node failure:
+1. Power on both control plane nodes.
+
+Pacemaker starts automatically and begins the recovery operation when it detects both nodes are online. If the recovery does not start as expected, use the diagnostic commands described in the previous step to investigate the issue.
+2. Reset the resources on your cluster and instruct Pacemaker to attempt to start them fresh by running the following command:
+
+```terminal
+$ sudo pcs resource cleanup
+```
+
+3. Check resource start order by running the following command:
+
+```terminal
+$ sudo pcs status --full
+```
+
+4. Inspect the pacemaker service journal if kubelet fails by running the following commands:
+
+```terminal
+$ sudo journalctl -u pacemaker
+```
+
+
+```terminal
+$ sudo journalctl -u kubelet
+```
+
+5. Handle out-of-sync etcd.
+
+If one node has a more up-to-date etcd, Pacemaker attempts to fence the lagging node and start it as a learner. If this process stalls, verify the Redfish fencing endpoint and credentials by running the following command:
+
+```terminal
+$ sudo pcs stonith config
+```
+
+
+If the recovery is successful, no further action is required. If the issue persists, perform manual recovery as described in the next step.
+4. If you need to manually recover from an event when one of the nodes is not recoverable, follow the procedure in "Replacing control plane nodes in a two-node OpenShift cluster".
+
+When a cluster loses a single node, it enters the degraded mode. In this state, Pacemaker automatically unblocks quorum and allows the cluster to temporarily operate on the remaining node.
+
+If both nodes fail, you must restart both nodes to reestablish quorum so that Pacemaker can resume normal cluster operations.
+
+If only one of the two nodes can be restarted, follow the node replacement procedure to manually reestablish quorum on the surviving node.
+
+If manual recovery is still required and it fails, collect a must-gather and SOS report, and file a bug.
+
+For information about verifying that both control plane nodes and etcd are operating correctly, see "Verifying etcd health in a two-node OpenShift cluster with fencing".
+
+# Additional resources
+
+* Restoring etcd from a backup.
+* Verifying etcd health in a two-node OpenShift cluster with fencing
+
+# Replacing control plane nodes in a two-node OpenShift cluster with fencing
+
+You can replace a failed control plane node in a two-node OpenShift cluster. The replacement node must use the same host name and IP address as the failed node.
+
+* You have a functioning survivor control plane node.
+* You have verified that either the machine is not running or the node is not ready.
+* You have access to the cluster as a user with the cluster-admin role.
+* You know the host name and IP address of the failed node.
+
+
+[NOTE]
+----
+Do an etcd backup before proceeding to ensure that you can restore the cluster if any issues occur.
+----
+
+1. Check the quorum state by running the following command:
+
+```terminal
+$ sudo pcs quorum status
+```
+
+Example output
+
+```terminal
+Quorum information
+------------------
+Date:             Fri Oct  3 14:15:31 2025
+Quorum provider:  corosync_votequorum
+Nodes:            2
+Node ID:          1
+Ring ID:          1.16
+Quorate:          Yes
+
+Votequorum information
+----------------------
+Expected votes:   2
+Highest expected: 2
+Total votes:      2
+Quorum:           1
+Flags:            2Node Quorate WaitForAll
+
+Membership information
+----------------------
+    Nodeid      Votes    Qdevice Name
+         1          1         NR master-0 (local)
+         2          1         NR master-1
+```
+
+1. If quorum is lost and one control plane node is still running, restore quorum manually on the survivor node by running the following command:
+
+```terminal
+$ sudo pcs quorum unblock
+```
+
+2. If only one node failed, verify that etcd is running on the survivor node by running the following command:
+
+```terminal
+$ sudo pcs resource status etcd
+```
+
+3. If etcd is not running, restart etcd by running the following command:
+
+```terminal
+$ sudo pcs resource cleanup etcd
+```
+
+
+If etcd still does not start, force it manually on the survivor node, skipping fencing:
+
+[IMPORTANT]
+----
+Before running this commands, ensure that the node being replaced is inaccessible. Otherwise, you risk etcd corruption.
+----
+
+```terminal
+$ sudo pcs resource debug-stop etcd
+```
+
+
+```terminal
+$ sudo OCF_RESKEY_CRM_meta_notify_start_resource='etcd' pcs resource debug-start etcd
+```
+
+
+After recovery, etcd must be running successfully on the survivor node.
+2. Delete etcd secrets for the failed node by running the following commands:
+
+```terminal
+$ oc project openshift-etcd
+```
+
+
+```terminal
+$ oc delete secret etcd-peer-<node_name>
+```
+
+
+```terminal
+$ oc delete secret etcd-serving-<node_name>
+```
+
+
+```terminal
+$ oc delete secret etcd-serving-metrics-<node_name>
+```
+
+
+[NOTE]
+----
+To replace the failed node, you must delete its etcd secrets first. When etcd is running, it might take some time for the API server to respond to these commands.
+----
+3. Delete resources for the failed node:
+1. If you have the BareMetalHost (BMH) objects, list them to identify the host you are replacing by running the following command:
+
+```terminal
+$ oc get bmh -n openshift-machine-api
+```
+
+2. Delete the BMH object for the failed node by running the following command:
+
+```terminal
+$ oc delete bmh/<bmh_name> -n openshift-machine-api
+```
+
+3. List the Machine objects to identify the object that maps to the node that you are replacing by running the following command:
+
+```terminal
+$ oc get machines.machine.openshift.io -n openshift-machine-api
+```
+
+4. Get the label with the machine hash value from the Machine object by running the following command:
+
+```terminal
+$ oc get machines.machine.openshift.io/<machine_name> -n openshift-machine-api \
+  -o jsonpath='Machine hash label: {.metadata.labels.machine\.openshift\.io/cluster-api-cluster}{"\n"}'
+```
+
+
+Replace <machine_name> with the name of a Machine object in your cluster. For example, ostest-bfs7w-ctrlplane-0.
+
+You need this label to provision a new Machine object.
+5. Delete the Machine object for the failed node by running the following command:
+
+```terminal
+$ oc delete machines.machine.openshift.io/<machine_name>-<failed nodename> -n openshift-machine-api
+```
+
+
+[NOTE]
+----
+The node object is deleted automatically after deleting the Machine object.
+----
+4. Recreate the failed host by using the same name and IP address:
+
+[IMPORTANT]
+----
+You must perform this step only if you are using installer-provisioned infrastructure or the Machine API to create the original node.
+For information about replacing a failed bare-metal control plane node, see "Replacing an unhealthy etcd member on bare metal".
+----
+1. Remove the BMH and Machine objects. The machine controller automatically deletes the node object.
+2. Provision a new machine by using the following sample configuration:
+Example Machine object configuration
+
+```yaml
+apiVersion: machine.openshift.io/v1beta1
+kind: Machine
+metadata:
+  annotations:
+    metal3.io/BareMetalHost: openshift-machine-api/{bmh_name}
+  finalizers:
+  - machine.machine.openshift.io
+  labels:
+    machine.openshift.io/cluster-api-cluster: {machine_hash_label}
+    machine.openshift.io/cluster-api-machine-role: master
+    machine.openshift.io/cluster-api-machine-type: master
+  name: {machine_name}
+  namespace: openshift-machine-api
+spec:
+  authoritativeAPI: MachineAPI
+  metadata: {}
+  providerSpec:
+    value:
+      apiVersion: baremetal.cluster.k8s.io/v1alpha1
+      customDeploy:
+        method: install_coreos
+      hostSelector: {}
+      image:
+        checksum: ""
+        url: ""
+      kind: BareMetalMachineProviderSpec
+      metadata:
+        creationTimestamp: null
+      userData:
+        name: master-user-data-managed
+```
+
+* metadata.annotations.metal3.io/BareMetalHost: Replace {bmh_name} with the name of the BMH object that is associated with the host that you are replacing.
+* labels.machine.openshift.io/cluster-api-cluster: Replace {machine_hash_label} with the label that you fetched from the machine you deleted.
+* metadata.name: Replace {machine_name} with the name of the machine you deleted.
+3. Create the new BMH object and the secret to store the BMC credentials by running the following command:
+
+```terminal
+cat <<EOF | oc apply -f -
+apiVersion: v1
+kind: Secret
+metadata:
+  name: <secret_name>
+  namespace: openshift-machine-api
+data:
+  password: <password>
+  username: <username>
+type: Opaque
+---
+apiVersion: metal3.io/v1alpha1
+kind: BareMetalHost
+metadata:
+  name: {bmh_name}
+  namespace: openshift-machine-api
+spec:
+  automatedCleaningMode: disabled
+  bmc:
+    address: <redfish_url>/{uuid}
+    credentialsName: <name>
+    disableCertificateVerification: true
+  bootMACAddress: {boot_mac_address}
+  bootMode: UEFI
+  externallyProvisioned: false
+  online: true
+  rootDeviceHints:
+    deviceName: /dev/disk/by-id/scsi-<serial_number>
+  userData:
+    name: master-user-data-managed
+    namespace: openshift-machine-api
+EOF
+```
+
+* metadata.name: Specify the name of the secret.
+* metadata.name: Replace {bmh_name} with the name of the BMH object that you deleted.
+* bmc.address: Replace {uuid} with the UUID of the node that you created.
+* bmc.credentialsName: Replace name with the name of the secret that you created.
+* bootMACAddress: Specify the MAC address of the provisioning network interface. This is the MAC address the node uses to identify itself when communicating with Ironic during provisioning.
+5. Verify that the new node has reached the Provisioned state by running the following command:
+
+```terminal
+$ oc get bmh -o wide
+```
+
+
+The value of the STATUS column in the output of this command must be Provisioned.
+
+[NOTE]
+----
+The provisioning process can take 10 to 20 minutes to complete.
+----
+6. Verify that both control plane nodes are in the Ready state by running the following command:
+
+```terminal
+$ oc get nodes
+```
+
+
+The value of the STATUS column in the output of this command must be Ready for both nodes.
+7. Apply the detached annotation to the BMH object to prevent the Machine API from managing it by running the following command:
+
+```terminal
+$ oc annotate bmh <bmh_name> -n openshift-machine-api baremetalhost.metal3.io/detached='' --overwrite
+```
+
+8. Rejoin the replacement node to the pacemaker cluster by running the following command:
+
+[NOTE]
+----
+Run the following command on the survivor control plane node, not the node being replaced.
+----
+
+```terminal
+$ sudo pcs cluster node remove <node_name>
+```
+
+
+```terminal
+$ sudo pcs cluster node add <node_name> addr=<node_ip> --start --enable
+```
+
+9. Delete stale jobs for the failed node by running the following command:
+
+```terminal
+$ oc project openshift-etcd
+```
+
+
+```terminal
+$ oc delete job tnf-auth-job-<node_name>
+```
+
+
+```terminal
+$ oc delete job tnf-after-setup-job-<node_name>
+```
+
+
+For information about verifying that both control plane nodes and etcd are operating correctly, see "Verifying etcd health in a two-node OpenShift cluster with fencing".
+
+# Additional resources
+
+* Restoring etcd from a backup.
+
+# Verifying etcd health in a two-node OpenShift cluster with fencing
+
+After completing node recovery or maintenance procedures, verify that both control plane nodes and etcd are operating correctly.
+
+* You have access to the cluster as a user with cluster-admin privileges.
+* You can access at least one control plane node through SSH.
+
+1. Check the overall node status by running the following command:
+
+```terminal
+$ oc get nodes
+```
+
+
+This command verifies that both control plane nodes are in the Ready state, indicating that they can receive workloads for scheduling.
+2. Verify the status of the cluster-etcd-operator by running the following command:
+
+```terminal
+$ oc describe co/etcd
+```
+
+
+The cluster-etcd-operator manages and reports on the health of your etcd setup. Reviewing its status helps you identify any ongoing issues or degraded conditions.
+3. Review the etcd member list by running the following command:
+
+```terminal
+$ oc rsh -n openshift-etcd <etcd_pod> etcdctl member list -w table
+```
+
+
+This command shows the current etcd members and their roles. Look for any nodes marked as learner, which indicates that they are in the process of becoming voting members.
+4. Review the Pacemaker resource status by running the following command on either control plane node:
+
+```terminal
+$ sudo pcs status --full
+```
+
+
+This command provides a detailed overview of all resources managed by Pacemaker. You must ensure that the following conditions are met:
+* Both nodes are online.
+* The kubelet and etcd resources are running.
+* Fencing is correctly configured for both nodes.

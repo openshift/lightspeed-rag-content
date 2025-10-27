@@ -15,12 +15,6 @@ The AWS EFS CSI Driver Operator supports dynamic volume provisioning by allowing
 This eliminates the need for cluster administrators to pre-provision storage.
 * The AWS EFS CSI driver enables you to create and mount AWS EFS PVs.
 
-
-[NOTE]
-----
-AWS EFS only supports regional volumes, not zonal volumes.
-----
-
 # About CSI
 
 Storage vendors have traditionally provided storage drivers as part of Kubernetes. With the implementation of the Container Storage Interface (CSI), third-party providers can instead deliver storage plugins using a standard interface without ever having to change the core Kubernetes code.
@@ -47,6 +41,12 @@ Perform this procedure before you install the AWS EFS CSI Driver Operator (see I
 * AWS account credentials
 
 You can obtain the ARN role in multiple ways. The following procedure shows one method that uses the same concept and CCO utility (ccoctl) binary tool as cluster installation.
+
+
+[NOTE]
+----
+If you are using One Zone file system, you need to create two CredentialRequests, one for the controller and one for the driver node. For more information, see Section Setting up One Zone file systems with STS.
+----
 
 To obtain a role ARN for configuring AWS EFS CSI Driver Operator using STS:
 
@@ -640,6 +640,94 @@ EOF
 
 
 * Setting the output format in the AWS CLI
+
+# One Zone file systems
+
+## One Zone file systems overview
+
+{product-title} supports AWS Elastic File System (EFS) One Zone file system, which is an EFS storage option that stores data redundantly within a single Availability Zone (AZ). This contrasts with the default EFS storage option, which stores data redundantly across multiple AZs within a region.
+
+Clusters upgraded from {product-title} 4.19 are compatible with the regional EFS volumes.
+
+
+[NOTE]
+----
+Dynamic provisioning of One Zone volumes is supported only in single-zone clusters. All nodes in the cluster must be in the same AZ as the EFS volume that is used for the dynamic provisioning.
+Manually provisioned One Zone volumes in regional clusters is supported, assuming that the persistent volumes (PVs) have correct spec.nodeAffinity that indicates the zone that the volume is in.
+----
+
+For Cloud Credential Operator (CCO) Mint mode or Passthrough, no extra configuration is required. However, for Security Token Service (STS), use the procedure in Section Setting up One Zone file systems with STS.
+
+## Setting up One Zone file systems with STS
+
+The following procedure explains how to set up AWS One Zone file systems with Security Token Service (STS):
+
+* Access to the cluster as a user with the cluster-admin role.
+* AWS account credentials
+
+To configure One Zone file systems with STS:
+
+1. Create two CredentialsRequests in the credrequests directory following the procedure under Section Obtaining a role Amazon Resource Name for Security Token Service.:
+* For the controller CredentialsRequest, follow the procedure without any changes.
+* For the driver node CredentialsRequest use the following example file:
+Example CredentialsRequest YAML file for driver node
+
+```yaml
+apiVersion: cloudcredential.openshift.io/v1
+kind: CredentialsRequest
+metadata:
+  annotations:
+    credentials.openshift.io/role-arns-vars: NODE_ROLEARN 1
+  name: openshift-aws-efs-csi-driver-node
+  namespace: openshift-cloud-credential-operator
+spec:
+  providerSpec:
+    apiVersion: cloudcredential.openshift.io/v1
+    kind: AWSProviderSpec
+    statementEntries:
+    - action:
+      - elasticfilesystem:DescribeMountTargets
+      - ec2:DescribeAvailabilityZones
+      effect: Allow
+      resource: '*'
+  secretRef:
+    name: node-aws-efs-cloud-credentials
+    namespace: openshift-cluster-csi-drivers
+  serviceAccountNames:
+  - aws-efs-csi-driver-node-sa
+```
+
+Set metadata.annotations.credentials.openshift.io/role-arns-vars to NODE_ROLEARN.
+Example ccoctl output
+
+```terminal
+2025/08/26 14:05:24 Role arn:aws:iam::269733383066:role/my-arn-1-blll6-openshift-cluster-csi-drivers-aws-efs-cloud-cre created 1
+2025/08/26 14:05:24 Saved credentials configuration to: /home/my-arn/project/go/src/github.com/openshift/myinst/aws-sts-compact-1/manifests/openshift-cluster-csi-drivers-aws-efs-cloud-credentials-credentials.yaml
+2025/08/26 14:05:24 Updated Role policy for Role my-arn-1-blll6-openshift-cluster-csi-drivers-aws-efs-cloud-cre
+2025/08/26 14:05:24 Role arn:aws:iam::269733383066:role/my-arn-1-blll6-openshift-cluster-csi-drivers-node-aws-efs-clou created 2
+2025/08/26 14:05:24 Saved credentials configuration to: manifests/openshift-cluster-csi-drivers-node-aws-efs-cloud-credentials-credentials.yaml
+2025/08/26 14:05:24 Updated Role policy for Role my-arn-1-blll6-openshift-cluster-csi-drivers-node-aws-efs-clou
+```
+
+Controller Amazon Resource Name (ARN)
+Driver node ARN
+2. Install the AWS EFS CSI driver using the controller ARN created earlier in this procedure.
+3. Edit the operator's subscription and add NODE_ROLEARN with the driver node's ARN by running a command similar to the following:
+
+```terminal
+$ oc -n openshift-cluster-csi-drivers edit subscription aws-efs-csi-driver-operator
+...
+  config:
+    env:
+    - name: ROLEARN
+      value: arn:aws:iam::269733383066:role/my-arn-1-blll6-openshift-cluster-csi-drivers-aws-efs-cloud-cre 1
+    - name: NODE_ROLEARN
+      value: arn:aws:iam::269733383066:role/my-arn-1-blll6-openshift-cluster-csi-drivers-node-aws-efs-clou 2
+...
+```
+
+Controller ARN. Already exists.
+Driver node ARN
 
 # Dynamic provisioning for Amazon Elastic File Storage
 
