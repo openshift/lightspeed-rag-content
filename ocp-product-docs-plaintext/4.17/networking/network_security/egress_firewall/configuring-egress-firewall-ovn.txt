@@ -5,39 +5,40 @@ As a cluster administrator, you can create an egress firewall for a project that
 
 # How an egress firewall works in a project
 
-As a cluster administrator, you can use an egress firewall to limit the external hosts that some or all pods can access from within the cluster. An egress firewall supports the following scenarios:
+As a cluster administrator, you can use an egress firewall to limit the external hosts that some or all pods can access from within the
+cluster. An egress firewall supports the following scenarios:
 
-* A pod can only connect to internal hosts and cannot start connections to
+* A pod can only connect to internal hosts and cannot initiate connections to
 the public internet.
-* A pod can only connect to the public internet and cannot start connections
+* A pod can only connect to the public internet and cannot initiate connections
 to internal hosts that are outside the Red Hat OpenShift Container Platform cluster.
 * A pod cannot reach specified internal subnets or hosts outside the Red Hat OpenShift Container Platform cluster.
-* A pod can connect to only specific external hosts.
+* A pod can only connect to specific external hosts.
 
-For example, you can allow one project access to a specified IP range but deny the same access to a different project. Or you can restrict application developers from updating from Python pip mirrors, and force updates to come only from approved sources.
+For example, you can allow one project access to a specified IP range but deny the same access to a different project. Or, you can restrict application developers from updating from Python pip mirrors, and force updates to come only from approved sources.
 
-
-[NOTE]
-----
-Egress firewall does not apply to the host network namespace. Egress firewall rules do not impact any pods that have host networking enabled.
-----
-
-You configure an egress firewall policy by creating an {kind} custom resource (CR) object. The egress firewall matches network traffic that meets any of the following criteria:
+You configure an egress firewall policy by creating an EgressFirewall custom resource (CR). The egress firewall matches network traffic that meets any of the following criteria:
 
 * An IP address range in CIDR format
 * A DNS name that resolves to an IP address
 * A port number
 * A protocol that is one of the following protocols: TCP, UDP, and SCTP
 
+## Limitations of an egress firewall
 
-[IMPORTANT]
-----
-If your egress firewall includes a deny rule for 0.0.0.0/0, the rule blocks access to your Red Hat OpenShift Container Platform API servers. You must either add allow rules for each IP address or use the nodeSelector type allow rule in your egress policy rules to connect to API servers.
+An egress firewall has the following limitations:
+
+* No project can have more than one EgressFirewall CR.
+* Egress firewall rules do not apply to traffic that goes through routers. Any user with permission to create a Route CR object can bypass egress firewall policy rules by creating a route that points to a forbidden destination.
+* Egress firewall does not apply to the host network namespace. Pods with host networking enabled are unaffected by egress firewall rules.
+* If your egress firewall includes a deny rule for 0.0.0.0/0, access to your Red Hat OpenShift Container Platform API servers is blocked. You must either add allow rules for each IP address or use the nodeSelector type allow rule in your egress policy rules to connect to API servers.
+
 The following example illustrates the order of the egress firewall rules necessary to ensure API server access:
+EgressFirewall API server access example
 
 ```yaml
-apiVersion: {api}
-kind: {kind}
+apiVersion: k8s.ovn.org/v1
+kind: EgressFirewall
 metadata:
   name: default
   namespace: <namespace> 1
@@ -52,49 +53,34 @@ spec:
     type: Deny
 ```
 
-The namespace for the egress firewall.
-The IP address range that includes your Red Hat OpenShift Container Platform API servers.
-A global deny rule prevents access to the Red Hat OpenShift Container Platform API servers.
+
+where:
+<namespace>:: Specifies the namespace for the egress firewall.
+<api_server_address_range>:: Specifies the IP address range that includes your Red Hat OpenShift Container Platform API servers.
+<cidrSelector>:: Specifies a value of 0.0.0.0/0 to set a global deny rule that prevents access to the Red Hat OpenShift Container Platform API servers.
+
 To find the IP address for your API servers, run oc get ep kubernetes -n default.
+
 For more information, see BZ#1988324.
-----
+* A maximum of one EgressFirewall object with a maximum of 8,000 rules can be defined per project.
+* If you are using the OVN-Kubernetes network plugin with shared gateway mode in Red Hat OpenShift Networking, return ingress replies are affected by egress firewall rules. If the egress firewall rules drop the ingress reply destination IP, the traffic is dropped.
+* In general, using Domain Name Server (DNS) names in your egress firewall policy does not affect local DNS resolution through CoreDNS. However, if your egress firewall policy uses domain names and an external DNS server handles DNS resolution for an affected pod, you must include egress firewall rules that permit access to the IP addresses of your DNS server.
 
+Violating any of these restrictions results in a broken egress firewall for the project. Consequently, all external network traffic is dropped, which can cause security risks for your organization.
 
-[WARNING]
-----
-Egress firewall rules do not apply to traffic that goes through routers. Any user with permission to create a Route CR object can bypass egress firewall policy rules by creating a route that points to a forbidden destination.
-----
-
-## Limitations of an egress firewall
-
-An egress firewall has the following limitations:
-
-* No project can have more than one {kind} object.
-* A maximum of one {kind} object with a maximum of 8,000 rules can be defined per project.
-* If you use the OVN-Kubernetes network plugin and you configured false for the routingViaHost parameter in the Network custom resource for your cluster, egress firewall rules impact the return ingress replies. If the egress firewall rules drop the ingress reply destination IP, the traffic is dropped.
-
-Violating any of these restrictions results in a broken egress firewall for the project. As a result, all external network traffic drops, which can cause security risks for your organization.
-
-You can create an Egress Firewall resource in the kube-node-lease, kube-public, kube-system, openshift and openshift- projects.
+An EgressFirewall resource is created in the kube-node-lease, kube-public, kube-system, openshift and openshift- projects.
 
 ## Matching order for egress firewall policy rules
 
-The OVN-Kubernetes network plugin evaluates egress firewall policy rules based on the first-to-last order of how you defined the rules. The first rule that matches an egress connection from a pod applies. The plugin ignores any subsequent rules for that connection.
+OVN-Kubernetes evaluates egress firewall policy rules in the order they are defined in, from first to last. The first rule that matches an egress connection from a pod applies. Any subsequent rules are ignored for that connection.
 
-## Domain Name Server (DNS) resolution
+## How Domain Name Server (DNS) resolution works
 
 If you use DNS names in any of your egress firewall policy rules, proper resolution of the domain names is subject to the following restrictions:
 
 * Domain name updates are polled based on a time-to-live (TTL) duration. By default, the duration is 30 minutes. When the egress firewall controller queries the local name servers for a domain name, if the response includes a TTL and the TTL is less than 30 minutes, the controller sets the duration for that DNS name to the returned value. Each DNS name is queried after the TTL for the DNS record expires.
-* The pod must resolve the domain from the same local name servers when necessary. Otherwise the IP addresses for the domain known by the egress firewall controller and the pod can be different. If the IP addresses for a hostname differ, consistent enforcement of the egress firewall does not apply.
-* Because the egress firewall controller and pods asynchronously poll the same local name server, the pod might obtain the updated IP address before the egress controller does, which causes a race condition. Due to this current limitation, domain name usage in {kind} objects is only recommended for domains with infrequent IP address changes.
-
-
-[NOTE]
-----
-Using DNS names in your egress firewall policy does not affect local DNS resolution through CoreDNS.
-If your egress firewall policy uses domain names, and an external DNS server handles DNS resolution for an affected pod, you must include egress firewall rules that allow access to the IP addresses of your DNS server.
-----
+* The pod must resolve the domain from the same local name servers when necessary. Otherwise the IP addresses for the domain known by the egress firewall controller and the pod can be different. If the IP addresses for a hostname differ, the egress firewall might not be enforced consistently.
+* Because the egress firewall controller and pods asynchronously poll the same local name server, the pod might obtain the updated IP address before the egress controller does, which causes a race condition. Due to this current limitation, domain name usage in EgressFirewall objects is only recommended for domains with infrequent IP address changes.
 
 ### Improved DNS resolution and resolving wildcard domain names
 
@@ -114,22 +100,24 @@ For more information about the support scope of Red Hat Technology Preview featu
 apiVersion: networking.openshift.io/v1alpha1
 kind: DNSNameResolver
 spec:
-  name: www.example.com. 1
+  name: www.example.com.
 status:
   resolvedNames:
-  - dnsName: www.example.com. 2
+  - dnsName: www.example.com.
     resolvedAddress:
-    - ip: "1.2.3.4" 3
-      ttlSeconds: 60 4
-      lastLookupTime: "2023-08-08T15:07:04Z" 5
+    - ip: "1.2.3.4"
+      ttlSeconds: 60
+      lastLookupTime: "2023-08-08T15:07:04Z"
 ```
 
 
-The DNS name. This can be either a standard DNS name or a wildcard DNS name. For a wildcard DNS name, the DNS name resolution information contains all of the DNS names that match the wildcard DNS name.
-The resolved DNS name matching the spec.name field. If the spec.name field contains a wildcard DNS name, then multiple dnsName entries are created that contain the standard DNS names that match the wildcard DNS name when resolved. If the wildcard DNS name can also be successfully resolved, then this field also stores the wildcard DNS name.
-The current IP addresses associated with the DNS name.
-The last time-to-live (TTL) duration.
-The last lookup time.
+where:
+
+<name>:: Specifies the DNS name. This can be either a standard DNS name or a wildcard DNS name. For a wildcard DNS name, the DNS name resolution information contains all of the DNS names that match the wildcard DNS name.
+<dnsName>:: Specifies the resolved DNS name matching the spec.name field. If the spec.name field contains a wildcard DNS name, then multiple dnsName entries are created that contain the standard DNS names that match the wildcard DNS name when resolved. If the wildcard DNS name can also be successfully resolved, then this field also stores the wildcard DNS name.
+<ip> Specifies the current IP addresses associated with the DNS name.
+<ttlSeconds>:: Specifies the last time-to-live (TTL) duration.
+<lastLookupTime>:: Specifies the last lookup time.
 
 If during DNS resolution the DNS name in the query matches any name defined in a DNSNameResolver CR, then the previous information is updated accordingly in the CR status field. For unsuccessful DNS wildcard name lookups, the request is retried after a default TTL of 30 minutes.
 
@@ -141,70 +129,76 @@ The OVN-Kubernetes cluster manager watches for updates to an EgressFirewall cust
 Do not modify DNSNameResolver custom resources directly. This can lead to unwanted behavior of your egress firewall.
 ----
 
-# EgressFirewall custom resource (CR) object
+# EgressFirewall custom resource (CR)
 
 You can define one or more rules for an egress firewall. A rule is either an Allow rule or a Deny rule, with a specification for the traffic that the rule applies to.
 
-The following YAML describes an {kind} CR object:
+The following YAML describes an EgressFirewall CR:
 
 
 ```yaml
-apiVersion: {api}
-kind: {kind}
+apiVersion: k8s.ovn.org/v1
+kind: EgressFirewall
 metadata:
-  name: <name> 1
+  name: <ovn>
 spec:
-  egress: 2
+  egress: <egress_rules>
     ...
 ```
 
 
-The name for the object must be default.
-A collection of one or more egress network policy rules as described in the following section.
+where:
+
+<ovn>:: The name for the object must be default.
+<egress_rules>:: Specifies a collection of one or more egress network policy rules as described in the following section.
 
 ## EgressFirewall rules
 
-The following YAML describes an egress firewall rule object. The user can select either an IP address range in CIDR format, a domain name, or use the nodeSelector to allow or deny egress traffic. The egress stanza expects an array of one or more objects.
+The following YAML describes the rules for an EgressFirewall resource. The user can select either an IP address range in CIDR format, a domain name, or use the nodeSelector field to allow or deny egress traffic. The egress stanza expects an array of one or more objects.
 
 
 ```yaml
 egress:
-- type: <type> 1
-  to: 2
-    cidrSelector: <cidr> 3
-    dnsName: <dns_name> 4
-    nodeSelector: <label_name>: <label_value> 5
-  ports: 6
+- type: <type>
+  to:
+    cidrSelector: <cidr_range>
+    dnsName: <dns_name>
+    nodeSelector: <label_name>: <label_value>
+  ports: <optional_port>
       ...
 ```
 
 
-The type of rule. The value must be either Allow or Deny.
-A stanza describing an egress traffic match rule that specifies the cidrSelector field or the dnsName field. You cannot use both fields in the same rule.
-An IP address range in CIDR format.
-A DNS domain name.
-Labels are key/value pairs that the user defines. Labels are attached to objects, such as pods. The nodeSelector allows for one or more node labels to be selected and attached to pods.
-Optional: A stanza describing a collection of network ports and protocols for the rule.
+where:
+
+<type>:: Specifies the type of rule. The value must be either Allow or Deny.
+<to>:: Specifies a stanza describing an egress traffic match rule that specifies the cidrSelector field or the dnsName field. You cannot use both fields in the same rule.
+<cidr_range>:: Specifies an IP address range in CIDR format.
+<dns_name>:: Specifies a DNS domain name.
+<nodeSelector>:: Specifies labels which are key and value pairs that the user defines. Labels are attached to objects, such as pods. The nodeSelector allows for one or more node labels to be selected and attached to pods.
+<ports>:: Specifies an optional field that describes a collection of network ports and protocols for the rule.
 
 
 ```yaml
 ports:
-- port: <port> 1
-  protocol: <protocol> 2
+- port:
+  protocol:
 ```
 
 
-A network port, such as 80 or 443. If you specify a value for this field, you must also specify a value for protocol.
-A network protocol. The value must be either TCP, UDP, or SCTP.
+where:
 
-## Example EgressFirewall CR objects
+<port>:: Specifies a network port, such as 80 or 443. If you specify a value for this field, you must also specify a value for the protocol field.
+<protocol>:: Specifies a network protocol. The value must be either TCP, UDP, or SCTP.
+
+## Example EgressFirewall CR
 
 The following example defines several egress firewall policy rules:
 
 
 ```yaml
-apiVersion: {api}
-kind: {kind}
+apiVersion: k8s.ovn.org/v1
+kind: EgressFirewall
 metadata:
   name: default
 spec:
@@ -218,14 +212,16 @@ spec:
 ```
 
 
-A collection of egress firewall policy rule objects.
+where:
+
+<egress>:: Specifies a collection of egress firewall policy rule objects.
 
 The following example defines a policy rule that denies traffic to the host at the 172.16.1.1/32 IP address, if the traffic is using either the TCP protocol and destination port 80 or any protocol and destination port 443.
 
 
 ```yaml
-apiVersion: {api}
-kind: {kind}
+apiVersion: k8s.ovn.org/v1
+kind: EgressFirewall
 metadata:
   name: default
 spec:
@@ -240,13 +236,13 @@ spec:
 ```
 
 
-## Example nodeSelector for EgressFirewall
+## Example EgressFirewall CR using nodeSelector
 
-As a cluster administrator, you can allow or deny egress traffic to nodes in your cluster by specifying a label using nodeSelector. Labels can be applied to one or more nodes. The following is an example with the region=east label:
+As a cluster administrator, you can allow or deny egress traffic to nodes in your cluster by specifying a label using nodeSelector field. Labels can be applied to one or more nodes. Labels can be helpful because instead of adding manual rules per node IP address, you can use node selectors to create a label that allows pods behind an egress firewall to access host network pods. The following is an example with the region=east label:
 
 
 ```yaml
-apiVersion: {api}
+apiVersion: k8s.ovn.org/v1
 kind: EgressFirewall
 metadata:
   name: default
@@ -260,36 +256,30 @@ spec:
 ```
 
 
-
-[TIP]
-----
-Instead of adding manual rules per node IP address, use node selectors to create a label that allows pods behind an egress firewall to access host network pods.
-----
-
-# Creating an egress firewall policy object
+# Creating an EgressFirewall custom resource (CR)
 
 As a cluster administrator, you can create an egress firewall policy object for a project.
 
 
 [IMPORTANT]
 ----
-If the project already has an {kind} object defined, you must edit the existing policy to make changes to the egress firewall rules.
+If the project already has an EgressFirewall resource, you must edit the existing policy to make changes to egress firewall rules.
 ----
 
-* A cluster that uses the {cni} network plugin.
+* A cluster that uses the OVN-Kubernetes network plugin.
 * Install the OpenShift CLI (oc).
 * You must log in to the cluster as a cluster administrator.
 
 1. Create a policy rule:
 1. Create a <policy_name>.yaml file where <policy_name> describes the egress
 policy rules.
-2. In the file you created, define an egress policy object.
-2. Enter the following command to create the policy object. Replace <policy_name> with the name of the policy and <project> with the project that the rule applies to.
+2. Define the EgressFirewall object in the file.
+2. Create the policy object by entering the following command. Replace <policy_name> with the name of the policy and <project> with the project that the rule applies to.
 
 ```terminal
 $ oc create -f <policy_name>.yaml -n <project>
 ```
 
 
-Successful output lists the {obj} name and the created status.
+Successful output lists the egressfirewall.k8s.ovn.org/v1 name and the created status.
 3. Optional: Save the <policy_name>.yaml file so that you can make changes later.

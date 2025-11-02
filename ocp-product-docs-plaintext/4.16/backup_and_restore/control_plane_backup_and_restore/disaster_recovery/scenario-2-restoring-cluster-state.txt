@@ -464,7 +464,73 @@ $ oc -n openshift-ovn-kubernetes get pod -l app=ovnkube-node --field-selector=sp
 ----
 It might take several minutes for the pods to restart.
 ----
-15. Turn off the quorum guard by running the following command:
+15. Delete and re-create other non-recovery, control plane machines, one by one. After the machines are re-created, a new revision is forced and etcd automatically scales up.
+* If you use a user-provisioned bare metal installation, you can re-create a control plane machine by using the same method that you used to originally create it. For more information, see "Installing a user-provisioned cluster on bare metal".
+
+[WARNING]
+----
+Do not delete and re-create the machine for the recovery host.
+----
+* If you are running installer-provisioned infrastructure, or you used the Machine API to create your machines, follow these steps:
+
+[WARNING]
+----
+Do not delete and re-create the machine for the recovery host.
+For bare metal installations on installer-provisioned infrastructure, control plane machines are not re-created. For more information, see "Replacing a bare-metal control plane node".
+----
+1. Obtain the machine for one of the lost control plane hosts.
+
+In a terminal that has access to the cluster as a cluster-admin user, run the following command:
+
+```terminal
+$ oc get machines -n openshift-machine-api -o wide
+```
+
+Example output
+
+```terminal
+NAME                                        PHASE     TYPE        REGION      ZONE         AGE     NODE                           PROVIDERID                              STATE
+clustername-8qw5l-master-0                  Running   m4.xlarge   us-east-1   us-east-1a   3h37m   ip-10-0-131-183.ec2.internal   aws:///us-east-1a/i-0ec2782f8287dfb7e   stopped 1
+clustername-8qw5l-master-1                  Running   m4.xlarge   us-east-1   us-east-1b   3h37m   ip-10-0-143-125.ec2.internal   aws:///us-east-1b/i-096c349b700a19631   running
+clustername-8qw5l-master-2                  Running   m4.xlarge   us-east-1   us-east-1c   3h37m   ip-10-0-154-194.ec2.internal    aws:///us-east-1c/i-02626f1dba9ed5bba  running
+clustername-8qw5l-worker-us-east-1a-wbtgd   Running   m4.large    us-east-1   us-east-1a   3h28m   ip-10-0-129-226.ec2.internal   aws:///us-east-1a/i-010ef6279b4662ced   running
+clustername-8qw5l-worker-us-east-1b-lrdxb   Running   m4.large    us-east-1   us-east-1b   3h28m   ip-10-0-144-248.ec2.internal   aws:///us-east-1b/i-0cb45ac45a166173b   running
+clustername-8qw5l-worker-us-east-1c-pkg26   Running   m4.large    us-east-1   us-east-1c   3h28m   ip-10-0-170-181.ec2.internal   aws:///us-east-1c/i-06861c00007751b0a   running
+```
+
+This is the control plane machine for the lost control plane host, ip-10-0-131-183.ec2.internal.
+2. Delete the machine of the lost control plane host by running:
+
+```terminal
+$ oc delete machine -n openshift-machine-api clustername-8qw5l-master-0 1
+```
+
+Specify the name of the control plane machine for the lost control plane host.
+
+A new machine is automatically provisioned after deleting the machine of the lost control plane host.
+3. Verify that a new machine has been created by running:
+
+```terminal
+$ oc get machines -n openshift-machine-api -o wide
+```
+
+Example output
+
+```terminal
+NAME                                        PHASE          TYPE        REGION      ZONE         AGE     NODE                           PROVIDERID                              STATE
+clustername-8qw5l-master-1                  Running        m4.xlarge   us-east-1   us-east-1b   3h37m   ip-10-0-143-125.ec2.internal   aws:///us-east-1b/i-096c349b700a19631   running
+clustername-8qw5l-master-2                  Running        m4.xlarge   us-east-1   us-east-1c   3h37m   ip-10-0-154-194.ec2.internal    aws:///us-east-1c/i-02626f1dba9ed5bba  running
+clustername-8qw5l-master-3                  Provisioning   m4.xlarge   us-east-1   us-east-1a   85s     ip-10-0-173-171.ec2.internal    aws:///us-east-1a/i-015b0888fe17bc2c8  running 1
+clustername-8qw5l-worker-us-east-1a-wbtgd   Running        m4.large    us-east-1   us-east-1a   3h28m   ip-10-0-129-226.ec2.internal   aws:///us-east-1a/i-010ef6279b4662ced   running
+clustername-8qw5l-worker-us-east-1b-lrdxb   Running        m4.large    us-east-1   us-east-1b   3h28m   ip-10-0-144-248.ec2.internal   aws:///us-east-1b/i-0cb45ac45a166173b   running
+clustername-8qw5l-worker-us-east-1c-pkg26   Running        m4.large    us-east-1   us-east-1c   3h28m   ip-10-0-170-181.ec2.internal   aws:///us-east-1c/i-06861c00007751b0a   running
+```
+
+The new machine, clustername-8qw5l-master-3 is being created and is ready after the phase changes from Provisioning to Running.
+
+It might take a few minutes for the new machine to be created. The etcd cluster Operator will automatically sync when the machine or node returns to a healthy state.
+4. Repeat these steps for each lost control plane host that is not the recovery host.
+16. Turn off the quorum guard by running the following command:
 
 ```terminal
 $ oc patch etcd/cluster --type=merge -p '{"spec": {"unsupportedConfigOverrides": {"useUnsupportedUnsafeNonHANonProductionUnstableEtcd": true}}}'
@@ -472,13 +538,13 @@ $ oc patch etcd/cluster --type=merge -p '{"spec": {"unsupportedConfigOverrides":
 
 
 This command ensures that you can successfully re-create secrets and roll out the static pods.
-16. If not yet defined, in a separate terminal window within the recovery host, export the recovery kubeconfig file by running the following command:
+17. If not yet defined, in a separate terminal window within the recovery host, export the recovery kubeconfig file by running the following command:
 
 ```terminal
 $ export KUBECONFIG=/etc/kubernetes/static-pod-resources/kube-apiserver-certs/secrets/node-kubeconfigs/localhost-recovery.kubeconfig
 ```
 
-17. Force etcd redeployment.
+18. Force etcd redeployment.
 
 In the same terminal window where you exported the recovery kubeconfig file, run the following command:
 
@@ -491,19 +557,19 @@ The forceRedeploymentReason value must be unique, which is why a timestamp is ap
 The etcd redeployment starts.
 
 When the etcd cluster Operator performs a redeployment, the existing nodes are started with new pods similar to the initial bootstrap scale up.
-18. Turn the quorum guard back on by running the following command:
+19. Turn the quorum guard back on by running the following command:
 
 ```terminal
 $ oc patch etcd/cluster --type=merge -p '{"spec": {"unsupportedConfigOverrides": null}}'
 ```
 
-19. You can verify that the unsupportedConfigOverrides section is removed from the object by running the following command:
+20. You can verify that the unsupportedConfigOverrides section is removed from the object by running the following command:
 
 ```terminal
 $ oc get etcd/cluster -oyaml
 ```
 
-20. Verify all nodes are updated to the latest revision.
+21. Verify all nodes are updated to the latest revision.
 
 In a terminal that has access to the cluster as a cluster-admin user, run the following command:
 
@@ -522,7 +588,7 @@ AllNodesAtLatestRevision
 In this example, the latest revision number is 7.
 
 If the output includes multiple revision numbers, such as 2 nodes are at revision 6; 1 nodes are at revision 7, this means that the update is still in progress. Wait a few minutes and try again.
-21. After etcd is redeployed, force new rollouts for the control plane. kube-apiserver will reinstall itself on the other nodes because the kubelet is connected to API servers using an internal load balancer.
+22. After etcd is redeployed, force new rollouts for the control plane. kube-apiserver will reinstall itself on the other nodes because the kubelet is connected to API servers using an internal load balancer.
 
 In a terminal that has access to the cluster as a cluster-admin user, complete the following steps:
 1. Force a new rollout for kube-apiserver:
@@ -597,12 +663,6 @@ AllNodesAtLatestRevision
 In this example, the latest revision number is 7.
 
 If the output includes multiple revision numbers, such as 2 nodes are at revision 6; 1 nodes are at revision 7, this means that the update is still in progress. Wait a few minutes and try again.
-22. If the keepalived daemon is in use, restore the configuration on the control plane nodes other than the recovery host by running the following command. Otherwise, the network operator will not advance beyond the "Progressing" state.
-
-```terminal
-$ sudo cp -v /home/core/keepalived.yaml /etc/kubernetes/manifests/
-```
-
 23. Monitor the platform Operators by running the following command:
 
 ```terminal
