@@ -91,3 +91,18 @@ The database is located at /rag/vector_db and by default the Faiss index id is "
 ```bash
 $ podman run -e VECTOR_DB_INDEX=acme_openshift_sop ...
 ```
+
+## Document title and URL
+OpenShift Ligthspeed can display titles and URLs of the documents used for generation of answers. In the RAG database, titles and URLs accompany documents as metadata. The BYOK tool can obtain the title and url attributes from YAML frontmatter if found in Markdown files it processes:
+
+```Markdown
+---
+title: "Introduction to Layers {#gimp-concepts-layers}"
+url: "https://docs.gimp.org/3.0/en/gimp-using-layers.html"
+---
+
+# Introduction to Layers
+...
+```
+
+If a Markdown file does not have frontmatter with the title and url attributes, the first top-level Markdown heading (ex. `# Introduction to Layers`) becomes the title and the file path becomes the URL.
