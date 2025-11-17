@@ -57,6 +57,15 @@ If you are updating your cluster from a previous {product-title} version that co
 
 When you create a GatewayClass as shown in the first step, it configures Gateway API for use on your cluster.
 
+
+[IMPORTANT]
+----
+The {product-title} Gateway API implementation relies on the Cluster Ingress Operator (CIO) to install and manage a specific version of OpenShift Service Mesh (OSSM v3.x) in the openshift-ingress namespace.
+A conflict occurs if your cluster already has an active OpenShift Service Mesh (OSSM v2.x) subscription in any namespace. OSSM v2.x and OSSM v3.x cannot coexist on the same cluster.
+If a conflicting OSSM v2.x subscription is present when you create a GatewayClass resource, the Cluster Ingress Operator attempts to install the required OSSM v3.x components but fails this installation operation. As a result, Gateway API resources ,such as Gateway or HTTPRoute, have no effect and no proxy gets configured to route traffic. In {product-title} 4.19, this failure is silent; In {product-title} 4.20 and later, this conflict causes the ingress ClusterOperator to report a Degraded status.
+Before enabling Gateway API by creating a GatewayClass, verify that you do not have an active OSSM v2.x subscription on the cluster.
+----
+
 1. Create a GatewayClass object:
 1. Create a YAML file, openshift-default.yaml, that contains the following information:
 Example GatewayClass CR
@@ -401,5 +410,54 @@ spec:
 
 
 With a shared gateway topology, the routes must specify the namespace of the Gateway object it wants to attach to. Multiple Gateway objects can be deployed and shared across namespaces. When there are multiple shared gateways, this topology becomes conceptually similar to Ingress Controller sharding.
+
+# Ingress Operator is Degraded due to Gateway API and OSSM conflict
+
+In {product-title} 4.20 and later, if you create a GatewayClass resource while a conflicting OpenShift Service Mesh (OSSM) v2.x subscription exists, the ingress Cluster Operator (CIO) reports a Degraded status. This procedure details how to verify and resolve this conflict.
+
+The conflict occurs because the Gateway API implementation requires OSSM v3.x, which cannot coexist with OSSM v2.x. The CIO detects this conflict, stops the Gateway API provisioning, and reports the Degraded status to alert administrators.
+
+Your Cluster Operator reports a status of True and a type of Degraded with a reason of GatewayAPIOSSMConflict. Verify by running the following command:
+
+
+```terminal
+$ oc get clusteroperator ingress -o yaml
+```
+
+
+In the status section of the output, look for a Degraded condition with status: "True" and reason: GatewayAPIOSSMConflict.
+
+
+```yaml
+status:
+  conditions:
+
+    lastTransitionTime: "2025-10-22T17:00:00Z"
+
+    message: 'Failed to install OpenShift Service Mesh 3.x for Gateway API: A
+      conflicting OpenShift Service Mesh 2.x subscription was found. Remove the
+      GatewayClass resource or the conflicting OSSM 2.x subscription to resolve.'
+    reason: GatewayAPIOSSMConflict
+    status: "True"
+    type: Degraded
+```
+
+
+You can resolve this issue and clear the Degraded status either by removing the GatewayClass resource or by using Openshift Gateway API to remove the conflicting OpenShift Service Mesh v2.x subscription from the cluster.
+
+* If you do not intend to use the OpenShift Gateway API, remove the GatewayClass resource. This signals to the Ingress Operator to stop attempting to provision Gateway API.
+
+```terminal
+$ oc delete gatewayclass <gatewayclass-name>
+```
+
+* If you do intend to use the OpenShift Gateway API, you must remove the conflicting OpenShift Service Mesh v2.x subscription from the cluster.
+
+```terminal
+$ oc -n openshift-operators delete subscription <OSSM v2.x subscription name>
+```
+
+
+After the v2.x subscription is removed, the Ingress Operator automatically retries the installation of OSSM v3.x and completes the Gateway API provisioning.
 
 * Ingress Controller sharding.
