@@ -7,14 +7,13 @@ metadata:
     build.appstudio.redhat.com/target_branch: '{{target_branch}}'
     pipelinesascode.tekton.dev/cancel-in-progress: "false"
     pipelinesascode.tekton.dev/max-keep-runs: "3"
-    pipelinesascode.tekton.dev/on-cel-expression: event == "push" && target_branch
-      == "main"
-  creationTimestamp: null
+    pipelinesascode.tekton.dev/on-cel-expression: event == "push" && target_branch == "main"
+  creationTimestamp:
   labels:
-    appstudio.openshift.io/application: ols
-    appstudio.openshift.io/component: lightspeed-ocp-rag
+    appstudio.openshift.io/application: lightspeed-rag-content
+    appstudio.openshift.io/component: openshift-pipelines-lightspeed-rag-content
     pipelines.appstudio.openshift.io/type: build
-  name: lightspeed-ocp-rag-on-push
+  name: openshift-pipelines-lightspeed-rag-content-on-push
   namespace: crt-nshift-lightspeed-tenant
 spec:
   params:
@@ -23,15 +22,15 @@ spec:
   - name: revision
     value: '{{revision}}'
   - name: output-image
-    value: quay.io/redhat-user-workloads/crt-nshift-lightspeed-tenant/lightspeed-ocp-rag:{{revision}}
+    value: quay.io/redhat-user-workloads/crt-nshift-lightspeed-tenant/openshift-pipelines-lightspeed-rag-content:{{revision}}
   - name: dockerfile
-    value: lsc/Containerfile.konflux
+    value: Containerfile
   - name: path-context
     value: .
   - name: build-source-image
     value: "true"
   - name: prefetch-input
-    value: '[{"type": "generic", "path": "."}, {"type": "rpm", "path": "lsc"}, {"type": "pip", "path": ".", "allow_binary": "true", "requirements_files": ["lsc/requirements.txt"]}]'
+    value: '[{"type": "generic", "path": "."}, {"type": "rpm", "path": "."}, {"type": "pip", "path": ".", "allow_binary": "true", "requirements_files": ["requirements.gpu.txt"]}]'
   - name: hermetic
     value: "true"
   - name: build-args
@@ -44,8 +43,22 @@ spec:
     description: |
       This pipeline is ideal for building container images from a Containerfile while maintaining trust after pipeline customization.
 
-      _Uses `buildah` to create a container image leveraging [trusted artifacts](https://konflux-ci.dev/architecture/ADR/0036-trusted-artifacts.html). It also optionally creates a source image and runs some build-time tests. Information is shared between tasks using OCI artifacts instead of PVCs. EC will pass the [`trusted_task.trusted`](https://conforma.dev/docs/policy/packages/release_trusted_task.html#trusted_task__trusted) policy as long as all data used to build the artifact is generated from trusted tasks.
+      _Uses `buildah` to create a container image leveraging [trusted artifacts](https://konflux-ci.dev/architecture/ADR/0036-trusted-artifacts.html). It also optionally creates a source image and runs some build-time tests. Information is shared between tasks using OCI artifacts instead of PVCs. EC will pass the [`trusted_task.trusted`](https://enterprisecontract.dev/docs/ec-policies/release_policy.html#trusted_task__trusted) policy as long as all data used to build the artifact is generated from trusted tasks.
       This pipeline is pushed as a Tekton bundle to [quay.io](https://quay.io/repository/konflux-ci/tekton-catalog/pipeline-docker-build-oci-ta?tab=tags)_
+    finally:
+    - name: show-sbom
+      params:
+      - name: IMAGE_URL
+        value: $(tasks.build-image-index.results.IMAGE_URL)
+      taskRef:
+        params:
+        - name: name
+          value: show-sbom
+        - name: bundle
+          value: quay.io/konflux-ci/tekton-catalog/task-show-sbom:0.1@sha256:beb0616db051952b4b861dd8c3e00fa1c0eccbd926feddf71194d3bb3ace9ce7
+        - name: kind
+          value: task
+        resolver: bundles
     params:
     - description: Source Repository URL
       name: git-url
@@ -58,13 +71,11 @@ spec:
       name: output-image
       type: string
     - default: .
-      description: Path to the source code of an application's component from where
-        to build image.
+      description: Path to the source code of an application's component from where to build image.
       name: path-context
       type: string
     - default: Dockerfile
-      description: Path to the Dockerfile inside the context specified by parameter
-        path-context
+      description: Path to the Dockerfile inside the context specified by parameter path-context
       name: dockerfile
       type: string
     - default: "false"
@@ -80,26 +91,19 @@ spec:
       name: hermetic
       type: string
     - default: ""
-      description: Build dependencies to be prefetched
+      description: Build dependencies to be prefetched by Cachi2
       name: prefetch-input
       type: string
     - default: ""
-      description: Image tag expiration time, time values could be something like
-        1h, 2d, 3w for hours, days, and weeks, respectively.
+      description: Image tag expiration time, time values could be something like 1h, 2d, 3w for hours, days, and weeks, respectively.
       name: image-expires-after
-      type: string
     - default: "false"
       description: Build a source image.
       name: build-source-image
       type: string
-    - default: "false"
+    - default: "true"
       description: Add built image into an OCI image index
       name: build-image-index
-      type: string
-    - default: docker
-      description: The format for the resulting image's mediaType. Valid values are
-        oci or docker.
-      name: buildah-format
       type: string
     - default: []
       description: Array of --build-arg values ("arg=value" strings) for buildah
@@ -109,11 +113,10 @@ spec:
       description: Path to a file with build arguments for buildah, see https://www.mankier.com/1/buildah-build#--build-arg-file
       name: build-args-file
       type: string
-    - default: "false"
-      description: Whether to enable privileged mode, should be used only with remote
-        VMs
-      name: privileged-nested
+    - name: buildah-format
+      default: docker
       type: string
+      description: The format for the resulting image's mediaType. Valid values are oci or docker.
     results:
     - description: ""
       name: IMAGE_URL
@@ -225,16 +228,12 @@ spec:
         - $(params.build-args[*])
       - name: BUILD_ARGS_FILE
         value: $(params.build-args-file)
-      - name: PRIVILEGED_NESTED
-        value: $(params.privileged-nested)
-      - name: SOURCE_URL
-        value: $(tasks.clone-repository.results.url)
-      - name: BUILDAH_FORMAT
-        value: $(params.buildah-format)
       - name: SOURCE_ARTIFACT
         value: $(tasks.prefetch-dependencies.results.SOURCE_ARTIFACT)
       - name: CACHI2_ARTIFACT
         value: $(tasks.prefetch-dependencies.results.CACHI2_ARTIFACT)
+      - name: BUILDAH_FORMAT
+        value: $(params.buildah-format)
       runAfter:
       - prefetch-dependencies
       taskRef:
@@ -433,10 +432,10 @@ spec:
         - "false"
     - name: sast-coverity-check
       params:
-      - name: image-digest
-        value: $(tasks.build-image-index.results.IMAGE_DIGEST)
       - name: image-url
         value: $(tasks.build-image-index.results.IMAGE_URL)
+      - name: image-digest
+        value: $(tasks.build-image-index.results.IMAGE_DIGEST)
       - name: IMAGE
         value: $(params.output-image)
       - name: DOCKERFILE
@@ -527,10 +526,10 @@ spec:
         - "false"
     - name: sast-unicode-check
       params:
-      - name: image-digest
-        value: $(tasks.build-image-index.results.IMAGE_DIGEST)
       - name: image-url
         value: $(tasks.build-image-index.results.IMAGE_URL)
+      - name: image-digest
+        value: $(tasks.build-image-index.results.IMAGE_DIGEST)
       - name: SOURCE_ARTIFACT
         value: $(tasks.prefetch-dependencies.results.SOURCE_ARTIFACT)
       - name: CACHI2_ARTIFACT
@@ -632,7 +631,7 @@ spec:
       limits:
         memory: 4Gi
   taskRunTemplate:
-    serviceAccountName: build-pipeline-lightspeed-ocp-rag
+    serviceAccountName: build-pipeline-openshift-pipelines-lightspeed-rag-content
   timeouts:
     pipeline: 4h0m0s
     tasks: 4h0m0s
