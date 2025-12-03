@@ -14,6 +14,8 @@ Memory overcommitment can lower workload performance on a highly utilized system
 
 The wasp-agent component facilitates memory overcommitment by assigning swap resources to worker nodes. It also manages pod evictions when nodes are at risk due to high swap I/O traffic or high utilization.
 
+The wasp-agent component is deployed automatically if memoryOvercommitPercentage is set to more than 100 when you first create the HyperConverged custom resource (CR).
+
 
 [IMPORTANT]
 ----
@@ -57,7 +59,8 @@ spec:
 $ oc wait mcp worker --for condition=Updated=True --timeout=-1s
 ```
 
-2. Provision swap by creating a MachineConfig object. For example:
+2. Provision swap by creating a MachineConfig object:
+1. Create a MachineConfig file with the paramaters shown in the following example:
 
 ```yaml
 apiVersion: machineconfiguration.openshift.io/v1
@@ -123,154 +126,13 @@ NODE_SWAP_SPACE = 16 GB * (150% / 100% - 1)
                =  8 GB
 ```
 
-3. Create a privileged service account by running the following commands:
-
-```terminal
-$ oc adm new-project wasp
-```
-
-
-```terminal
-$ oc create sa -n wasp wasp
-```
-
-
-```terminal
-$ oc create clusterrolebinding wasp --clusterrole=cluster-admin --serviceaccount=wasp:wasp
-```
-
-
-```terminal
-$ oc adm policy add-scc-to-user -n wasp privileged -z wasp
-```
-
-4. Wait for the worker nodes to sync with the new configuration by running the following command:
+2. Wait for the worker nodes to sync with the new configuration by running the following command:
 
 ```yaml
 $ oc wait mcp worker --for condition=Updated=True --timeout=-1s
 ```
 
-5. Determine the pull URL for the wasp agent image by running the following command:
-
-```terminal
-$ oc get csv -n openshift-cnv -l=operators.coreos.com/kubevirt-hyperconverged.openshift-cnv -ojson | jq '.items[0].spec.relatedImages[] | select(.name|test(".*wasp-agent.*")) | .image'
-```
-
-6. Deploy wasp-agent by creating a DaemonSet object as shown in the following example:
-
-```yaml
-kind: DaemonSet
-apiVersion: apps/v1
-metadata:
-  name: wasp-agent
-  namespace: wasp
-  labels:
-    app: wasp
-    tier: node
-spec:
-  selector:
-    matchLabels:
-      name: wasp
-  template:
-    metadata:
-      annotations:
-        description: >-
-          Configures swap for workloads
-      labels:
-        name: wasp
-    spec:
-      containers:
-        - env:
-            - name: SWAP_UTILIZATION_THRESHOLD_FACTOR
-              value: "0.8"
-            - name: MAX_AVERAGE_SWAP_IN_PAGES_PER_SECOND
-              value: "1000000000"
-            - name: MAX_AVERAGE_SWAP_OUT_PAGES_PER_SECOND
-              value: "1000000000"
-            - name: AVERAGE_WINDOW_SIZE_SECONDS
-              value: "30"
-            - name: VERBOSITY
-              value: "1"
-            - name: FSROOT
-              value: /host
-            - name: NODE_NAME
-              valueFrom:
-                fieldRef:
-                  fieldPath: spec.nodeName
-          image: >-
-            quay.io/openshift-virtualization/wasp-agent:v4.20 1
-          imagePullPolicy: Always
-          name: wasp-agent
-          resources:
-            requests:
-              cpu: 100m
-              memory: 50M
-          securityContext:
-            privileged: true
-          volumeMounts:
-            - mountPath: /host
-              name: host
-            - mountPath: /rootfs
-              name: rootfs
-      hostPID: true
-      hostUsers: true
-      priorityClassName: system-node-critical
-      serviceAccountName: wasp
-      terminationGracePeriodSeconds: 5
-      volumes:
-        - hostPath:
-            path: /
-          name: host
-        - hostPath:
-            path: /
-          name: rootfs
-  updateStrategy:
-    type: RollingUpdate
-    rollingUpdate:
-      maxUnavailable: 10%
-      maxSurge: 0
-```
-
-Replace the image value with the image URL from the previous step.
-7. Deploy alerting rules by creating a PrometheusRule object. For example:
-
-```yaml
-apiVersion: monitoring.coreos.com/v1
-kind: PrometheusRule
-metadata:
-  labels:
-    tier: node
-    wasp.io: ""
-  name: wasp-rules
-  namespace: wasp
-spec:
-  groups:
-    - name: alerts.rules
-      rules:
-        - alert: NodeHighSwapActivity
-          annotations:
-            description: High swap activity detected at {{ $labels.instance }}. The rate
-              of swap out and swap in exceeds 200 in both operations in the last minute.
-              This could indicate memory pressure and may affect system performance.
-            runbook_url: https://github.com/openshift-virtualization/wasp-agent/tree/main/docs/runbooks/NodeHighSwapActivity.md
-            summary: High swap activity detected at {{ $labels.instance }}.
-          expr: rate(node_vmstat_pswpout[1m]) > 200 and rate(node_vmstat_pswpin[1m]) >
-            200
-          for: 1m
-          labels:
-            kubernetes_operator_component: kubevirt
-            kubernetes_operator_part_of: kubevirt
-            operator_health_impact: warning
-            severity: warning
-```
-
-8. Add the cluster-monitoring label to the wasp namespace by running the following command:
-
-```terminal
-$ oc label namespace wasp openshift.io/cluster-monitoring="true"
-```
-
-9. Enable memory overcommitment in OpenShift Virtualization by using the web console or the CLI.
+3. Enable memory overcommitment in OpenShift Virtualization by using the web console or the CLI.
 * Web console
 1. In the {product-title} web console, go to Virtualization -> Overview -> Settings -> General settings -> Memory density.
 2. Set Enable memory density to on.
@@ -297,7 +159,7 @@ hyperconverged.hco.kubevirt.io/kubevirt-hyperconverged patched
 1. To verify the deployment of wasp-agent, run the following command:
 
 ```terminal
-$ oc rollout status ds wasp-agent -n wasp
+$ oc rollout status ds wasp-agent -n openshift-cnv
 ```
 
 
@@ -350,25 +212,7 @@ If you no longer need memory overcommitment, you can remove the wasp-agent compo
 * You are logged in to the cluster with the cluster-admin role.
 * You have installed the OpenShift CLI (`oc`).
 
-1. Remove the wasp-agent DaemonSet:
-
-```terminal
-$ oc delete daemonset wasp-agent -n wasp
-```
-
-2. If deployed, remove the alerting rules:
-
-```terminal
-$ oc delete prometheusrule wasp-rules -n wasp
-```
-
-3. Optionally, delete the wasp namespace if no other resources depend on it:
-
-```terminal
-$ oc delete namespace wasp
-```
-
-4. Revert the memory overcommitment configuration:
+1. Revert the memory overcommitment configuration:
 
 ```terminal
 $ oc -n openshift-cnv patch HyperConverged/kubevirt-hyperconverged \
@@ -376,33 +220,25 @@ $ oc -n openshift-cnv patch HyperConverged/kubevirt-hyperconverged \
   -p='[{"op": "remove", "path": "/spec/higherWorkloadDensity"}]'
 ```
 
-5. Delete the MachineConfig that provisions swap memory:
+2. Delete the MachineConfig that provisions swap memory:
 
 ```terminal
 $ oc delete machineconfig 90-worker-swap
 ```
 
-6. Delete the associated KubeletConfig:
+3. Delete the associated KubeletConfig:
 
 ```terminal
 $ oc delete kubeletconfig custom-config
 ```
 
-7. Wait for the worker nodes to reconcile:
+4. Wait for the worker nodes to reconcile:
 
 ```terminal
 $ oc wait mcp worker --for condition=Updated=True --timeout=-1s
 ```
 
 
-* Confirm that the wasp-agent DaemonSet is removed:
-
-```terminal
-$ oc get daemonset -n wasp
-```
-
-
-No wasp-agent should be listed.
 * Confirm that swap is no longer enabled on a node:
 
 ```terminal
