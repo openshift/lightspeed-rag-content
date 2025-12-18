@@ -1,0 +1,347 @@
+# Monitoring pending workloads
+
+
+Red Hat build of Kueue provides the VisibilityOnDemand feature to monitor pending workloads. A workload is an application that runs to completion. It can be composed by one or multiple pods that, loosely or tightly coupled, as a whole, complete a task. A workload is the unit of admission in Red Hat build of Kueue.
+The VisibilityOnDemand feature provides the ability for batch administrators to monitor the pipeline of pending jobs in the cluster queue and the local queue and batch users just for local queue, and help users to estimate when their jobs will start.
+You can regulate inbound requests and high request volumes, and provide user permissions for viewing the pending workloads.
+
+# API Priority and Fairness
+
+Red&#160;Hat build of Kueue uses Kubernetes API Priority and Fairness (APF) To help manage pending workloads. APF is a flow control mechanism that allows you to define API-level policies to regulate inbound requests to the API server. It protects the API server from being overwhelmed by unexpectedly high request volume, while protecting critical traffic from the throttling effect on best-effort workloads.
+
+* API Priority and Fairness
+
+# Providing user permissions
+
+You can configure role-based access control (RBAC) objects for the users of your Red&#160;Hat build of Kueue deployment. These objects determine which types of users can create which types of Red&#160;Hat build of Kueue objects.
+
+You need to provide permissions to the users that require access to the specific APIs.
+
+* If the user needs access to the pending workloads from the ClusterQueue resource, a ClusterRoleBinding schema needs to be created referencing the ClusterRole kueue-batch-admin-role.
+* If the user needs access to the pending workloads from the LocalQueue resource, a RoleBinding schema needs to be created referencing the ClusterRole kueue-batch-user-role.
+
+* Configuring role-based permissions
+
+# Monitoring pending workloads on demand
+
+To test the monitoring of pending workloads, you must correctly configure both the ClusterQueue and the LocalQueue resources. After that, you can create jobs on that LocalQueue. Kueue manages the workload object created from the job so, when a job is submitted and saturates the ClusterQueue, its corresponding workloads can be seen in the list of pending workloads.
+
+* You have cluster administrator permissions.
+* The Red Hat build of Kueue Operator is installed on your cluster, and you have created a Kueue custom resource (CR).
+* You have installed the OpenShift CLI (`oc`).
+* The OpenShift CLI (`oc`) has communication with your cluster.
+
+The following procedure tells you how to install and test workload monitoring.
+
+1. Create the assets by running the following command:
+
+```terminal
+cat <<EOF| oc create -f -
+---
+apiVersion: kueue.x-k8s.io/v1beta1
+kind: ResourceFlavor
+metadata:
+  name: "default-flavor"
+---
+apiVersion: kueue.x-k8s.io/v1beta1
+kind: ClusterQueue
+metadata:
+  name: "cluster-queue"
+spec:
+  namespaceSelector: {} # match all.
+  resourceGroups:
+  - coveredResources: ["cpu", "memory"]
+    flavors:
+    - name: "default-flavor"
+      resources:
+      - name: "cpu"
+        nominalQuota: 9
+      - name: "memory"
+        nominalQuota: 36Gi
+---
+apiVersion: kueue.x-k8s.io/v1beta1
+kind: LocalQueue
+metadata:
+  namespace: "default"
+  name: "user-queue"
+spec:
+  clusterQueue: "cluster-queue"
+---
+EOF
+```
+
+2. Create the following file with the job manifest:
+
+```terminal
+cat >> job.yaml << EOF
+apiVersion: batch/v1
+kind: Job
+metadata:
+  generateName: sample-job-
+  namespace: default
+  labels:
+    kueue.x-k8s.io/queue-name: user-queue
+spec:
+  parallelism: 3
+  completions: 3
+  suspend: true
+  template:
+    spec:
+      containers:
+      - name: <example-job>
+        image: registry.k8s.io/e2e-test-images/agnhost:2.53
+        command: [ "/bin/sh" ]
+        args: [ "-c", "sleep 60" ]
+        resources:
+          requests:
+            cpu: "1"
+            memory: "200Mi"
+      restartPolicy: Never
+EOF
+```
+
+3. Label the default namespace to be managed by Kueue by running the following command:
+
+```terminal
+$ oc label namespace default kueue.openshift.io/managed=true
+```
+
+4. Create the six jobs by running the following command:
+
+```terminal
+for i in {1..6}; do oc create -f job.yaml; done
+```
+
+
+In this example, three of the jobs saturate the ClusterQueue resource and the other three jobs should be pending.
+
+## Viewing pending workloads in ClusterQueue
+
+To view all pending workloads at the cluster level, administrators can use the ClusterQueue object visibility endpoint of Kueue&#8217;s visibility API. This endpoint returns a list of all workloads currently waiting for admission by that ClusterQueue resource.
+
+1. To view pending workloads in ClusterQueue run the following command:
+
+```terminal
+$ oc get --raw "/apis/visibility.kueue.x-k8s.io/v1beta1/clusterqueues/cluster-queue/pendingworkloads"
+```
+
+Example output
+
+```yaml
+{
+  "kind": "PendingWorkloadsSummary",
+  "apiVersion": "visibility.kueue.x-k8s.io/v1beta1",
+  "metadata": {
+    "creationTimestamp": null
+  },
+  "items": [
+    {
+      "metadata": {
+        "name": "job-sample-job-jrjfr-8d56e",
+        "namespace": "default",
+        "creationTimestamp": "2023-12-05T15:42:03Z",
+        "ownerReferences": [
+          {
+            "apiVersion": "batch/v1",
+            "kind": "Job",
+            "name": "sample-job-jrjfr",
+            "uid": "5863cf0e-b0e7-43bf-a445-f41fa1abedfa"
+          }
+        ]
+      },
+      "priority": 0,
+      "localQueueName": "user-queue",
+      "positionInClusterQueue": 0,
+      "positionInLocalQueue": 0
+    },
+    {
+      "metadata": {
+        "name": "job-sample-job-jg9dw-5f1a3",
+        "namespace": "default",
+        "creationTimestamp": "2023-12-05T15:42:03Z",
+        "ownerReferences": [
+          {
+            "apiVersion": "batch/v1",
+            "kind": "Job",
+            "name": "sample-job-jg9dw",
+            "uid": "fd5d1796-f61d-402f-a4c8-cbda646e2676"
+          }
+        ]
+      },
+      "priority": 0,
+      "localQueueName": "user-queue",
+      "positionInClusterQueue": 1,
+      "positionInLocalQueue": 1
+    },
+    {
+      "metadata": {
+        "name": "job-sample-job-t9b8m-4e770",
+        "namespace": "default",
+        "creationTimestamp": "2023-12-05T15:42:03Z",
+        "ownerReferences": [
+          {
+            "apiVersion": "batch/v1",
+            "kind": "Job",
+            "name": "sample-job-t9b8m",
+            "uid": "64c26c73-6334-4d13-a1a8-38d99196baa5"
+          }
+        ]
+      },
+      "priority": 0,
+      "localQueueName": "user-queue",
+      "positionInClusterQueue": 2,
+      "positionInLocalQueue": 2
+    }
+  ]
+}
+```
+
+
+You can pass the following optional query parameters:
+limit <integer>:: 1000 is the default. Specifies the maximum number of pending workloads that should be fetched.
+offset <integer>:: 0 is the default. Specifies the position of the first pending workload that should be fetched, starting from 0.
+2. To view only one pending workload starting from position 0 in ClusterQueue run the following command:
+
+```terminal
+$ oc get --raw "/apis/visibility.kueue.x-k8s.io/v1beta1/clusterqueues/cluster-queue/pendingworkloads?limit=1&offset=0"
+```
+
+
+## Viewing pending workloads in LocalQueue
+
+To view the pending workloads submitted by a specific tenant within their namespace, users can query the LocalQueue resource visibility endpoint of Kueue&#8217;s visibility API. This provides an ordered list of their jobs waiting in that queue.
+
+1. To view pending workloads in LocalQueue run the following command:
+
+```terminal
+$ oc get --raw /apis/visibility.kueue.x-k8s.io/v1beta1/namespaces/default/localqueues/user-queue/pendingworkloads
+```
+
+Example output
+
+```yaml
+{
+  "kind": "PendingWorkloadsSummary",
+  "apiVersion": "visibility.kueue.x-k8s.io/v1beta1",
+  "metadata": {
+    "creationTimestamp": null
+  },
+  "items": [
+    {
+      "metadata": {
+        "name": "job-sample-job-jrjfr-8d56e",
+        "namespace": "default",
+        "creationTimestamp": "2023-12-05T15:42:03Z",
+        "ownerReferences": [
+          {
+            "apiVersion": "batch/v1",
+            "kind": "Job",
+            "name": "sample-job-jrjfr",
+            "uid": "5863cf0e-b0e7-43bf-a445-f41fa1abedfa"
+          }
+        ]
+      },
+      "priority": 0,
+      "localQueueName": "user-queue",
+      "positionInClusterQueue": 0,
+      "positionInLocalQueue": 0
+    },
+    {
+      "metadata": {
+        "name": "job-sample-job-jg9dw-5f1a3",
+        "namespace": "default",
+        "creationTimestamp": "2023-12-05T15:42:03Z",
+        "ownerReferences": [
+          {
+            "apiVersion": "batch/v1",
+            "kind": "Job",
+            "name": "sample-job-jg9dw",
+            "uid": "fd5d1796-f61d-402f-a4c8-cbda646e2676"
+          }
+        ]
+      },
+      "priority": 0,
+      "localQueueName": "user-queue",
+      "positionInClusterQueue": 1,
+      "positionInLocalQueue": 1
+    },
+    {
+      "metadata": {
+        "name": "job-sample-job-t9b8m-4e770",
+        "namespace": "default",
+        "creationTimestamp": "2023-12-05T15:42:03Z",
+        "ownerReferences": [
+          {
+            "apiVersion": "batch/v1",
+            "kind": "Job",
+            "name": "sample-job-t9b8m",
+            "uid": "64c26c73-6334-4d13-a1a8-38d99196baa5"
+          }
+        ]
+      },
+      "priority": 0,
+      "localQueueName": "user-queue",
+      "positionInClusterQueue": 2,
+      "positionInLocalQueue": 2
+    }
+  ]
+}
+```
+
+
+You can pass the following optional query parameters:
+limit <integer>:: 1000 is the default. Specifies the maximum number of pending workloads that should be fetched.
+offset <integer>:: 0 is the default. Specifies the position of the first pending workload that should be fetched, starting from 0.
+2. To view only one pending workload starting from position 0 in LocalQueue run the following command:
+
+```terminal
+$ oc get --raw "/apis/visibility.kueue.x-k8s.io/v1beta1/namespaces/default/localqueues/user-queue/pendingworkloads?limit=1&offset=0"
+```
+
+
+# Modifying monitoring settings
+
+Modify the monitoring settings according to your organization&#8217;s requirements to ensure users can access and view the pending workloads in a timely and reliable manner.
+
+This procedure tells you how to modify the resource flow control for the Red&#160;Hat build of Kueue VisibilityOnDemand feature. Modifications directly impact the system&#8217;s ability to handle concurrent requests for job visibility information.
+
+1. Edit the PriorityLevelConfiguration asset for VisibilityOnDemand on Kueue by running the following command:
+
+```terminal
+$ oc edit prioritylevelconfiguration kueue-visibility
+```
+
+2. Modify the nominalConcurrencyShares field in the PriorityLevelConfiguration asset by setting the value for kueue.openshift.io/allow-nominal-concurrency-shares-update  to true.
+
+The possible values you can specify for nominalConcurrencyShares are 0, 2 (the default) until 5. If you specify a value that is not acceptable (the value 1 or any value above 5), the default value 2, is enforced.
+
+See the following example:
+
+```yaml
+apiVersion: flowcontrol.apiserver.k8s.io/v1
+kind: PriorityLevelConfiguration
+metadata:
+  name: kueue-visibility
+  annotations:
+    kueue.openshift.io/allow-nominal-concurrency-shares-update: "false"
+spec:
+  limited:
+    borrowingLimitPercent: 0
+    lendablePercent: 90
+    limitResponse:
+      queuing:
+        handSize: 4
+        queueLengthLimit: 50
+        queues: 16
+      type: Queue
+    nominalConcurrencyShares: 2
+  type: Limited
+```
+
+
+The default value for kueue.openshift.io/allow-nominal-concurrency-shares-update is false. If you change the value of nominalConcurrencyShares to any value other than 2, then you must first change the value of kueue.openshift.io/allow-nominal-concurrency-shares-update to true. Otherwise, the value you assign for nominalConcurrencyShares will not take effect.
+3. Verify the value is kept by running the following command:
+
+```terminal
+$ oc get prioritylevelconfiguration kueue-visibility
+```

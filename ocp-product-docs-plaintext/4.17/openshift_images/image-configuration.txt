@@ -1,16 +1,21 @@
 # Image configuration resources (Classic)
 
 
-Use the following procedure to configure image registries.
+You can configure an image registry to store and serve container images.
 
 # Image controller configuration parameters
 
-The image.config.openshift.io/cluster resource holds cluster-wide information about how to handle images. The canonical, and only valid name is cluster. Its spec offers the following configuration parameters.
+You can configure certain parameters that handle images cluster-wide in the spec of the image.config.openshift.io/cluster resource.
 
 
 [NOTE]
 ----
-Parameters such as DisableScheduledImport, MaxImagesBulkImportedPerRepository, MaxScheduledImportsPerMinute, ScheduledImageImportMinimumIntervalSeconds, InternalRegistryHostname are not configurable.
+The following non-configurable parameters are not listed in the table:
+* DisableScheduledImport
+* MaxImagesBulkImportedPerRepository
+* MaxScheduledImportsPerMinute
+* ScheduledImageImportMinimumIntervalSeconds
+* InternalRegistryHostname
 ----
 
 
@@ -18,28 +23,47 @@ Parameters such as DisableScheduledImport, MaxImagesBulkImportedPerRepository, M
 
 [WARNING]
 ----
-When the allowedRegistries parameter is defined, all registries, including registry.redhat.io and quay.io registries and the default OpenShift image registry, are blocked unless explicitly listed. When using the parameter, to prevent pod failure, add all registries including the registry.redhat.io and quay.io registries and the internalRegistryHostname to the allowedRegistries list, as they are required by payload images within your environment. For disconnected clusters, mirror registries should also be added.
+When you define the allowedRegistries parameter, all registries, including registry.redhat.io, quay.io, and the default OpenShift image registry, are blocked unless explicitly listed. You must add all of the registries that your payload images require to the allowedRegistries list. For example, list registry.redhat.io, quay.io, and the internalRegistryHostname registries. For disconnected clusters, you must also add your mirror registries. Otherwise, you risk pod failure.
 ----
 
 The status field of the image.config.openshift.io/cluster resource holds observed values from the cluster.
 
 
 
-# Configuring image registry settings
+# Machine Config Operator behavior and registry changes
 
-You can configure image registry settings by editing the image.config.openshift.io/cluster custom resource (CR).
-When changes to the registry are applied to the image.config.openshift.io/cluster CR, the Machine Config Operator (MCO) performs the following sequential actions:
+The Machine Config Operator (MCO) watches the image.config.openshift.io/cluster custom resource (CR) for any changes to registries and takes specific steps when the registry changes.
 
-1. Cordons the node
+When changes to the registry are applied to the image.config.openshift.io/cluster CR, the MCO performs the following sequential actions:
+
+1. Cordons the node; certain parameters result in drained nodes, and others do not
 2. Applies changes by restarting CRI-O
 3. Uncordons the node
 
 [NOTE]
 ----
-The MCO does not restart nodes when it detects changes.
+The MCO does not restart nodes when it detects changes. During this period, you might experience service unavailability.
 ----
 
-1. Edit the image.config.openshift.io/cluster custom resource:
+## When allowing and blocking registry sources
+
+The MCO watches the image.config.openshift.io/cluster resource for any changes to the registries. When the MCO detects a change, it triggers a rollout on nodes in machine config pool (MCP). The allowed registries list is used to update the image signature policy in the /etc/containers/policy.json file on each node. Changes to the /etc/containers/policy.json file do not require the node to drain.
+
+## When using the containerRuntimeSearchRegistries parameter
+
+After the nodes return to the Ready state, if the containerRuntimeSearchRegistries parameter is added, the MCO creates a file in the /etc/containers/registries.conf.d directory on each node with the listed registries. The file overrides the default list of unqualified search registries in the /etc/containers/registries.conf file. There is no way to fall back to the default list of unqualified search registries.
+
+
+[IMPORTANT]
+----
+The containerRuntimeSearchRegistries parameter works only with the Podman and CRI-O container engines. The registries in the list can be used only in pod specs, not in builds and image streams.
+----
+
+# Configuring image registry settings
+
+You can configure image registry settings by editing the image.config.openshift.io/cluster custom resource (CR).
+
+1. Edit the image.config.openshift.io/cluster CR by running the following command:
 
 ```terminal
 $ oc edit image.config.openshift.io/cluster
@@ -50,7 +74,7 @@ The following is an example image.config.openshift.io/cluster CR:
 
 ```yaml
 apiVersion: config.openshift.io/v1
-kind: Image 1
+kind: Image
 metadata:
   annotations:
     release.openshift.io/create-only: "true"
@@ -61,12 +85,12 @@ metadata:
   selfLink: /apis/config.openshift.io/v1/images/cluster
   uid: e34555da-78a9-11e9-b92b-06d6c7da38dc
 spec:
-  allowedRegistriesForImport: 2
+  allowedRegistriesForImport:
     - domainName: quay.io
       insecure: false
-  additionalTrustedCA: 3
+  additionalTrustedCA:
     name: myconfigmap
-  registrySources: 4
+  registrySources:
     allowedRegistries:
     - example.com
     - quay.io
@@ -79,18 +103,14 @@ status:
   internalRegistryHostname: image-registry.openshift-image-registry.svc:5000
 ```
 
-Image: Holds cluster-wide information about how to handle images. The canonical, and only valid name is cluster.
-allowedRegistriesForImport: Limits the container image registries from which normal users may import images. Set this list to the registries that you trust to contain valid images, and that you want applications to be able to import from. Users with permission to create images or ImageStreamMappings from the API are not affected by this policy. Typically only cluster administrators have the appropriate permissions.
-additionalTrustedCA: A reference to a config map containing additional certificate authorities (CA) that are trusted during image stream import, pod image pull, openshift-image-registry pullthrough, and builds. The namespace for this config map is openshift-config. The format of the config map is to use the registry hostname as the key, and the PEM certificate as the value, for each additional registry CA to trust.
-registrySources: Contains configuration that determines whether the container runtime allows or blocks individual registries when accessing images for builds and pods. Either the allowedRegistries parameter or the blockedRegistries parameter can be set, but not both. You can also define whether or not to allow access to insecure registries or registries that allow registries that use image short names. This example uses the allowedRegistries parameter, which defines the registries that are allowed to be used. The insecure registry insecure.com is also allowed. The registrySources parameter does not contain configuration for the internal cluster registry.
 
 [NOTE]
 ----
-When the allowedRegistries parameter is defined, all registries, including the registry.redhat.io and quay.io registries and the default OpenShift image registry, are blocked unless explicitly listed. If you use the parameter, to prevent pod failure, you must add the registry.redhat.io and quay.io registries and the internalRegistryHostname to the allowedRegistries list, as they are required by payload images within your environment. Do not add the registry.redhat.io and quay.io registries to the blockedRegistries list.
-When using the allowedRegistries, blockedRegistries, or insecureRegistries parameter, you can specify an individual repository within a registry. For example: reg1.io/myrepo/myapp:latest.
-Insecure external registries should be avoided to reduce possible security risks.
+When you use the allowedRegistries, blockedRegistries, or insecureRegistries parameter, you can specify an individual repository within a registry. For example: reg1.io/myrepo/myapp:latest.
+Avoid insecure external registries to reduce possible security risks.
 ----
-2. To check that the changes are applied, list your nodes:
+
+1. To verify your changes, list your nodes by running the following command:
 
 ```terminal
 $ oc get nodes
@@ -109,19 +129,21 @@ ip-10-0-223-123.us-east-2.compute.internal   Ready                      control-
 ```
 
 
-## Adding specific registries
+## Adding specific registries to an allowlist
 
-You can add a list of registries, and optionally an individual repository within a registry, that are permitted for image pull and push actions by editing the image.config.openshift.io/cluster custom resource (CR). Red Hat OpenShift Container Platform applies the changes to this CR to all nodes in the cluster.
+You can add an allowlist of registries, or an individual repository, within a registry for image pull and push actions by editing the image.config.openshift.io/cluster custom resource (CR).
 
-When pulling or pushing images, the container runtime searches the registries listed under the registrySources parameter in the image.config.openshift.io/cluster CR. If you created a list of registries under the allowedRegistries parameter, the container runtime searches only those registries. Registries not in the list are blocked.
+Red Hat OpenShift Container Platform applies the changes to this CR to all nodes in the cluster.
+
+When pulling or pushing images, the container runtime searches the registries listed under the registrySources parameter in the image.config.openshift.io/cluster CR. If you created a list of registries under the allowedRegistries parameter, the container runtime searches only those registries. Registries not in your allowlist are blocked.
 
 
 [WARNING]
 ----
-When the allowedRegistries parameter is defined, all registries, including the registry.redhat.io and quay.io registries and the default OpenShift image registry, are blocked unless explicitly listed. If you use the parameter, to prevent pod failure, add the registry.redhat.io and quay.io registries and the internalRegistryHostname to the allowedRegistries list, as they are required by payload images within your environment. For disconnected clusters, mirror registries should also be added.
+When you define the allowedRegistries parameter, all registries, including registry.redhat.io, quay.io, and the default OpenShift image registry, are blocked unless explicitly listed. You must add all of the registries that your payload images require to the allowedRegistries list. For example, list registry.redhat.io, quay.io, and the internalRegistryHostname registries. For disconnected clusters, you must also add your mirror registries. Otherwise, you risk pod failure.
 ----
 
-* Edit the image.config.openshift.io/cluster custom resource:
+* Edit the image.config.openshift.io/cluster custom resource by running the following command:
 
 ```terminal
 $ oc edit image.config.openshift.io/cluster
@@ -143,8 +165,8 @@ metadata:
   selfLink: /apis/config.openshift.io/v1/images/cluster
   uid: e34555da-78a9-11e9-b92b-06d6c7da38dc
 spec:
-  registrySources: 1
-    allowedRegistries: 2
+  registrySources:
+    allowedRegistries:
     - example.com
     - quay.io
     - registry.redhat.io
@@ -154,17 +176,7 @@ status:
   internalRegistryHostname: image-registry.openshift-image-registry.svc:5000
 ```
 
-Contains configurations that determine how the container runtime should treat individual registries when accessing images for builds and pods. It does not contain configuration for the internal cluster registry.
-Specify registries, and optionally a repository in that registry, to use for image pull and push actions. All other registries are blocked.
-
-[NOTE]
-----
-Either the allowedRegistries parameter or the blockedRegistries parameter can be set, but not both.
-----
-
-The Machine Config Operator (MCO) watches the image.config.openshift.io/cluster resource for any changes to the registries. When the MCO detects a change, it drains the nodes, applies the change, and uncordons the nodes. After the nodes return to the Ready state, the allowed registries list is used to update the image signature policy in the /etc/containers/policy.json file on each node.
-
-* Enter the following command to obtain a list of your nodes:
+1. After you make your configuration updates, list your nodes by running the following command:
 
 ```terminal
 $ oc get nodes
@@ -178,26 +190,29 @@ NAME               STATUS   ROLES                  AGE   VERSION
 <node_name>        Ready    control-plane,master   37m   v1.27.8+4fab27b
 ```
 
-1. Run the following command to enter debug mode on the node:
+2. Enter debug mode on the node by running the following command:
 
 ```terminal
 $ oc debug node/<node_name>
 ```
 
-2. When prompted, enter chroot /host into the terminal:
+
+Replace &lt;node_name&gt; with the name of your node.
+3. When prompted, enter chroot /host into the terminal:
 
 ```terminal
 sh-4.4# chroot /host
 ```
 
-3. Enter the following command to check that the registries have been added to the policy file:
+
+1. Check that the registries are in the policy file by running the following command:
 
 ```terminal
 sh-5.1# cat /etc/containers/policy.json | jq '.'
 ```
 
 
-The following policy indicates that only images from the example.com, quay.io, and registry.redhat.io registries are permitted for image pulls and pushes:
+The following policy indicates that only images from the example.com, quay.io, and registry.redhat.io registries are accessible for image pulls and pushes:
 Example image signature policy file
 
 ```text
@@ -306,17 +321,19 @@ spec:
 
 ## Blocking specific registries
 
-You can block any registry, and optionally an individual repository within a registry, by editing the image.config.openshift.io/cluster custom resource (CR). Red Hat OpenShift Container Platform applies the changes to this CR to all nodes in the cluster.
+You can block any registry, or an individual repository, within a registry by editing the image.config.openshift.io/cluster custom resource (CR).
+
+Red Hat OpenShift Container Platform applies the changes to this CR to all nodes in the cluster.
 
 When pulling or pushing images, the container runtime searches the registries listed under the registrySources parameter in the image.config.openshift.io/cluster CR. If you created a list of registries under the blockedRegistries parameter, the container runtime does not search those registries. All other registries are allowed.
 
 
 [WARNING]
 ----
-To prevent pod failure, do not add the registry.redhat.io and quay.io registries to the blockedRegistries list, as they are required by payload images within your environment.
+To prevent pod failure, do not add the registry.redhat.io and quay.io registries to the blockedRegistries list. Payload images within your environment require access to these registries.
 ----
 
-* Edit the image.config.openshift.io/cluster custom resource:
+* Edit the image.config.openshift.io/cluster custom resource by running the following command:
 
 ```terminal
 $ oc edit image.config.openshift.io/cluster
@@ -338,25 +355,17 @@ metadata:
   selfLink: /apis/config.openshift.io/v1/images/cluster
   uid: e34555da-78a9-11e9-b92b-06d6c7da38dc
 spec:
-  registrySources: 1
-    blockedRegistries: 2
+  registrySources:
+    blockedRegistries:
     - untrusted.com
     - reg1.io/myrepo/myapp:latest
 status:
   internalRegistryHostname: image-registry.openshift-image-registry.svc:5000
 ```
 
-Contains configurations that determine how the container runtime should treat individual registries when accessing images for builds and pods. It does not contain configuration for the internal cluster registry.
-Specify registries, and optionally a repository in that registry, that should not be used for image pull and push actions. All other registries are allowed.
 
-[NOTE]
-----
-Either the blockedRegistries registry or the allowedRegistries registry can be set, but not both.
-----
-
-The Machine Config Operator (MCO) watches the image.config.openshift.io/cluster resource for any changes to the registries. When the MCO detects a change, it drains the nodes, applies the change, and uncordons the nodes. After the nodes return to the Ready state, changes to the blocked registries appear in the /etc/containers/registries.conf file on each node. During this period, you might experience service unavailability.
-
-* Enter the following command to obtain a list of your nodes:
+You cannot set both the blockedRegistries and allowedRegistries parameters. You must select one or the other.
+1. Get a list of your nodes by running the following command:
 
 ```terminal
 $ oc get nodes
@@ -370,26 +379,29 @@ NAME                STATUS   ROLES                  AGE   VERSION
 <node_name>         Ready    control-plane,master   37m   v1.27.8+4fab27b
 ```
 
-1. Run the following command to enter debug mode on the node:
+2. Run the following command to enter debug mode on the node:
 
 ```terminal
 $ oc debug node/<node_name>
 ```
 
-2. When prompted, enter chroot /host into the terminal:
+
+Replace &lt;node_name&gt; with the name of the node you want details about.
+3. When prompted, enter chroot /host into the terminal:
 
 ```terminal
 sh-4.4# chroot /host
 ```
 
-3. Enter the following command to check that the registries have been added to the policy file:
+
+1. Verify that the registries are in the policy file by running the following command:
 
 ```terminal
 sh-5.1# cat etc/containers/registries.conf
 ```
 
 
-The following example indicates that images from the untrusted.com registry are prevented for image pulls and pushes:
+The following example indicates that images from the untrusted.com registry are blocked for image pulls and pushes:
 Example output
 
 ```text
@@ -402,9 +414,10 @@ unqualified-search-registries = ["registry.access.redhat.com", "docker.io"]
 ```
 
 
-### Blocking a payload registry
+## Blocking a payload registry
 
-In a mirroring configuration, you can block upstream payload registries in a disconnected environment using a ImageContentSourcePolicy (ICSP) object. The following example procedure demonstrates how to block the quay.io/openshift-payload payload registry.
+In a mirroring configuration, you can block upstream payload registries in a disconnected environment by using a ImageContentSourcePolicy (ICSP) object.
+The following example procedure demonstrates how to block the quay.io/openshift-payload payload registry.
 
 1. Create the mirror configuration using an ImageContentSourcePolicy (ICSP) object to mirror the payload to a registry in your instance. The following example ICSP file mirrors the payload internal-mirror.io/openshift-payload:
 
@@ -420,7 +433,7 @@ spec:
     source: quay.io/openshift-payload
 ```
 
-2. After the object deploys onto your nodes, verify that the mirror configuration is set by checking the /etc/containers/registries.conf file:
+2. After the object deploys onto your nodes, verify that the mirror configuration is set by checking the /etc/containers/registries.conf custom resource (CR):
 Example output
 
 ```terminal
@@ -433,13 +446,13 @@ Example output
   location = "internal-mirror.io/openshift-payload"
 ```
 
-3. Use the following command to edit the image.config.openshift.io custom resource file:
+3. Use the following command to edit the image.config.openshift.io CR:
 
 ```terminal
 $ oc edit image.config.openshift.io cluster
 ```
 
-4. To block the payload registry, add the following configuration to the image.config.openshift.io custom resource file:
+4. To block the payload registry, add the following configuration to the image.config.openshift.io CR:
 
 ```yaml
 spec:
@@ -450,7 +463,7 @@ spec:
 
 
 * Verify that the upstream payload registry is blocked by checking the /etc/containers/registries.conf file on the node.
-Example output
+Example /etc/containers/registries.conf file
 
 ```terminal
 [[registry]]
@@ -466,17 +479,26 @@ Example output
 
 ## Allowing insecure registries
 
-You can add insecure registries, and optionally an individual repository within a registry, by editing the image.config.openshift.io/cluster custom resource (CR). Red Hat OpenShift Container Platform applies the changes to this CR to all nodes in the cluster.
+You can add insecure registries, or an individual repository, within a registry by editing the image.config.openshift.io/cluster custom resource (CR).
 
-Registries that do not use valid SSL certificates or do not require HTTPS connections are considered insecure.
+Red Hat OpenShift Container Platform applies the changes to this CR to all nodes in the cluster. Registries that do not use valid SSL certificates or do not require HTTPS connections are considered insecure.
+
+
+[IMPORTANT]
+----
+Avoid insecure external registries to reduce possible security risks.
+----
+
++
+:leveloffset: +1
 
 
 [WARNING]
 ----
-Insecure external registries should be avoided to reduce possible security risks.
+When you define the allowedRegistries parameter, all registries, including registry.redhat.io, quay.io, and the default OpenShift image registry, are blocked unless explicitly listed. You must add all of the registries that your payload images require to the allowedRegistries list. For example, list registry.redhat.io, quay.io, and the internalRegistryHostname registries. For disconnected clusters, you must also add your mirror registries. Otherwise, you risk pod failure.
 ----
 
-* Edit the image.config.openshift.io/cluster custom resource:
+* Edit the image.config.openshift.io/cluster custom resource (CR) by running the following command:
 
 ```terminal
 $ oc edit image.config.openshift.io/cluster
@@ -498,40 +520,30 @@ metadata:
   selfLink: /apis/config.openshift.io/v1/images/cluster
   uid: e34555da-78a9-11e9-b92b-06d6c7da38dc
 spec:
-  registrySources: 1
-    insecureRegistries: 2
+  registrySources:
+    insecureRegistries:
     - insecure.com
     - reg4.io/myrepo/myapp:latest
     allowedRegistries:
     - example.com
     - quay.io
     - registry.redhat.io
-    - insecure.com 3
+    - insecure.com
     - reg4.io/myrepo/myapp:latest
     - image-registry.openshift-image-registry.svc:5000
 status:
   internalRegistryHostname: image-registry.openshift-image-registry.svc:5000
 ```
 
-Contains configurations that determine how the container runtime should treat individual registries when accessing images for builds and pods. It does not contain configuration for the internal cluster registry.
-Specify an insecure registry. You can specify a repository in that registry.
-Ensure that any insecure registries are included in the allowedRegistries list.
 
-[NOTE]
-----
-When the allowedRegistries parameter is defined, all registries, including the registry.redhat.io and quay.io registries and the default OpenShift image registry, are blocked unless explicitly listed. If you use the parameter, to prevent pod failure, add all registries including the registry.redhat.io and quay.io registries and the internalRegistryHostname to the allowedRegistries list, as they are required by payload images within your environment. For disconnected clusters, mirror registries should also be added.
-----
-
-The Machine Config Operator (MCO) watches the image.config.openshift.io/cluster CR for any changes to the registries, then drains and uncordons the nodes when it detects changes. After the nodes return to the Ready state, changes to the insecure and blocked registries appear in the /etc/containers/registries.conf file on each node.
-
-* To check that the registries have been added to the policy file, use the following command on a node:
+* Check that the registries are added to the policy file by running the following command on a node:
 
 ```terminal
 $ cat /etc/containers/registries.conf
 ```
 
 
-The following example indicates that images from the insecure.com registry is insecure and is allowed for image pulls and pushes.
+The following example indicates that images from the insecure.com registry is insecure and are allowed for image pulls and pushes.
 Example output
 
 ```terminal
@@ -544,29 +556,41 @@ unqualified-search-registries = ["registry.access.redhat.com", "docker.io"]
 ```
 
 
-## Adding registries that allow image short names
+# About adding registries that allow image short names
 
-You can add registries to search for an image short name by editing the image.config.openshift.io/cluster custom resource (CR). Red Hat OpenShift Container Platform applies the changes to this CR to all nodes in the cluster.
+With an image short name, you can search for images without including the fully qualified domain name in the pull spec parameter.
 
-An image short name enables you to search for images without including the fully qualified domain name in the pull spec. For example, you could use rhel7/etcd instead of registry.access.redhat.com/rhe7/etcd.
+For example, you could use rhel7/etcd instead of registry.access.redhat.com/rhe7/etcd. You can add registries to search for an image short name by editing the image.config.openshift.io/cluster custom resource (CR).
 
-You might use short names in situations where using the full path is not practical. For example, if your cluster references multiple internal registries whose DNS changes frequently, you would need to update the fully qualified domain names in your pull specs with each change. In this case, using an image short name might be beneficial.
+You might use short names in situations where using the full path is not practical. For example, if your cluster references multiple internal registries whose DNS changes often, you would need to update the fully qualified domain names in your pull specs with each change. In this case, using an image short name might be beneficial.
 
 When pulling or pushing images, the container runtime searches the registries listed under the registrySources parameter in the image.config.openshift.io/cluster CR. If you created a list of registries under the containerRuntimeSearchRegistries parameter, when pulling an image with a short name, the container runtime searches those registries.
+
+## When not to use image short names
+
+Using image short names with public registries is strongly discouraged because the image might not deploy if the public registry requires authentication. Use fully-qualified image names with public registries.
+
+Red&#160;Hat internal or private registries typically support the use of image short names.
+
+You cannot list multiple public registries under the containerRuntimeSearchRegistries parameter if each public registry requires different credentials and a cluster does not list the public registry in the global pull secret.
+
+For a public registry that requires authentication, you can use an image short name only if the registry has its credentials stored in the global pull secret.
 
 
 [WARNING]
 ----
-Using image short names with public registries is strongly discouraged because the image might not deploy if the public registry requires authentication. Use fully-qualified image names with public registries.
-Red Hat internal or private registries typically support the use of image short names.
 If you list public registries under the containerRuntimeSearchRegistries parameter (including the registry.redhat.io, docker.io, and quay.io registries), you expose your credentials to all the registries on the list, and you risk network and registry attacks. Because you can only have one pull secret for pulling images, as defined by the global pull secret, that secret is used to authenticate against every registry in that list. Therefore, if you include public registries in the list, you introduce a security risk.
-You cannot list multiple public registries under the containerRuntimeSearchRegistries parameter if each public registry requires different credentials and a cluster does not list the public registry in the global pull secret.
-For a public registry that requires authentication, you can use an image short name only if the registry has its credentials stored in the global pull secret.
 ----
 
-The Machine Config Operator (MCO) watches the image.config.openshift.io/cluster resource for any changes to the registries. When the MCO detects a change, it drains the nodes, applies the change, and uncordons the nodes. During this period, you might experience service unavailability. After the nodes return to the Ready state, if the containerRuntimeSearchRegistries parameter is added, the MCO creates a file in the /etc/containers/registries.conf.d directory on each node with the listed registries. The file overrides the default list of unqualified search registries in the /etc/containers/registries.conf file. There is no way to fall back to the default list of unqualified search registries.
+## Adding registries that allow image short names
 
-The containerRuntimeSearchRegistries parameter works only with the Podman and CRI-O container engines. The registries in the list can be used only in pod specs, not in builds and image streams.
+You can add registries to search for an image short name by editing the image.config.openshift.io/cluster custom resource (CR). Red Hat OpenShift Container Platform applies the changes to this CR to all nodes in the cluster.
+
+
+[WARNING]
+----
+When you define the allowedRegistries parameter, all registries, including registry.redhat.io, quay.io, and the default OpenShift image registry, are blocked unless explicitly listed. You must add all of the registries that your payload images require to the allowedRegistries list. For example, list registry.redhat.io, quay.io, and the internalRegistryHostname registries. For disconnected clusters, you must also add your mirror registries. Otherwise, you risk pod failure.
+----
 
 * Edit the image.config.openshift.io/cluster custom resource:
 
@@ -596,11 +620,11 @@ spec:
   additionalTrustedCA:
     name: myconfigmap
   registrySources:
-    containerRuntimeSearchRegistries: 1
+    containerRuntimeSearchRegistries:
     - reg1.io
     - reg2.io
     - reg3.io
-    allowedRegistries: 2
+    allowedRegistries:
     - example.com
     - quay.io
     - registry.redhat.io
@@ -613,15 +637,7 @@ status:
   internalRegistryHostname: image-registry.openshift-image-registry.svc:5000
 ```
 
-Specify registries to use with image short names. You should use image short names with only internal or private registries to reduce possible security risks.
-Ensure that any registries listed under containerRuntimeSearchRegistries are included in the allowedRegistries list.
-
-[NOTE]
-----
-When the allowedRegistries parameter is defined, all registries, including the registry.redhat.io and quay.io registries and the default OpenShift image registry, are blocked unless explicitly listed. If you use this parameter, to prevent pod failure, add all registries including the registry.redhat.io and quay.io registries and the internalRegistryHostname to the allowedRegistries list, as they are required by payload images within your environment. For disconnected clusters, mirror registries should also be added.
-----
-
-* Enter the following command to obtain a list of your nodes:
+1. Get a list of your nodes by running the following command:
 
 ```terminal
 $ oc get nodes
@@ -635,19 +651,20 @@ NAME                STATUS   ROLES                  AGE   VERSION
 <node_name>         Ready    control-plane,master   37m   v1.27.8+4fab27b
 ```
 
-1. Run the following command to enter debug mode on the node:
+2. Run the following command to enter debug mode on the node:
 
 ```terminal
 $ oc debug node/<node_name>
 ```
 
-2. When prompted, enter chroot /host into the terminal:
+3. When prompted, enter chroot /host into the terminal:
 
 ```terminal
 sh-4.4# chroot /host
 ```
 
-3. Enter the following command to check that the registries have been added to the policy file:
+
+1. Verify that registries are added to the policy file by running the following command:
 
 ```terminal
 sh-5.1# cat /etc/containers/registries.conf.d/01-image-searchRegistries.conf
@@ -662,11 +679,12 @@ unqualified-search-registries = ['reg1.io', 'reg2.io', 'reg3.io']
 
 ## Configuring additional trust stores for image registry access
 
-You can update an image.config.openshift.io/cluster custom resource (CR) to include a reference to a config map that includes additional certificate authorities (CAs). You must ensure that these CAs are trusted during image registry access. The config map key is the hostname of a registry with the port for which this CA is to be trusted. The Privacy-Enhanced Mail (PEM) certificate content is the value, for each additional registry CA to trust.
+You can add references to a config map that has additional certificate authorities (CAs) to be trusted during image registry access to the image.config.openshift.io/cluster custom resource (CR).
 
-* Ensure that a CA is PEM-encoded.
+* The certificate authorities (CAs) must be PEM-encoded.
 
-1. Create a config map in the openshift-config namespace. The following example configurations show defined image registry CA that exists in a config map:
+1. Create a config map in the openshift-config namespace, then and use the config map name in the AdditionalTrustedCA parameter of the image.config.openshift.io CR. This adds CAs that should be trusted when the cluster contacts external image registries.
+Image registry CA config map example
 
 ```yaml
 apiVersion: v1
@@ -686,8 +704,11 @@ data:
 
 
 where:
-registry-with-port.example.com..5000:: If the registry has the port, : should be replaced with &#8230;&#8203;
-2. Configure an additional CA. Ensure that you specify the name of the CA in the AdditionalTrustedCA` parameter of the image.config.openshift.io CR. You can then provide additional CAs that must be trusted when contacting external registries.
+data:registry.example.com::: An example hostname of a registry for which this CA is to be trusted.
+data:registry-with-port.example.com..5000::: An example hostname of a registry with the port for which this CA is to be trusted. If the registry has a port, such as registry-with-port.example.com:5000, : must be replaced with &#8230;&#8203;
+
+The PEM certificate content is the value for each additional registry CA to trust.
+2. Optional. Configure an additional CA by running the following command:
 
 ```terminal
 $ oc create configmap registry-config --from-file=<external_registry_address>=ca.crt -n openshift-config
@@ -708,7 +729,7 @@ spec:
 
 # Understanding image registry repository mirroring
 
-Setting up container registry repository mirroring enables you to perform the following tasks:
+By setting up container registry repository mirroring, you can perform the following tasks:
 
 * Configure your Red Hat OpenShift Container Platform cluster to redirect requests to pull images from a repository on a source image registry and have it resolved by a repository on a mirrored image registry.
 * Identify multiple mirrored repositories for each target repository, to make sure that if one mirror is down, another can be used.
@@ -721,7 +742,7 @@ Repository mirroring in Red Hat OpenShift Container Platform includes the follow
 * The mirror information you enter is added to the /etc/containers/registries.conf file on every node in the Red Hat OpenShift Container Platform cluster.
 * When a node makes a request for an image from the source repository, it tries each mirrored repository in turn until it finds the requested content. If all mirrors fail, the cluster tries the source repository. If successful, the image is pulled to the node.
 
-Setting up repository mirroring can be done in the following ways:
+You can set up repository mirroring in the following ways:
 
 * At Red Hat OpenShift Container Platform installation:
 
@@ -735,14 +756,14 @@ If you did not configure mirroring during Red Hat OpenShift Container Platform i
 
 [IMPORTANT]
 ----
-Using an ImageContentSourcePolicy (ICSP) object to configure repository mirroring is a deprecated feature. Deprecated functionality is still included in Red Hat OpenShift Container Platform and continues to be supported; however, it will be removed in a future release of this product and is not recommended for new deployments. If you have existing YAML files that you used to create ImageContentSourcePolicy objects, you can use the oc adm migrate icsp command to convert those files to an ImageDigestMirrorSet YAML file. For more information, see "Converting ImageContentSourcePolicy (ICSP) files for image registry repository mirroring" in the following section.
+Using an ImageContentSourcePolicy (ICSP) object to configure repository mirroring is a deprecated feature. Deprecated functionality is still included in Red Hat OpenShift Container Platform and continues to be supported. It will be removed in a future release and is not recommended for new deployments.
+If you have existing YAML files that you used to create ImageContentSourcePolicy objects, you can use the oc adm migrate icsp command to convert those files to a ImageDigestMirrorSet YAML files. For more information, see "Converting ImageContentSourcePolicy (ICSP) files for image registry repository mirroring".
 ----
 
 Each of these custom resource objects identify the following information:
 
 * The source of the container image repository you want to mirror.
 * A separate entry for each mirror repository you want to offer the content
-requested from the source repository.
 
 Note the following actions and how they affect node drain behavior:
 
@@ -763,17 +784,15 @@ Note the following actions and how they affect node drain behavior:
 * The addition of items to the unqualified-search-registries list.
 ----
 
-For new clusters, you can use IDMS, ITMS, and ICSP CRs objects as desired. However, using IDMS and ITMS is recommended.
+For new clusters, you can use IDMS, ITMS, and ICSP CRs objects as needed. However, using IDMS and ITMS is recommended.
 
-If you upgraded a cluster, any existing ICSP objects remain stable, and both IDMS and ICSP objects are supported. Workloads using ICSP objects continue to function as expected. However, if you want to take advantage of the fallback policies introduced in the IDMS CRs, you can migrate current workloads to IDMS objects by using the oc adm migrate icsp command as shown in the Converting ImageContentSourcePolicy (ICSP) files for image registry repository mirroring section that follows. Migrating to IDMS objects does not require a cluster reboot.
+If you upgraded a cluster, any existing ICSP objects remain stable, and both IDMS and ICSP objects are supported. Workloads that use ICSP objects continue to function as expected. However, if you want to take advantage of the fallback policies introduced in the IDMS CRs, you can migrate current workloads to IDMS objects by using the oc adm migrate icsp command as shown in the Converting ImageContentSourcePolicy (ICSP) files for image registry repository mirroring section that follows. Migrating to IDMS objects does not require a cluster reboot.
 
 
 [NOTE]
 ----
 If your cluster uses an ImageDigestMirrorSet, ImageTagMirrorSet, or ImageContentSourcePolicy object to configure repository mirroring, you can use only global pull secrets for mirrored registries. You cannot add a pull secret to a project.
 ----
-
-* For more information about global pull secrets, see Updating the global cluster pull secret.
 
 ## Configuring image registry repository mirroring
 
@@ -782,10 +801,11 @@ You can create postinstallation mirror configuration custom resources (CR) to re
 * Access to the cluster as a user with the cluster-admin role.
 
 1. Configure mirrored repositories, by either:
-* Setting up a mirrored repository with Red Hat Quay, as described in Red Hat Quay Repository Mirroring. Using Red Hat Quay allows you to copy images from one repository to another and also automatically sync those repositories repeatedly over time.
+* Setting up a mirrored repository with Red Hat Quay. You can copy images from one repository to another and also automatically sync those repositories repeatedly over time by using Red Hat Quay.
+* Red Hat Quay Repository Mirroring
 * Using a tool such as skopeo to copy images manually from the source repository to the mirrored repository.
 
-For example, after installing the skopeo RPM package on a Red Hat Enterprise Linux (RHEL) 7 or RHEL 8 system, use the skopeo command as shown in this example:
+For example, after installing the skopeo RPM package on a {op-system-base-full system}, use the skopeo command as shown in the following example:
 
 ```terminal
 $ skopeo copy --all \
@@ -794,62 +814,44 @@ docker://example.io/example/ubi-minimal
 ```
 
 
-In this example, you have a container image registry that is named example.io with an image repository named example to which you want to copy the ubi9/ubi-minimal image from registry.access.redhat.com. After you create the mirrored registry, you can configure your Red Hat OpenShift Container Platform cluster to redirect requests made of the source repository to the mirrored repository.
-2. Create a postinstallation mirror configuration CR, by using one of the following examples:
+In this example, you have a container image registry named example.io and image repository named example. You want to copy the ubi9/ubi-minimal image from registry.access.redhat.com to example.io. After you create the mirrored registry, you can configure your Red Hat OpenShift Container Platform cluster to redirect requests made to the source repository to the mirrored repository.
+2. Create a postinstallation mirror configuration custom resource (CR), by using one of the following examples:
 * Create an ImageDigestMirrorSet or ImageTagMirrorSet CR, as needed, replacing the source and mirrors with your own registry and repository pairs and images:
 
 ```yaml
-apiVersion: config.openshift.io/v1 1
-kind: ImageDigestMirrorSet 2
+apiVersion: config.openshift.io/v1
+kind: ImageDigestMirrorSet
 metadata:
   name: ubi9repo
 spec:
-  imageDigestMirrors: 3
+  imageDigestMirrors:
   - mirrors:
-    - example.io/example/ubi-minimal 4
-    - example.com/example/ubi-minimal 5
-    source: registry.access.redhat.com/ubi9/ubi-minimal 6
-    mirrorSourcePolicy: AllowContactingSource 7
+    - example.io/example/ubi-minimal
+    - example.com/example2/ubi-minimal
+    source: registry.access.redhat.com/ubi9/ubi-minimal
+    mirrorSourcePolicy: AllowContactingSource
   - mirrors:
     - mirror.example.com/redhat
-    source: registry.example.com/redhat 8
+    source: registry.example.com/redhat
     mirrorSourcePolicy: AllowContactingSource
   - mirrors:
     - mirror.example.com
-    source: registry.example.com 9
+    source: registry.example.com
     mirrorSourcePolicy: AllowContactingSource
   - mirrors:
     - mirror.example.net/image
-    source: registry.example.com/example/myimage 10
+    source: registry.example.com/example/myimage
     mirrorSourcePolicy: AllowContactingSource
   - mirrors:
     - mirror.example.net
-    source: registry.example.com/example 11
+    source: registry.example.com/example
     mirrorSourcePolicy: AllowContactingSource
   - mirrors:
     - mirror.example.net/registry-example-com
-    source: registry.example.com 12
+    source: registry.example.com
     mirrorSourcePolicy: AllowContactingSource
 ```
 
-Indicates the API to use with this CR. This must be config.openshift.io/v1.
-Indicates the kind of object according to the pull type:
-* ImageDigestMirrorSet: Pulls a digest reference image.
-* ImageTagMirrorSet: Pulls a tag reference image.
-Indicates the type of image pull method, either:
-* imageDigestMirrors: Use for an ImageDigestMirrorSet CR.
-* imageTagMirrors: Use for an ImageTagMirrorSet CR.
-Indicates the name of the mirrored image registry and repository.
-Optional: Indicates a secondary mirror repository for each target repository. If one mirror is down, the target repository can use the secondary mirror.
-Indicates the registry and repository source, which is the repository that is referred to in an image pull specification.
-Optional: Indicates the fallback policy if the image pull fails:
-* AllowContactingSource: Allows continued attempts to pull the image from the source repository. This is the default.
-* NeverContactSource: Prevents continued attempts to pull the image from the source repository.
-Optional: Indicates a namespace inside a registry, which allows you to use any image in that namespace. If you use a registry domain as a source, the object is applied to all repositories from the registry.
-Optional: Indicates a registry, which allows you to use any image in that registry. If you specify a registry name, the object is applied to all repositories from a source registry to a mirror registry.
-Pulls the image registry.example.com/example/myimage@sha256:&#8230;&#8203; from the mirror mirror.example.net/image@sha256:&#8230;&#8203;
-Pulls the image registry.example.com/example/image@sha256:&#8230;&#8203; in the source registry namespace from the mirror mirror.example.net/image@sha256:&#8230;&#8203;.
-Pulls the image registry.example.com/myimage@sha256 from the mirror registry example.net/registry-example-com/myimage@sha256:&#8230;&#8203;.
 * Create an ImageContentSourcePolicy custom resource, replacing the source and mirrors with your own registry and repository pairs and images:
 
 ```yaml
@@ -860,16 +862,18 @@ metadata:
 spec:
   repositoryDigestMirrors:
   - mirrors:
-    - mirror.registry.com:443/ocp/release 1
-    source: quay.io/openshift-release-dev/ocp-release 2
+    - mirror.registry.com:443/ocp/release
+    source: quay.io/openshift-release-dev/ocp-release
   - mirrors:
     - mirror.registry.com:443/ocp/release
     source: quay.io/openshift-release-dev/ocp-v4.0-art-dev
 ```
 
-Specifies the name of the mirror image registry and repository.
-Specifies the online registry and repository containing the content that is mirrored.
-3. Create the new object:
+
+where:
+- mirror.registry.com:443/ocp/release:: Specifies the name of the mirror image registry and repository.
+source: quay.io/openshift-release-dev/ocp-release:: Specifies the online registry and repository containing the content that is mirrored.
+3. Create the new object by running the following command:
 
 ```terminal
 $ oc create -f registryrepomirror.yaml
@@ -922,7 +926,7 @@ sh-4.2# cat /etc/containers/registries.conf
 ```
 
 
-The following output represents a registries.conf file where postinstallation mirror configuration CRs were applied. The final two entries are marked digest-only and tag-only respectively.
+The following output represents a registries.conf file where postinstallation mirror configuration CRs are applied.
 Example output
 
 ```terminal
@@ -931,11 +935,11 @@ short-name-mode = ""
 
 [[registry]]
   prefix = ""
-  location = "registry.access.redhat.com/ubi9/ubi-minimal" 1
+  location = "registry.access.redhat.com/ubi9/ubi-minimal"
 
   [[registry.mirror]]
-    location = "example.io/example/ubi-minimal" 2
-    pull-from-mirror = "digest-only" 3
+    location = "example.io/example/ubi-minimal"
+    pull-from-mirror = "digest-only"
 
   [[registry.mirror]]
     location = "example.com/example/ubi-minimal"
@@ -983,18 +987,20 @@ short-name-mode = ""
 [[registry]]
   prefix = ""
   location = "registry.access.redhat.com/ubi9/ubi-minimal"
-  blocked = true 4
+  blocked = true
 
   [[registry.mirror]]
     location = "example.io/example/ubi-minimal-tag"
-    pull-from-mirror = "tag-only" 5
+    pull-from-mirror = "tag-only"
 ```
 
-Indicates the repository that is referred to in a pull spec.
-Indicates the mirror for that repository.
-Indicates that the image pull from the mirror is a digest reference image.
-Indicates that the NeverContactSource parameter is set for this repository.
-Indicates that the image pull from the mirror is a tag reference image.
+
+where:
+[[registry]].location = "registry.access.redhat.com/ubi9/ubi-minimal":: The repository listed in a pull spec.
+[[registry.mirror]].location = "example.io/example/ubi-minimal":: Indicates the mirror for that repository.
+[[registry.mirror]].pull-from-mirror = "digest-only":: Means that the image pull from the mirror is a digest reference image.
+[[registry]].blocked = true:: Indicates that the NeverContactSource parameter is set for this repository.
+[[registry.mirror]].pull-from-mirror = "tag-only":: Indicates that the image pull from the mirror is a tag reference image.
 5. Pull an image to the node from the source and check if it is resolved by the mirror.
 
 ```terminal
@@ -1002,16 +1008,24 @@ sh-4.2# podman pull --log-level=debug registry.access.redhat.com/ubi9/ubi-minima
 ```
 
 
-If the repository mirroring procedure does not work as described, use the following information about how repository mirroring works to help troubleshoot the problem.
+If the repository mirroring procedure does not work as described, use the following information about how repository mirroring works to help troubleshoot the problem:
 
 * The first working mirror is used to supply the pulled image.
 * The main registry is only used if no other mirror works.
 * From the system context, the Insecure flags are used as fallback.
 * The format of the /etc/containers/registries.conf file has changed recently. It is now version 2 and in TOML format.
 
+## Image registry repository mirroring configuration parameters
+
+You can use the following table for information about parameters when configuring your image repository for mirroring.
+
+
+
 ## Converting ImageContentSourcePolicy (ICSP) files for image registry repository mirroring
 
-Using an ImageContentSourcePolicy (ICSP) object to configure repository mirroring is a deprecated feature. This functionality is still included in Red Hat OpenShift Container Platform and continues to be supported; however, it will be removed in a future release of this product and is not recommended for new deployments.
+Using an ImageContentSourcePolicy (ICSP) object to configure repository mirroring is a deprecated feature.
+
+This functionality is still included in Red Hat OpenShift Container Platform and continues to be supported; however, it will be removed in a future release of this product and is not recommended for new deployments.
 
 ICSP objects are being replaced by ImageDigestMirrorSet and ImageTagMirrorSet objects to configure repository mirroring. If you have existing YAML files that you used to create ImageContentSourcePolicy objects, you can use the oc adm migrate icsp command to convert those files to an ImageDigestMirrorSet YAML file. The command updates the API to the current version, changes the kind value to ImageDigestMirrorSet, and changes spec.repositoryDigestMirrors to spec.imageDigestMirrors. The rest of the file is not changed.
 
@@ -1027,6 +1041,7 @@ For more information about ImageDigestMirrorSet or ImageTagMirrorSet objects, se
 ```terminal
 $ oc adm migrate icsp <file_name>.yaml <file_name>.yaml <file_name>.yaml --dest-dir <path_to_the_directory>
 ```
+
 
 where:
 <file_name>:: Specifies the name of the source ImageContentSourcePolicy YAML. You can list multiple file names.
@@ -1051,7 +1066,14 @@ wrote ImageDigestMirrorSet to idms-files/imagedigestmirrorset_ubi9repo.645693185
 $ oc create -f <path_to_the_directory>/<file-name>.yaml
 ```
 
+
 where:
 <path_to_the_directory>:: Specifies the path to the directory, if you used the --dest-dir flag.
 <file_name>:: Specifies the name of the ImageDigestMirrorSet YAML.
 3. Remove the ICSP objects after the IDMS objects are rolled out.
+
+# Additional resources
+
+* Working with manifest lists
+* Understanding feature gates
+* Updating the global cluster pull secret

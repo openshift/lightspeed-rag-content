@@ -1,0 +1,264 @@
+# Backing up and restoring etcd in an on-premise environment
+
+
+You can back up and restore etcd on a hosted cluster in an on-premise environment to fix failures.
+
+# Backing up and restoring etcd on a hosted cluster in an on-premise environment
+
+By backing up and restoring etcd on a hosted cluster, you can fix failures, such as corrupted or missing data in an etcd member of a three node cluster. If multiple members of the etcd cluster encounter data loss or have a CrashLoopBackOff status, this approach helps prevent an etcd quorum loss.
+
+
+[IMPORTANT]
+----
+{FeatureName} is a Technology Preview feature only. Technology Preview features are not supported with Red Hat production service level agreements (SLAs) and might not be functionally complete. Red Hat does not recommend using them in production. These features provide early access to upcoming product features, enabling customers to test functionality and provide feedback during the development process.
+For more information about the support scope of Red Hat Technology Preview features, see Technology Preview Features Support Scope.
+----
+
+* The oc and jq binaries have been installed.
+
+1. First, set up your environment variables:
+1. Set up environment variables for your hosted cluster by entering the following commands, replacing values as necessary:
+
+```terminal
+$ CLUSTER_NAME=my-cluster
+```
+
+
+```terminal
+$ HOSTED_CLUSTER_NAMESPACE=clusters
+```
+
+
+```terminal
+$ CONTROL_PLANE_NAMESPACE="${HOSTED_CLUSTER_NAMESPACE}-${CLUSTER_NAME}"
+```
+
+2. Pause reconciliation of the hosted cluster by entering the following command, replacing values as necessary:
+
+```terminal
+$ oc patch -n ${HOSTED_CLUSTER_NAMESPACE} hostedclusters/${CLUSTER_NAME} \
+  -p '{"spec":{"pausedUntil":"true"}}' --type=merge
+```
+
+2. Next, take a snapshot of etcd by using one of the following methods:
+1. Use a previously backed-up snapshot of etcd.
+2. If you have an available etcd pod, take a snapshot from the active etcd pod by completing the following steps:
+1. List etcd pods by entering the following command:
+
+```terminal
+$ oc get -n ${CONTROL_PLANE_NAMESPACE} pods -l app=etcd
+```
+
+2. Take a snapshot of the pod database and save it locally to your machine by entering the following commands:
+
+```terminal
+$ ETCD_POD=etcd-0
+```
+
+
+```terminal
+$ oc exec -n ${CONTROL_PLANE_NAMESPACE} -c etcd -t ${ETCD_POD} -- \
+  env ETCDCTL_API=3 /usr/bin/etcdctl \
+  --cacert /etc/etcd/tls/etcd-ca/ca.crt \
+  --cert /etc/etcd/tls/client/etcd-client.crt \
+  --key /etc/etcd/tls/client/etcd-client.key \
+  --endpoints=https://localhost:2379 \
+  snapshot save /var/lib/snapshot.db
+```
+
+3. Verify that the snapshot is successful by entering the following command:
+
+```terminal
+$ oc exec -n ${CONTROL_PLANE_NAMESPACE} -c etcd -t ${ETCD_POD} -- \
+  env ETCDCTL_API=3 /usr/bin/etcdctl -w table snapshot status \
+  /var/lib/snapshot.db
+```
+
+3. Make a local copy of the snapshot by entering the following command:
+
+```terminal
+$ oc cp -c etcd ${CONTROL_PLANE_NAMESPACE}/${ETCD_POD}:/var/lib/snapshot.db \
+  /tmp/etcd.snapshot.db
+```
+
+1. Make a copy of the snapshot database from etcd persistent storage:
+1. List etcd pods by entering the following command:
+
+```terminal
+$ oc get -n ${CONTROL_PLANE_NAMESPACE} pods -l app=etcd
+```
+
+2. Find a pod that is running and set its name as the value of ETCD_POD: ETCD_POD=etcd-0, and then copy its snapshot database by entering the following command:
+
+```terminal
+$ oc cp -c etcd \
+  ${CONTROL_PLANE_NAMESPACE}/${ETCD_POD}:/var/lib/data/member/snap/db \
+  /tmp/etcd.snapshot.db
+```
+
+3. Next, scale down the etcd statefulset by entering the following command:
+
+```terminal
+$ oc scale -n ${CONTROL_PLANE_NAMESPACE} statefulset/etcd --replicas=0
+```
+
+1. Delete volumes for second and third members by entering the following command:
+
+```terminal
+$ oc delete -n ${CONTROL_PLANE_NAMESPACE} pvc/data-etcd-1 pvc/data-etcd-2
+```
+
+2. Create a pod to access the first etcd member's data:
+1. Get the etcd image by entering the following command:
+
+```terminal
+$ ETCD_IMAGE=$(oc get -n ${CONTROL_PLANE_NAMESPACE} statefulset/etcd \
+  -o jsonpath='{ .spec.template.spec.containers[0].image }')
+```
+
+2. Create a pod that allows access to etcd data:
+
+```yaml
+$ cat << EOF | oc apply -n ${CONTROL_PLANE_NAMESPACE} -f -
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: etcd-data
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: etcd-data
+  template:
+    metadata:
+      labels:
+        app: etcd-data
+    spec:
+      containers:
+      - name: access
+        image: $ETCD_IMAGE
+        volumeMounts:
+        - name: data
+          mountPath: /var/lib
+        command:
+        - /usr/bin/bash
+        args:
+        - -c
+        - |-
+          while true; do
+            sleep 1000
+          done
+      volumes:
+      - name: data
+        persistentVolumeClaim:
+          claimName: data-etcd-0
+EOF
+```
+
+3. Check the status of the etcd-data pod and wait for it to be running by entering the following command:
+
+```terminal
+$ oc get -n ${CONTROL_PLANE_NAMESPACE} pods -l app=etcd-data
+```
+
+4. Get the name of the etcd-data pod by entering the following command:
+
+```terminal
+$ DATA_POD=$(oc get -n ${CONTROL_PLANE_NAMESPACE} pods --no-headers \
+  -l app=etcd-data -o name | cut -d/ -f2)
+```
+
+3. Copy an etcd snapshot into the pod by entering the following command:
+
+```terminal
+$ oc cp /tmp/etcd.snapshot.db \
+  ${CONTROL_PLANE_NAMESPACE}/${DATA_POD}:/var/lib/restored.snap.db
+```
+
+4. Remove old data from the etcd-data pod by entering the following commands:
+
+```terminal
+$ oc exec -n ${CONTROL_PLANE_NAMESPACE} ${DATA_POD} -- rm -rf /var/lib/data
+```
+
+
+```terminal
+$ oc exec -n ${CONTROL_PLANE_NAMESPACE} ${DATA_POD} -- mkdir -p /var/lib/data
+```
+
+5. Restore the etcd snapshot by entering the following command:
+
+```terminal
+$ oc exec -n ${CONTROL_PLANE_NAMESPACE} ${DATA_POD} -- \
+     etcdutl snapshot restore /var/lib/restored.snap.db \
+     --data-dir=/var/lib/data --skip-hash-check \
+     --name etcd-0 \
+     --initial-cluster-token=etcd-cluster \
+     --initial-cluster etcd-0=https://etcd-0.etcd-discovery.${CONTROL_PLANE_NAMESPACE}.svc:2380,etcd-1=https://etcd-1.etcd-discovery.${CONTROL_PLANE_NAMESPACE}.svc:2380,etcd-2=https://etcd-2.etcd-discovery.${CONTROL_PLANE_NAMESPACE}.svc:2380 \
+     --initial-advertise-peer-urls https://etcd-0.etcd-discovery.${CONTROL_PLANE_NAMESPACE}.svc:2380
+```
+
+6. Remove the temporary etcd snapshot from the pod by entering the following command:
+
+```terminal
+$ oc exec -n ${CONTROL_PLANE_NAMESPACE} ${DATA_POD} -- \
+  rm /var/lib/restored.snap.db
+```
+
+7. Delete data access deployment by entering the following command:
+
+```terminal
+$ oc delete -n ${CONTROL_PLANE_NAMESPACE} deployment/etcd-data
+```
+
+8. Scale up the etcd cluster by entering the following command:
+
+```terminal
+$ oc scale -n ${CONTROL_PLANE_NAMESPACE} statefulset/etcd --replicas=3
+```
+
+9. Wait for the etcd member pods to return and report as available by entering the following command:
+
+```terminal
+$ oc get -n ${CONTROL_PLANE_NAMESPACE} pods -l app=etcd -w
+```
+
+4. Restore reconciliation of the hosted cluster by entering the following command:
+
+```terminal
+$ oc patch -n ${HOSTED_CLUSTER_NAMESPACE} hostedclusters/${CLUSTER_NAME} \
+  -p '{"spec":{"pausedUntil":"null"}}' --type=merge
+```
+
+5. Manually roll out the hosted cluster by entering the following command:
+
+```terminal
+$ oc annotate hostedcluster -n \
+  <hosted_cluster_namespace> <hosted_cluster_name> \
+  hypershift.openshift.io/restart-date=$(date --iso-8601=seconds)
+```
+
+
+The Multus admission controller and network node identity pods do not start yet.
+6. Delete the pods for the second and third members of etcd and their PVCs by entering the following commands:
+
+```terminal
+$ oc delete -n ${CONTROL_PLANE_NAMESPACE} pvc/data-etcd-1 pod/etcd-1 --wait=false
+```
+
+
+```terminal
+$ oc delete -n ${CONTROL_PLANE_NAMESPACE} pvc/data-etcd-2 pod/etcd-2 --wait=false
+```
+
+7. Manually roll out the hosted cluster again by entering the following command:
+
+```terminal
+$ oc annotate hostedcluster -n \
+  <hosted_cluster_namespace> <hosted_cluster_name> \
+  hypershift.openshift.io/restart-date=$(date --iso-8601=seconds) \
+  --overwrite
+```
+
+
+After a few minutes, the control plane pods start running.
