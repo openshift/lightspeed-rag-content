@@ -100,8 +100,7 @@ Because your cluster has limited access to automatic machine management when you
 
 ## Networking requirements for user-provisioned infrastructure
 
-All the Red Hat Enterprise Linux CoreOS (RHCOS) machines require networking to be configured in initramfs during boot
-to fetch their Ignition config files.
+You must configure networking for all the Red Hat Enterprise Linux CoreOS (RHCOS) machines in initramfs during boot, so that they can fetch their Ignition config files.
 
 
 [IMPORTANT]
@@ -114,15 +113,11 @@ During the initial boot, the machines require an IP address configuration that i
 
 [NOTE]
 ----
-* It is recommended to use a DHCP server for long-term management of the cluster machines. Ensure that the DHCP server is configured to provide persistent IP addresses, DNS server information, and hostnames to the cluster machines.
+* Consider using a DHCP server for long-term management of the cluster machines. Ensure that the DHCP server is configured to provide persistent IP addresses, DNS server information, and hostnames to the cluster machines.
 * If a DHCP service is not available for your user-provisioned infrastructure, you can instead provide the IP networking configuration and the address of the DNS server to the nodes at RHCOS install time. These can be passed as boot arguments if you are installing from an ISO image. See the Installing RHCOS and starting the Red Hat OpenShift Container Platform bootstrap process section for more information about static IP provisioning and advanced networking options.
 ----
 
-The Kubernetes API server must be able to resolve the node names of the cluster
-machines. If the API servers and worker nodes are in different zones, you can
-configure a default DNS search zone to allow the API server to resolve the
-node names. Another supported approach is to always refer to hosts by their
-fully-qualified domain names in both the node objects and all DNS requests.
+The Kubernetes API server must be able to resolve the node names of the cluster machines. If the API servers and worker nodes are in different zones, you can configure a default DNS search zone to allow the API server to resolve the node names. Another supported approach is to always refer to hosts by their fully-qualified domain names in both the node objects and all DNS requests.
 
 ### Setting the cluster node hostnames through DHCP
 
@@ -132,9 +127,7 @@ Additionally, setting the hostnames through DHCP can bypass any manual DNS recor
 
 ### Network connectivity requirements
 
-You must configure the network connectivity between machines to allow Red Hat OpenShift Container Platform cluster
-components to communicate. Each machine must be able to resolve the hostnames
-of all other machines in the cluster.
+You must configure the network connectivity between machines to allow Red Hat OpenShift Container Platform cluster components to communicate. Each machine must be able to resolve the hostnames of all other machines in the cluster.
 
 This section provides details about the ports that are required.
 
@@ -631,192 +624,6 @@ $ oc scale machineset <machineset_name> --replicas=<n> 1
 ```
 
 Where <machineset_name> is the name of the machine set and <n> is the number of compute nodes.
-
-# Enabling OVS balance-slb mode for your cluster
-
-You can enable the Open vSwitch (OVS) balance-slb mode so that two or more physical interfaces can share their network traffic. A balance-slb mode interface can give source load balancing (SLB) capabilities to a cluster that runs virtualization workloads, without requiring load balancing negotiation with the network switch.
-
-Currently, source load balancing runs on a bond interface, where the interface connects to an auxiliary bridge, such as  br-phy. Source load balancing balances only across different Media Access Control (MAC) address and virtual local area network (VLAN) combinations. Note that all OVN-Kubernetes pod traffic uses the same MAC address and VLAN, so this traffic cannot be load balanced across many physical interfaces.
-
-The following diagram shows balance-slb mode on a simple cluster infrastructure layout. Virtual machines (VMs) connect to specific localnet NetworkAttachmentDefinition (NAD) custom resource definition (CRDs), NAD 0 or NAD 1. Each NAD provides VMs with access to the underlying physical network, supporting VLAN-tagged or untagged traffic. A br-ex OVS bridge receives traffic from VMs and passes the traffic to the next OVS bridge, br-phy. The br-phy bridge functions as the controller for the SLB bond. The SLB bond balances traffic from different VM ports over the physical interface links, such as eno0 and eno1. Additionally, ingress traffic from either physical interface can pass through the set of OVS bridges to reach the VMs.
-
-![OVS `balance-slb` mode operating on a localnet with two NAD CRDs]
-
-You can integrate the balance-slb mode interface into primary or secondary network types by using OVS bonding. Note the following points about OVS bonding:
-
-* Supports the OVN-Kubernetes CNI plugin and easily integrates with the plugin.
-* Natively supports balance-slb mode.
-
-* You have more than one physical interface attached to your primary network and you defined the interfaces in a MachineConfig file.
-* You created a manifest object and defined a customized br-ex bridge in the object configuration file.
-* You have more than one physical interfaces attached to your primary network and you defined the interfaces in a NAD CRD file.
-
-1. For each bare-metal host that exists in a cluster, in the install-config.yaml file for your cluster define a networkConfig section similar to the following example:
-
-```yaml
-apiVersion: v1
-kind: InstallConfig
-metadata:
-  name: <cluster-name>
-# ...
-networkConfig:
-  interfaces:
-    - name: enp1s0 1
-      type: ethernet
-      state: up
-      ipv4:
-        dhcp: true
-        enabled: true
-      ipv6:
-        enabled: false
-    - name: enp2s0 2
-      type: ethernet
-      state: up
-      mtu: 1500 3
-      ipv4:
-        dhcp: true
-        enabled: true
-      ipv6:
-        dhcp: true
-        enabled: true
-    - name: enp3s0 4
-      type: ethernet
-      state: up
-      mtu: 1500
-      ipv4:
-        enabled: false
-      ipv6:
-        enabled: false
-# ...
-```
-
-The interface for the provisioned network interface controller (NIC).
-The first bonded interface that pulls in the Ignition config file for the bond interface.
-Manually set the br-ex maximum transmission unit (MTU) on the bond ports.
-The second bonded interface is part of a minimal configuration that pulls ignition during cluster installation.
-2. Define each network interface in an NMState configuration file:
-Example NMState configuration file that defines many network interfaces
-
-```yaml
-apiVersion: nmstate.io/v1
-kind: NodeNetworkConfigurationPolicy
-metadata:
-# ...
-ovn:
-  bridge-mappings:
-    - localnet: localnet-network
-      bridge: br-ex
-      state: present
-interfaces:
-  - name: br-ex
-    type: ovs-bridge
-    state: up
-    bridge:
-      allow-extra-patch-ports: true
-      port:
-        - name: br-ex
-        - name: patch-ex-to-phy
-    ovs-db:
-      external_ids:
-        bridge-uplink: "patch-ex-to-phy"
-  - name: br-ex
-    type: ovs-interface
-    state: up
-    mtu: 1500 1
-    ipv4:
-      enabled: true
-      dhcp: true
-      auto-route-metric: 48
-    ipv6:
-      enabled: false
-      dhcp: false
-      auto-route-metric: 48
-  - name: br-phy
-    type: ovs-bridge
-    state: up
-    bridge:
-      allow-extra-patch-ports: true
-      port:
-        - name: patch-phy-to-ex
-        - name: ovs-bond
-          link-aggregation:
-            mode: balance-slb
-            port:
-              - name: enp2s0
-              - name: enp3s0
-  - name: patch-ex-to-phy
-    type: ovs-interface
-    state: up
-    patch:
-      peer: patch-phy-to-ex
-  - name: patch-phy-to-ex
-    type: ovs-interface
-    state: up
-    patch:
-      peer: patch-ex-to-phy
-  - name: enp1s0
-    type: ethernet
-    state: up
-    ipv4:
-      dhcp: true
-      enabled: true
-    ipv6:
-      enabled: false
-  - name: enp2s0
-    type: ethernet
-    state: up
-    mtu: 1500
-    ipv4:
-      enabled: false
-    ipv6:
-      enabled: false
-  - name: enp3s0
-    type: ethernet
-    state: up
-    mtu: 1500
-    ipv4:
-      enabled: false
-    ipv6:
-      enabled: false
-# ...
-```
-
-Manually set the br-ex MTU on the bond ports.
-3. Use the base64 command to encode the interface content of the NMState configuration file:
-
-```terminal
-$ base64 -w0  <nmstate_configuration>.yml 1
-```
-
-Where the -w0 option prevents line wrapping during the base64 encoding operation.
-4. Create MachineConfig manifest files for the master role and the worker role. Ensure that you embed the base64-encoded string from an earlier command into each MachineConfig manifest file. The following example manifest file configures the master role for all nodes that exist in a cluster. You can also create a manifest file for master and worker roles specific to a node.
-
-```yaml
-apiVersion: machineconfiguration.openshift.io/v1
-kind: MachineConfig
-metadata:
-  labels:
-    machineconfiguration.openshift.io/role: master
-  name: 10-br-ex-master 1
-spec:
-  config:
-    ignition:
-      version: 3.2.0
-    storage:
-      files:
-      - contents:
-          source: data:text/plain;charset=utf-8;base64,<base64_encoded_nmstate_configuration> 2
-        mode: 0644
-        overwrite: true
-        path: /etc/nmstate/openshift/cluster.yml 3
-```
-
-The name of the policy.
-Writes the encoded base64 information to the specified path.
-Specify the path to the cluster.yml file. For each node in your cluster, you can specify the short hostname path to your node, such as <node_short_hostname>.yml.
-5. Save each MachineConfig manifest file to the ./<installation_directory>/manifests directory, where <installation_directory> is the directory in which the installation program creates files.
-
-The Machine Config Operator (MCO) takes the content from each manifest file and consistently applies the content to all selected nodes during a rolling update.
 
 # Preparing the user-provisioned infrastructure
 
@@ -1892,7 +1699,7 @@ To set up static IP addresses or configure special settings, such as bonding, yo
 
 To configure a PXE or iPXE installation, use one of the following options:
 
-* See the "Advanced RHCOS installation reference" tables.
+* See the "coreos-installer and boot options for ISO and PXE installations" tables.
 * Use a machine config to copy networking files to the installed system.
 
 To configure an ISO installation, use the following procedure.
@@ -2149,13 +1956,15 @@ By default, the Red Hat Enterprise Linux CoreOS (RHCOS) serial console is disabl
 
 ```terminal
 $ coreos-installer install \
---console=tty0 \1
---console=ttyS0,<options> \2
+--console=tty0 \
+--console=ttyS0,<options> \
 --ignition-url=http://host/worker.ign /dev/disk/by-id/scsi-<serial_number>
 ```
 
-The desired secondary console. In this case, the graphical console. Omitting this option will disable the graphical console.
-The desired primary console. In this case the serial console. The options field defines the baud rate and other settings. A common value for this field is 115200n8. If no options are provided, the default kernel value of 9600n8 is used. For more information on the format of this option, see Linux kernel serial console documentation.
+
+where:
+--console=tty0:: The desired secondary console. In this case, the graphical console. Omitting this option will disable the graphical console.
+--console=ttyS0:: The desired primary console. In this case the serial console. The options field defines the baud rate and other settings. A common value for this field is 115200n8. If no options are provided, the default kernel value of 9600n8 is used. For more information on the format of this option, see Linux kernel serial console documentation.
 3. Reboot into the installed system.
 
 [NOTE]
@@ -2190,12 +1999,14 @@ You can use this feature to configure the {boot-media} to automatically install 
 
 ```terminal
 $ coreos-installer iso customize rhcos-<version>-live.x86_64.iso \
-    --dest-ignition bootstrap.ign \ 1
-    --dest-device /dev/disk/by-id/scsi-<serial_number> 2
+    --dest-ignition bootstrap.ign \
+    --dest-device /dev/disk/by-id/scsi-<serial_number>
 ```
 
-The Ignition config file that is generated from the openshift-installer installation program.
-When you specify this option, the {boot-media} automatically runs an installation. Otherwise, the image remains configured for installation, but does not install automatically unless you specify the coreos.inst.install_dev kernel argument.
+
+where:
+--dest-ignition:: The Ignition config file that is generated from the openshift-installer installation program.
+--dest-device:: When you specify this option, the {boot-media} automatically runs an installation. Otherwise, the image remains configured for installation, but does not install automatically unless you specify the coreos.inst.install_dev kernel argument.
 3. Optional: To remove the {boot-media} customizations and return the image to its pristine state, run:
 
 ```terminal
@@ -2216,16 +2027,18 @@ On clusters installed with Red Hat OpenShift Container Platform 4.12 and above, 
 
 ```terminal
 $ coreos-installer iso customize rhcos-<version>-live.x86_64.iso \
-  --dest-ignition <path> \1
-  --dest-console tty0 \2
-  --dest-console ttyS0,<options> \3
-  --dest-device /dev/disk/by-id/scsi-<serial_number> 4
+  --dest-ignition <path> \//
+  --dest-console tty0 \//
+  --dest-console ttyS0,<options> \//
+  --dest-device /dev/disk/by-id/scsi-<serial_number>
 ```
 
-The location of the Ignition config to install.
-The desired secondary console. In this case, the graphical console. Omitting this option will disable the graphical console.
-The desired primary console. In this case, the serial console. The options field defines the baud rate and other settings. A common value for this field is 115200n8. If no options are provided, the default kernel value of 9600n8 is used. For more information on the format of this option, see the Linux kernel serial console documentation.
-The specified disk to install to. If you omit this option, the {boot-media} automatically runs the installation program which will fail unless you also specify the coreos.inst.install_dev kernel argument.
+
+where:
+<path>:: The location of the Ignition config to install.
+tty0:: The desired secondary console. In this case, the graphical console. Omitting this option will disable the graphical console.
+<options>:: The desired primary console. In this case, the serial console. The options field defines the baud rate and other settings. A common value for this field is 115200n8. If no options are provided, the default kernel value of 9600n8 is used. For more information on the format of this option, see the Linux kernel serial console documentation.
+<serial_number>:: The specified disk to install to. If you omit this option, the {boot-media} automatically runs the installation program which will fail unless you also specify the coreos.inst.install_dev kernel argument.
 
 [NOTE]
 ----
@@ -2258,7 +2071,6 @@ Custom CA certificates affect how Ignition fetches remote resources but they do 
 ```terminal
 $ coreos-installer iso customize rhcos-<version>-live.x86_64.iso --ignition-ca cert.pem
 ```
-
 
 
 [IMPORTANT]
@@ -2347,21 +2159,23 @@ You can set the iSCSI target and initiator values for automatic mounting, bootin
 
 ```text
 $ coreos-installer iso customize \
-    --pre-install mount-iscsi.sh \ 1
-    --post-install unmount-iscsi.sh \ 2
-    --dest-device /dev/disk/by-path/<IP_address>:<port>-iscsi-<target_iqn>-lun-<lun> \ 3
-    --dest-ignition config.ign \ 4
-    --dest-karg-append rd.iscsi.initiator=<initiator_iqn> \ 5
-    --dest-karg-append netroot=<target_iqn> \ 6
+    --pre-install mount-iscsi.sh \
+    --post-install unmount-iscsi.sh \
+    --dest-device /dev/disk/by-path/<IP_address>:<port>-iscsi-<target_iqn>-lun-<lun> \
+    --dest-ignition config.ign \
+    --dest-karg-append rd.iscsi.initiator=<initiator_iqn> \
+    --dest-karg-append netroot=<target_iqn> \
     -o custom.iso rhcos-<version>-live.x86_64.iso
 ```
 
-The script that gets run before installation. It should contain the iscsiadm commands for mounting the iSCSI target and any commands enabling multipathing.
-The script that gets run after installation. It should contain the command iscsiadm --mode node --logout=all.
-The location of the destination system. You must provide the IP address of the target portal, the associated port number, the target iSCSI node in IQN format, and the iSCSI logical unit number (LUN).
-The Ignition configuration for the destination system.
-The iSCSI initiator, or client, name in IQN format. The initiator forms a session to connect to the iSCSI target.
-The the iSCSI target, or server, name in IQN format.
+
+where:
+mount-iscsi.sh:: The script that gets run before installation. It should contain the iscsiadm commands for mounting the iSCSI target and any commands enabling multipathing.
+unmount-iscsi.sh:: The script that gets run after installation. It should contain the command iscsiadm --mode node --logout=all.
+<target_iqn>:: The location of the destination system. You must provide the IP address of the target portal, the associated port number, the target iSCSI node in IQN format, and the iSCSI logical unit number (LUN).
+config.ign:: The Ignition configuration for the destination system.
+<initiator_iqn>:: The iSCSI initiator, or client, name in IQN format. The initiator forms a session to connect to the iSCSI target.
+<target_iqn>:: The the iSCSI target, or server, name in IQN format.
 
 For more information about the iSCSI options supported by dracut, see the dracut.cmdline manual page.
 
@@ -2377,21 +2191,23 @@ You can set the iSCSI target and initiator values for automatic mounting, bootin
 
 ```text
 $ coreos-installer iso customize \
-    --pre-install mount-iscsi.sh \ 1
-    --post-install unmount-iscsi.sh \ 2
-    --dest-device /dev/mapper/mpatha \ 3
-    --dest-ignition config.ign \ 4
-    --dest-karg-append rd.iscsi.firmware=1 \ 5
-    --dest-karg-append rd.multipath=default \ 6
+    --pre-install mount-iscsi.sh \
+    --post-install unmount-iscsi.sh \
+    --dest-device /dev/mapper/mpatha \
+    --dest-ignition config.ign \
+    --dest-karg-append rd.iscsi.firmware=1 \
+    --dest-karg-append rd.multipath=default \
     -o custom.iso rhcos-<version>-live.x86_64.iso
 ```
 
-The script that gets run before installation. It should contain the iscsiadm commands for mounting the iSCSI target and any commands enabling multipathing.
-The script that gets run after installation. It should contain the command iscsiadm --mode node --logout=all.
-The path to the device. If you are using multipath, the multipath device, /dev/mapper/mpatha, If there are multiple multipath devices connected, or to be explicit, you can use the World Wide Name (WWN) symlink available in /dev/disk/by-path.
-The Ignition configuration for the destination system.
-The iSCSI parameter is read from the BIOS firmware.
-Optional: include this parameter if you are enabling multipathing.
+
+where:
+mount-iscsi.sh:: The script that gets run before installation. It should contain the iscsiadm commands for mounting the iSCSI target and any commands enabling multipathing.
+unmount-iscsi.sh:: The script that gets run after installation. It should contain the command iscsiadm --mode node --logout=all.
+/dev/mapper/mpatha:: The path to the device. If you are using multipath, the multipath device, /dev/mapper/mpatha, If there are multiple multipath devices connected, or to be explicit, you can use the World Wide Name (WWN) symlink available in /dev/disk/by-path.
+config.ign:: The Ignition configuration for the destination system.
+rd.iscsi.firmware=1:: The iSCSI parameter is read from the BIOS firmware.
+rd.multipath=default:: Optional: include this parameter if you are enabling multipathing.
 
 For more information about the iSCSI options supported by dracut, see the dracut.cmdline manual page.
 
@@ -2408,14 +2224,16 @@ You can use this feature to configure the {boot-media} to automatically install 
 
 ```terminal
 $ coreos-installer pxe customize rhcos-<version>-live-initramfs.x86_64.img \
-    --dest-ignition bootstrap.ign \ 1
-    --dest-device /dev/disk/by-id/scsi-<serial_number> \ 2
-    -o rhcos-<version>-custom-initramfs.x86_64.img 3
+    --dest-ignition bootstrap.ign \
+    --dest-device /dev/disk/by-id/scsi-<serial_number> \
+    -o rhcos-<version>-custom-initramfs.x86_64.img
 ```
 
-The Ignition config file that is generated from openshift-installer.
-When you specify this option, the {boot-media} automatically runs an install. Otherwise, the image remains configured for installing, but does not do so automatically unless you specify the coreos.inst.install_dev kernel argument.
-Use the customized initramfs file in your PXE configuration. Add the ignition.firstboot and ignition.platform.id=metal kernel arguments if they are not already present.
+
+where:
+--dest-ignition:: The Ignition config file that is generated from openshift-installer.
+<serial_number>:: When you specify this option, the {boot-media} automatically runs an install. Otherwise, the image remains configured for installing, but does not do so automatically unless you specify the coreos.inst.install_dev kernel argument.
+<version>:: Use the customized initramfs file in your PXE configuration. Add the ignition.firstboot and ignition.platform.id=metal kernel arguments if they are not already present.
 
 Applying your customizations affects every subsequent boot of RHCOS.
 
@@ -2428,18 +2246,20 @@ On clusters installed with Red Hat OpenShift Container Platform 4.12 and above, 
 
 ```terminal
 $ coreos-installer pxe customize rhcos-<version>-live-initramfs.x86_64.img \
-  --dest-ignition <path> \1
-  --dest-console tty0 \2
-  --dest-console ttyS0,<options> \3
-  --dest-device /dev/disk/by-id/scsi-<serial_number> \4
-  -o rhcos-<version>-custom-initramfs.x86_64.img 5
+  --dest-ignition <path> \//
+  --dest-console tty0 \//
+  --dest-console ttyS0,<options> \//
+  --dest-device /dev/disk/by-id/scsi-<serial_number> \//
+  -o rhcos-<version>-custom-initramfs.x86_64.img
 ```
 
-The location of the Ignition config to install.
-The desired secondary console. In this case, the graphical console. Omitting this option will disable the graphical console.
-The desired primary console. In this case, the serial console. The options field defines the baud rate and other settings. A common value for this field is 115200n8. If no options are provided, the default kernel value of 9600n8 is used. For more information on the format of this option, see the Linux kernel serial console documentation.
-The specified disk to install to. If you omit this option, the {boot-media} automatically runs the installer which will fail unless you also specify the coreos.inst.install_dev kernel argument.
-Use the customized initramfs file in your PXE configuration. Add the ignition.firstboot and ignition.platform.id=metal kernel arguments if they are not already present.
+
+where:
+<path>:: The location of the Ignition config to install.
+tty0:: The desired secondary console. In this case, the graphical console. Omitting this option will disable the graphical console.
+<options>:: The desired primary console. In this case, the serial console. The options field defines the baud rate and other settings. A common value for this field is 115200n8. If no options are provided, the default kernel value of 9600n8 is used. For more information on the format of this option, see the Linux kernel serial console documentation.
+<serial_number>:: The specified disk to install to. If you omit this option, the {boot-media} automatically runs the installation program which will fail unless you also specify the coreos.inst.install_dev kernel argument.
+<version>:: Use the customized initramfs file in your PXE configuration. Add the ignition.firstboot and ignition.platform.id=metal kernel arguments if they are not already present.
 
 Your customizations are applied and affect every subsequent boot of the {boot-media}.
 
@@ -2463,7 +2283,6 @@ $ coreos-installer pxe customize rhcos-<version>-live-initramfs.x86_64.img \
 ```
 
 3. Use the customized initramfs file in your PXE configuration. Add the ignition.firstboot and ignition.platform.id=metal kernel arguments if they are not already present.
-
 
 [IMPORTANT]
 ----
@@ -2553,21 +2372,23 @@ You can set the iSCSI target and initiator values for automatic mounting, bootin
 
 ```text
 $ coreos-installer pxe customize \
-    --pre-install mount-iscsi.sh \ 1
-    --post-install unmount-iscsi.sh \ 2
-    --dest-device /dev/disk/by-path/<IP_address>:<port>-iscsi-<target_iqn>-lun-<lun> \ 3
-    --dest-ignition config.ign \ 4
-    --dest-karg-append rd.iscsi.initiator=<initiator_iqn> \ 5
-    --dest-karg-append netroot=<target_iqn> \ 6
+    --pre-install mount-iscsi.sh \
+    --post-install unmount-iscsi.sh \
+    --dest-device /dev/disk/by-path/<IP_address>:<port>-iscsi-<target_iqn>-lun-<lun> \
+    --dest-ignition config.ign \
+    --dest-karg-append rd.iscsi.initiator=<initiator_iqn> \
+    --dest-karg-append netroot=<target_iqn> \
     -o custom.img rhcos-<version>-live-initramfs.x86_64.img
 ```
 
-The script that gets run before installation. It should contain the iscsiadm commands for mounting the iSCSI target and any commands enabling multipathing.
-The script that gets run after installation. It should contain the command iscsiadm --mode node --logout=all.
-The location of the destination system. You must provide the IP address of the target portal, the associated port number, the target iSCSI node in IQN format, and the iSCSI logical unit number (LUN).
-The Ignition configuration for the destination system.
-The iSCSI initiator, or client, name in IQN format. The initiator forms a session to connect to the iSCSI target.
-The the iSCSI target, or server, name in IQN format.
+
+where:
+mount-iscsi.sh:: The script that gets run before installation. It should contain the iscsiadm commands for mounting the iSCSI target and any commands enabling multipathing.
+unmount-iscsi.sh:: The script that gets run after installation. It should contain the command iscsiadm --mode node --logout=all.
+<target_iqn>:: The location of the destination system. You must provide the IP address of the target portal, the associated port number, the target iSCSI node in IQN format, and the iSCSI logical unit number (LUN).
+config.ign:: The Ignition configuration for the destination system.
+<initiator_iqn>:: The iSCSI initiator, or client, name in IQN format. The initiator forms a session to connect to the iSCSI target.
+<target_iqn>:: The the iSCSI target, or server, name in IQN format.
 
 For more information about the iSCSI options supported by dracut, see the dracut.cmdline manual page.
 
@@ -2583,29 +2404,29 @@ You can set the iSCSI target and initiator values for automatic mounting, bootin
 
 ```text
 $ coreos-installer pxe customize \
-    --pre-install mount-iscsi.sh \ 1
-    --post-install unmount-iscsi.sh \ 2
-    --dest-device /dev/mapper/mpatha \ 3
-    --dest-ignition config.ign \ 4
-    --dest-karg-append rd.iscsi.firmware=1 \ 5
-    --dest-karg-append rd.multipath=default \ 6
+    --pre-install mount-iscsi.sh \
+    --post-install unmount-iscsi.sh \
+    --dest-device /dev/mapper/mpatha \
+    --dest-ignition config.ign \
+    --dest-karg-append rd.iscsi.firmware=1 \
+    --dest-karg-append rd.multipath=default \
     -o custom.img rhcos-<version>-live-initramfs.x86_64.img
 ```
 
-The script that gets run before installation. It should contain the iscsiadm commands for mounting the iSCSI target.
-The script that gets run after installation. It should contain the command iscsiadm --mode node --logout=all.
-The path to the device. If you are using multipath, the multipath device, /dev/mapper/mpatha, If there are multiple multipath devices connected, or to be explicit, you can use the World Wide Name (WWN) symlink available in /dev/disk/by-path.
-The Ignition configuration for the destination system.
-The iSCSI parameter is read from the BIOS firmware.
-Optional: include this parameter if you are enabling multipathing.
+
+where:
+mount-iscsi.sh:: The script that gets run before installation. It should contain the iscsiadm commands for mounting the iSCSI target.
+unmount-iscsi.sh:: The script that gets run after installation. It should contain the command iscsiadm --mode node --logout=all.
+/dev/mapper/mpatha:: The path to the device. If you are using multipath, the multipath device, /dev/mapper/mpatha, If there are multiple multipath devices connected, or to be explicit, you can use the World Wide Name (WWN) symlink available in /dev/disk/by-path.
+config.ign:: The Ignition configuration for the destination system.
+rd.iscsi.firmware=1:: The iSCSI parameter is read from the BIOS firmware.
+rd.multipath=default:: Optional: include this parameter if you are enabling multipathing.
 
 For more information about the iSCSI options supported by dracut, see the dracut.cmdline manual page.
 
-### Advanced RHCOS installation reference
+## Networking and bonding options for ISO installations
 
-This section illustrates the networking configuration and other advanced options that allow you to modify the Red Hat Enterprise Linux CoreOS (RHCOS) manual installation process. The following tables describe the kernel arguments and command-line options you can use with the RHCOS live installer and the coreos-installer command.
-
-#### Networking and bonding options for ISO installations
+You can configure advanced options so that you can modify the Red Hat Enterprise Linux CoreOS (RHCOS) manual installation process. The subsequent sections show examples of networking options for an ISO installation.
 
 If you install RHCOS from an ISO image, you can add kernel arguments manually when you boot the image to configure networking for a node. If no networking arguments are specified, DHCP is activated in the initramfs when RHCOS detects that networking is required to fetch the Ignition config file.
 
@@ -2625,11 +2446,11 @@ Ordering is important when adding the kernel arguments: ip=, nameserver=, and th
 
 The networking options are passed to the dracut tool during system boot. For more information about the networking options supported by dracut, see the dracut.cmdline manual page.
 
-The following examples are the networking options for ISO installation.
+### Configuring DHCP or static IP addresses
 
-##### Configuring DHCP or static IP addresses
+You can configure an IP address by using either DHCP or an individual static IP address. If you set a static IP, you must then identify the DNS server IP address on each node.
 
-To configure an IP address, either use DHCP (ip=dhcp) or set an individual static IP address (ip=<host_ip>). If setting a static IP, you must then identify the DNS server IP address (nameserver=<dns_ip>) on each node. The following example sets:
+The configuration examples in the procedure, update the IP addresses for the following components:
 
 * The node's IP address to 10.10.10.2
 * The gateway address to 10.10.10.254
@@ -2638,85 +2459,32 @@ To configure an IP address, either use DHCP (ip=dhcp) or set an individual stati
 * The DNS server address to 4.4.4.41
 * The auto-configuration value to none. No auto-configuration is required when IP networking is configured statically.
 
+1. Enter a command like the following command to configure a static IP address:
 
 ```terminal
 ip=10.10.10.2::10.10.10.254:255.255.255.0:core0.example.com:enp1s0:none
 nameserver=4.4.4.41
 ```
 
+2. Enter a command like the following command to configure a DHCP IP address:
+
+```terminal
+ip=enp1s0:dhcp
+```
 
 
 [NOTE]
 ----
 When you use DHCP to configure IP addressing for the RHCOS machines, the machines also obtain the DNS server information through DHCP. For DHCP-based deployments, you can define the DNS server address that is used by the RHCOS nodes through your DHCP server configuration.
 ----
-
-##### Configuring an IP address without a static hostname
-
-You can configure an IP address without assigning a static hostname. If a static hostname is not set by the user, it will be picked up and automatically set by a reverse DNS lookup. To configure an IP address without a static hostname refer to the following example:
-
-* The node's IP address to 10.10.10.2
-* The gateway address to 10.10.10.254
-* The netmask to 255.255.255.0
-* The DNS server address to 4.4.4.41
-* The auto-configuration value to none. No auto-configuration is required when IP networking is configured statically.
-
-
-```terminal
-ip=10.10.10.2::10.10.10.254:255.255.255.0::enp1s0:none
-nameserver=4.4.4.41
-```
-
-
-##### Specifying multiple network interfaces
-
-You can specify multiple network interfaces by setting multiple ip= entries.
-
-
-```terminal
-ip=10.10.10.2::10.10.10.254:255.255.255.0:core0.example.com:enp1s0:none
-ip=10.10.10.3::10.10.10.254:255.255.255.0:core0.example.com:enp2s0:none
-```
-
-
-##### Configuring default gateway and route
-
-Optional: You can configure routes to additional networks by setting an rd.route= value.
-
-
-[NOTE]
-----
-When you configure one or multiple networks, one default gateway is required. If the additional network gateway is different from the primary network gateway, the default gateway must be the primary network gateway.
-----
-
-* Run the following command to configure the default gateway:
-
-```terminal
-ip=::10.10.10.254::::
-```
-
-* Enter the following command to configure the route for the additional network:
-
-```terminal
-rd.route=20.20.20.0/24:20.20.20.254:enp2s0
-```
-
-
-##### Disabling DHCP on a single interface
-
-You can disable DHCP on a single interface, such as when there are two or more network interfaces and only one interface is being used. In the example, the enp1s0 interface has a static networking configuration and DHCP is disabled for enp2s0, which is not used:
-
+3. If two or more network interfaces and only one interface exists, disable DHCP on a single interface. In the example, the enp1s0 interface has a static networking configuration and DHCP is disabled for enp2s0, which is not used:
 
 ```terminal
 ip=10.10.10.2::10.10.10.254:255.255.255.0:core0.example.com:enp1s0:none
 ip=::::core0.example.com:enp2s0:none
 ```
 
-
-##### Combining DHCP and static IP configurations
-
-You can combine DHCP and static IP configurations on systems with multiple network interfaces, for example:
-
+4. If you need to combine DHCP and static IP configurations on systems with multiple network interfaces, run the following example command:
 
 ```terminal
 ip=enp1s0:dhcp
@@ -2724,9 +2492,71 @@ ip=10.10.10.2::10.10.10.254:255.255.255.0:core0.example.com:enp2s0:none
 ```
 
 
-##### Configuring VLANs on individual interfaces
+### Configuring an IP address without a static hostname
 
-Optional: You can configure VLANs on individual interfaces by using the vlan= parameter.
+You can configure an IP address without assigning a static hostname. If a static hostname is not set by the user, the static hostname gets picked up and automatically set by a reverse DNS lookup.
+
+The configuration examples in the procedure, update the IP addresses for the following components:
+
+* The node's IP address to 10.10.10.2
+* The gateway address to 10.10.10.254
+* The netmask to 255.255.255.0
+* The DNS server address to 4.4.4.41
+* The auto-configuration value to none. No auto-configuration is required when IP networking is configured statically.
+
+* To configure an IP address without a static hostname, enter a command like the following command:
+
+```terminal
+ip=10.10.10.2::10.10.10.254:255.255.255.0::enp1s0:none
+nameserver=4.4.4.41
+```
+
+
+### Specifying multiple network interfaces and DNS servers
+
+You can specify multiple network interfaces by setting multiple ip= entries. You can provide multiple DNS servers by adding a nameserver= entry for each server,
+
+* To specify multiple network interfaces for your interfaces, you can enter a command like the following command:
+
+```terminal
+ip=10.10.10.2::10.10.10.254:255.255.255.0:core0.example.com:enp1s0:none
+ip=10.10.10.3::10.10.10.254:255.255.255.0:core0.example.com:enp2s0:none
+```
+
+* To provide multiple DNS servers by adding a nameserver= entry for each server, enter a command like the following command:
+
+```terminal
+nameserver=1.1.1.1
+nameserver=8.8.8.8
+```
+
+
+### Configuring default gateway and route
+
+As an optional task, you can configure routes to additional networks by setting an rd.route= value.
+
+
+[NOTE]
+----
+When you configure one or multiple networks, one default gateway is required. If the additional network gateway is different from the primary network gateway, the default gateway must be the primary network gateway.
+----
+
+* To configure the default gateway, enter the following command:
+
+```terminal
+ip=::10.10.10.254::::
+```
+
+* To configure the route for an additional network, enter the following command:
+
+```terminal
+rd.route=20.20.20.0/24:20.20.20.254:enp2s0
+```
+
+
+### Configuring VLANs on individual interfaces
+
+As an optional task, you can configure VLANs on individual interfaces by using the vlan= parameter.
 
 * To configure a VLAN on a network interface and use a static IP address, run the following command:
 
@@ -2743,35 +2573,32 @@ vlan=enp2s0.100:enp2s0
 ```
 
 
-##### Providing multiple DNS servers
+### Bonding multiple network interfaces to a single interface
 
-You can provide multiple DNS servers by adding a nameserver= entry for each server, for example:
+As an optional task, you can bond multiple network interfaces to a single interface by using the bond= option. By completing this task, you can eliminate a single point of failure for your network environment.
+
+The following example demonstrates editing the /etc/config/network file and specifying the following syntax for bonding multiple network interfaces to a single interface:
 
 
 ```terminal
-nameserver=1.1.1.1
-nameserver=8.8.8.8
+bond=<name>[:<network_interfaces>][:<options>]
 ```
 
 
-##### Bonding multiple network interfaces to a single interface
+* <name>: Specifies the bonding device name, for example bond0.
+* <network_interfaces>: Specifies a comma-separated list of physical (ethernet) interfaces, such as em1,em2.
+* <options>: Specifies a comma-separated list of bonding options. Enter the `modinfo bonding command to see available options.
 
-Optional: You can bond multiple network interfaces to a single interface by using the bond= option. Refer to the following examples:
+When you create a bonded interface using the bond= command, you must specify how the IP address is assigned and other information for the bonded interface.
 
-* The syntax for configuring a bonded interface is: bond=<name>[:<network_interfaces>][:options]
-
-<name> is the bonding device name (bond0), <network_interfaces> represents a comma-separated list of physical (ethernet) interfaces (em1,em2),
-and options is a comma-separated list of bonding options. Enter modinfo bonding to see available options.
-* When you create a bonded interface using bond=, you must specify how the IP address is assigned and other
-information for the bonded interface.
-* To configure the bonded interface to use DHCP, set the bond's IP address to dhcp. For example:
+* To configure the bonded interface to use DHCP, edit the /etc/config/network file by setting the IP address for the bond to dhcp. For example:
 
 ```terminal
 bond=bond0:em1,em2:mode=active-backup
 ip=bond0:dhcp
 ```
 
-* To configure the bonded interface to use a static IP address, enter the specific IP address you want and related information. For example:
+* To configure the bonded interface to use a static IP address, edit the /etc/config/network file entering the specific IP address you want and related information. For example:
 
 ```terminal
 bond=bond0:em1,em2:mode=active-backup
@@ -2779,17 +2606,14 @@ ip=10.10.10.2::10.10.10.254:255.255.255.0:core0.example.com:bond0:none
 ```
 
 
-##### Bonding multiple SR-IOV network interfaces to a dual port NIC interface
+### Bonding multiple SR-IOV network interfaces to a dual port NIC interface
 
-Optional: You can bond multiple SR-IOV network interfaces to a dual port NIC interface by using the bond= option.
-
-On each node, you must perform the following tasks:
+You can bond multiple SR-IOV network interfaces to a dual port NIC interface by using the bond= option. This task provides high availability capabilities to your network by preventing a single physical port from becoming a single point of failure. Ensure you apply the procedure tasks to each node.
 
 1. Create the SR-IOV virtual functions (VFs) following the guidance in Managing SR-IOV devices. Follow the procedure in the "Attaching SR-IOV networking devices to virtual machines" section.
 2. Create the bond, attach the desired VFs to the bond and set the bond link state up following the guidance in Configuring network bonding. Follow any of the described procedures to create the bond.
 
 The following examples illustrate the syntax you must use:
-
 * The syntax for configuring a bonded interface is bond=<name>[:<network_interfaces>][:options].
 
 <name> is the bonding device name (bond0), <network_interfaces> represents the virtual functions (VFs) by their known name in the kernel and shown in the output of the ip link command(eno1f0, eno2f0), and options is a comma-separated list of bonding options. Enter modinfo bonding to see available options.
@@ -2808,15 +2632,10 @@ bond=bond0:eno1f0,eno2f0:mode=active-backup
 ip=10.10.10.2::10.10.10.254:255.255.255.0:core0.example.com:bond0:none
 ```
 
-
-##### Using network teaming
-
-Optional: You can use a network teaming as an alternative to bonding by using the team= parameter:
-
+3. Optional: You can use network teaming as an alternative to bonding by using the team= parameter.
 * The syntax for configuring a team interface is: team=name[:network_interfaces]
 
 name is the team device name (team0) and network_interfaces represents a comma-separated list of physical (ethernet) interfaces (em1, em2).
-
 
 [NOTE]
 ----
@@ -2825,14 +2644,13 @@ Teaming is planned to be deprecated when RHCOS switches to an upcoming version o
 
 Use the following example to configure a network team:
 
-
 ```terminal
 team=team0:em1,em2
 ip=team0:dhcp
 ```
 
 
-#### coreos-installer options for ISO and PXE installations
+### coreos-installer and boot options for ISO and PXE installations
 
 You can install RHCOS by running coreos-installer install <options> <device> at the command prompt, after booting into the RHCOS live environment from an ISO image.
 
@@ -2840,11 +2658,9 @@ The following table shows the subcommands, options, and arguments you can pass t
 
 
 
-#### coreos.inst boot options for ISO or PXE installations
+You can automatically start coreos-installer options at boot time by passing coreos.inst boot arguments to the RHCOS live installer. These are provided in addition to the standard boot arguments.
 
-You can automatically invoke coreos-installer options at boot time by passing coreos.inst boot arguments to the RHCOS live installer. These are provided in addition to the standard boot arguments.
-
-* For ISO installations, the coreos.inst options can be added by interrupting the automatic boot at the bootloader menu. You can interrupt the automatic boot by pressing TAB while the RHEL CoreOS (Live) menu option is highlighted.
+* For ISO installations, the coreos.inst options can be added by interrupting the automatic boot at the boot loader menu. You can interrupt the automatic boot by pressing TAB while the RHEL CoreOS (Live) menu option is highlighted.
 * For PXE or iPXE installations, the coreos.inst options must be added to the APPEND line before the RHCOS live installer is booted.
 
 The following table shows the RHCOS live installer coreos.inst boot options for ISO and PXE installations.
