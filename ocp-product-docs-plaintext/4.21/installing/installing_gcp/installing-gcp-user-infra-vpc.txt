@@ -1,0 +1,2352 @@
+# Installing a cluster into a shared VPC on Google Cloud using Deployment Manager templates
+
+
+In {product-title} version {product-version}, you can install a cluster into a shared Virtual Private Cloud (VPC) on Google Cloud that uses infrastructure that you provide. In this context, a cluster installed into a shared VPC is a cluster that is configured to use a VPC from a project different from where the cluster is being deployed.
+A shared VPC enables an organization to connect resources from multiple projects to a common VPC network. You can communicate within the organization securely and efficiently by using internal IPs from that network. For more information about shared VPC, see Shared VPC overview in the Google Cloud documentation.
+The steps for performing a user-provided infrastructure installation into a shared VPC are outlined here. Several
+Deployment Manager templates are provided to assist in
+completing these steps or to help model your own. You are also free to create
+the required resources through other methods.
+
+[IMPORTANT]
+----
+The steps for performing a user-provisioned infrastructure installation are provided as an example only. Installing a cluster with infrastructure you provide requires knowledge of the cloud provider and the installation process of {product-title}. Several Deployment Manager templates are provided to assist in completing these steps or to help model your own. You are also free to create the required resources through other methods; the templates are just an example.
+----
+
+# Prerequisites
+
+* You reviewed details about the {product-title} installation and update processes.
+* You read the documentation on selecting a cluster installation method and preparing it for users.
+* If you use a firewall and plan to use the Telemetry service, you configured the firewall to allow the sites that your cluster requires access to.
+* If the cloud identity and access management (IAM) APIs are not accessible in your environment, or if you do not want to store an administrator-level credential secret in the kube-system namespace, you can manually create and maintain long-term credentials.
+* If you want to provide your own private hosted zone, you must have created one in the service project with the DNS pattern cluster-name.baseDomain., for example testCluster.example.com.. The private hosted zone must be bound to the VPC in the host project. For more information about cross-project binding, see Create a zone with cross-project binding (Google documentation). If you do not provide a private hosted zone, the installation program will provision one automatically.
+
+[NOTE]
+----
+Be sure to also review this site list if you are configuring a proxy.
+----
+
+# Certificate signing requests management
+
+Because your cluster has limited access to automatic machine management when you use infrastructure that you provision, you must provide a mechanism for approving cluster certificate signing requests (CSRs) after installation. The kube-controller-manager only approves the kubelet client CSRs. The machine-approver cannot guarantee the validity of a serving certificate that is requested by using kubelet credentials because it cannot confirm that the correct machine issued the request. You must determine and implement a method of verifying the validity of the kubelet serving certificate requests and approving them.
+
+# Internet access for {product-title}
+
+In {product-title} {product-version}, you require access to the internet to
+install
+your cluster.
+
+You must have internet access to perform the following actions:
+
+* Access OpenShift Cluster Manager to download the installation program and perform subscription management. If the cluster has internet access and you do not disable Telemetry, that service automatically entitles your cluster.
+* Access Quay.io to obtain the packages that are required to install your cluster.
+* Obtain the packages that are required to perform cluster updates.
+
+# Configuring the Google Cloud project that hosts your cluster
+
+Before you can install {product-title}, you must configure a Google Cloud project to host it.
+
+## Creating a Google Cloud project
+
+To install {product-title}, you must create a project in your Google Cloud account to host the cluster.
+
+* Create a project to host your {product-title} cluster. See
+Creating and Managing Projects in the Google Cloud documentation.
+
+[IMPORTANT]
+----
+Your Google Cloud project must use the Premium Network Service Tier if you are using installer-provisioned infrastructure. The Standard Network Service Tier is not supported for clusters installed using the installation program. The installation program configures internal load balancing for the api-int.<cluster_name>.<base_domain> URL; the Premium Tier is required for internal load balancing.
+----
+
+## Enabling API services in Google Cloud
+
+Your Google Cloud project requires access to several API services
+to complete {product-title} installation.
+
+* You created a project to host your cluster.
+
+* Enable the following required API services in the project that hosts your
+cluster. You may also enable optional API services which are not required for installation. See
+Enabling services
+in the Google Cloud documentation.
+Required API services
+
+Optional API services
+
+
+## Google Cloud account limits
+
+The {product-title} cluster uses a number of Google Cloud
+components, but the default
+Quotas
+do not affect your ability to install a default {product-title} cluster.
+
+A default cluster, which contains three compute and three control plane machines,
+uses the following resources. Note that some resources are required only during
+the bootstrap process and are removed after the cluster deploys.
+
+
+
+
+[NOTE]
+----
+If any of the quotas are insufficient during installation, the installation program displays an error that states both which quota was exceeded and the region.
+----
+
+Be sure to consider your actual cluster size, planned cluster growth, and any usage from other clusters that are associated with your account. The CPU, static IP addresses, and persistent disk SSD (storage) quotas are the ones that are most likely to be insufficient.
+
+If you plan to deploy your cluster in one of the following regions, you will exceed the maximum storage quota and are likely to exceed the CPU quota limit:
+
+* asia-east2
+* asia-northeast2
+* asia-south1
+* australia-southeast1
+* europe-north1
+* europe-west2
+* europe-west3
+* europe-west6
+* northamerica-northeast1
+* southamerica-east1
+* us-west2
+
+You can increase resource quotas from the Google Cloud console, but you might need to file a support ticket. Be sure to plan your cluster size early so that you can allow time to resolve the support ticket before you install your {product-title} cluster.
+
+## Creating a service account in Google Cloud
+
+{product-title} requires a Google Cloud service account that provides authentication and authorization to access data in the Google APIs. If you do not have an existing IAM service account that contains the required roles in your project, you must create one.
+
+* You created a project to host your cluster.
+
+1. Create a service account in the project that you use to host your
+{product-title} cluster. See
+Creating a service account
+in the Google Cloud documentation.
+2. Grant the service account the appropriate permissions. You can either
+grant the individual permissions that follow or assign the Owner role to it.
+See Granting roles to a service account for specific resources.
+
+[NOTE]
+----
+While making the service account an owner of the project is the easiest way to gain the required permissions, it means that service account has complete control over the project. You must determine if the risk that comes from offering that power is acceptable.
+----
+3. You can create the service account key in JSON format, or attach the service account to a Google Cloud virtual machine.
+See Creating service account keys and Creating and enabling service accounts for instances in the Google Cloud documentation.
+
+[NOTE]
+----
+If you use a virtual machine with an attached service account to create your cluster, you must set credentialsMode: Manual in the install-config.yaml file before installation.
+----
+
+### Required Google Cloud roles
+
+When you attach the Owner role to the service account that you create, you grant that service account all permissions, including those that are required to install {product-title}. If your organization&#8217;s security policies require a more restrictive set of permissions, you can create a service account with the following permissions. If you deploy your cluster into an existing virtual private cloud (VPC), the service account does not require certain networking permissions, which are noted in the following lists:
+
+* Compute Admin
+* Role Administrator
+* Security Admin
+* Service Account Admin
+* Service Account Key Admin
+* Service Account User
+* Storage Admin
+
+* DNS Administrator
+
+* Compute Load Balancer Admin
+* Tag User
+
+* Deployment Manager Editor
+
+The following roles are applied to the service accounts that the control plane and compute machines use:
+
+
+
+## Supported Google Cloud regions
+
+You can deploy an {product-title} cluster to the following Google Cloud
+regions:
+
+* africa-south1 (Johannesburg, South Africa)
+* asia-east1 (Changhua County, Taiwan)
+* asia-east2 (Hong Kong)
+* asia-northeast1 (Tokyo, Japan)
+* asia-northeast2 (Osaka, Japan)
+* asia-northeast3 (Seoul, South Korea)
+* asia-south1 (Mumbai, India)
+* asia-south2 (Delhi, India)
+* asia-southeast1 (Jurong West, Singapore)
+* asia-southeast2 (Jakarta, Indonesia)
+* australia-southeast1 (Sydney, Australia)
+* australia-southeast2 (Melbourne, Australia)
+* europe-central2 (Warsaw, Poland)
+* europe-north1 (Hamina, Finland)
+* europe-southwest1 (Madrid, Spain)
+* europe-west1 (St. Ghislain, Belgium)
+* europe-west2 (London, England, UK)
+* europe-west3 (Frankfurt, Germany)
+* europe-west4 (Eemshaven, Netherlands)
+* europe-west6 (Zürich, Switzerland)
+* europe-west8 (Milan, Italy)
+* europe-west9 (Paris, France)
+* europe-west12 (Turin, Italy)
+* me-central1 (Doha, Qatar, Middle East)
+* me-central2 (Dammam, Saudi Arabia, Middle East)
+* me-west1 (Tel Aviv, Israel)
+* northamerica-northeast1 (Montréal, Québec, Canada)
+* northamerica-northeast2 (Toronto, Ontario, Canada)
+* southamerica-east1 (São Paulo, Brazil)
+* southamerica-west1 (Santiago, Chile)
+* us-central1 (Council Bluffs, Iowa, USA)
+* us-east1 (Moncks Corner, South Carolina, USA)
+* us-east4 (Ashburn, Northern Virginia, USA)
+* us-east5 (Columbus, Ohio)
+* us-south1 (Dallas, Texas)
+* us-west1 (The Dalles, Oregon, USA)
+* us-west2 (Los Angeles, California, USA)
+* us-west3 (Salt Lake City, Utah, USA)
+* us-west4 (Las Vegas, Nevada, USA)
+
+
+[NOTE]
+----
+To determine which machine type instances are available by region and zone, see the Google documentation.
+----
+
+## Installing and configuring CLI tools for Google Cloud
+
+To install {product-title} on Google Cloud using user-provisioned
+infrastructure, you must install and configure the CLI tools for Google Cloud.
+
+* You created a project to host your cluster.
+* You created a service account and granted it the required permissions.
+
+1. Install the following binaries in $PATH:
+* gcloud
+* gsutil
+
+See Install the latest Cloud SDK version
+in the Google Cloud documentation.
+2. Authenticate using the gcloud tool with your configured service account.
+
+See Authorizing with a service account in the Google Cloud documentation.
+
+# Requirements for a cluster with user-provisioned infrastructure
+
+For a cluster that contains user-provisioned infrastructure, you must deploy all
+of the required machines.
+
+This section describes the requirements for deploying {product-title} on user-provisioned infrastructure.
+
+## Required machines for cluster installation
+
+The smallest {product-title} clusters require the following hosts:
+
+
+[IMPORTANT]
+----
+For a cluster that contains user-provisioned infrastructure, you must deploy all of the required machines.
+----
+
+
+
+
+[IMPORTANT]
+----
+To maintain high availability of your cluster, use separate physical hosts for
+these cluster machines.
+----
+
+The bootstrap and control plane machines must use Red Hat Enterprise Linux CoreOS (RHCOS) as the operating system. However, the compute machines can choose between Red Hat Enterprise Linux CoreOS (RHCOS), Red Hat Enterprise Linux (RHEL) 8.6 and later.
+
+Note that RHCOS is based on Red Hat Enterprise Linux (RHEL) 9.2 and inherits all of its hardware certifications and requirements.
+See Red Hat Enterprise Linux technology capabilities and limits.
+
+## Minimum resource requirements for cluster installation
+
+Each cluster machine must meet the following minimum requirements:
+
+
+
+1. One vCPU is equivalent to one physical core when simultaneous multithreading (SMT), or Hyper-Threading, is not enabled. When enabled, use the following formula to calculate the corresponding ratio: (threads per core × cores) × sockets = vCPUs.
+2. {product-title} and Kubernetes are sensitive to disk performance, and faster storage is recommended, particularly for etcd on the control plane nodes which require a 10 ms p99 fsync duration. Note that on many cloud platforms, storage size and IOPS scale together, so you might need to over-allocate storage volume to obtain sufficient performance.
+3. As with all user-provisioned installations, if you choose to use RHEL compute machines in your cluster, you take responsibility for all operating system life cycle management and maintenance, including performing system updates, applying patches, and completing all other required tasks. Use of RHEL 7 compute machines is deprecated and has been removed in {product-title} 4.10 and later.
+
+
+[NOTE]
+----
+For {product-title} version 4.19, RHCOS is based on RHEL version 9.6, which updates the micro-architecture requirements. The following list contains the minimum instruction set architectures (ISA) that each architecture requires:
+* x86-64 architecture requires x86-64-v2 ISA
+* ARM64 architecture requires ARMv8.0-A ISA
+* IBM Power architecture requires Power 9 ISA
+* s390x architecture requires z14 ISA
+For more information, see Architectures (RHEL documentation).
+----
+
+If an instance type for your platform meets the minimum requirements for cluster machines, it is supported to use in {product-title}.
+
+* Optimizing storage
+
+## Tested instance types for Google Cloud
+
+The following Google Cloud instance types have been tested with {product-title}.
+
+
+[NOTE]
+----
+Not all instance types are available in all regions and zones. For a detailed breakdown of which instance types are available in which zones, see regions and zones (Google documentation).
+Some instance types require the use of Hyperdisk storage. If you use an instance type that requires Hyperdisk storage, all of the nodes in your cluster must support Hyperdisk storage, and you must change the default storage class to use Hyperdisk storage. For more information, see machine series support for Hyperdisk (Google documentation). For instructions on modifying storage classes, see the "GCE PersistentDisk (gcePD) object definition" section in the Dynamic Provisioning page in Storage.
+----
+
+https://raw.githubusercontent.com/openshift/installer/release-4.20/docs/user/gcp/tested_instance_types.md
+
+## Using custom machine types
+
+Using a custom machine type to install a {product-title} cluster is supported.
+
+Consider the following when using a custom machine type:
+
+* Similar to predefined instance types, custom machine types must meet the minimum resource requirements for control plane and compute machines. For more information, see "Minimum resource requirements for cluster installation".
+* The name of the custom machine type must adhere to the following syntax:
+custom-<number_of_cpus>-<amount_of_memory_in_mb>
+For example, custom-6-20480.
+
+# Configuring the Google Cloud project that hosts your shared VPC network
+
+If you use a shared Virtual Private Cloud (VPC) to host your {product-title} cluster in Google Cloud, you must configure the project that hosts it.
+
+
+[NOTE]
+----
+If you already have a project that hosts the shared VPC network, review this section to ensure that the project meets all of the requirements to install an {product-title} cluster.
+----
+
+1. Create a project to host the shared VPC for your {product-title} cluster. See
+Creating and Managing Projects in the Google Cloud documentation.
+2. Create a service account in the project that hosts your shared VPC. See
+Creating a service account
+in the Google Cloud documentation.
+3. Grant the service account the appropriate permissions. You can either
+grant the individual permissions that follow or assign the Owner role to it.
+See Granting roles to a service account for specific resources.
+
+[NOTE]
+----
+While making the service account an owner of the project is the easiest way to gain the required permissions, it means that service account has complete control over the project. You must determine if the risk that comes from offering that power is acceptable.
+The service account for the project that hosts the shared VPC network requires the following roles:
+* Compute Network User
+* Compute Security Admin
+* Deployment Manager Editor
+* DNS Administrator
+* Security Admin
+* Network Management Admin
+----
+
+## Configuring DNS for Google Cloud
+
+To install {product-title}, the Google Cloud account you use must
+have a dedicated public hosted zone
+in the project that hosts the shared VPC that you install the cluster into.
+This zone must be authoritative for the domain. The
+DNS service provides cluster DNS resolution and name lookup for external
+connections to the cluster.
+
+1. Identify your domain, or subdomain, and registrar. You can transfer an existing domain and
+registrar or obtain a new one through Google Cloud or another source.
+
+[NOTE]
+----
+If you purchase a new domain, it can take time for the relevant DNS
+changes to propagate. For more information about purchasing domains
+through Google, see Google Domains.
+----
+2. Create a public hosted zone for your domain or subdomain in your Google Cloud project. See
+Creating public zones
+in the Google Cloud documentation.
+
+Use an appropriate root domain, such as openshiftcorp.com, or subdomain,
+such as clusters.openshiftcorp.com.
+3. Extract the new authoritative name servers from the hosted zone records. See
+Look up your Cloud DNS name servers
+in the Google Cloud documentation.
+
+You typically have four name servers.
+4. Update the registrar records for the name servers that your domain
+uses. For example, if you registered your domain to Google Domains, see the
+following topic in the Google Domains Help:
+How to switch to custom name servers.
+5. If you migrated your root domain to Google Cloud DNS, migrate your DNS records. See Migrating to Cloud DNS in the Google Cloud documentation.
+6. If you use a subdomain, follow your company's procedures to add its delegation records to the parent domain. This process might include a request to your company's IT department or the division that controls the root domain and DNS services for your company.
+
+## Creating a VPC in Google Cloud
+
+You must create a VPC in Google Cloud for your {product-title}
+cluster to use. You can customize the VPC to meet your requirements. One way to
+create the VPC is to modify the provided Deployment Manager template.
+
+
+[NOTE]
+----
+If you do not use the provided Deployment Manager template to create your Google Cloud
+infrastructure, you must review the provided information and manually create
+the infrastructure. If your cluster does not initialize correctly, you might
+have to contact Red Hat support with your installation logs.
+----
+
+* You have defined the variables in the Exporting common variables section.
+
+1. Copy the template from the Deployment Manager template for the VPC
+section of this topic and save it as 01_vpc.py on your computer. This template
+describes the VPC that your cluster requires.
+2. Export the following variables required by the resource definition:
+1. Export the control plane CIDR:
+
+```terminal
+$ export MASTER_SUBNET_CIDR='10.0.0.0/17'
+```
+
+2. Export the compute CIDR:
+
+```terminal
+$ export WORKER_SUBNET_CIDR='10.0.128.0/17'
+```
+
+3. Export the region to deploy the VPC network and cluster to:
+
+```terminal
+$ export REGION='<region>'
+```
+
+3. Export the variable for the ID of the project that hosts the shared VPC:
+
+```terminal
+$ export HOST_PROJECT=<host_project>
+```
+
+4. Export the variable for the email of the service account that belongs to host project:
+
+```terminal
+$ export HOST_PROJECT_ACCOUNT=<host_service_account_email>
+```
+
+5. Create a 01_vpc.yaml resource definition file:
+
+```terminal
+$ cat <<EOF >01_vpc.yaml
+imports:
+- path: 01_vpc.py
+
+resources:
+- name: cluster-vpc
+  type: 01_vpc.py
+  properties:
+    infra_id: '<prefix>' 1
+    region: '${REGION}' 2
+    master_subnet_cidr: '${MASTER_SUBNET_CIDR}' 3
+    worker_subnet_cidr: '${WORKER_SUBNET_CIDR}' 4
+EOF
+```
+
+infra_id is the prefix of the network name.
+region is the region to deploy the cluster into, for example us-central1.
+master_subnet_cidr is the CIDR for the master subnet, for example 10.0.0.0/17.
+worker_subnet_cidr is the CIDR for the worker subnet, for example 10.0.128.0/17.
+6. Create the deployment by using the gcloud CLI:
+
+```terminal
+$ gcloud deployment-manager deployments create <vpc_deployment_name> --config 01_vpc.yaml --project ${HOST_PROJECT} --account ${HOST_PROJECT_ACCOUNT} 1
+```
+
+For <vpc_deployment_name>, specify the name of the VPC to deploy.
+7. Export the VPC variable that other components require:
+1. Export the name of the host project network:
+
+```terminal
+$ export HOST_PROJECT_NETWORK=<vpc_network>
+```
+
+2. Export the name of the host project control plane subnet:
+
+```terminal
+$ export HOST_PROJECT_CONTROL_SUBNET=<control_plane_subnet>
+```
+
+3. Export the name of the host project compute subnet:
+
+```terminal
+$ export HOST_PROJECT_COMPUTE_SUBNET=<compute_subnet>
+```
+
+8. Set up the shared VPC. See Setting up Shared VPC in the Google Cloud documentation.
+
+### Deployment Manager template for the VPC
+
+You can use the following Deployment Manager template to deploy the VPC that
+you need for your {product-title} cluster:
+
+
+```python
+link:https://raw.githubusercontent.com/openshift/installer/release-4.20/upi/gcp/01_vpc.py[role=include]
+```
+
+# Creating the installation files for Google Cloud
+
+To install {product-title} on {cp-first} using user-provisioned infrastructure, you must generate the files that the installation program needs to deploy your cluster and modify them so that the cluster creates only the machines that it will use. You generate and customize the install-config.yaml file, Kubernetes manifests, and Ignition config files. You also have the option to first set up a separate var partition during the preparation phases of installation.
+
+## Manually creating the installation configuration file
+
+Installing the cluster requires that you manually create the installation configuration file.
+
+* You have an SSH public key on your local machine for use with the installation program. You can use the key for SSH authentication onto your cluster nodes for debugging and disaster recovery.
+* You have obtained the {product-title} installation program and the pull secret for your
+cluster.
+
+1. Create an installation directory to store your required installation assets in:
+
+```terminal
+$ mkdir <installation_directory>
+```
+
+
+[IMPORTANT]
+----
+You must create a directory. Some installation assets, such as bootstrap X.509 certificates have short expiration intervals, so you must not reuse an installation directory. If you want to reuse individual files from another cluster installation, you can copy them into your directory. However, the file names for the installation assets might change between releases. Use caution when copying installation files from an earlier {product-title} version.
+----
+2. Customize the provided sample install-config.yaml file template and save the file in the <installation_directory>.
+
+[NOTE]
+----
+You must name this configuration file install-config.yaml.
+----
+3. Back up the install-config.yaml file so that you can use it to install many clusters.
+
+[IMPORTANT]
+----
+Back up the install-config.yaml file now, because the installation process consumes the file in the next step.
+----
+
+* Installation configuration parameters for Google Cloud
+
+## Enabling Shielded VMs
+
+You can use Shielded VMs when installing your cluster. Shielded VMs have extra security features including secure boot, firmware and integrity monitoring, and rootkit detection. For more information, see Google&#8217;s documentation on Shielded VMs.
+
+
+[NOTE]
+----
+Shielded VMs are currently not supported on clusters with 64-bit ARM infrastructures.
+----
+
+* Use a text editor to edit the install-config.yaml file prior to deploying your cluster and add one of the following stanzas:
+1. To use shielded VMs for only control plane machines:
+
+```yaml
+controlPlane:
+  platform:
+    gcp:
+       secureBoot: Enabled
+```
+
+2. To use shielded VMs for only compute machines:
+
+```yaml
+compute:
+- platform:
+    gcp:
+       secureBoot: Enabled
+```
+
+3. To use shielded VMs for all machines:
+
+```yaml
+platform:
+  gcp:
+    defaultMachinePlatform:
+       secureBoot: Enabled
+```
+
+
+## Enabling Confidential VMs
+
+You can use Confidential VMs when installing your cluster. Confidential VMs encrypt data while it is being processed. For more information, see Google&#8217;s documentation on Confidential Computing. You can enable Confidential VMs and Shielded VMs at the same time, although they are not dependent on each other.
+
+
+[NOTE]
+----
+Confidential VMs are currently not supported on 64-bit ARM architectures.
+----
+
+* Use a text editor to edit the install-config.yaml file prior to deploying your cluster and add one of the following stanzas:
+1. To use confidential VMs for only control plane machines:
+
+```yaml
+controlPlane:
+  platform:
+    gcp:
+       confidentialCompute: AMDEncryptedVirtualizationNestedPaging 1
+       type: n2d-standard-8 2
+       onHostMaintenance: Terminate 3
+```
+
+Enable confidential VMs with AMD Secure Encrypted Virtualization Secure Nested Paging (AMD SEV-SNP). For more information about available options, see "Additional Google Cloud configuration parameters".
+Specify a machine type that supports Confidential VMs. Confidential VMs require the N2D, C2D, C3D, or C3 series of machine types. For more information on supported machine types, see Supported operating systems and machine types.
+Specify the behavior of the VM during a host maintenance event, such as a hardware or software update. For a machine that uses Confidential VM, this value must be set to Terminate, which stops the VM. Confidential VMs do not support live VM migration.
+2. To use confidential VMs for only compute machines:
+
+```yaml
+compute:
+- platform:
+    gcp:
+       confidentialCompute: AMDEncryptedVirtualizationNestedPaging
+       type: n2d-standard-8
+       onHostMaintenance: Terminate
+```
+
+3. To use confidential VMs for all machines:
+
+```yaml
+platform:
+  gcp:
+    defaultMachinePlatform:
+       confidentialCompute: AMDEncryptedVirtualizationNestedPaging
+       type: n2d-standard-8
+       onHostMaintenance: Terminate
+```
+
+
+* Additional Google Cloud configuration parameters
+
+## Sample customized install-config.yaml file for Google Cloud
+
+You can customize the install-config.yaml file to specify more details about your {product-title} cluster&#8217;s platform or modify the values of the required parameters.
+
+
+[IMPORTANT]
+----
+This sample YAML file is provided for reference only. You must obtain your install-config.yaml file by using the installation program and modify it.
+----
+
+
+```yaml
+apiVersion: v1
+baseDomain: example.com 1
+controlPlane: 2
+  hyperthreading: Enabled 3 4
+  name: master
+  platform:
+    gcp:
+      type: n2-standard-4
+      zones:
+      - us-central1-a
+      - us-central1-c
+      tags: 5
+      - control-plane-tag1
+      - control-plane-tag2
+  replicas: 3
+compute: 2
+- hyperthreading: Enabled 3
+  name: worker
+  platform:
+    gcp:
+      type: n2-standard-4
+      zones:
+      - us-central1-a
+      - us-central1-c
+      tags: 5
+      - compute-tag1
+      - compute-tag2
+  replicas: 0
+metadata:
+  name: test-cluster
+networking:
+  clusterNetwork:
+  - cidr: 10.128.0.0/14
+    hostPrefix: 23
+  machineNetwork:
+  - cidr: 10.0.0.0/16
+  networkType: OVNKubernetes 6
+  serviceNetwork:
+  - 172.30.0.0/16
+platform:
+  gcp:
+    defaultMachinePlatform:
+      tags: 5
+      - global-tag1
+      - global-tag2
+    projectID: openshift-production 7
+    region: us-central1 8
+pullSecret: '{"auths": ...}'
+fips: false 9
+sshKey: ssh-ed25519 AAAA... 10
+publish: Internal 11
+```
+
+
+Specify the public DNS on the host project.
+If you do not provide these parameters and values, the installation program provides the default value.
+The controlPlane section is a single mapping, but the compute section is a sequence of mappings. To meet the requirements of the different data structures, the first line of the compute section must begin with a hyphen, -, and the first line of the controlPlane section must not. Although both sections currently define a single machine pool, it is possible that future versions of {product-title} will support defining multiple compute pools during installation. Only one control plane pool is used.
+Whether to enable or disable simultaneous multithreading, or hyperthreading. By default, simultaneous multithreading is enabled to increase the performance of your machines' cores. You can disable it by setting the parameter value to Disabled. If you disable simultaneous multithreading in some cluster machines, you must disable it in all cluster machines.
+
+[IMPORTANT]
+----
+If you disable simultaneous multithreading, ensure that your capacity planning accounts for the dramatically decreased machine performance. Use larger machine types, such as n1-standard-8, for your machines if you disable simultaneous multithreading.
+----
+Optional: A set of network tags to apply to the control plane or compute machine sets. The platform.gcp.defaultMachinePlatform.tags parameter applies to both control plane and compute machines. If the compute.platform.gcp.tags or controlPlane.platform.gcp.tags parameters are set, they override the platform.gcp.defaultMachinePlatform.tags parameter.
+The cluster network plugin to install. The default value OVNKubernetes is the only supported value.
+Specify the main project where the VM instances reside.
+Specify the region that your VPC network is in.
+Whether to enable or disable FIPS mode. By default, FIPS mode is not enabled. If FIPS mode is enabled, the Red Hat Enterprise Linux CoreOS (RHCOS) machines that {product-title} runs on bypass the default Kubernetes cryptography suite and use the cryptography modules that are provided with RHCOS instead.
+
+[IMPORTANT]
+----
+To enable FIPS mode for your cluster, you must run the installation program from a Red Hat Enterprise Linux (RHEL) computer configured to operate in FIPS mode. For more information about configuring FIPS mode on RHEL, see Switching RHEL to FIPS mode.
+When running Red Hat Enterprise Linux (RHEL) or Red Hat Enterprise Linux CoreOS (RHCOS) booted in FIPS mode, {product-title} core components use the RHEL cryptographic libraries that have been submitted to NIST for FIPS 140-2/140-3 Validation on only the x86_64, ppc64le, and s390x architectures.
+----
+You can optionally provide the sshKey value that you use to access the machines in your cluster.
+
+[NOTE]
+----
+For production {product-title} clusters on which you want to perform installation debugging or disaster recovery, specify an SSH key that your ssh-agent process uses.
+----
+How to publish the user-facing endpoints of your cluster. Set publish to Internal to deploy a private cluster, which cannot be accessed from the internet. The default value is External.
+To use a shared VPC in a cluster that uses infrastructure that you provision, you must set publish to Internal. The installation program will no longer be able to access the public DNS zone for the base domain in the host project.
+
+## Configuring the cluster-wide proxy during installation
+
+Production environments can deny direct access to the internet and instead have
+an HTTP or HTTPS proxy available. You can configure a new {product-title}
+cluster to use a proxy by configuring the proxy settings in the
+install-config.yaml file.
+
+* You reviewed the sites that your cluster requires access to and determined whether any of them need to bypass the proxy. By default, all cluster egress traffic is proxied, including calls to hosting cloud provider APIs. You added sites to the Proxy object's spec.noProxy field to bypass the proxy if necessary.
+
+[NOTE]
+----
+The Proxy object status.noProxy field is populated with the values of the networking.machineNetwork[].cidr, networking.clusterNetwork[].cidr, and networking.serviceNetwork[] fields from your installation configuration.
+For installations on Amazon Web Services (AWS), Google Cloud, Microsoft Azure, and Red Hat OpenStack Platform (RHOSP), the Proxy object status.noProxy field is also populated with the instance metadata endpoint (169.254.169.254).
+----
+
+1. Edit your install-config.yaml file and add the proxy settings. For example:
+
+```yaml
+apiVersion: v1
+baseDomain: my.domain.com
+proxy:
+  httpProxy: http://<username>:<pswd>@<ip>:<port> 1
+  httpsProxy: https://<username>:<pswd>@<ip>:<port> 2
+  noProxy: example.com 3
+additionalTrustBundle: | 4
+    -----BEGIN CERTIFICATE-----
+    <MY_TRUSTED_CA_CERT>
+    -----END CERTIFICATE-----
+additionalTrustBundlePolicy: <policy_to_add_additionalTrustBundle> 5
+```
+
+A proxy URL to use for creating HTTP connections outside the cluster. The
+URL scheme must be http.
+A proxy URL to use for creating HTTPS connections outside the cluster.
+A comma-separated list of destination domain names, IP addresses, or other network CIDRs to exclude from proxying. Preface a domain with . to match subdomains only. For example, .y.com matches x.y.com, but not y.com. Use * to bypass the proxy for all destinations.
+If provided, the installation program generates a config map that is named user-ca-bundle in
+the openshift-config namespace that contains one or more additional CA
+certificates that are required for proxying HTTPS connections. The Cluster Network
+Operator then creates a trusted-ca-bundle config map that merges these contents
+with the Red Hat Enterprise Linux CoreOS (RHCOS) trust bundle, and this config map is referenced in the trustedCA field of the Proxy object. The additionalTrustBundle field is required unless
+the proxy's identity certificate is signed by an authority from the RHCOS trust
+bundle.
+Optional: The policy to determine the configuration of the Proxy object to reference the user-ca-bundle config map in the trustedCA field. The allowed values are Proxyonly and Always. Use Proxyonly to reference the user-ca-bundle config map only when http/https proxy is configured. Use Always to always reference the user-ca-bundle config map. The default value is Proxyonly.
+
+[NOTE]
+----
+The installation program does not support the proxy readinessEndpoints field.
+----
+
+[NOTE]
+----
+If the installer times out, restart and then complete the deployment by using the wait-for command of the installer. For example:
+
+```terminal
+$ ./openshift-install wait-for install-complete --log-level debug
+```
+
+----
+2. Save the file and reference it when installing {product-title}.
+
+The installation program creates a cluster-wide proxy that is named cluster that uses the proxy
+settings in the provided install-config.yaml file. If no proxy settings are
+provided, a cluster Proxy object is still created, but it will have a nil
+spec.
+
+
+[NOTE]
+----
+Only the Proxy object named cluster is supported, and no additional
+proxies can be created.
+----
+
+## Creating the Kubernetes manifest and Ignition config files
+
+Because you must modify some cluster definition files and manually start the cluster machines, you must generate the Kubernetes manifest and Ignition config files that the cluster needs to configure the machines.
+
+The installation configuration file transforms into the Kubernetes manifests. The manifests wrap into the Ignition configuration files, which are later used to configure the cluster machines.
+
+
+[IMPORTANT]
+----
+* The Ignition config files that the {product-title} installation program generates contain certificates that expire after 24 hours, which are then renewed at that time. If the cluster is shut down before renewing the certificates and the cluster is later restarted after the 24 hours have elapsed, the cluster automatically recovers the expired certificates. The exception is that you must manually approve the pending node-bootstrapper certificate signing requests (CSRs) to recover kubelet certificates. See the documentation for Recovering from expired control plane certificates for more information.
+* It is recommended that you use Ignition config files within 12 hours after they are generated because the 24-hour certificate rotates from 16 to 22 hours after the cluster is installed. By using the Ignition config files within 12 hours, you can avoid installation failure if the certificate update runs during installation.
+----
+
+1. Change to the directory that contains the {product-title} installation program and generate the Kubernetes manifests for the cluster:
+
+```terminal
+$ ./openshift-install create manifests --dir <installation_directory> 1
+```
+
+For <installation_directory>, specify the installation directory that
+contains the install-config.yaml file you created.
+2. Remove the Kubernetes manifest files that define the control plane machines:
+
+```terminal
+$ rm -f <installation_directory>/openshift/99_openshift-cluster-api_master-machines-*.yaml
+```
+
+
+By removing these files, you prevent the cluster from automatically generating control plane machines.
+3. Remove the Kubernetes manifest files that define the control plane machine set:
+
+```terminal
+$ rm -f <installation_directory>/openshift/99_openshift-machine-api_master-control-plane-machine-set.yaml
+```
+
+4. Remove the Kubernetes manifest files that define the worker machines:
+
+```terminal
+$ rm -f <installation_directory>/openshift/99_openshift-cluster-api_worker-machineset-*.yaml
+```
+
+
+Because you create and manage the worker machines yourself, you do not need to initialize these machines.
+5. Check that the mastersSchedulable parameter in the <installation_directory>/manifests/cluster-scheduler-02-config.yml Kubernetes manifest file is set to false. This setting prevents pods from being scheduled on the control plane machines:
+1. Open the <installation_directory>/manifests/cluster-scheduler-02-config.yml file.
+2. Locate the mastersSchedulable parameter and ensure that it is set to false.
+3. Save and exit the file.
+6. Remove the privateZone
+sections from the <installation_directory>/manifests/cluster-dns-02-config.yml DNS configuration file:
+
+```yaml
+apiVersion: config.openshift.io/v1
+kind: DNS
+metadata:
+  creationTimestamp: null
+  name: cluster
+spec:
+  baseDomain: example.openshift.com
+  privateZone: 1
+    id: mycluster-100419-private-zone
+status: {}
+```
+
+Remove this section completely.
+7. Configure the cloud provider for your VPC.
+1. Open the <installation_directory>/manifests/cloud-provider-config.yaml file.
+2. Add the network-project-id parameter and set its value to the ID of project that hosts the shared VPC network.
+3. Add the network-name parameter and set its value to the name of the shared VPC network that hosts the {product-title} cluster.
+4. Replace the value of the subnetwork-name parameter with the value of the shared VPC subnet that hosts your compute machines.
+
+The contents of the <installation_directory>/manifests/cloud-provider-config.yaml resemble the following example:
+
+```yaml
+config: |+
+  [global]
+  project-id      = example-project
+  regional        = true
+  multizone       = true
+  node-tags       = opensh-ptzzx-master
+  node-tags       = opensh-ptzzx-worker
+  node-instance-prefix = opensh-ptzzx
+  external-instance-groups-prefix = opensh-ptzzx
+  network-project-id = example-shared-vpc
+  network-name    = example-network
+  subnetwork-name = example-worker-subnet
+```
+
+8. If you deploy a cluster that is not on a private network, open the <installation_directory>/manifests/cluster-ingress-default-ingresscontroller.yaml file and replace the value of the scope parameter with External. The contents of the file resemble the following example:
+
+```yaml
+apiVersion: operator.openshift.io/v1
+kind: IngressController
+metadata:
+  creationTimestamp: null
+  name: default
+  namespace: openshift-ingress-operator
+spec:
+  endpointPublishingStrategy:
+    loadBalancer:
+      scope: External
+    type: LoadBalancerService
+status:
+  availableReplicas: 0
+  domain: ''
+  selector: ''
+```
+
+9. To create the Ignition configuration files, run the following command from the directory that contains the installation program:
+
+```terminal
+$ ./openshift-install create ignition-configs --dir <installation_directory> 1
+```
+
+For <installation_directory>, specify the same installation directory.
+
+Ignition config files are created for the bootstrap, control plane, and compute nodes in the installation directory. The kubeadmin-password and kubeconfig files are created in the ./<installation_directory>/auth directory:
+
+```
+.
+├── auth
+│   ├── kubeadmin-password
+│   └── kubeconfig
+├── bootstrap.ign
+├── master.ign
+├── metadata.json
+└── worker.ign
+```
+
+
+# Exporting common variables
+
+## Extracting the infrastructure name
+
+The Ignition config files contain a unique cluster identifier that you can use to
+uniquely identify your cluster in {cp-first}. The infrastructure name is also used to locate the appropriate {cp} resources during an {product-title} installation. The provided {cp-template}
+templates contain references to this infrastructure name, so you must extract
+it.
+
+* You installed the jq package.
+
+* To extract and view the infrastructure name from the Ignition config file
+metadata, run the following command:
+
+```terminal
+$ jq -r .infraID <installation_directory>/metadata.json 1
+```
+
+For <installation_directory>, specify the path to the directory that you stored the
+installation files in.
+Example output
+
+```terminal
+openshift-vw9j6 1
+```
+
+The output of this command is your cluster name and a random string.
+
+## Exporting common variables for Deployment Manager templates
+
+You must export a common set of variables that are used with the provided
+{cp-template} templates used to assist in completing a user-provided
+infrastructure install on {cp-first}.
+
+
+[NOTE]
+----
+Specific {cp-template} templates can also require additional exported variables, which are detailed in their related procedures.
+----
+
+1. Export the following common variables to be used by the provided {cp-template}
+templates:
+
+```terminal
+$ export BASE_DOMAIN='<base_domain>'
+```
+
+* <base_domain>: Supply the values for the host project.
+
+```terminal
+$ export BASE_DOMAIN_ZONE_NAME='<base_domain_zone_name>'
+```
+
+* <base_domain>: Supply the values for the host project.
+
+```terminal
+$ export NETWORK_CIDR='10.0.0.0/16'
+```
+
+
+```terminal
+$ export KUBECONFIG=<installation_directory>/auth/kubeconfig
+```
+
+* <installation_directory>: Specify the path to the directory that you stored the installation files in.
+
+```terminal
+$ export CLUSTER_NAME=`jq -r .clusterName <installation_directory>/metadata.json`
+```
+
+
+```terminal
+$ export INFRA_ID=`jq -r .infraID <installation_directory>/metadata.json`
+```
+
+
+```terminal
+$ export PROJECT_NAME=`jq -r .gcp.projectID <installation_directory>/metadata.json`
+```
+
+
+# Networking requirements for user-provisioned infrastructure
+
+You must configure networking for all the Red Hat Enterprise Linux CoreOS (RHCOS) machines in initramfs during boot, so that they can fetch their Ignition config files.
+
+
+[IMPORTANT]
+----
+Ensure you enable the disk.EnableUUID parameter on all virtual machines in your cluster.
+----
+
+## Setting the cluster node hostnames through DHCP
+
+On Red Hat Enterprise Linux CoreOS (RHCOS) machines, the hostname is set through NetworkManager. By default, the machines obtain their hostname through DHCP. If the hostname is not provided by DHCP, set statically through kernel arguments, or another method, it is obtained through a reverse DNS lookup. Reverse DNS lookup occurs after the network has been initialized on a node and can take time to resolve. Other system services can start prior to this and detect the hostname as localhost or similar. You can avoid this by using DHCP to provide the hostname for each cluster node.
+
+Additionally, setting the hostnames through DHCP can bypass any manual DNS record name configuration errors in environments that have a DNS split-horizon implementation.
+
+## Network connectivity requirements
+
+You must configure the network connectivity between machines to allow {product-title} cluster components to communicate. Each machine must be able to resolve the hostnames of all other machines in the cluster.
+
+This section provides details about the ports that are required.
+
+
+[IMPORTANT]
+----
+In connected {product-title} environments, all nodes are required to have internet access to pull images
+for platform containers and provide telemetry data to Red Hat.
+----
+
+
+
+
+
+
+
+# Creating load balancers in Google Cloud
+
+You must configure load balancers in Google Cloud for your
+{product-title} cluster to use. One way to create these components is
+to modify the provided Deployment Manager template.
+
+
+[NOTE]
+----
+If you do not use the provided Deployment Manager template to create your Google Cloud
+infrastructure, you must review the provided information and manually create
+the infrastructure. If your cluster does not initialize correctly, you might
+have to contact Red Hat support with your installation logs.
+----
+
+* You have defined the variables in the Exporting common variables section.
+
+1. Copy the template from the Deployment Manager template for the internal load balancer
+section of this topic and save it as 02_lb_int.py on your computer. This
+template describes the internal load balancing objects that your cluster
+requires.
+2. For an external cluster, also copy the template from the Deployment Manager template for the external load balancer
+section of this topic and save it as 02_lb_ext.py on your computer. This
+template describes the external load balancing objects that your cluster
+requires.
+3. Export the variables that the deployment template uses:
+1. Export the cluster network location:
+
+```terminal
+$ export CLUSTER_NETWORK=(`gcloud compute networks describe ${HOST_PROJECT_NETWORK} --project ${HOST_PROJECT} --account ${HOST_PROJECT_ACCOUNT} --format json | jq -r .selfLink`)
+```
+
+2. Export the control plane subnet location:
+
+```terminal
+$ export CONTROL_SUBNET=(`gcloud compute networks subnets describe ${HOST_PROJECT_CONTROL_SUBNET} --region=${REGION} --project ${HOST_PROJECT} --account ${HOST_PROJECT_ACCOUNT} --format json | jq -r .selfLink`)
+```
+
+3. Export the three zones that the cluster uses:
+
+```terminal
+$ export ZONE_0=(`gcloud compute regions describe ${REGION} --format=json | jq -r .zones[0] | cut -d "/" -f9`)
+```
+
+
+```terminal
+$ export ZONE_1=(`gcloud compute regions describe ${REGION} --format=json | jq -r .zones[1] | cut -d "/" -f9`)
+```
+
+
+```terminal
+$ export ZONE_2=(`gcloud compute regions describe ${REGION} --format=json | jq -r .zones[2] | cut -d "/" -f9`)
+```
+
+4. Create a 02_infra.yaml resource definition file:
+
+```terminal
+$ cat <<EOF >02_infra.yaml
+imports:
+- path: 02_lb_ext.py
+- path: 02_lb_int.py 1
+resources:
+- name: cluster-lb-ext 1
+  type: 02_lb_ext.py
+  properties:
+    infra_id: '${INFRA_ID}' 2
+    region: '${REGION}' 3
+- name: cluster-lb-int
+  type: 02_lb_int.py
+  properties:
+    cluster_network: '${CLUSTER_NETWORK}'
+    control_subnet: '${CONTROL_SUBNET}' 4
+    infra_id: '${INFRA_ID}'
+    region: '${REGION}'
+    zones: 5
+    - '${ZONE_0}'
+    - '${ZONE_1}'
+    - '${ZONE_2}'
+EOF
+```
+
+Required only when deploying an external cluster.
+infra_id is the INFRA_ID infrastructure name from the extraction step.
+region is the region to deploy the cluster into, for example us-central1.
+control_subnet is the URI to the control subnet.
+zones are the zones to deploy the control plane instances into, like us-east1-b, us-east1-c, and us-east1-d.
+5. Create the deployment by using the gcloud CLI:
+
+```terminal
+$ gcloud deployment-manager deployments create ${INFRA_ID}-infra --config 02_infra.yaml
+```
+
+6. Export the cluster IP address:
+
+```terminal
+$ export CLUSTER_IP=(`gcloud compute addresses describe ${INFRA_ID}-cluster-ip --region=${REGION} --format json | jq -r .address`)
+```
+
+7. For an external cluster, also export the cluster public IP address:
+
+```terminal
+$ export CLUSTER_PUBLIC_IP=(`gcloud compute addresses describe ${INFRA_ID}-cluster-public-ip --region=${REGION} --format json | jq -r .address`)
+```
+
+
+## Deployment Manager template for the external load balancer
+
+You can use the following Deployment Manager template to deploy the external load balancer that you need for your {product-title} cluster:
+
+
+```python
+link:https://raw.githubusercontent.com/openshift/installer/release-4.20/upi/gcp/02_lb_ext.py[role=include]
+```
+
+## Deployment Manager template for the internal load balancer
+
+You can use the following Deployment Manager template to deploy the internal load balancer that you need for your {product-title} cluster:
+
+
+```python
+link:https://raw.githubusercontent.com/openshift/installer/release-4.20/upi/gcp/02_lb_int.py[role=include]
+```
+
+You will need this template in addition to the 02_lb_ext.py template when you create an external cluster.
+
+# Creating a private DNS zone in Google Cloud
+
+You must configure a private DNS zone in Google Cloud for your
+{product-title} cluster to use. One way to create this component is
+to modify the provided Deployment Manager template.
+
+
+[NOTE]
+----
+If you do not use the provided Deployment Manager template to create your Google Cloud
+infrastructure, you must review the provided information and manually create
+the infrastructure. If your cluster does not initialize correctly, you might
+have to contact Red Hat support with your installation logs.
+----
+
+* Ensure you defined the variables in the Exporting common variables and Creating load balancers in Google Cloud sections.
+
+1. Copy the template from the Deployment Manager template for the private DNS
+section of this topic and save it as 02_dns.py on your computer. This
+template describes the private DNS objects that your cluster
+requires.
+2. Create a 02_dns.yaml resource definition file:
+
+```terminal
+$ cat <<EOF >02_dns.yaml
+imports:
+- path: 02_dns.py
+
+resources:
+- name: cluster-dns
+  type: 02_dns.py
+  properties:
+    infra_id: '${INFRA_ID}' 1
+    cluster_domain: '${CLUSTER_NAME}.${BASE_DOMAIN}' 2
+    cluster_network: '${CLUSTER_NETWORK}' 3
+EOF
+```
+
+infra_id is the INFRA_ID infrastructure name from the extraction step.
+cluster_domain is the domain for the cluster, for example openshift.example.com.
+cluster_network is the selfLink URL to the cluster network.
+3. Create the deployment by using the gcloud CLI:
+
+```terminal
+$ gcloud deployment-manager deployments create ${INFRA_ID}-dns --config 02_dns.yaml --project ${HOST_PROJECT} --account ${HOST_PROJECT_ACCOUNT}
+```
+
+4. The templates do not create DNS entries due to limitations of Deployment
+Manager, so you must create them manually:
+1. Add the internal DNS entries:
+
+```terminal
+$ if [ -f transaction.yaml ]; then rm transaction.yaml; fi
+$ gcloud dns record-sets transaction start --zone ${INFRA_ID}-private-zone --project ${HOST_PROJECT} --account ${HOST_PROJECT_ACCOUNT}
+$ gcloud dns record-sets transaction add ${CLUSTER_IP} --name api.${CLUSTER_NAME}.${BASE_DOMAIN}. --ttl 60 --type A --zone ${INFRA_ID}-private-zone --project ${HOST_PROJECT} --account ${HOST_PROJECT_ACCOUNT}
+$ gcloud dns record-sets transaction add ${CLUSTER_IP} --name api-int.${CLUSTER_NAME}.${BASE_DOMAIN}. --ttl 60 --type A --zone ${INFRA_ID}-private-zone --project ${HOST_PROJECT} --account ${HOST_PROJECT_ACCOUNT}
+$ gcloud dns record-sets transaction execute --zone ${INFRA_ID}-private-zone --project ${HOST_PROJECT} --account ${HOST_PROJECT_ACCOUNT}
+```
+
+2. For an external cluster, also add the external DNS entries:
+
+```terminal
+$ if [ -f transaction.yaml ]; then rm transaction.yaml; fi
+$ gcloud --account=${HOST_PROJECT_ACCOUNT} --project=${HOST_PROJECT} dns record-sets transaction start --zone ${BASE_DOMAIN_ZONE_NAME}
+$ gcloud --account=${HOST_PROJECT_ACCOUNT} --project=${HOST_PROJECT} dns record-sets transaction add ${CLUSTER_PUBLIC_IP} --name api.${CLUSTER_NAME}.${BASE_DOMAIN}. --ttl 60 --type A --zone ${BASE_DOMAIN_ZONE_NAME}
+$ gcloud --account=${HOST_PROJECT_ACCOUNT} --project=${HOST_PROJECT} dns record-sets transaction execute --zone ${BASE_DOMAIN_ZONE_NAME}
+```
+
+
+## Deployment Manager template for the private DNS
+
+You can use the following Deployment Manager template to deploy the private DNS that you need for your {product-title} cluster:
+
+
+```python
+link:https://raw.githubusercontent.com/openshift/installer/release-4.20/upi/gcp/02_dns.py[role=include]
+```
+
+# Creating firewall rules in Google Cloud
+
+You must create firewall rules in Google Cloud for your
+{product-title} cluster to use. One way to create these components is
+to modify the provided Deployment Manager template.
+
+
+[NOTE]
+----
+If you do not use the provided Deployment Manager template to create your Google Cloud
+infrastructure, you must review the provided information and manually create
+the infrastructure. If your cluster does not initialize correctly, you might
+have to contact Red Hat support with your installation logs.
+----
+
+* Ensure you defined the variables in the Exporting common variables and Creating load balancers in Google Cloud sections.
+
+1. Copy the template from the
+Deployment Manager template for firewall rules
+section of this topic and save it as 03_firewall.py on your computer. This
+template describes the security groups that your cluster requires.
+2. Create a 03_firewall.yaml resource definition file:
+
+```terminal
+$ cat <<EOF >03_firewall.yaml
+imports:
+- path: 03_firewall.py
+
+resources:
+- name: cluster-firewall
+  type: 03_firewall.py
+  properties:
+    allowed_external_cidr: '0.0.0.0/0' 1
+    infra_id: '${INFRA_ID}' 2
+    cluster_network: '${CLUSTER_NETWORK}' 3
+    network_cidr: '${NETWORK_CIDR}' 4
+EOF
+```
+
+allowed_external_cidr is the CIDR range that can access the cluster API and SSH to the bootstrap host. For an internal cluster, set this value to ${NETWORK_CIDR}.
+infra_id is the INFRA_ID infrastructure name from the extraction step.
+cluster_network is the selfLink URL to the cluster network.
+network_cidr is the CIDR of the VPC network, for example 10.0.0.0/16.
+3. Create the deployment by using the gcloud CLI:
+
+```terminal
+$ gcloud deployment-manager deployments create ${INFRA_ID}-firewall --config 03_firewall.yaml --project ${HOST_PROJECT} --account ${HOST_PROJECT_ACCOUNT}
+```
+
+
+## Deployment Manager template for firewall rules
+
+You can use the following Deployment Manager template to deploy the firewall rules that you need for your {product-title} cluster:
+
+
+```python
+link:https://raw.githubusercontent.com/openshift/installer/release-4.20/upi/gcp/03_firewall.py[role=include]
+```
+
+# Creating IAM roles in Google Cloud
+
+You must create IAM roles in Google Cloud for your
+{product-title} cluster to use. One way to create these components is
+to modify the provided Deployment Manager template.
+
+
+[NOTE]
+----
+If you do not use the provided Deployment Manager template to create your Google Cloud
+infrastructure, you must review the provided information and manually create
+the infrastructure. If your cluster does not initialize correctly, you might
+have to contact Red Hat support with your installation logs.
+----
+
+* You have defined the variables in the Exporting common variables section.
+
+1. Copy the template from the
+Deployment Manager template for IAM roles
+section of this topic and save it as 03_iam.py on your computer. This
+template describes the IAM roles that your cluster requires.
+2. Create a 03_iam.yaml resource definition file:
+
+```terminal
+$ cat <<EOF >03_iam.yaml
+imports:
+- path: 03_iam.py
+resources:
+- name: cluster-iam
+  type: 03_iam.py
+  properties:
+    infra_id: '${INFRA_ID}' 1
+EOF
+```
+
+infra_id is the INFRA_ID infrastructure name from the extraction step.
+3. Create the deployment by using the gcloud CLI:
+
+```terminal
+$ gcloud deployment-manager deployments create ${INFRA_ID}-iam --config 03_iam.yaml
+```
+
+4. Export the variable for the master service account:
+
+```terminal
+$ export MASTER_SERVICE_ACCOUNT=(`gcloud iam service-accounts list --filter "email~^${INFRA_ID}-m@${PROJECT_NAME}." --format json | jq -r '.[0].email'`)
+```
+
+5. Export the variable for the worker service account:
+
+```terminal
+$ export WORKER_SERVICE_ACCOUNT=(`gcloud iam service-accounts list --filter "email~^${INFRA_ID}-w@${PROJECT_NAME}." --format json | jq -r '.[0].email'`)
+```
+
+6. Assign the permissions that the installation program requires to the service accounts for the subnets that host the control plane and compute subnets:
+1. Grant the networkViewer role of the project that hosts your shared VPC to the master service account:
+
+```terminal
+$ gcloud --account=${HOST_PROJECT_ACCOUNT} --project=${HOST_PROJECT} projects add-iam-policy-binding ${HOST_PROJECT} --member "serviceAccount:${MASTER_SERVICE_ACCOUNT}" --role "roles/compute.networkViewer"
+```
+
+2. Grant the networkUser role to the master service account for the control plane subnet:
+
+```terminal
+$ gcloud --account=${HOST_PROJECT_ACCOUNT} --project=${HOST_PROJECT} compute networks subnets add-iam-policy-binding "${HOST_PROJECT_CONTROL_SUBNET}" --member "serviceAccount:${MASTER_SERVICE_ACCOUNT}" --role "roles/compute.networkUser" --region ${REGION}
+```
+
+3. Grant the networkUser role to the worker service account for the control plane subnet:
+
+```terminal
+$ gcloud --account=${HOST_PROJECT_ACCOUNT} --project=${HOST_PROJECT} compute networks subnets add-iam-policy-binding "${HOST_PROJECT_CONTROL_SUBNET}" --member "serviceAccount:${WORKER_SERVICE_ACCOUNT}" --role "roles/compute.networkUser" --region ${REGION}
+```
+
+4. Grant the networkUser role to the master service account for the compute subnet:
+
+```terminal
+$ gcloud --account=${HOST_PROJECT_ACCOUNT} --project=${HOST_PROJECT} compute networks subnets add-iam-policy-binding "${HOST_PROJECT_COMPUTE_SUBNET}" --member "serviceAccount:${MASTER_SERVICE_ACCOUNT}" --role "roles/compute.networkUser" --region ${REGION}
+```
+
+5. Grant the networkUser role to the worker service account for the compute subnet:
+
+```terminal
+$ gcloud --account=${HOST_PROJECT_ACCOUNT} --project=${HOST_PROJECT} compute networks subnets add-iam-policy-binding "${HOST_PROJECT_COMPUTE_SUBNET}" --member "serviceAccount:${WORKER_SERVICE_ACCOUNT}" --role "roles/compute.networkUser" --region ${REGION}
+```
+
+7. The templates do not create the policy bindings due to limitations of Deployment
+Manager, so you must create them manually:
+
+```terminal
+$ gcloud projects add-iam-policy-binding ${PROJECT_NAME} --member "serviceAccount:${MASTER_SERVICE_ACCOUNT}" --role "roles/compute.instanceAdmin"
+$ gcloud projects add-iam-policy-binding ${PROJECT_NAME} --member "serviceAccount:${MASTER_SERVICE_ACCOUNT}" --role "roles/compute.networkAdmin"
+$ gcloud projects add-iam-policy-binding ${PROJECT_NAME} --member "serviceAccount:${MASTER_SERVICE_ACCOUNT}" --role "roles/compute.securityAdmin"
+$ gcloud projects add-iam-policy-binding ${PROJECT_NAME} --member "serviceAccount:${MASTER_SERVICE_ACCOUNT}" --role "roles/iam.serviceAccountUser"
+$ gcloud projects add-iam-policy-binding ${PROJECT_NAME} --member "serviceAccount:${MASTER_SERVICE_ACCOUNT}" --role "roles/storage.admin"
+
+$ gcloud projects add-iam-policy-binding ${PROJECT_NAME} --member "serviceAccount:${WORKER_SERVICE_ACCOUNT}" --role "roles/compute.viewer"
+$ gcloud projects add-iam-policy-binding ${PROJECT_NAME} --member "serviceAccount:${WORKER_SERVICE_ACCOUNT}" --role "roles/storage.admin"
+```
+
+8. Create a service account key and store it locally for later use:
+
+```terminal
+$ gcloud iam service-accounts keys create service-account-key.json --iam-account=${MASTER_SERVICE_ACCOUNT}
+```
+
+
+## Deployment Manager template for IAM roles
+
+You can use the following Deployment Manager template to deploy the IAM roles that you need for your {product-title} cluster:
+
+
+```python
+link:https://raw.githubusercontent.com/openshift/installer/release-4.20/upi/gcp/03_iam.py[role=include]
+```
+
+# Creating the RHCOS cluster image for the Google Cloud infrastructure
+
+You must use a valid Red Hat Enterprise Linux CoreOS (RHCOS) image for Google Cloud for
+your {product-title} nodes.
+
+1. Obtain the RHCOS image from the RHCOS image mirror page.
+
+[IMPORTANT]
+----
+The RHCOS images might not change with every release of {product-title}.
+You must download an image with the highest version that is
+less than or equal to the {product-title} version that you install. Use the image version
+that matches your {product-title} version if it is available.
+----
+
+The file name contains the {product-title} version number in the format
+rhcos-<version>-<arch>-gcp.<arch>.tar.gz.
+2. Create the Google storage bucket:
+
+```terminal
+$ gsutil mb gs://<bucket_name>
+```
+
+3. Upload the RHCOS image to the Google storage bucket:
+
+```terminal
+$ gsutil cp <downloaded_image_file_path>/rhcos-<version>-x86_64-gcp.x86_64.tar.gz  gs://<bucket_name>
+```
+
+4. Export the uploaded RHCOS image location as a variable:
+
+```terminal
+$ export IMAGE_SOURCE=gs://<bucket_name>/rhcos-<version>-x86_64-gcp.x86_64.tar.gz
+```
+
+5. Create the cluster image:
+
+```terminal
+$ gcloud compute images create "${INFRA_ID}-rhcos-image" \
+    --source-uri="${IMAGE_SOURCE}"
+```
+
+
+# Creating the bootstrap machine in Google Cloud
+
+You must create the bootstrap machine in Google Cloud to use during
+{product-title} cluster initialization. One way to create this machine is
+to modify the provided Deployment Manager template.
+
+
+[NOTE]
+----
+If you do not use the provided Deployment Manager template to create your bootstrap
+machine, you must review the provided information and manually create
+the infrastructure. If your cluster does not initialize correctly, you might
+have to contact Red Hat support with your installation logs.
+----
+
+* Ensure you defined the variables in the Exporting common variables and Creating load balancers in Google Cloud sections.
+* Ensure you installed pyOpenSSL.
+
+1. Copy the template from the Deployment Manager template for the bootstrap machine
+section of this topic and save it as 04_bootstrap.py on your computer. This
+template describes the bootstrap machine that your cluster requires.
+2. Export the location of the Red Hat Enterprise Linux CoreOS (RHCOS) image that the installation program requires:
+
+```terminal
+$ export CLUSTER_IMAGE=(`gcloud compute images describe ${INFRA_ID}-rhcos-image --format json | jq -r .selfLink`)
+```
+
+3. Create a bucket and upload the bootstrap.ign file:
+
+```terminal
+$ gsutil mb gs://${INFRA_ID}-bootstrap-ignition
+```
+
+
+```terminal
+$ gsutil cp <installation_directory>/bootstrap.ign gs://${INFRA_ID}-bootstrap-ignition/
+```
+
+4. Create a signed URL for the bootstrap instance to use to access the Ignition
+config. Export the URL from the output as a variable:
+
+```terminal
+$ export BOOTSTRAP_IGN=`gsutil signurl -d 1h service-account-key.json gs://${INFRA_ID}-bootstrap-ignition/bootstrap.ign | grep "^gs:" | awk '{print $5}'`
+```
+
+5. Create a 04_bootstrap.yaml resource definition file:
+
+```terminal
+$ cat <<EOF >04_bootstrap.yaml
+imports:
+- path: 04_bootstrap.py
+
+resources:
+- name: cluster-bootstrap
+  type: 04_bootstrap.py
+  properties:
+    infra_id: '${INFRA_ID}' 1
+    region: '${REGION}' 2
+    zone: '${ZONE_0}' 3
+
+    cluster_network: '${CLUSTER_NETWORK}' 4
+    control_subnet: '${CONTROL_SUBNET}' 5
+    image: '${CLUSTER_IMAGE}' 6
+    machine_type: 'n1-standard-4' 7
+    root_volume_size: '128' 8
+
+    bootstrap_ign: '${BOOTSTRAP_IGN}' 9
+EOF
+```
+
+infra_id is the INFRA_ID infrastructure name from the extraction step.
+region is the region to deploy the cluster into, for example us-central1.
+zone is the zone to deploy the bootstrap instance into, for example us-central1-b.
+cluster_network is the selfLink URL to the cluster network.
+control_subnet is the selfLink URL to the control subnet.
+image is the selfLink URL to the RHCOS image.
+machine_type is the machine type of the instance, for example n1-standard-4.
+root_volume_size is the boot disk size for the bootstrap machine.
+bootstrap_ign is the URL output when creating a signed URL.
+6. Create the deployment by using the gcloud CLI:
+
+```terminal
+$ gcloud deployment-manager deployments create ${INFRA_ID}-bootstrap --config 04_bootstrap.yaml
+```
+
+7. Add the bootstrap instance to the internal load balancer instance group:
+
+```terminal
+$ gcloud compute instance-groups unmanaged add-instances ${INFRA_ID}-bootstrap-ig --zone=${ZONE_0} --instances=${INFRA_ID}-bootstrap
+```
+
+8. Add the bootstrap instance group to the internal load balancer backend service:
+
+```terminal
+$ gcloud compute backend-services add-backend ${INFRA_ID}-api-internal --region=${REGION} --instance-group=${INFRA_ID}-bootstrap-ig --instance-group-zone=${ZONE_0}
+```
+
+
+## Deployment Manager template for the bootstrap machine
+
+You can use the following Deployment Manager template to deploy the bootstrap
+machine that you need for your {product-title} cluster:
+
+
+```python
+link:https://raw.githubusercontent.com/openshift/installer/release-4.20/upi/gcp/04_bootstrap.py[role=include]
+```
+
+# Creating the control plane machines in Google Cloud
+
+You must create the control plane machines in Google Cloud for
+your cluster to use. One way to create these machines is to modify the
+provided Deployment Manager template.
+
+
+[NOTE]
+----
+If you do not use the provided Deployment Manager template to create your
+control plane machines, you must review the provided information and manually
+create the infrastructure. If your cluster does not initialize correctly, you
+might have to contact Red Hat support with your installation logs.
+----
+
+* Ensure you defined the variables in the Exporting common variables, Creating load balancers in Google Cloud, Creating IAM roles in Google Cloud, and Creating the bootstrap machine in Google Cloud sections.
+* Create the bootstrap machine.
+
+1. Copy the template from the Deployment Manager template for control plane machines
+section of this topic and save it as 05_control_plane.py on your computer.
+This template describes the control plane machines that your cluster requires.
+2. Export the following variable required by the resource definition:
+
+```terminal
+$ export MASTER_IGNITION=`cat <installation_directory>/master.ign`
+```
+
+3. Create a 05_control_plane.yaml resource definition file:
+
+```terminal
+$ cat <<EOF >05_control_plane.yaml
+imports:
+- path: 05_control_plane.py
+
+resources:
+- name: cluster-control-plane
+  type: 05_control_plane.py
+  properties:
+    infra_id: '${INFRA_ID}' 1
+    zones: 2
+    - '${ZONE_0}'
+    - '${ZONE_1}'
+    - '${ZONE_2}'
+
+    control_subnet: '${CONTROL_SUBNET}' 3
+    image: '${CLUSTER_IMAGE}' 4
+    machine_type: 'n1-standard-4' 5
+    root_volume_size: '128'
+    service_account_email: '${MASTER_SERVICE_ACCOUNT}' 6
+
+    ignition: '${MASTER_IGNITION}' 7
+EOF
+```
+
+infra_id is the INFRA_ID infrastructure name from the extraction step.
+zones are the zones to deploy the control plane instances into, for example us-central1-a, us-central1-b, and us-central1-c.
+control_subnet is the selfLink URL to the control subnet.
+image is the selfLink URL to the RHCOS image.
+machine_type is the machine type of the instance, for example n1-standard-4.
+service_account_email is the email address for the master service account that you created.
+ignition is the contents of the master.ign file.
+4. Create the deployment by using the gcloud CLI:
+
+```terminal
+$ gcloud deployment-manager deployments create ${INFRA_ID}-control-plane --config 05_control_plane.yaml
+```
+
+5. The templates do not manage load balancer membership due to limitations of Deployment
+Manager, so you must add the control plane machines manually.
+* Run the following commands to add the control plane machines to the appropriate instance groups:
+
+```terminal
+$ gcloud compute instance-groups unmanaged add-instances ${INFRA_ID}-master-${ZONE_0}-ig --zone=${ZONE_0} --instances=${INFRA_ID}-master-0
+```
+
+
+```terminal
+$ gcloud compute instance-groups unmanaged add-instances ${INFRA_ID}-master-${ZONE_1}-ig --zone=${ZONE_1} --instances=${INFRA_ID}-master-1
+```
+
+
+```terminal
+$ gcloud compute instance-groups unmanaged add-instances ${INFRA_ID}-master-${ZONE_2}-ig --zone=${ZONE_2} --instances=${INFRA_ID}-master-2
+```
+
+* For an external cluster, you must also run the following commands to add the control plane machines to the target pools:
+
+```terminal
+$ gcloud compute target-pools add-instances ${INFRA_ID}-api-target-pool --instances-zone="${ZONE_0}" --instances=${INFRA_ID}-master-0
+```
+
+
+```terminal
+$ gcloud compute target-pools add-instances ${INFRA_ID}-api-target-pool --instances-zone="${ZONE_1}" --instances=${INFRA_ID}-master-1
+```
+
+
+```terminal
+$ gcloud compute target-pools add-instances ${INFRA_ID}-api-target-pool --instances-zone="${ZONE_2}" --instances=${INFRA_ID}-master-2
+```
+
+
+## Deployment Manager template for control plane machines
+
+You can use the following Deployment Manager template to deploy the control
+plane machines that you need for your {product-title} cluster:
+
+
+```python
+link:https://raw.githubusercontent.com/openshift/installer/release-4.20/upi/gcp/05_control_plane.py[role=include]
+```
+
+# Removing bootstrap resources in Google Cloud
+
+After you create all of the required infrastructure in Google Cloud, wait for the bootstrap process to complete on the machines that you provisioned by using the Ignition config files. The installation program created the Ignition config files.
+
+* Ensure you defined the variables in the Exporting common variables and Creating load balancers in Google Cloud sections.
+* Create the bootstrap machine.
+* Create the control plane machines.
+
+1. Change to the directory that includes the installation program and run the following command:
+
+```terminal
+$ ./openshift-install wait-for bootstrap-complete --dir <installation_directory> \ 1
+    --log-level info 2
+```
+
+For <installation_directory>, specify the path to the directory where you stored the installation files.
+To view different installation details, specify warn, debug, or error instead of info.
+
+If the command exits without a FATAL warning, your production control plane has initialized.
+2. To remove the bootstrap instance group from the backend services' backends, run the following commands:
+
+```terminal
+$ gcloud compute backend-services remove-backend ${INFRA_ID}-api-internal --region=${REGION} --instance-group=${INFRA_ID}-bootstrap-ig --instance-group-zone=${ZONE_0}
+```
+
+
+```terminal
+$ ingress_backendservice=$(gcloud compute backend-services list --filter="backends.group~${INFRA_ID}" --format='value(name)' | grep -v "${INFRA_ID}")
+```
+
+1. If ingress_backendservice is not empty, run the following describe command for the bootstrap group:
+
+```terminal
+$ gcloud compute backend-services describe ${ingress_backendservice} --region=${REGION}
+```
+
+2. If the describe command displays that the bootstrap group is one of its backends, run the following remove-backend command to remove the bootstrap group from the backends:
+
+```terminal
+$ gcloud compute backend-services remove-backend ${ingress_backendservice} --region=${REGION} --instance-group=${INFRA_ID}-bootstrap-ig --instance-group-zone=${ZONE_0}
+```
+
+3. To remove the bucket and the deployment, run the following commands:
+
+```terminal
+$ gsutil rb gs://${INFRA_ID}-bootstrap-ignition
+```
+
+
+```terminal
+$ gcloud deployment-manager deployments delete ${INFRA_ID}-bootstrap
+```
+
+
+# Creating additional worker machines in Google Cloud
+
+You can create worker machines in Google Cloud for your cluster
+to use by launching individual instances discretely or by automated processes
+outside the cluster, such as auto scaling groups. You can also take advantage of
+the built-in cluster scaling mechanisms and the machine API in {product-title}.
+
+In this example, you manually launch one instance by using the Deployment
+Manager template. Additional instances can be launched by including additional
+resources of type 06_worker.py in the file.
+
+
+[NOTE]
+----
+If you do not use the provided Deployment Manager template to create your worker
+machines, you must review the provided information and manually create
+the infrastructure. If your cluster does not initialize correctly, you might
+have to contact Red Hat support with your installation logs.
+----
+
+* Ensure you defined the variables in the Exporting common variables, Creating load balancers in Google Cloud, and Creating the bootstrap machine in Google Cloud sections.
+* Create the bootstrap machine.
+* Create the control plane machines.
+
+1. Copy the template from the Deployment Manager template for worker machines
+section of this topic and save it as 06_worker.py on your computer. This
+template describes the worker machines that your cluster requires.
+2. Export the variables that the resource definition uses.
+1. Export the subnet that hosts the compute machines:
+
+```terminal
+$ export COMPUTE_SUBNET=(`gcloud compute networks subnets describe ${HOST_PROJECT_COMPUTE_SUBNET} --region=${REGION} --project ${HOST_PROJECT} --account ${HOST_PROJECT_ACCOUNT} --format json | jq -r .selfLink`)
+```
+
+2. Export the email address for your service account:
+
+```terminal
+$ export WORKER_SERVICE_ACCOUNT=(`gcloud iam service-accounts list --filter "email~^${INFRA_ID}-w@${PROJECT_NAME}." --format json | jq -r '.[0].email'`)
+```
+
+3. Export the location of the compute machine Ignition config file:
+
+```terminal
+$ export WORKER_IGNITION=`cat <installation_directory>/worker.ign`
+```
+
+3. Create a 06_worker.yaml resource definition file:
+
+```terminal
+$ cat <<EOF >06_worker.yaml
+imports:
+- path: 06_worker.py
+
+resources:
+- name: 'worker-0' 1
+  type: 06_worker.py
+  properties:
+    infra_id: '${INFRA_ID}' 2
+    zone: '${ZONE_0}' 3
+    compute_subnet: '${COMPUTE_SUBNET}' 4
+    image: '${CLUSTER_IMAGE}' 5
+    machine_type: 'n1-standard-4' 6
+    root_volume_size: '128'
+    service_account_email: '${WORKER_SERVICE_ACCOUNT}' 7
+    ignition: '${WORKER_IGNITION}' 8
+- name: 'worker-1'
+  type: 06_worker.py
+  properties:
+    infra_id: '${INFRA_ID}' 2
+    zone: '${ZONE_1}' 3
+    compute_subnet: '${COMPUTE_SUBNET}' 4
+    image: '${CLUSTER_IMAGE}' 5
+    machine_type: 'n1-standard-4' 6
+    root_volume_size: '128'
+    service_account_email: '${WORKER_SERVICE_ACCOUNT}' 7
+    ignition: '${WORKER_IGNITION}' 8
+EOF
+```
+
+name is the name of the worker machine, for example worker-0.
+infra_id is the INFRA_ID infrastructure name from the extraction step.
+zone is the zone to deploy the worker machine into, for example us-central1-a.
+compute_subnet is the selfLink URL to the compute subnet.
+image is the selfLink URL to the RHCOS image. 1
+machine_type is the machine type of the instance, for example n1-standard-4.
+service_account_email is the email address for the worker service account that you created.
+ignition is the contents of the worker.ign file.
+4. Optional: If you want to launch additional instances, include additional
+resources of type 06_worker.py in your 06_worker.yaml resource definition
+file.
+5. Create the deployment by using the gcloud CLI:
+
+```terminal
+$ gcloud deployment-manager deployments create ${INFRA_ID}-worker --config 06_worker.yaml
+```
+
+
+1. To use a Google Cloud Marketplace image, specify the offer to use:
+* {product-title}: https://www.googleapis.com/compute/v1/projects/redhat-marketplace-public/global/images/redhat-coreos-ocp-413-x86-64-202305021736
+* OpenShift Platform Plus: https://www.googleapis.com/compute/v1/projects/redhat-marketplace-public/global/images/redhat-coreos-opp-413-x86-64-202305021736
+* OpenShift Kubernetes Engine: https://www.googleapis.com/compute/v1/projects/redhat-marketplace-public/global/images/redhat-coreos-oke-413-x86-64-202305021736
+
+## Deployment Manager template for worker machines
+
+You can use the following Deployment Manager template to deploy the worker machines
+that you need for your {product-title} cluster:
+
+
+```python
+link:https://raw.githubusercontent.com/openshift/installer/release-4.20/upi/gcp/06_worker.py[role=include]
+```
+
+# Installing the OpenShift CLI on Linux
+
+You can install the OpenShift CLI (`oc`) binary on Linux.
+
+
+[IMPORTANT]
+----
+If you installed an earlier version of oc, you cannot use it to complete all of the commands in {product-title}.
+Download and install the new version of oc.
+----
+
+1. Navigate to the Download {product-title} page on the Red Hat Customer Portal.
+2. Select the architecture from the Product Variant list.
+3. Select the appropriate version from the Version list.
+4. Click Download Now next to the OpenShift v{product-version} Linux Clients entry and save the file.
+5. Unpack the archive:
+
+```terminal
+$ tar xvf <file>
+```
+
+6. Place the oc binary in a directory that is on your PATH.
+
+To check your PATH, execute the following command:
+
+```terminal
+$ echo $PATH
+```
+
+
+* After you install the OpenShift CLI, it is available using the oc command:
+
+```terminal
+$ oc <command>
+```
+
+
+# Installing the OpenShift CLI on Windows
+
+You can install the OpenShift CLI (`oc`) binary on Windows.
+
+
+[IMPORTANT]
+----
+If you installed an earlier version of oc, you cannot use it to complete all of the commands in {product-title}.
+Download and install the new version of oc.
+----
+
+1. Navigate to the Download {product-title} page on the Red Hat Customer Portal.
+2. Select the appropriate version from the Version list.
+3. Click Download Now next to the OpenShift v{product-version} Windows Client entry and save the file.
+4. Extract the archive with a ZIP program.
+5. Move the oc binary to a directory that is on your PATH variable.
+
+To check your PATH variable, open the command prompt and execute the following command:
+
+```terminal
+C:\> path
+```
+
+
+* After you install the OpenShift CLI, it is available using the oc command:
+
+```terminal
+C:\> oc <command>
+```
+
+
+# Installing the OpenShift CLI on macOS
+
+You can install the OpenShift CLI (`oc`) binary on macOS.
+
+
+[IMPORTANT]
+----
+If you installed an earlier version of oc, you cannot use it to complete all of the commands in {product-title}.
+Download and install the new version of oc.
+----
+
+1. Navigate to the Download {product-title} page on the Red Hat Customer Portal.
+2. Select the architecture from the Product Variant list.
+3. Select the appropriate version from the Version list.
+4. Click Download Now next to the OpenShift v{product-version} macOS Clients entry and save the file.
+
+[NOTE]
+----
+For macOS arm64, choose the OpenShift v{product-version} macOS arm64 Client entry.
+----
+5. Unpack and unzip the archive.
+6. Move the oc binary to a directory on your PATH variable.
+
+To check your PATH variable, open a terminal and execute the following command:
+
+```terminal
+$ echo $PATH
+```
+
+
+* Verify your installation by using an oc command:
+
+```terminal
+$ oc <command>
+```
+
+
+# Logging in to the cluster by using the CLI
+
+You can log in to your cluster as a default system user by exporting the cluster kubeconfig file.
+The kubeconfig file contains information about the cluster that is used by the CLI to connect a client to the correct cluster and API server.
+The file is specific to a cluster and is created during {product-title} installation.
+
+* You installed the OpenShift CLI (`oc`).
+* Ensure the bootstrap process completed successfully.
+
+1. Export the kubeadmin credentials by running the following command:
+
+```terminal
+$ export KUBECONFIG=<installation_directory>/auth/kubeconfig 1
+```
+
+For <installation_directory>, specify the path to the directory that you stored
+the installation files in.
+2. Verify you can run oc commands successfully using the exported configuration by running the following command:
+
+```terminal
+$ oc whoami
+```
+
+Example output
+
+```terminal
+system:admin
+```
+
+
+# Approving the certificate signing requests for your machines
+
+When you add machines to a cluster, two pending certificate signing requests (CSRs) are generated for each machine that you added. You must confirm that these CSRs are approved or, if necessary, approve them yourself. The client requests must be approved first, followed by the server requests.
+
+* You added machines to your cluster.
+
+1. Confirm that the cluster recognizes the machines:
+
+```terminal
+$ oc get nodes
+```
+
+Example output
+
+```terminal
+NAME      STATUS    ROLES   AGE  VERSION
+master-0  Ready     master  63m  v1.33.4
+master-1  Ready     master  63m  v1.33.4
+master-2  Ready     master  64m  v1.33.4
+```
+
+
+The output lists all of the machines that you created.
+
+[NOTE]
+----
+The preceding output might not include the compute nodes, also known as worker nodes, until some CSRs are approved.
+----
+2. Review the pending CSRs and ensure that you see the client requests with the Pending or Approved status for each machine that you added to the cluster:
+
+```terminal
+$ oc get csr
+```
+
+Example output
+
+```terminal
+NAME        AGE     REQUESTOR                                                                   CONDITION
+csr-8b2br   15m     system:serviceaccount:openshift-machine-config-operator:node-bootstrapper   Pending
+csr-8vnps   15m     system:serviceaccount:openshift-machine-config-operator:node-bootstrapper   Pending
+...
+```
+
+
+In this example, two machines are joining the cluster. You might see more approved CSRs in the list.
+3. If the CSRs were not approved, after all of the pending CSRs for the machines you added are in Pending status, approve the CSRs for your cluster machines:
+
+[NOTE]
+----
+Because the CSRs rotate automatically, approve your CSRs within an hour of adding the machines to the cluster. If you do not approve them within an hour, the certificates will rotate, and more than two certificates will be present for each node. You must approve all of these certificates. After the client CSR is approved, the Kubelet creates a secondary CSR for the serving certificate, which requires manual approval. Then, subsequent serving certificate renewal requests are automatically approved by the machine-approver if the Kubelet requests a new certificate with identical parameters.
+----
+
+[NOTE]
+----
+For clusters running on platforms that are not machine API enabled, such as bare metal and other user-provisioned infrastructure, you must implement a method of automatically approving the kubelet serving certificate requests (CSRs). If a request is not approved, then the oc exec, oc rsh, and oc logs commands cannot succeed, because a serving certificate is required when the API server connects to the kubelet. Any operation that contacts the Kubelet endpoint requires this certificate approval to be in place. The method must watch for new CSRs, confirm that the CSR was submitted by the node-bootstrapper service account in the system:node or system:admin groups, and confirm the identity of the node.
+----
+* To approve them individually, run the following command for each valid CSR:
+
+```terminal
+$ oc adm certificate approve <csr_name> 1
+```
+
+<csr_name> is the name of a CSR from the list of current CSRs.
+* To approve all pending CSRs, run the following command:
+
+```terminal
+$ oc get csr -o go-template='{{range .items}}{{if not .status}}{{.metadata.name}}{{"\n"}}{{end}}{{end}}' | xargs --no-run-if-empty oc adm certificate approve
+```
+
+
+[NOTE]
+----
+Some Operators might not become available until some CSRs are approved.
+----
+4. Now that your client requests are approved, you must review the server requests for each machine that you added to the cluster:
+
+```terminal
+$ oc get csr
+```
+
+Example output
+
+```terminal
+NAME        AGE     REQUESTOR                                                                   CONDITION
+csr-bfd72   5m26s   system:node:ip-10-0-50-126.us-east-2.compute.internal                       Pending
+csr-c57lv   5m26s   system:node:ip-10-0-95-157.us-east-2.compute.internal                       Pending
+...
+```
+
+5. If the remaining CSRs are not approved, and are in the Pending status, approve the CSRs for your cluster machines:
+* To approve them individually, run the following command for each valid CSR:
+
+```terminal
+$ oc adm certificate approve <csr_name> 1
+```
+
+<csr_name> is the name of a CSR from the list of current CSRs.
+* To approve all pending CSRs, run the following command:
+
+```terminal
+$ oc get csr -o go-template='{{range .items}}{{if not .status}}{{.metadata.name}}{{"\n"}}{{end}}{{end}}' | xargs oc adm certificate approve
+```
+
+6. After all client and server CSRs have been approved, the machines have the Ready status. Verify this by running the following command:
+
+```terminal
+$ oc get nodes
+```
+
+Example output
+
+```terminal
+NAME      STATUS    ROLES   AGE  VERSION
+master-0  Ready     master  73m  v1.33.4
+master-1  Ready     master  73m  v1.33.4
+master-2  Ready     master  74m  v1.33.4
+worker-0  Ready     worker  11m  v1.33.4
+worker-1  Ready     worker  11m  v1.33.4
+```
+
+
+[NOTE]
+----
+It can take a few minutes after approval of the server CSRs for the machines to transition to the Ready status.
+----
+
+* Certificate Signing Requests
+
+# Adding the ingress DNS records
+
+DNS zone configuration is removed when creating Kubernetes manifests and generating Ignition configs. You must manually create DNS records that point at the ingress load balancer. You can create either a wildcard
+*.apps.{baseDomain}. or specific records. You can use A, CNAME, and other records per your requirements.
+
+* Ensure you defined the variables in the Exporting common variables section.
+* Remove the DNS Zone configuration when creating Kubernetes manifests and
+generating Ignition configs.
+* Ensure the bootstrap process completed successfully.
+
+1. Wait for the Ingress router to create a load balancer and populate the EXTERNAL-IP field:
+
+```terminal
+$ oc -n openshift-ingress get service router-default
+```
+
+Example output
+
+```terminal
+NAME             TYPE           CLUSTER-IP      EXTERNAL-IP      PORT(S)                      AGE
+router-default   LoadBalancer   172.30.18.154   35.233.157.184   80:32288/TCP,443:31215/TCP   98
+```
+
+2. Add the A record to your zones:
+* To use A records:
+1. Export the variable for the router IP address:
+
+```terminal
+$ export ROUTER_IP=`oc -n openshift-ingress get service router-default --no-headers | awk '{print $4}'`
+```
+
+2. Add the A record to the private zones:
+
++
+
+
+```
+$ if [ -f transaction.yaml ]; then rm transaction.yaml; fi
+$ gcloud dns record-sets transaction start --zone ${INFRA_ID}-private-zone --project ${HOST_PROJECT} --account ${HOST_PROJECT_ACCOUNT}
+$ gcloud dns record-sets transaction add ${ROUTER_IP} --name \*.apps.${CLUSTER_NAME}.${BASE_DOMAIN}. --ttl 300 --type A --zone ${INFRA_ID}-private-zone --project ${HOST_PROJECT} --account ${HOST_PROJECT_ACCOUNT}
+$ gcloud dns record-sets transaction execute --zone ${INFRA_ID}-private-zone --project ${HOST_PROJECT} --account ${HOST_PROJECT_ACCOUNT}
+```
+
+
+1. For an external cluster, also add the A record to the public zones:
+
++
+
+
+```
+$ if [ -f transaction.yaml ]; then rm transaction.yaml; fi
+$ gcloud dns record-sets transaction start --zone ${BASE_DOMAIN_ZONE_NAME} --project ${HOST_PROJECT} --account ${HOST_PROJECT_ACCOUNT}
+$ gcloud dns record-sets transaction add ${ROUTER_IP} --name \*.apps.${CLUSTER_NAME}.${BASE_DOMAIN}. --ttl 300 --type A --zone ${BASE_DOMAIN_ZONE_NAME} --project ${HOST_PROJECT} --account ${HOST_PROJECT_ACCOUNT}
+$ gcloud dns record-sets transaction execute --zone ${BASE_DOMAIN_ZONE_NAME} --project ${HOST_PROJECT} --account ${HOST_PROJECT_ACCOUNT}
+```
+
+
+* To add explicit domains instead of using a wildcard,
+create entries for each of the cluster's current routes:
+
+```terminal
+$ oc get --all-namespaces -o jsonpath='{range .items[*]}{range .status.ingress[*]}{.host}{"\n"}{end}{end}' routes
+```
+
+Example output
+
+```terminal
+oauth-openshift.apps.your.cluster.domain.example.com
+console-openshift-console.apps.your.cluster.domain.example.com
+downloads-openshift-console.apps.your.cluster.domain.example.com
+alertmanager-main-openshift-monitoring.apps.your.cluster.domain.example.com
+prometheus-k8s-openshift-monitoring.apps.your.cluster.domain.example.com
+```
+
+
+# Adding ingress firewall rules
+
+The cluster requires several firewall rules. If you do not use a shared VPC, these rules are created by the Ingress Controller via the Google Cloud cloud provider. When you use a shared VPC, you can either create cluster-wide firewall rules for all services now or create each rule based on events, when the cluster requests access. By creating each rule when the cluster requests access, you know exactly which firewall rules are required. By creating cluster-wide firewall rules, you can apply the same rule set across multiple clusters.
+
+If you choose to create each rule based on events, you must create firewall rules after you provision the cluster and during the life of the cluster when the console notifies you that rules are missing. Events that are similar to the following event are displayed, and you must add the firewall rules that are required:
+
+
+```terminal
+$ oc get events -n openshift-ingress --field-selector="reason=LoadBalancerManualChange"
+```
+
+
+
+```terminal
+Firewall change required by security admin: `gcloud compute firewall-rules create k8s-fw-a26e631036a3f46cba28f8df67266d55 --network example-network --description "{\"kubernetes.io/service-name\":\"openshift-ingress/router-default\", \"kubernetes.io/service-ip\":\"35.237.236.234\"}\" --allow tcp:443,tcp:80 --source-ranges 0.0.0.0/0 --target-tags exampl-fqzq7-master,exampl-fqzq7-worker --project example-project`
+```
+
+
+If you encounter issues when creating these rule-based events, you can configure the cluster-wide firewall rules while your cluster is running.
+
+## Creating cluster-wide firewall rules for a shared VPC in Google Cloud
+
+You can create cluster-wide firewall rules to allow the access that the {product-title} cluster requires.
+
+
+[WARNING]
+----
+If you do not choose to create firewall rules based on cluster events, you must create cluster-wide firewall rules.
+----
+
+* You exported the variables that the Deployment Manager templates require to deploy your cluster.
+* You created the networking and load balancing components in Google Cloud that your cluster requires.
+
+1. Add a single firewall rule to allow the Google Cloud Engine health checks to access all of the services. This rule enables the ingress load balancers to determine the health status of their instances.
+
+```terminal
+$ gcloud compute firewall-rules create --allow='tcp:30000-32767,udp:30000-32767' --network="${CLUSTER_NETWORK}" --source-ranges='130.211.0.0/22,35.191.0.0/16,209.85.152.0/22,209.85.204.0/22' --target-tags="${INFRA_ID}-master,${INFRA_ID}-worker" ${INFRA_ID}-ingress-hc --account=${HOST_PROJECT_ACCOUNT} --project=${HOST_PROJECT}
+```
+
+2. Add a single firewall rule to allow access to all cluster services:
+* For an external cluster:
+
+```terminal
+$ gcloud compute firewall-rules create --allow='tcp:80,tcp:443' --network="${CLUSTER_NETWORK}" --source-ranges="0.0.0.0/0" --target-tags="${INFRA_ID}-master,${INFRA_ID}-worker" ${INFRA_ID}-ingress --account=${HOST_PROJECT_ACCOUNT} --project=${HOST_PROJECT}
+```
+
+* For a private cluster:
+
+```terminal
+$ gcloud compute firewall-rules create --allow='tcp:80,tcp:443' --network="${CLUSTER_NETWORK}" --source-ranges=${NETWORK_CIDR} --target-tags="${INFRA_ID}-master,${INFRA_ID}-worker" ${INFRA_ID}-ingress --account=${HOST_PROJECT_ACCOUNT} --project=${HOST_PROJECT}
+```
+
+Because this rule only allows traffic on TCP ports 80 and 443, ensure that you add all the ports that your services use.
+
+# Completing a Google Cloud installation on user-provisioned infrastructure
+
+After you start the {product-title} installation on Google Cloud
+user-provisioned infrastructure, you can monitor the cluster events until the
+cluster is ready.
+
+* Ensure the bootstrap process completed successfully.
+
+1. Complete the cluster installation:
+
+```terminal
+$ ./openshift-install --dir <installation_directory> wait-for install-complete 1
+```
+
+Example output
+
+```terminal
+INFO Waiting up to 30m0s for the cluster to initialize...
+```
+
+For <installation_directory>, specify the path to the directory that you
+stored the installation files in.
+
+[IMPORTANT]
+----
+* The Ignition config files that the installation program generates contain certificates that expire after 24 hours, which are then renewed at that time. If the cluster is shut down before renewing the certificates and the cluster is later restarted after the 24 hours have elapsed, the cluster automatically recovers the expired certificates. The exception is that you must manually approve the pending node-bootstrapper certificate signing requests (CSRs) to recover kubelet certificates. See the documentation for Recovering from expired control plane certificates for more information.
+* It is recommended that you use Ignition config files within 12 hours after they are generated because the 24-hour certificate rotates from 16 to 22 hours after the cluster is installed. By using the Ignition config files within 12 hours, you can avoid installation failure if the certificate update runs during installation.
+----
+2. Observe the running state of your cluster.
+1. Run the following command to view the current cluster version and status:
+
+```terminal
+$ oc get clusterversion
+```
+
+Example output
+
+```terminal
+NAME      VERSION   AVAILABLE   PROGRESSING   SINCE   STATUS
+version             False       True          24m     Working towards 4.5.4: 99% complete
+```
+
+2. Run the following command to view the Operators managed on the control plane by
+the Cluster Version Operator (CVO):
+
+```terminal
+$ oc get clusteroperators
+```
+
+Example output
+
+```terminal
+NAME                                       VERSION   AVAILABLE   PROGRESSING   DEGRADED   SINCE
+authentication                             4.5.4     True        False         False      7m56s
+cloud-credential                           4.5.4     True        False         False      31m
+cluster-autoscaler                         4.5.4     True        False         False      16m
+console                                    4.5.4     True        False         False      10m
+csi-snapshot-controller                    4.5.4     True        False         False      16m
+dns                                        4.5.4     True        False         False      22m
+etcd                                       4.5.4     False       False         False      25s
+image-registry                             4.5.4     True        False         False      16m
+ingress                                    4.5.4     True        False         False      16m
+insights                                   4.5.4     True        False         False      17m
+kube-apiserver                             4.5.4     True        False         False      19m
+kube-controller-manager                    4.5.4     True        False         False      20m
+kube-scheduler                             4.5.4     True        False         False      20m
+kube-storage-version-migrator              4.5.4     True        False         False      16m
+machine-api                                4.5.4     True        False         False      22m
+machine-config                             4.5.4     True        False         False      22m
+marketplace                                4.5.4     True        False         False      16m
+monitoring                                 4.5.4     True        False         False      10m
+network                                    4.5.4     True        False         False      23m
+node-tuning                                4.5.4     True        False         False      23m
+openshift-apiserver                        4.5.4     True        False         False      17m
+openshift-controller-manager               4.5.4     True        False         False      15m
+openshift-samples                          4.5.4     True        False         False      16m
+operator-lifecycle-manager                 4.5.4     True        False         False      22m
+operator-lifecycle-manager-catalog         4.5.4     True        False         False      22m
+operator-lifecycle-manager-packageserver   4.5.4     True        False         False      18m
+service-ca                                 4.5.4     True        False         False      23m
+service-catalog-apiserver                  4.5.4     True        False         False      23m
+service-catalog-controller-manager         4.5.4     True        False         False      23m
+storage                                    4.5.4     True        False         False      17m
+```
+
+3. Run the following command to view your cluster pods:
+
+```terminal
+$ oc get pods --all-namespaces
+```
+
+Example output
+
+```terminal
+NAMESPACE                                               NAME                                                                READY     STATUS      RESTARTS   AGE
+kube-system                                             etcd-member-ip-10-0-3-111.us-east-2.compute.internal                1/1       Running     0          35m
+kube-system                                             etcd-member-ip-10-0-3-239.us-east-2.compute.internal                1/1       Running     0          37m
+kube-system                                             etcd-member-ip-10-0-3-24.us-east-2.compute.internal                 1/1       Running     0          35m
+openshift-apiserver-operator                            openshift-apiserver-operator-6d6674f4f4-h7t2t                       1/1       Running     1          37m
+openshift-apiserver                                     apiserver-fm48r                                                     1/1       Running     0          30m
+openshift-apiserver                                     apiserver-fxkvv                                                     1/1       Running     0          29m
+openshift-apiserver                                     apiserver-q85nm                                                     1/1       Running     0          29m
+...
+openshift-service-ca-operator                           openshift-service-ca-operator-66ff6dc6cd-9r257                      1/1       Running     0          37m
+openshift-service-ca                                    apiservice-cabundle-injector-695b6bcbc-cl5hm                        1/1       Running     0          35m
+openshift-service-ca                                    configmap-cabundle-injector-8498544d7-25qn6                         1/1       Running     0          35m
+openshift-service-ca                                    service-serving-cert-signer-6445fc9c6-wqdqn                         1/1       Running     0          35m
+openshift-service-catalog-apiserver-operator            openshift-service-catalog-apiserver-operator-549f44668b-b5q2w       1/1       Running     0          32m
+openshift-service-catalog-controller-manager-operator   openshift-service-catalog-controller-manager-operator-b78cr2lnm     1/1       Running     0          31m
+```
+
+When the current cluster version is AVAILABLE, the installation is complete.
+
+# Telemetry access for {product-title}
+
+In {product-title} {product-version}, the Telemetry service, which runs by default to provide metrics about cluster health and the success of updates, requires internet access. If your cluster is connected to the internet, Telemetry runs automatically, and your cluster is registered to OpenShift Cluster Manager.
+
+After you confirm that your OpenShift Cluster Manager inventory is correct, either maintained automatically by Telemetry or manually by using OpenShift Cluster Manager, use subscription watch to track your {product-title} subscriptions at the account or multi-cluster level.
+
+* See About remote health monitoring for more information about the Telemetry service
+
+# Next steps
+
+* Customize your cluster.
+* If necessary, you can
+Remote health reporting.

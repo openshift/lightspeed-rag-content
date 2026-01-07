@@ -1,0 +1,293 @@
+# Configuring the Collector
+
+
+The Red Hat build of OpenTelemetry Operator uses a custom resource definition (CRD) file that defines the architecture and configuration settings to be used when creating and deploying the Red Hat build of OpenTelemetry resources. You can install the default configuration or modify the file.
+
+# Deployment modes
+
+The OpenTelemetryCollector custom resource allows you to specify one of the following deployment modes for the OpenTelemetry Collector:
+
+Deployment:: The default.
+StatefulSet:: If you need to run stateful workloads, for example when using the Collector's File Storage Extension or Tail Sampling Processor, use the StatefulSet deployment mode.
+DaemonSet:: If you need to scrape telemetry data from every node, for example by using the Collector's Filelog Receiver to read container logs, use the DaemonSet deployment mode.
+Sidecar:: If you need access to log files inside a container, inject the Collector as a sidecar, and use the Collector's Filelog Receiver and a shared volume such as emptyDir.
+
+If you need to configure an application to send telemetry data via localhost, inject the Collector as a sidecar, and set up the Collector to forward the telemetry data to an external service via an encrypted and authenticated connection. The Collector runs in the same pod as the application when injected as a sidecar.
+
+[NOTE]
+----
+If you choose the sidecar deployment mode, then in addition to setting the spec.mode: sidecar field in the OpenTelemetryCollector custom resource CR, you must also set the sidecar.opentelemetry.io/inject annotation as a pod annotation or namespace annotation. If you set this annotation on both the pod and namespace, the pod annotation takes precedence if it is set to either false or the OpenTelemetryCollector CR name.
+As a pod annotation, the sidecar.opentelemetry.io/inject annotation supports several values:
+
+```yaml
+apiVersion: v1
+kind: Pod
+metadata:
+  ...
+  annotations:
+    sidecar.opentelemetry.io/inject: "<supported_value>" 1
+...
+```
+
+Supported values:
+false:: Does not inject the Collector. This is the default if the annotation is missing.
+true:: Injects the Collector with the configuration of the OpenTelemetryCollector CR in the same namespace.
+<collector_name>:: Injects the Collector with the configuration of the <collector_name> OpenTelemetryCollector CR in the same namespace.
+<namespace>/<collector_name>:: Injects the Collector with the configuration of the <collector_name> OpenTelemetryCollector CR in the <namespace> namespace.
+----
+
+# OpenTelemetry Collector configuration options
+
+The OpenTelemetry Collector consists of five types of components that access telemetry data:
+
+* Receivers
+* Processors
+* Exporters
+* Connectors
+* Extensions
+
+You can define multiple instances of components in a custom resource YAML file. When configured, these components must be enabled through pipelines defined in the spec.config.service section of the YAML file. As a best practice, only enable the components that you need.
+
+
+```yaml
+apiVersion: opentelemetry.io/v1beta1
+kind: OpenTelemetryCollector
+metadata:
+  name: cluster-collector
+  namespace: tracing-system
+spec:
+  mode: deployment
+  observability:
+    metrics:
+      enableMetrics: true
+  config:
+    receivers:
+      otlp:
+        protocols:
+          grpc: {}
+          http: {}
+    processors: {}
+    exporters:
+      otlp:
+        endpoint: otel-collector-headless.tracing-system.svc:4317
+        tls:
+          ca_file: "/var/run/secrets/kubernetes.io/serviceaccount/service-ca.crt"
+      prometheus:
+        endpoint: 0.0.0.0:8889
+        resource_to_telemetry_conversion:
+          enabled: true # by default resource attributes are dropped
+    service: 1
+      pipelines:
+        traces:
+          receivers: [otlp]
+          processors: []
+          exporters: [otlp]
+        metrics:
+          receivers: [otlp]
+          processors: []
+          exporters: [prometheus]
+```
+
+
+If a component is configured but not defined in the service section, the component is not enabled.
+
+
+
+# Profile signal
+
+The Profile signal is an emerging telemetry data format for observing code execution and resource consumption.
+
+
+[IMPORTANT]
+----
+{FeatureName} is a Technology Preview feature only. Technology Preview features are not supported with Red Hat production service level agreements (SLAs) and might not be functionally complete. Red Hat does not recommend using them in production. These features provide early access to upcoming product features, enabling customers to test functionality and provide feedback during the development process.
+For more information about the support scope of Red Hat Technology Preview features, see Technology Preview Features Support Scope.
+----
+
+The Profile signal allows you to pinpoint inefficient code down to specific functions. Such profiling allows you to precisely identify performance bottlenecks and resource inefficiencies down to the specific line of code. By correlating such high-fidelity profile data with traces, metrics, and logs, it enables comprehensive performance analysis and targeted code optimization in production environments.
+
+Profiling can target an application or operating system:
+
+* Using profiling to observe an application can help developers validate code performance, prevent regressions, and monitor resource consumption such as memory and CPU usage, and thus identify and improve inefficient code.
+* Using profiling to observe operating systems can provide insights into the infrastructure, system calls, kernel operations, and I/O wait times, and thus help in optimizing infrastructure for efficiency and cost savings.
+
+
+```yaml
+apiVersion: opentelemetry.io/v1beta1
+kind: OpenTelemetryCollector
+metadata:
+name: otel-profiles-collector
+  namespace: otel-profile
+spec:
+ args:
+   feature-gates: service.profilesSupport 1
+  config:
+    receivers:
+      otlp: 2
+        protocols:
+          grpc:
+           endpoint: '0.0.0.0:4317'
+          http:
+           endpoint: '0.0.0.0:4318'
+    exporters:
+       otlp/pyroscope:
+           endpoint: "pyroscope.pyroscope-monitoring.svc.cluster.local:4317" 3
+    service:
+      pipelines: 4
+         profiles:
+           receivers: [otlp]
+           exporters: [otlp/pyroscope]
+# ...
+```
+
+
+Enables profiles by setting the feature-gates field as shown here.
+Configures the OTLP Receiver to set up the OpenTelemetry Collector to receive profile data via the OTLP.
+Configures where to export profiles to, such as a storage.
+Defines a profiling pipeline, including a configuration for forwarding the received profile data to an OTLP-compatible profiling back end such as Grafana Pyroscope.
+
+* OpenTelemetry Profiles
+* Profiles attributes
+
+# Creating the required RBAC resources automatically
+
+Some Collector components require configuring the RBAC resources.
+
+* Add the following permissions to the opentelemetry-operator-controller-manage service account so that the Red Hat build of OpenTelemetry Operator can create them automatically:
+
+```yaml
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: generate-processors-rbac
+rules:
+- apiGroups:
+  - rbac.authorization.k8s.io
+  resources:
+  - clusterrolebindings
+  - clusterroles
+  verbs:
+  - create
+  - delete
+  - get
+  - list
+  - patch
+  - update
+  - watch
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: generate-processors-rbac
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: generate-processors-rbac
+subjects:
+- kind: ServiceAccount
+  name: opentelemetry-operator-controller-manager
+  namespace: openshift-opentelemetry-operator
+```
+
+
+# Target Allocator
+
+The Target Allocator is an optional component of the OpenTelemetry Operator that shards scrape targets across the deployed fleet of OpenTelemetry Collector instances. The Target Allocator integrates with the Prometheus PodMonitor and ServiceMonitor custom resources (CR). When the Target Allocator is enabled, the OpenTelemetry Operator adds the http_sd_config field to the enabled prometheus receiver that connects to the Target Allocator service.
+
+
+[IMPORTANT]
+----
+{FeatureName} is a Technology Preview feature only. Technology Preview features are not supported with Red Hat production service level agreements (SLAs) and might not be functionally complete. Red Hat does not recommend using them in production. These features provide early access to upcoming product features, enabling customers to test functionality and provide feedback during the development process.
+For more information about the support scope of Red Hat Technology Preview features, see Technology Preview Features Support Scope.
+----
+
+
+```yaml
+apiVersion: opentelemetry.io/v1beta1
+kind: OpenTelemetryCollector
+metadata:
+  name: otel
+  namespace: observability
+spec:
+  mode: statefulset 1
+  targetAllocator:
+    enabled: true 2
+    serviceAccount: 3
+    prometheusCR:
+      enabled: true 4
+      scrapeInterval: 10s
+      serviceMonitorSelector: 5
+        name: app1
+      podMonitorSelector: 6
+        name: app2
+  config:
+    receivers:
+      prometheus: 7
+        config:
+          scrape_configs: []
+    processors:
+    exporters:
+      debug: {}
+    service:
+      pipelines:
+        metrics:
+          receivers: [prometheus]
+          processors: []
+          exporters: [debug]
+# ...
+```
+
+
+When the Target Allocator is enabled, the deployment mode must be set to statefulset.
+Enables the Target Allocator. Defaults to false.
+The service account name of the Target Allocator deployment. The service account needs to have RBAC to get the ServiceMonitor, PodMonitor custom resources, and other objects from the cluster to properly set labels on scraped metrics. The default service name is <collector_name>-targetallocator.
+Enables integration with the Prometheus PodMonitor and ServiceMonitor custom resources.
+Label selector for the Prometheus ServiceMonitor custom resources. When left empty, enables all service monitors.
+Label selector for the Prometheus PodMonitor custom resources. When left empty, enables all pod monitors.
+Prometheus receiver with the minimal, empty scrape_config: [] configuration option.
+
+The Target Allocator deployment uses the Kubernetes API to get relevant objects from the cluster, so it requires a custom RBAC configuration.
+
+
+```yaml
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: otel-targetallocator
+rules:
+  - apiGroups: [""]
+    resources:
+      - services
+      - pods
+      - namespaces
+    verbs: ["get", "list", "watch"]
+  - apiGroups: ["monitoring.coreos.com"]
+    resources:
+      - servicemonitors
+      - podmonitors
+      - scrapeconfigs
+      - probes
+    verbs: ["get", "list", "watch"]
+  - apiGroups: ["discovery.k8s.io"]
+    resources:
+      - endpointslices
+    verbs: ["get", "list", "watch"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: otel-targetallocator
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: otel-targetallocator
+subjects:
+  - kind: ServiceAccount
+    name: otel-targetallocator 1
+    namespace: observability 2
+# ...
+```
+
+
+The name of the Target Allocator service account.
+The namespace of the Target Allocator service account.

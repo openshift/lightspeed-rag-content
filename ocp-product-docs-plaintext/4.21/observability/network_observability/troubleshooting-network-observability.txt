@@ -1,0 +1,302 @@
+# Troubleshooting network observability
+
+
+Perform diagnostic actions to troubleshoot common issues related to the Network Observability Operator and its components.
+
+# Using the must-gather tool
+
+You can use the must-gather tool to collect information about the Network Observability Operator resources and cluster-wide resources, such as pod logs, FlowCollector, and webhook configurations.
+
+1. Navigate to the directory where you want to store the must-gather data.
+2. Run the following command to collect cluster-wide must-gather resources:
+
+```terminal
+$ oc adm must-gather
+ --image-stream=openshift/must-gather \
+ --image=quay.io/netobserv/must-gather
+```
+
+
+# Configuring network traffic menu entry in the {product-title} console
+
+Manually configure the network traffic menu entry in the {product-title} console when the network traffic menu entry is not listed in Observe menu in the {product-title} console.
+
+* You have installed {product-title} version 4.10 or newer.
+
+1. Check if the spec.consolePlugin.register field is set to true by running the following command:
+
+```terminal
+$ oc -n netobserv get flowcollector cluster -o yaml
+```
+
+Example output
+
+```
+apiVersion: flows.netobserv.io/v1alpha1
+kind: FlowCollector
+metadata:
+  name: cluster
+spec:
+  consolePlugin:
+    register: false
+```
+
+2. Optional: Add the netobserv-plugin plugin by manually editing the Console Operator config:
+
+```terminal
+$ oc edit console.operator.openshift.io cluster
+```
+
+Example output
+
+```
+...
+spec:
+  plugins:
+  - netobserv-plugin
+...
+```
+
+3. Optional: Set the spec.consolePlugin.register field to true by running the following command:
+
+```terminal
+$ oc -n netobserv edit flowcollector cluster -o yaml
+```
+
+Example output
+
+```
+apiVersion: flows.netobserv.io/v1alpha1
+kind: FlowCollector
+metadata:
+  name: cluster
+spec:
+  consolePlugin:
+    register: true
+```
+
+4. Ensure the status of console pods is running by running the following command:
+
+```terminal
+$ oc get pods -n openshift-console -l app=console
+```
+
+5. Restart the console pods by running the following command:
+
+```terminal
+$ oc delete pods -n openshift-console -l app=console
+```
+
+6. Clear your browser cache and history.
+7. Check the status of network observability plugin pods by running the following command:
+
+```terminal
+$ oc get pods -n netobserv -l app=netobserv-plugin
+```
+
+Example output
+
+```
+NAME                                READY   STATUS    RESTARTS   AGE
+netobserv-plugin-68c7bbb9bb-b69q6   1/1     Running   0          21s
+```
+
+8. Check the logs of the network observability plugin pods by running the following command:
+
+```terminal
+$ oc logs -n netobserv -l app=netobserv-plugin
+```
+
+Example output
+
+```terminal
+time="2022-12-13T12:06:49Z" level=info msg="Starting netobserv-console-plugin [build version: , build date: 2022-10-21 15:15] at log level info" module=main
+time="2022-12-13T12:06:49Z" level=info msg="listening on https://:9001" module=server
+```
+
+
+# Flowlogs-Pipeline does not consume network flows after installing Kafka
+
+If you deployed the flow collector first with deploymentModel: KAFKA and then deployed Kafka, the flow collector might not connect correctly to Kafka. Manually restart the flow-pipeline pods where Flowlogs-pipeline does not consume network flows from Kafka.
+
+1. Delete the flow-pipeline pods to restart them by running the following command:
+
+```terminal
+$ oc delete pods -n netobserv -l app=flowlogs-pipeline-transformer
+```
+
+
+# Failing to see network flows from both br-int and br-ex interfaces
+
+br-ex` and br-int are virtual bridge devices operated at OSI layer 2. The eBPF agent works at the IP and TCP levels, layers 3 and 4 respectively. You can expect that the eBPF agent captures the network traffic passing through br-ex and br-int, when the network traffic is processed by other interfaces such as physical host or virtual pod interfaces. If you restrict the eBPF agent network interfaces to attach only to br-ex and br-int, you do not see any network flow.
+
+Manually remove the part in the interfaces or excludeInterfaces that restricts the network interfaces to br-int and br-ex.
+
+1. Remove the interfaces: [ 'br-int', 'br-ex' ] field. This allows the agent to fetch information from all the interfaces. Alternatively, you can specify the Layer-3 interface for example, eth0. Run the following command:
+
+```terminal
+$ oc edit -n netobserv flowcollector.yaml -o yaml
+```
+
+Example output
+
+```
+apiVersion: flows.netobserv.io/v1alpha1
+kind: FlowCollector
+metadata:
+  name: cluster
+spec:
+  agent:
+    type: EBPF
+    ebpf:
+      interfaces: [ 'br-int', 'br-ex' ] 1
+```
+
+Specifies the network interfaces.
+
+# Network observability controller manager pod runs out of memory
+
+You can increase memory limits for the Network Observability Operator by editing the spec.config.resources.limits.memory specification in the Subscription object.
+
+1. In the web console, navigate to Ecosystem -> Installed Operators
+2. Click Network Observability and then select Subscription.
+3. From the Actions menu, click Edit Subscription.
+1. Alternatively, you can use the CLI to open the YAML configuration for the Subscription object by running the following command:
+
+```terminal
+$ oc edit subscription netobserv-operator -n openshift-netobserv-operator
+```
+
+4. Edit the Subscription object to add the config.resources.limits.memory specification and set the value to account for your memory requirements. See the Additional resources for more information about resource considerations:
+
+```yaml
+apiVersion: operators.coreos.com/v1alpha1
+kind: Subscription
+metadata:
+  name: netobserv-operator
+  namespace: openshift-netobserv-operator
+spec:
+  channel: stable
+  config:
+    resources:
+      limits:
+        memory: 800Mi     1
+      requests:
+        cpu: 100m
+        memory: 100Mi
+  installPlanApproval: Automatic
+  name: netobserv-operator
+  source: redhat-operators
+  sourceNamespace: openshift-marketplace
+  startingCSV: <network_observability_operator_latest_version> 2
+```
+
+For example, you can increase the memory limit to 800Mi.
+This value should not be edited, but note that it changes depending on the most current release of the Operator.
+
+# Running custom queries to Loki
+
+For troubleshooting, can run custom queries to Loki. There are two examples of ways to do this, which you can adapt according to your needs by replacing the &lt;api_token&gt; with your own.
+
+
+[NOTE]
+----
+These examples use the netobserv namespace for the Network Observability Operator and Loki deployments. Additionally, the examples assume that the LokiStack is named loki. You can optionally use a different namespace and naming by adapting the examples, specifically the -n netobserv or the loki-gateway URL.
+----
+
+* Installed Loki Operator for use with Network Observability Operator
+
+* To get all available labels, run the following:
+
+```terminal
+$ oc exec deployment/netobserv-plugin -n netobserv -- curl -G -s -H 'X-Scope-OrgID:network' -H 'Authorization: Bearer <api_token>' -k https://loki-gateway-http.netobserv.svc:8080/api/logs/v1/network/loki/api/v1/labels | jq
+```
+
+* To get all flows from the source namespace, my-namespace, run the following:
+
+```terminal
+$ oc exec deployment/netobserv-plugin -n netobserv -- curl -G -s -H 'X-Scope-OrgID:network' -H 'Authorization: Bearer <api_token>' -k https://loki-gateway-http.netobserv.svc:8080/api/logs/v1/network/loki/api/v1/query --data-urlencode 'query={SrcK8S_Namespace="my-namespace"}' | jq
+```
+
+
+* Resource considerations
+
+# Troubleshooting Loki ResourceExhausted error
+
+Loki may return a ResourceExhausted error when network flow data sent by network observability exceeds the configured maximum message size. If you are using the Red&#160;Hat Loki Operator, this maximum message size is configured to 100 MiB.
+
+1. Navigate to Ecosystem -> Installed Operators, viewing All projects from the Project drop-down menu.
+2. In the Provided APIs list, select the Network Observability Operator.
+3. Click the Flow Collector then the YAML view tab.
+1. If you are using the Loki Operator, check that the spec.loki.batchSize value does not exceed 98 MiB.
+2. If you are using a Loki installation method that is different from the Red Hat Loki Operator, such as Grafana Loki, verify that the grpc_server_max_recv_msg_size Grafana Loki server setting is higher than the FlowCollector resource spec.loki.batchSize value. If it is not, you must either increase the grpc_server_max_recv_msg_size value, or decrease the spec.loki.batchSize value so that it is lower than the limit.
+4. Click Save if you edited the FlowCollector.
+
+# Loki empty ring error
+
+The Loki "empty ring" error results in flows not being stored in Loki and not showing up in the web console. This error might happen in various situations. A single workaround to address them all does not exist. There are some actions you can take to investigate the logs in your Loki pods, and verify that the LokiStack is healthy and ready.
+
+Some of the situations where this error is observed are as follows:
+
+* After a LokiStack is uninstalled and reinstalled in the same namespace, old PVCs are not removed, which can cause this error.
+* Action: You can try removing the LokiStack again, removing the PVC, then reinstalling the LokiStack.
+* After a certificate rotation, this error can prevent communication with the flowlogs-pipeline and console-plugin pods.
+* Action: You can restart the pods to restore the connectivity.
+
+# Resource troubleshooting
+
+
+
+# LokiStack rate limit errors
+
+A rate-limit placed on the Loki tenant can result in potential temporary loss of data and a 429 error: Per stream rate limit exceeded (limit:xMB/sec) while attempting to ingest for stream. You might consider having an alert set to notify you of this error. For more information, see "Creating Loki rate limit alerts for the NetObserv dashboard" in the Additional resources of this section.
+
+You can update the LokiStack CRD with the perStreamRateLimit and perStreamRateLimitBurst specifications, as shown in the following procedure.
+
+1. Navigate to Ecosystem -> Installed Operators, viewing All projects from the Project dropdown.
+2. Look for Loki Operator, and select the LokiStack tab.
+3. Create or edit an existing LokiStack instance using the YAML view to add the perStreamRateLimit and perStreamRateLimitBurst specifications:
+
+```yaml
+apiVersion: loki.grafana.com/v1
+kind: LokiStack
+metadata:
+  name: loki
+  namespace: netobserv
+spec:
+  limits:
+    global:
+      ingestion:
+        perStreamRateLimit: 6        1
+        perStreamRateLimitBurst: 30  2
+  tenants:
+    mode: openshift-network
+  managementState: Managed
+```
+
+The default value for perStreamRateLimit is 3.
+The default value for perStreamRateLimitBurst is 15.
+4. Click Save.
+
+Once you update the perStreamRateLimit and perStreamRateLimitBurst specifications, the pods in your cluster restart and the 429 rate-limit error no longer occurs.
+
+# Running a large query results in Loki errors
+
+When running large queries for a long time, Loki errors can occur, such as a timeout or too many outstanding requests. There is no complete corrective for this issue, but there are several ways to mitigate it:
+
+Adapt your query to add an indexed filter:: 
+
+With Loki queries, you can query on both indexed and non-indexed fields or labels. Queries that contain filters on labels perform better. For example, if you query for a particular Pod, which is not an indexed field, you can add its Namespace to the query. The list of indexed fields can be found in the "Network flows format reference", in the Loki label column.
+Consider querying Prometheus rather than Loki:: 
+
+Prometheus is a better fit than Loki to query on large time ranges. However, whether or not you can use Prometheus instead of Loki depends on the use case. For example, queries on Prometheus are much faster than on Loki, and large time ranges do not impact performance. But Prometheus metrics do not contain as much information as flow logs in Loki. The Network Observability OpenShift web console automatically favors Prometheus over Loki if the query is compatible; otherwise, it defaults to Loki. If your query does not run against Prometheus, you can change some filters or aggregations to make the switch. In the OpenShift web console, you can force the use of Prometheus. An error message is displayed when incompatible queries fail, which can help you figure out which labels to change to make the query compatible. For example, changing a filter or an aggregation from Resource or Pods to Owner.
+Consider using the FlowMetrics API to create your own metric:: If the data that you need isn't available as a Prometheus metric, you can use the FlowMetrics API to create your own metric. For more information, see "FlowMetrics API Reference" and "Configuring custom metrics by using FlowMetric API".
+Configure Loki to improve the query performance:: 
+
+If the problem persists, you can consider configuring Loki to improve the query performance. Some options depend on the installation mode you used for Loki, such as using the Operator and LokiStack, or Monolithic mode, or Microservices mode.
+* In LokiStack or Microservices modes, try increasing the number of querier replicas.
+* Increase the query timeout. You must also increase the Network Observability read timeout to Loki in the FlowCollector spec.loki.readTimeout.
+
+* Network flows format reference
+* FlowMetric API reference
+* Configuring custom metrics by using FlowMetric API

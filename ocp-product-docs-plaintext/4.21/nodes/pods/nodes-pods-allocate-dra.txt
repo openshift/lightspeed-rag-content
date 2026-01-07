@@ -1,0 +1,190 @@
+# Allocating GPUs to pods
+
+
+Attribute-Based GPU Allocation enables fine-tuned control over graphics processing unit (GPU) resource allocation in {product-title}, allowing pods to request GPUs based on specific device attributes, including product name, GPU memory capacity, compute capability, vendor name and driver version. These attributes are exposed by a third-party Dynamic Resource Allocation (DRA) driver.
+
+[IMPORTANT]
+----
+Attribute-Based GPU Allocation is a Technology Preview feature only. Technology Preview features are not supported with Red Hat production service level agreements (SLAs) and might not be functionally complete. Red Hat does not recommend using them in production. These features provide early access to upcoming product features, enabling customers to test functionality and provide feedback during the development process.
+For more information about the support scope of Red Hat Technology Preview features, see Technology Preview Features Support Scope.
+----
+
+# About allocating GPUs to workloads
+
+Attribute-Based GPU Allocation enables pods to request graphics processing units (GPU) based on specific device attributes. This ensures that each pod receives the exact GPU specifications it requires.
+
+Attribute-based resource allocation requires that you install a Dynamic Resource Allocation (DRA) driver. A DRA driver is a third-party application that runs on each node in your cluster to interface with the hardware of that node.
+
+The DRA driver advertises several GPU device attributes that {product-title} can use for precise GPU selection, including the following attributes:
+
+Product Name:: Pods can request an exact GPU model based on performance requirements or compatibility with applications. This ensures that workloads leverage the best-suited hardware for their tasks.
+GPU Memory Capacity:: Pods can request GPUs with a minimum or maximum memory capacity, such as 8 GB, 16 GB, or 40 GB. This is helpful with memory-intensive workloads such as large AI model training or data processing. This attribute enables applications to allocate GPUs that meet memory needs without overcommitting or underutilizing resources.
+Compute Capability:: Pods can request GPUs based on the compute capabilities of the GPU, such as the CUDA versions supported. Pods can target GPUs that are compatible with the application’s framework and leverage optimized processing capabilities.
+Power and Thermal Profiles:: Pods can request GPUs based on power usage or thermal characteristics, enabling power-sensitive or temperature-sensitive applications to operate efficiently. This is particularly useful in high-density environments where energy or cooling constraints are factors.
+Device ID and Vendor ID:: Pods can request GPUs based on the GPU's hardware specifics, which allows applications that require specific vendors or device types to make targeted requests.
+Driver Version:: Pods can request GPUs that run a specific driver version, ensuring compatibility with application dependencies and maximizing GPU feature access.
+
+# About GPU allocation objects
+
+Attribute-Based GPU Allocation uses the following objects to provide the core graphics processing unit (GPU) allocation functionality. All of these API kinds are included in the resource.k8s.io/v1beta2 API group.
+
+Device class:: A device class is a category of devices that pods can claim and how to select specific device attributes in claims. Some device drivers contain their own device class. Alternatively, an administrator can create device classes. A device class contains a device selector, which is a common expression language (CEL) expression that must evaluate to true if a device satisfies the request.
+
+The following example DeviceClass object selects any device that is managed by the driver.example.com device driver:
+Example device class object
+
+```yaml
+apiVersion: resource.k8s.io/v1beta1
+kind: DeviceClass
+metadata:
+  name: example-device-class
+spec:
+  selectors:
+  - cel:
+      expression: |-
+        device.driver == "driver.example.com"
+```
+
+Resource slice:: The Dynamic Resource Allocation (DRA) driver on each node creates and manages resource slices in the cluster. A resource slice represents one or more GPU resources that are attached to nodes. When a resource claim is created and used in a pod, {product-title} uses the resource slices to find nodes that have access to the requested resources. After finding an eligible resource slice for the resource claim, the {product-title} scheduler updates the resource claim with the allocation details, allocates resources to the resource claim, and schedules the pod onto a node that can access the resources.
+Resource claim template:: Cluster administrators and operators can create a resource claim template to request a GPU from a specific device class. Resource claim templates provide pods with access to separate, similar resources. {product-title} uses a resource claim template to generate a resource claim for the pod. Each resource claim that {product-title} generates from the template is bound to a specific pod. When the pod terminates, {product-title} deletes the corresponding resource claim.
+
+The following example resource claim template requests devices in the example-device-class device class.
+Example resource claim template object
+
+```yaml
+apiVersion: resource.k8s.io/v1beta1
+kind: ResourceClaimTemplate
+metadata:
+  namespace: gpu-test1
+  name: gpu-claim-template
+spec:
+# ...
+  spec:
+    devices:
+      requests:
+      - name: gpu
+        deviceClassName: example-device-class
+```
+
+Resource claim:: Admins and operators can create a resource claim to request a GPU from a specific device class. A resource claim differs from a resource claim template by allowing you to share GPUs with multiple pods. Also, resource claims are not deleted when a requesting pod is terminated.
+
+The following example resource claim template uses CEL expressions to request specific devices in the example-device-class device class that are of a specific size.
+Example resource claim object
+
+```yaml
+apiVersion: resource.k8s.io/v1beta1
+kind: ResourceClaim
+metadata:
+  namespace: gpu-claim
+  name: gpu-devices
+spec:
+  devices:
+    requests:
+    - name: 1g-5gb
+      deviceClassName: example-device-class
+      selectors:
+      - cel:
+          expression: "device.attributes['driver.example.com'].profile == '1g.5gb'"
+    - name: 1g-5gb-2
+      deviceClassName: example-device-class
+      selectors:
+      - cel:
+          expression: "device.attributes['driver.example.com'].profile == '1g.5gb'"
+    - name: 2g-10gb
+      deviceClassName: example-device-class
+      selectors:
+      - cel:
+          expression: "device.attributes['driver.example.com'].profile == '2g.10gb'"
+    - name: 3g-20gb
+      deviceClassName: example-device-class
+      selectors:
+      - cel:
+          expression: "device.attributes['driver.example.com'].profile == '3g.20gb'"
+```
+
+
+For more information on configuring resource claims, resource claim templates, see "Dynamic Resource Allocation" (Kubernetes documentation).
+
+For information on adding resource claims to pods, see "Adding resource claims to pods".
+
+* Adding resource claims to pods
+
+# Adding resource claims to pods
+
+Attribute-Based GPU Allocation uses resource claims and resource claim templates to allow you to request specific graphics processing units (GPU) for the containers in your pods. Resource claims can be used with multiple containers, but resource claim templates can be used with only one container. For more information, see "About configuring device allocation by using device attributes" in the Additional Resources section.
+
+The example in the following procedure creates a resource claim template to assign a specific GPU to container0 and a resource claim to share a GPU between container1 and container2.
+
+* A Dynamic Resource Allocation (DRA) driver is installed. For more information on DRA, see "Dynamic Resource Allocation" (Kubernetes documentation).
+* A resource slice has been created.
+* A resource claim and/or resource claim template has been created.
+* You enabled the required Technology Preview features for your cluster by editing the FeatureGate CR named cluster:
+Example FeatureGate CR
+
+```yaml
+apiVersion: config.openshift.io/v1
+kind: FeatureGate
+metadata:
+  name: cluster
+spec:
+  featureSet: TechPreviewNoUpgrade 1
+```
+
+Enables the required features.
+
+[WARNING]
+----
+Enabling the TechPreviewNoUpgrade feature set on your cluster cannot be undone and prevents minor version updates. This feature set allows you to enable these Technology Preview features on test clusters, where you can fully test them. Do not enable this feature set on production clusters.
+----
+
+1. Create a pod by creating a YAML file similar to the following:
+Example pod that is requesting resources
+
+```yaml
+apiVersion: v1
+kind: Pod
+metadata:
+  namespace: gpu-allocate
+  name: pod1
+  labels:
+    app: pod
+spec:
+  restartPolicy: Never
+  containers:
+  - name: container0
+    image: ubuntu:24.04
+    command: ["sleep", "9999"]
+    resources:
+      claims: 1
+      - name: gpu-claim-template
+  - name: container1
+    image: ubuntu:24.04
+    command: ["sleep", "9999"]
+    resources:
+      claims:
+      - name: gpu-claim
+  - name: container2
+    image: ubuntu:24.04
+    command: ["sleep", "9999"]
+    resources:
+      claims:
+      - name: gpu-claim
+  resourceClaims: 2
+  - name: gpu-claim-template
+    resourceClaimTemplateName: example-resource-claim-template
+  - name: gpu-claim
+    resourceClaimName: example-resource-claim
+```
+
+Specifies one or more resource claims to use with this container.
+Specifies the resource claims that are required for the containers to start. Include an arbitrary name for the resource claim request and the resource claim and/or resource claim template.
+2. Create the CRD object:
+
+```terminal
+$ oc create -f <file_name>.yaml
+```
+
+
+For more information on configuring pod resource requests, see "Dynamic Resource Allocation" (Kubernetes documentation).
+
+* About configuring device allocation by using device attributes

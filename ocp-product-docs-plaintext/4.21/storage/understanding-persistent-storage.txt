@@ -1,0 +1,975 @@
+# Understanding persistent storage
+
+
+
+# Persistent storage overview
+
+Stateful applications deployed in containers require persistent storage. {microshift-short} uses a pre-provisioned storage framework called persistent volumes (PV) to allow node administrators to provision persistent storage. The data inside these volumes can exist beyond the lifecycle of an individual pod. Developers can use persistent volume claims (PVCs) to request storage requirements.
+
+Managing storage is a distinct problem from managing compute resources. {product-title} uses the Kubernetes persistent volume (PV) framework to allow cluster administrators to provision persistent storage for a cluster. Developers can use persistent volume claims (PVCs) to request PV resources without having specific knowledge of the underlying storage infrastructure.
+
+PVCs are specific to a project, and are created and used by developers as a means to use a PV. PV resources on their own are not scoped to any single project; they can be shared across the entire {product-title} node and claimed from any project. After a PV is bound to a PVC, that PV can not then be bound to additional PVCs. This has the effect of scoping a bound PV to a single namespace, that of the binding project.
+
+PVs are defined by a PersistentVolume API object, which represents a piece of existing storage in the cluster that was either statically provisioned by the cluster administrator or dynamically provisioned using a StorageClass object. It is a resource in the cluster just like a node is a cluster resource.
+
+PVs are volume plugins like Volumes but have a lifecycle that is independent of any individual pod that uses the PV. PV objects capture the details of the implementation of the storage, be that NFS, iSCSI, or a cloud-provider-specific storage system.
+
+
+[IMPORTANT]
+----
+High availability of storage in the infrastructure is left to the underlying storage provider.
+----
+
+PVCs are defined by a PersistentVolumeClaim API object, which represents a request for storage by a developer. It is similar to a pod in that pods consume node resources and PVCs consume PV resources. For example, pods can request specific levels of resources, such as CPU and memory, while PVCs can request specific storage capacity and access modes. For example, they can be mounted once read-write or many times read-only.
+
+# Lifecycle of a volume and claim
+
+PVs are resources in the cluster. PVCs are requests for those resources
+and also act as claim checks to the resource. The interaction between PVs
+and PVCs have the following lifecycle.
+
+## Provision storage
+
+In response to requests from a developer defined in a PVC, a cluster
+administrator configures one or more dynamic provisioners that provision
+storage and a matching PV.
+
+## Bind claims
+
+When you create a PVC, you request a specific amount of storage, specify the
+required access mode, and create a storage class to describe and classify
+the storage. The control loop in the master watches for new PVCs and binds
+the new PVC to an appropriate PV. If an appropriate PV does not exist, a
+provisioner for the storage class creates one.
+
+The size of all PVs might exceed your PVC size. This is especially true
+with manually provisioned PVs. To minimize the excess, {product-title}
+binds to the smallest PV that matches all other criteria.
+
+Claims remain unbound indefinitely if a matching volume does not exist or
+can not be created with any available provisioner servicing a storage
+class. Claims are bound as matching volumes become available. For example,
+a cluster with many manually provisioned 50Gi volumes would not match a
+PVC requesting 100Gi. The PVC can be bound when a 100Gi PV is added to the
+cluster.
+
+## Use pods and claimed PVs
+
+Pods use claims as volumes. The cluster inspects the claim to find the bound
+volume and mounts that volume for a pod. For those volumes that support
+multiple access modes, you must specify which mode applies when you use
+the claim as a volume in a pod.
+
+Once you have a claim and that claim is bound, the bound PV belongs to you
+for as long as you need it. You can schedule pods and access claimed
+PVs by including persistentVolumeClaim in the pod&#8217;s volumes block.
+
+
+[NOTE]
+----
+If you attach persistent volumes that have high file counts to pods, those pods can fail or can take a long time to start. For
+more information, see When using Persistent Volumes with high file counts in OpenShift, why do pods fail to start or take an excessive amount of time to achieve "Ready" state?.
+----
+
+## Release a persistent volume
+
+When you are finished with a volume, you can delete the PVC object from
+the API, which allows reclamation of the resource. The volume is
+considered released when the claim is deleted, but it is not yet available
+for another claim. The previous claimant&#8217;s data remains on the volume and
+must be handled according to policy.
+
+## Reclaim policy for persistent volumes
+
+The reclaim policy of a persistent volume tells the cluster what to do with the volume after it is released. A volume&#8217;s reclaim policy can be
+Retain, Recycle, or Delete.
+
+* Retain reclaim policy allows manual reclamation of the resource for
+those volume plugins that support it.
+* Recycle reclaim policy recycles the volume back into the pool of
+unbound persistent volumes once it is released from its claim.
+
+
+[IMPORTANT]
+----
+The Recycle reclaim policy is deprecated in {product-title} 4. Dynamic provisioning is recommended for equivalent and better
+functionality.
+----
+
+* Delete reclaim policy deletes  both the PersistentVolume object
+from {product-title} and the associated storage asset in external
+infrastructure, such as Amazon Elastic Block Store (Amazon EBS) or VMware vSphere.
+
+
+[NOTE]
+----
+Dynamically provisioned volumes are always deleted.
+----
+
+## Reclaiming a persistent volume manually
+
+When a persistent volume claim (PVC) is deleted, the persistent volume (PV) still exists and is considered "released". However, the PV is not yet available for another claim because the data of the previous claimant remains on the volume.
+
+To manually reclaim the PV as a cluster administrator:
+
+1. Delete the PV by running the following command:
+
+```terminal
+$ oc delete pv <pv_name>
+```
+
+
+The associated storage asset in the external infrastructure, such as an AWS EBS, GCE PD, Azure Disk, or Cinder volume, still exists after the PV is deleted.
+2. Clean up the data on the associated storage asset.
+3. Delete the associated storage asset. Alternately, to reuse the same storage asset, create a new PV with the storage asset definition.
+
+The reclaimed PV is now available for use by another PVC.
+
+## Changing the reclaim policy of a persistent volume
+
+You can change the reclaim policy of a persistent volume.
+
+1. List the persistent volumes in your cluster:
+
+```terminal
+$ oc get pv
+```
+
+Example output
+
+```terminal
+NAME                                       CAPACITY   ACCESSMODES   RECLAIMPOLICY   STATUS    CLAIM             STORAGECLASS     REASON    AGE
+ pvc-b6efd8da-b7b5-11e6-9d58-0ed433a7dd94   4Gi        RWO           Delete          Bound     default/claim1    manual                     10s
+ pvc-b95650f8-b7b5-11e6-9d58-0ed433a7dd94   4Gi        RWO           Delete          Bound     default/claim2    manual                     6s
+ pvc-bb3ca71d-b7b5-11e6-9d58-0ed433a7dd94   4Gi        RWO           Delete          Bound     default/claim3    manual                     3s
+```
+
+2. Choose one of your persistent volumes and change its reclaim policy:
+
+```terminal
+$ oc patch pv <your-pv-name> -p '{"spec":{"persistentVolumeReclaimPolicy":"Retain"}}'
+```
+
+3. Verify that your chosen persistent volume has the right policy:
+
+```terminal
+$ oc get pv
+```
+
+Example output
+
+```terminal
+NAME                                       CAPACITY   ACCESSMODES   RECLAIMPOLICY   STATUS    CLAIM             STORAGECLASS     REASON    AGE
+ pvc-b6efd8da-b7b5-11e6-9d58-0ed433a7dd94   4Gi        RWO           Delete          Bound     default/claim1    manual                     10s
+ pvc-b95650f8-b7b5-11e6-9d58-0ed433a7dd94   4Gi        RWO           Delete          Bound     default/claim2    manual                     6s
+ pvc-bb3ca71d-b7b5-11e6-9d58-0ed433a7dd94   4Gi        RWO           Retain          Bound     default/claim3    manual                     3s
+```
+
+
+In the preceding output, the volume bound to claim default/claim3 now has a Retain reclaim policy. The volume will not be automatically deleted when a user deletes claim default/claim3.
+
+# Persistent volumes
+
+Each PV contains a spec and status, which is the specification and status of the volume, for example:
+
+
+```yaml
+apiVersion: v1
+kind: PersistentVolume
+metadata:
+  name: pv0001 1
+spec:
+  capacity:
+    storage: 5Gi 2
+  accessModes:
+    - ReadWriteOnce 3
+  persistentVolumeReclaimPolicy: Retain 4
+  ...
+status:
+  ...
+```
+
+
+Name of the persistent volume.
+The amount of storage available to the volume.
+The access mode, defining the read-write and mount permissions.
+The reclaim policy, indicating how the resource should be handled once it is released.
+
+You can view the name of a PVC that is bound to a PV by running the following command:
+
+
+```terminal
+$ oc get pv <pv_name> -o jsonpath='{.spec.claimRef.name}'
+```
+
+
+## Types of PVs
+
+{product-title} supports the following persistent volume plugins:
+
+* AWS Elastic Block Store (EBS), which is installed by default.
+* GCP Persistent Disk
+* GCP Filestore
+
+## Capacity
+
+Generally, a persistent volume (PV) has a specific storage capacity. This is set by using the capacity attribute of the PV.
+
+Currently, storage capacity is the only resource that can be set or requested. Future attributes may include IOPS, throughput, and so on.
+
+## Access modes
+
+A persistent volume can be mounted on a host in any way supported by the resource provider. Providers have different capabilities and each PV&#8217;s access modes are set to the specific modes supported by that particular volume. For example, NFS can support multiple read-write clients, but a specific NFS PV might be exported on the server as read-only. Each PV gets its own set of access modes describing that specific PV&#8217;s capabilities.
+
+Claims are matched to volumes with similar access modes. The only two matching criteria are access modes and size. A claim&#8217;s access modes represent a request. Therefore, you might be granted more, but never less. For example, if a claim requests RWO, but the only volume available is an NFS PV (RWO+ROX+RWX), the claim would then match NFS because it supports RWO.
+
+Direct matches are always attempted first. The volume&#8217;s modes must match or contain more modes than you requested. The size must be greater than or equal to what is expected. If two types of volumes, such as NFS and iSCSI, have the same set of access modes, either of them can match a claim with those modes. There is no ordering between types of volumes and no way to choose one type over another.
+
+All volumes with the same modes are grouped, and then sorted by size, smallest to largest. The binder gets the group with matching modes and iterates over each, in size order, until one size matches.
+
+
+[IMPORTANT]
+----
+Volume access modes describe volume capabilities. They are not enforced constraints. The storage provider is responsible for runtime errors resulting from invalid use of the resource. Errors in the provider show up at runtime as mount errors.
+For example, NFS offers ReadWriteOnce access mode. If you want to use the volume's ROX capability, mark the claims as ReadOnlyMany.
+iSCSI and Fibre Channel volumes do not currently have any fencing mechanisms. You must ensure the volumes are only used by one node at a time. In certain situations, such as draining a node, the volumes can be used simultaneously by two nodes. Before draining the node, delete the pods that use the volumes.
+----
+
+The following table lists the access modes:
+
+
+
+
+
+1. ReadWriteOnce (RWO) volumes cannot be mounted on multiple nodes. If a node fails, the system does not allow the attached RWO volume to be mounted on a new node because it is already assigned to the failed node. If you encounter a multi-attach error message as a result, force delete the pod on a shutdown or crashed node to avoid data loss in critical workloads, such as when dynamic persistent volumes are attached.
+2. Use a recreate deployment strategy for pods that rely on AWS EBS.
+3. Only raw block volumes support the ReadWriteMany (RWX) access mode for Fibre Channel and iSCSI. For more information, see "Block volume support".
+4. For GCP hyperdisk-balanced disks:
+* The supported access modes are:
+* ReadWriteOnce
+* ReadWriteMany
+* Cloning and snapshotting is disabled for disks with ReadWriteMany access mode enabled.
+* You can attach a single hyperdisk-balanced disk volume in ReadWriteMany to a maximum of 8 instances.
+* You can only resize a disk in ReadWriteMany if you detach the disk from all instances.
+* Additional limitations.
+5. If the underlying vSphere environment supports the vSAN file service, the vSphere Container Storage Interface (CSI) Driver Operator installed by {product-title} supports provisioning of ReadWriteMany (RWX) volumes. If you do not have vSAN file service configured, and you request RWX, the volume fails to get created and an error is logged. For more information, see "Using Container Storage Interface" -> "VMware vSphere CSI Driver Operator".
+
+## Phase
+
+Volumes can be found in one of the following phases:
+
+
+
+### Last phase transition time
+
+The LastPhaseTransitionTime field has a timestamp that updates every time a persistent volume (PV) transitions to a different phase (pv.Status.Phase). To find the time of the last phase transition for a PV, run the following command:
+
+
+```terminal
+$ oc get pv <pv_name> -o json | jq '.status.lastPhaseTransitionTime' 1
+```
+
+
+Specify the name of the PV that you want to see the last phase transition.
+
+### Mount options
+
+You can specify mount options while mounting a PV by using the attribute mountOptions.
+
+For example:
+
+
+```yaml
+apiVersion: v1
+kind: PersistentVolume
+metadata:
+  name: pv0001
+spec:
+  capacity:
+    storage: 1Gi
+  accessModes:
+    - ReadWriteOnce
+  mountOptions: 1
+    - nfsvers=4.1
+  nfs:
+    path: /tmp
+    server: 172.17.0.2
+  persistentVolumeReclaimPolicy: Retain
+  claimRef:
+    name: claim1
+    namespace: default
+```
+
+
+Specified mount options are used while mounting the PV to the disk.
+
+The following PV types support mount options:
+
+* AWS Elastic Block Store (EBS)
+* AWS Elastic File Storage (EFS)
+* Azure Disk
+* Azure File
+* Cinder
+* GCE Persistent Disk
+* iSCSI
+* Local volume
+* NFS
+* Red Hat OpenShift Data Foundation (Ceph RBD only)
+* CIFS/SMB
+* VMware vSphere
+
+
+[NOTE]
+----
+Fibre Channel and HostPath PVs do not support mount options.
+----
+
+* ReadWriteMany vSphere volume support
+
+# Persistent volume claims
+
+Each PersistentVolumeClaim object contains spec and status fields, which are the specification and status of the persistent volume claim (PVC), for example:
+
+
+```yaml
+kind: PersistentVolumeClaim
+apiVersion: v1
+metadata:
+  name: myclaim 1
+spec:
+  accessModes:
+    - ReadWriteOnce 2
+  resources:
+    requests:
+      storage: 8Gi 3
+  storageClassName: gold 4
+status:
+  ...
+```
+
+
+Name of the PVC.
+The access mode, defining the read/write and mount permissions.
+The amount of storage available to the PVC.
+Name of the StorageClass required by the claim.
+
+## Storage classes
+
+Claims can optionally request a specific storage class by specifying the storage class&#8217;s name in the storageClassName attribute. Only PVs of the requested class, ones with the same storageClassName as the PVC, can be bound to the PVC. The cluster administrator can configure dynamic provisioners to service one or more storage classes. The cluster administrator can create a PV on-demand that matches the specifications in the PVC.
+
+
+[IMPORTANT]
+----
+The Cluster Storage Operator might install a default storage class depending on the platform in use. This storage class is owned and controlled by the Operator. It cannot be deleted or modified beyond defining annotations and labels. If different behavior is desired, you must define a custom storage class.
+----
+
+The cluster administrator can also set a default storage class for all PVCs. When you configure a default storage class, the PVC must explicitly ask for StorageClass or storageClassName annotations set to "" to be bound
+to a PV without a storage class.
+
+
+[NOTE]
+----
+If more than one storage class is marked as default, a PVC can only be created if the storageClassName is explicitly specified. Therefore, only set one storage class as the default.
+----
+
+## Access modes
+
+Claims use the same conventions as volumes when requesting storage with specific access modes.
+
+## Resources
+
+Claims, such as pods, can request specific quantities of a resource. In this case, the request is for storage. The same resource model applies to volumes and claims.
+
+## Claims as volumes
+
+Pods access storage by using the claim as a volume. Claims must exist in the same namespace as the pod that is using the claim. The cluster finds the claim in the pod&#8217;s namespace and uses it to get the PersistentVolume backing the claim. The volume is mounted to the host and into the pod, for example:
+
+
+```yaml
+kind: Pod
+apiVersion: v1
+metadata:
+  name: mypod
+spec:
+  containers:
+    - name: myfrontend
+      image: dockerfile/nginx
+      volumeMounts:
+      - mountPath: "/var/www/html" 1
+        name: mypd 2
+  volumes:
+    - name: mypd
+      persistentVolumeClaim:
+        claimName: myclaim 3
+```
+
+
+Path to mount the volume inside the pod.
+Name of the volume to mount. Do not mount to the container root, /, or any path that is the same in the host and the container. This can corrupt your host system if the container is sufficiently privileged, such as the host /dev/pts files. It is safe to mount the host by using /host.
+Name of the PVC, that exists in the same namespace, to use.
+
+## Viewing PVC usage statistics
+
+You can view usage statistics for persistent volume claims (PVCs).
+
+
+[IMPORTANT]
+----
+{FeatureName} is a Technology Preview feature only. Technology Preview features are not supported with Red Hat production service level agreements (SLAs) and might not be functionally complete. Red Hat does not recommend using them in production. These features provide early access to upcoming product features, enabling customers to test functionality and provide feedback during the development process.
+For more information about the support scope of Red Hat Technology Preview features, see Technology Preview Features Support Scope.
+----
+
+User permissions required to view PVC usage statistics:: To view PVC usage statistics, you must have the necessary privileges.
+
+To log on with the necessary privileges:
+
+* If you have admin privileges, log on as an admin.
+* If you do not have admin privileges:
+1. Create cluster roles for the user by running the following command:
+
+```terminal
+$ oc create clusterrole routes-view --verb=get,list --resource=routes
+```
+
+2. Add the routes-view cluster role for the user by running the following command:
+
+```terminal
+$ oc admin policy add-cluster-role-to-user routes-view <user_name> 1
+```
+
+Replace <user_name> with the user name.
+3. Add the cluster-monitoring-view cluster role for the user by running the following command:
+
+```terminal
+$ oc admin policy add-cluster-role-to-user cluster-monitoring-view <user_name> 1
+```
+
+Replace <user_name> with the user name.
+Viewing PVC usage statistics:: 
+* To view statistics across a cluster, run the following command:
+
+```terminal
+$ oc adm top pvc -A
+```
+
+Example command output
+
+```terminal
+NAMESPACE     NAME         USAGE(%)
+namespace-1   data-etcd-1  3.82%
+namespace-1   data-etcd-0  3.81%
+namespace-1   data-etcd-2  3.81%
+namespace-2   mypvc-fs-gp3 0.00%
+default       mypvc-fs     98.36%
+```
+
+* To view PVC usage statistics for a specified namespace, run the following command:
+
+```terminal
+$ oc adm top pvc -n <namespace-name> 1
+```
+
+Where <namespace-name> is the name of the specified namespace.
+Example command output
+
+```terminal
+NAMESPACE     NAME        USAGE(%)
+namespace-1   data-etcd-2 3.81%
+namespace-1   data-etcd-0 3.81%
+namespace-1   data-etcd-1 3.82%
+```
+
+
+In this example, the specified namespace is namespace-1.
+* To view usage statistics for a specified PVC and for a specified namespace, run the following command:
+
+```terminal
+$ oc adm top pvc <pvc-name> -n <namespace-name> 1
+```
+
+Where <pvc-name> is the name of specified PVC and <namespace-name> is the name of the specified namespace.
+Example command output
+
+```terminal
+NAMESPACE   NAME        USAGE(%)
+namespace-1 data-etcd-0 3.81%
+```
+
+
+In this example, the specified namespace is namespace-1 and the specified PVC is data-etcd-0.
+
+## Volume Attributes Classes
+
+Volume Attributes Classes provide a way for administrators to describe "classes" of storage they offer. Different classes might correspond to different quality-of-service levels.
+
+
+[IMPORTANT]
+----
+{FeatureName} is a Technology Preview feature only. Technology Preview features are not supported with Red Hat production service level agreements (SLAs) and might not be functionally complete. Red Hat does not recommend using them in production. These features provide early access to upcoming product features, enabling customers to test functionality and provide feedback during the development process.
+For more information about the support scope of Red Hat Technology Preview features, see Technology Preview Features Support Scope.
+----
+
+Volume Attributes Classes in {product-title} is available only with AWS Elastic Block Storage (EBS) and Google Cloud Platform (GCP) persistent disk (PD) Container Storage Interface (CSI).
+
+You can apply a Volume Attributes Class to a persistent volume claim (PVC). If a new Volume Attributes Class becomes available in the cluster, a user can update the PVC with the new Volume Attributes Class if needed.
+
+Volume Attributes Classes have parameters that describe volumes belonging to them. If a parameter is omitted, the default is used at volume provisioning. If you apply the PVC with a different Volume Attributes Class with omitted parameters, the default value of the parameters might be used depending on the CSI driver implementation. For more information, see the related CSI driver documentation.
+
+### Limitations
+
+Volume Attributes Classes has the following limitations:
+
+* With GCP PD, volume modification using Volume Attributes Classes is only possible for hyperdisk-balanced disk types.
+* No more than 512 parameters can be defined for a VolumeAttributesClass.
+* The total length of the parameter's object, including its keys and values, cannot exceed 256 KiB.
+* If you apply a Volume Attributes Class to a PVC, you can change the applied Volume Attributes Class for that PVC, but you cannot delete it from the PVC. To delete the Volume Attributes Class from the PVC, you must delete the PVC, and then re-create the PVC.
+* Volume Attributes Class parameters cannot be edited. If you need to change Volume Attributes Class parameters, create a new Volume Attributes Class with the desired parameters, and then apply it to a PVC.
+
+### Enabling Volume Attributes Classes
+
+Volume Attributes Classes are not enabled by default.
+
+To enable Volume Attributes Classes, follow the procedure in section Enabling {product-title} features using FeatureGates.
+
+### Defining Volume Attributes Classes
+
+The following is an example Volume Attributes Class YAML file for AWS EBS.
+
+
+```yaml
+apiVersion: storage.k8s.io/v1beta1
+kind: VolumeAttributesClass 1
+metadata:
+  name: silver 2
+driverName: ebs.csi.aws.com 3
+parameters:
+  iops: "300"
+  throughput: "125"
+  type: io2 4
+  ...
+```
+
+
+Defines object as Volumes Attributes Classes.
+Name of the VolumeAttributesClass. In this example, it is "silver".
+The provisioner that determines what volume plugin is used for provisioning persistent volumes (PVs). In this example, it is "ebs.csi.aws.com" for AWS EBS.
+Disk type.
+
+The following is an example Volume Attributes Class YAML file for GPC PD.
+
+
+```yaml
+apiVersion: storage.k8s.io/v1beta1
+kind: VolumeAttributesClass 1
+metadata:
+  name: silver 2
+driverName: pd.csi.storage.gke.io 3
+parameters:
+  iops: "3000"
+  throughput: "150Mi"
+  ...
+```
+
+
+Defines object as Volumes Attributes Classes.
+Name of the VolumeAttributesClass. In this example, it is "silver".
+The provisioner that determines what volume plugin is used for provisioning persistent volumes (PVs). In this example, it is "pd.csi.storage.gke.io" for GPC PD.
+
+### Applying a Volume Attributes Class to a PVC
+
+In addition to newly created PVCs, you can also update existing bound PVCs with a Volume Attributes Class.
+
+To apply a Volume Attributes Class to a PVC:
+
+* Set the PVC's volumeAttributesClassName parameter to the Volume Attributes Class's name:
+PVC definition example specifying a Volume Attributes Class
+
+```yaml
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: test-pv-claim
+spec:
+  …
+  volumeAttributesClassName: silver 1
+```
+
+Specifies using the Volume Attributes Class "silver" for this PVC.
+
+### Deleting Volume Attributes Classes
+
+You cannot delete a Volume Attributes Class while it is in use by PVCs.
+
+If you try to delete a Volume Attributes Class while it is still being used by a PVC, the command does not complete until all resources that use the Volume Attributes Class are updated to not use it.
+
+To delete a Volume Attributes Class:
+
+1. Search for PVCs that are using Volume Attributes Classes by running the following command:
+
+```terminal
+$ oc get pvc -A -o jsonpath='{range .items[?(@.spec.volumeAttributesClassName=="<vac-name>")]}{.metadata.name}{"\n"}{end}' 1
+```
+
+<vac-name> = Volume Attributes Class name
+Sample command output
+
+```terminal
+$ mypvc
+```
+
+2. Then either:
+* Specify a different Volume Attributes Class name in the PVC’s volumeAttributesClassName parameter:
+PVC definition example specifying a Volume Attributes Class
+
+```yaml
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+name: mypvc
+spec:
+…
+volumeAttributesClassName: silver 1
+```
+
+Specify a different Volume Attributes Class. In this example, "silver".
+
+Or
+* Delete all PVCs that specify the Volume Attributes Class by running the following command:
+
+```terminal
+$ oc delete pvc <pvc-name> 1
+```
+
+Name of the PVC that you want to delete.
+3. Now that the Volume Attributes Class is no longer being used by any PVC, delete the Volume Attributes Class by running the following command:
+
+```terminal
+$ oc delete vac <vac-name> 1
+```
+
+Name of the Volume Attributes Class that you want to delete.
+
+* Enabling {product-title} features using FeatureGates
+
+# Block volume support
+
+{product-title} can statically provision raw block volumes. These volumes do not have a file system, and can provide performance benefits for applications that either write to the disk directly or implement their own storage service.
+
+Raw block volumes are provisioned by specifying volumeMode: Block in the PV and PVC specification.
+
+
+[IMPORTANT]
+----
+Pods using raw block volumes must be configured to allow privileged containers.
+----
+
+The following table displays which volume plugins support block volumes.
+
+
+
+
+[IMPORTANT]
+----
+{FeatureName} is a Technology Preview feature only. Technology Preview features are not supported with Red Hat production service level agreements (SLAs) and might not be functionally complete. Red Hat does not recommend using them in production. These features provide early access to upcoming product features, enabling customers to test functionality and provide feedback during the development process.
+For more information about the support scope of Red Hat Technology Preview features, see Technology Preview Features Support Scope.
+----
+
+## Block volume examples
+
+
+```yaml
+apiVersion: v1
+kind: PersistentVolume
+metadata:
+  name: block-pv
+spec:
+  capacity:
+    storage: 10Gi
+  accessModes:
+    - ReadWriteOnce
+  volumeMode: Block 1
+  persistentVolumeReclaimPolicy: Retain
+  fc:
+    targetWWNs: ["50060e801049cfd1"]
+    lun: 0
+    readOnly: false
+```
+
+
+volumeMode must be set to Block to indicate that this PV is a raw
+block volume.
+
+
+```yaml
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: block-pvc
+spec:
+  accessModes:
+    - ReadWriteOnce
+  volumeMode: Block 1
+  resources:
+    requests:
+      storage: 10Gi
+```
+
+
+volumeMode must be set to Block to indicate that a raw block PVC
+is requested.
+
+
+```yaml
+apiVersion: v1
+kind: Pod
+metadata:
+  name: pod-with-block-volume
+spec:
+  containers:
+    - name: fc-container
+      image: fedora:26
+      command: ["/bin/sh", "-c"]
+      args: [ "tail -f /dev/null" ]
+      volumeDevices:  1
+        - name: data
+          devicePath: /dev/xvda 2
+  volumes:
+    - name: data
+      persistentVolumeClaim:
+        claimName: block-pvc 3
+```
+
+
+volumeDevices, instead of volumeMounts, is used for block
+devices. Only PersistentVolumeClaim sources can be used with
+raw block volumes.
+devicePath, instead of mountPath, represents the path to the
+physical device where the raw block is mapped to the system.
+The volume source must be of type persistentVolumeClaim and must
+match the name of the PVC as expected.
+
+
+
+
+
+
+[IMPORTANT]
+----
+Unspecified values result in the default value of Filesystem.
+----
+
+# Reducing pod timeouts using fsGroup
+
+If a storage volume contains many files (for example, a million or more), you might experience pod timeouts.
+
+This can occur because, by default, {product-title} recursively changes ownership and permissions for the contents of each volume to match the fsGroup specified in a pod&#8217;s securityContext when that volume is mounted. For volumes with many files, checking and changing ownership and permissions can be time consuming, slowing pod startup. You can use the fsGroupChangePolicy field inside a securityContext to control the way that {product-title} checks and manages ownership and permissions for a volume.
+
+fsGroupChangePolicy defines behavior for changing ownership and permission of the volume before being exposed inside a pod. This field only applies to volume types that support fsGroup-controlled ownership and permissions. This field has two possible values:
+
+* OnRootMismatch: Only change permissions and ownership if permission and ownership of root directory does not match with expected permissions of the volume. This can help shorten the time it takes to change ownership and permission of a volume to reduce pod timeouts.
+* Always: (Default) Always change permission and ownership of the volume when a volume is mounted.
+
+
+[NOTE]
+----
+The fsGroupChangePolicy field has no effect on ephemeral volume types, such as secret, configMap, and emptydir.
+----
+
+You can set fsGroupChangePolicy at either the namespace or pod level.
+
+## Changing fsGroup at the namespace level
+
+After applying the desired setting for fsGroupChangePolicy at the namespace level, all subsequently created pods in that namespace inherit the setting. However, if desired, you can override the inherited fsGroupChangePolicy setting for individual pods. Setting fsGroupChangePolicy at the pod level overrides inheritance from the namespace level setting for that pod.
+
+* Logged in to a running {product-title} cluster with administrator privileges.
+* Access to the {product-title} console.
+
+To set fsGroupChangePolicy per namespace:
+
+1. Select the desired namespace:
+1. Click Administration > Namespaces.
+2. On the Namespaces page, click the desired namespace. The Namespace details page appears.
+2. Add the fsGroupChangePolicy label to the namespace:
+1. On the Namespace details page, next to Labels, click Edit.
+2. In the Edit labels dialog, add the label storage.openshift.io/fsgroup-change-policy and set it equal to either:
+* OnRootMismatch: Specifies only changing permissions and ownership if the permission and the ownership of root directory does not match with expected permissions of the volume, thus helping to avoid pod timeout problems.
+* Always: (Default) Specifies always changing permission and ownership of the volume when a volume is mounted.
+3. Click Save.
+
+Start up a pod in the previously edited namespace and observe that the parameter spec.securityContext.fsGroupChangePolicy contains the value that you set for the namespace.
+
+
+```yaml
+securityContext:
+  seLinuxOptions:
+    level: 's0:c27,c24'
+  runAsNonRoot: true
+  fsGroup: 1000750000
+  fsGroupChangePolicy: OnRootMismatch 1
+  ...
+```
+
+
+This value is inherited from the namespace.
+
+## Changing fsGroup at the pod level
+
+You can set the set the fsGroupChangePolicy parameter in a new or existing deployment, and then the pods that it manages will have this parameter value. You can similarly do this for a statefulset. You cannot edit an existing pod to set fsGroupChangePolicy; however, you can set this parameter when creating a new pod.
+
+This procedure describes how to set the fsGroupChangePolicy parameter in an existing deployment.
+
+* Access to the {product-title} console.
+
+To set the fsGroupChangePolicy parameter in an existing deployment:
+
+1. Click Workloads > Deployments.
+2. On the Deployment page, click the desired deployment.
+3. On the Deployment details page, click the YAML tab.
+4. Edit the deployment's YAML file under spec.template.spec.securityContext using the following example file:
+Example deployment YAML file setting fsGroupChangePolicy
+
+```yaml
+...
+spec:
+replicas: 3
+selector:
+matchLabels:
+app: my-app
+template:
+metadata:
+creationTimestamp: null
+labels:
+app: my-app
+spec:
+containers:
+- name: container
+image: 'image-registry.openshift-image-registry.svc:5000/openshift/httpd:latest'
+ports:
+- containerPort: 8080
+protocol: TCP
+resources: {}
+terminationMessagePath: /dev/termination-log
+terminationMessagePolicy: File
+imagePullPolicy: Always
+restartPolicy: Always
+terminationGracePeriodSeconds: 30
+dnsPolicy: ClusterFirst
+securityContext:
+  fsGroupChangePolicy: OnRootMismatch 1
+...
+```
+
+OnRootMismatch specifies skipping recursive permission change, thus helping to avoid pod timeout problems. The default value is Always, which always changes permission and ownership of the volume when a volume is mounted.
+5. Click Save.
+
+# Reducing pod timeouts using seLinuxChangePolicy
+
+SELinux (Security-Enhanced Linux) is a security mechanism that assigns security labels (contexts) to all objects (files, processes, network ports, etc.) on a system. These labels determine what a process can access. In {product-title}, SELinux helps prevent containers from escaping and accessing the host system or other containers.
+
+When a pod starts, the container runtime recursively relabels all files on a volume to match the pod&#8217;s SELinux context. For volumes with many files, this can significantly increase pod startup times.
+
+Mount option specifies avoiding recursive relabeling of all files by attempting to mount the volume with the correct SELinux label directly using the -o context mount option, thus helping to avoid pod timeout problems.
+
+ReadWriteOncePod (RWOP) persistent volumes use the SELinux mount feature by default.
+
+The mount option feature is driver dependent, and enabled by default in AWS EBS
+, Azure Disk, GCP PD, IBM Cloud Block Storage volume, Cinder, vSphere,
+and Red Hat OpenShift Data Foundation. For third-party drivers, contact your storage vendor.
+
+ReadWriteOnce (RWO) and ReadWriteMany (RWX) volumes use recursive relabeling by default.
+
+
+[IMPORTANT]
+----
+In a future {product-title} version, RWO and RWX volumes will use mount option by default.
+----
+
+To assist you with the upcoming move to the mount option default, {product-title} 4.20 reports SELinux-related conflicts when creating pods, and on running pods, to make you aware of potential conflicts, and to help you resolve them. For more information about this reporting, see this Kowledge Base article.
+
+If you are unable to resolve the SELinux-related conflicts, you can proactively opt-out of the future move to mount option as default for selected pods or namespaces. To opt out, see Opting out of the SELinux mount option default.
+
+## Testing the RWO and RWX and SELinux mount option feature
+
+In {product-title} 4.20, you can evaluate the mount option feature for RWO and RWX volumes as a Technology Preview feature.
+
+
+[IMPORTANT]
+----
+{FeatureName} is a Technology Preview feature only. Technology Preview features are not supported with Red Hat production service level agreements (SLAs) and might not be functionally complete. Red Hat does not recommend using them in production. These features provide early access to upcoming product features, enabling customers to test functionality and provide feedback during the development process.
+For more information about the support scope of Red Hat Technology Preview features, see Technology Preview Features Support Scope.
+----
+
+To evaluate the mount option feature:
+
+* Enable Feature Gates. For information about enabling Feature Gates, see Section Enabling features using feature gates.
+
+RWO and RWX volumes now have mount option as the default behavior.
+
+Carefully test your applications and observe how they are using storage. Consult this Knowledge Base article and consider opting out from using mount option if you are experiencing issues. See Section Opting out of the SELinux mount option default.
+
+## Opting out of the SELinux mount option default
+
+If you want to opt out of the future move to mount option as default, you can affirmatively set the  seLinuxChangePolicy parameter to Recursive at either the individual pod or namespace level.
+
+### Changing seLinuxChangePolicy at the namespace level
+
+After applying the desired setting for seLinuxChangePolicy at the namespace level, all subsequently created pods in that namespace inherit the setting. However, if desired, you can override the inherited seLinuxChangePolicy setting for individual pods. Setting seLinuxChangePolicy at the pod level overrides inheritance from the namespace level setting for that pod.
+
+* Logged in to a running {product-title} cluster with administrator privileges.
+* Access to the {product-title} console.
+
+To set SELinuxChangePolicy per namespace:
+
+1. Select the desired namespace:
+1. Click Administration > Namespaces.
+2. On the Namespaces page, click the desired namespace. The Namespace details page appears.
+2. Add the seLinuxChangePolicy label to the namespace:
+1. On the Namespace details page, next to Labels, click Edit.
+2. In the Edit labels dialog, add the label storage.openshift.io/selinux-change-policy=Recursive.
+
+This specifies recursively relabeling all files on pod volumes to the appropriate SELinux context.
+3. Click Save.
+
+Start up a pod in the previously edited namespace and observe that the parameter spec.securityContext.seLinuxChangePolicy is set to Recursive.
+
+
+```yaml
+securityContext:
+    seLinuxOptions:
+      level: 's0:c27,c19'
+    runAsNonRoot: true
+    fsGroup: 1000740000
+    seccompProfile:
+      type: RuntimeDefault
+    seLinuxChangePolicy: Recursive 1
+  ...
+```
+
+
+This value is inherited from the namespace.
+
+### Changing seLinuxChangePolicy at the pod level
+
+You can set the set the seLinuxChangePolicy parameter in a new or existing Deployment, and then the pods that it manages will have this parameter value. You can similarly do this for a StatefulSet. You cannot edit an existing pod to set seLinuxChangePolicy; however, you can set this parameter when creating a new pod.
+
+This procedure describes how to set the seLinuxChangePolicy parameter in an existing deployment.
+
+* Access to the {product-title} console.
+
+To set the seLinuxChangePolicy parameter in an existing deployment:
+
+1. Click Workloads > Deployments.
+2. On the Deployment page, click the desired deployment.
+3. On the Deployment details page, click the YAML tab.
+4. Edit the deployment's YAML file under spec.template.spec.securityContext as per the following example file:
+Example deployment YAML file setting seLinuxChangePolicy
+
+```yaml
+  ...
+securityContext:
+  seLinuxChangePolicy: Recursive 1
+  ...
+```
+
+Specifies recursively relabeling all files on all pod volumes to the appropriate SELinux context.
+5. Click Save.

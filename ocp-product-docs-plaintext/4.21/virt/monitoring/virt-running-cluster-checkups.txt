@@ -1,0 +1,603 @@
+# OpenShift Virtualization cluster checkup framework
+
+
+A checkup is an automated test workload that allows you to verify if a specific cluster functionality works as expected. The cluster checkup framework uses native Kubernetes resources to configure and execute the checkup.
+
+[IMPORTANT]
+----
+The OpenShift Virtualization cluster checkup framework is a Technology Preview feature only. Technology Preview features are not supported with Red Hat production service level agreements (SLAs) and might not be functionally complete. Red Hat does not recommend using them in production. These features provide early access to upcoming product features, enabling customers to test functionality and provide feedback during the development process.
+For more information about the support scope of Red Hat Technology Preview features, see Technology Preview Features Support Scope.
+----
+As a developer or cluster administrator, you can use predefined checkups to improve cluster maintainability, troubleshoot unexpected behavior, minimize errors, and save time. You can review the results of the checkup and share them with experts for further analysis. Vendors can write and publish checkups for features or services that they provide and verify that their customer environments are configured correctly.
+
+# Running predefined latency checkups
+
+You can use a latency checkup to verify network connectivity and measure latency between two virtual machines (VMs) that are attached to a secondary network interface. The predefined latency checkup uses the ping utility.
+
+
+[IMPORTANT]
+----
+Before you run a latency checkup, you must first create a bridge interface on the cluster nodes to connect the VM's secondary interface to any interface on the node. If you do not create a bridge interface, the VMs do not start and the job fails.
+----
+
+Running a predefined checkup in an existing namespace involves setting up a service account for the checkup, creating the Role and RoleBinding objects for the service account, enabling permissions for the checkup, and creating the input config map and the checkup job. You can run a checkup multiple times.
+
+
+[IMPORTANT]
+----
+You must always:
+* Verify that the checkup image is from a trustworthy source before applying it.
+* Review the checkup permissions before creating the Role and RoleBinding objects.
+----
+
+## Running a latency checkup by using the web console
+
+Run a latency checkup to verify network connectivity and measure the latency between two virtual machines attached to a secondary network interface.
+
+* You must add a NetworkAttachmentDefinition to the namespace.
+
+1. Navigate to Virtualization -> Checkups in the web console.
+2. Click the Network latency tab.
+3. Click Install permissions.
+4. Click Run checkup.
+5. Enter a name for the checkup in the Name field.
+6. Select a NetworkAttachmentDefinition from the drop-down menu.
+7. Optional: Set a duration for the latency sample in the Sample duration (seconds) field.
+8. Optional: Define a maximum latency time interval by enabling Set maximum desired latency (milliseconds) and defining the time interval.
+9. Optional: Target specific nodes by enabling Select nodes and specifying the Source node and Target node.
+10. Click Run.
+
+* To view the status of the latency checkup, go to the Checkups list on the Latency checkup tab. Click on the name of the checkup for more details.
+
+## Running a latency checkup by using the CLI
+
+You can run a latency checkup by using the CLI.
+
+Perform the following steps:
+
+1. Create a service account, roles, and rolebindings to provide cluster access permissions to the latency checkup.
+2. Create a config map to provide the input to run the checkup and to store the results.
+3. Create a job to run the checkup.
+4. Review the results in the config map.
+5. Optional: To rerun the checkup, delete the existing config map and job and then create a new config map and job.
+6. When you are finished, delete the latency checkup resources.
+
+* You installed the OpenShift CLI (`oc`).
+* The cluster has at least two worker nodes.
+* You configured a network attachment definition for a namespace.
+
+1. Create a ServiceAccount, Role, and RoleBinding manifest for the latency checkup.
+
+Example role manifest file:
+
+```yaml
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: vm-latency-checkup-sa
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: kubevirt-vm-latency-checker
+rules:
+- apiGroups: ["kubevirt.io"]
+  resources: ["virtualmachineinstances"]
+  verbs: ["get", "create", "delete"]
+- apiGroups: ["subresources.kubevirt.io"]
+  resources: ["virtualmachineinstances/console"]
+  verbs: ["get"]
+- apiGroups: ["k8s.cni.cncf.io"]
+  resources: ["network-attachment-definitions"]
+  verbs: ["get"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: kubevirt-vm-latency-checker
+subjects:
+- kind: ServiceAccount
+  name: vm-latency-checkup-sa
+roleRef:
+  kind: Role
+  name: kubevirt-vm-latency-checker
+  apiGroup: rbac.authorization.k8s.io
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: kiagnose-configmap-access
+rules:
+- apiGroups: [ "" ]
+  resources: [ "configmaps" ]
+  verbs: ["get", "update"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: kiagnose-configmap-access
+subjects:
+- kind: ServiceAccount
+  name: vm-latency-checkup-sa
+roleRef:
+  kind: Role
+  name: kiagnose-configmap-access
+  apiGroup: rbac.authorization.k8s.io
+```
+
+2. Apply the ServiceAccount, Role, and RoleBinding manifest:
+
+```terminal
+$ oc apply -n <target_namespace> -f <latency_sa_roles_rolebinding>.yaml 1
+```
+
+<target_namespace> is the namespace where the checkup is to be run. This must be an existing namespace where the NetworkAttachmentDefinition object resides.
+3. Create a ConfigMap manifest that contains the input parameters for the checkup.
+
+Example input config map:
+
+```yaml
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: kubevirt-vm-latency-checkup-config
+  labels:
+    kiagnose/checkup-type: kubevirt-vm-latency
+data:
+  spec.timeout: 5m
+  spec.param.networkAttachmentDefinitionNamespace: <target_namespace>
+  spec.param.networkAttachmentDefinitionName: "blue-network" 1
+  spec.param.maxDesiredLatencyMilliseconds: "10" 2
+  spec.param.sampleDurationSeconds: "5" 3
+  spec.param.sourceNode: "worker1" 4
+  spec.param.targetNode: "worker2" 5
+```
+
+The name of the NetworkAttachmentDefinition object.
+Optional: The maximum desired latency, in milliseconds, between the virtual machines. If the measured latency exceeds this value, the checkup fails.
+Optional: The duration of the latency check, in seconds.
+Optional: When specified, latency is measured from this node to the target node. If the source node is specified, the spec.param.targetNode field cannot be empty.
+Optional: When specified, latency is measured from the source node to this node.
+4. Apply the config map manifest in the target namespace:
+
+```terminal
+$ oc apply -n <target_namespace> -f <latency_config_map>.yaml
+```
+
+5. Create a Job manifest to run the checkup.
+
+Example job manifest:
+
+```yaml
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: kubevirt-vm-latency-checkup
+  labels:
+    kiagnose/checkup-type: kubevirt-vm-latency
+spec:
+  backoffLimit: 0
+  template:
+    spec:
+      serviceAccountName: vm-latency-checkup-sa
+      restartPolicy: Never
+      containers:
+        - name: vm-latency-checkup
+          image: registry.redhat.io/container-native-virtualization/vm-network-latency-checkup-rhel9:v{product-version}.0
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop: ["ALL"]
+            runAsNonRoot: true
+            seccompProfile:
+              type: "RuntimeDefault"
+          env:
+            - name: CONFIGMAP_NAMESPACE
+              value: <target_namespace>
+            - name: CONFIGMAP_NAME
+              value: kubevirt-vm-latency-checkup-config
+            - name: POD_UID
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.uid
+```
+
+6. Apply the Job manifest:
+
+```terminal
+$ oc apply -n <target_namespace> -f <latency_job>.yaml
+```
+
+7. Wait for the job to complete:
+
+```terminal
+$ oc wait job kubevirt-vm-latency-checkup -n <target_namespace> --for condition=complete --timeout 6m
+```
+
+8. Review the results of the latency checkup by running the following command. If the maximum measured latency is greater than the value of the spec.param.maxDesiredLatencyMilliseconds attribute, the checkup fails and returns an error.
+
+```terminal
+$ oc get configmap kubevirt-vm-latency-checkup-config -n <target_namespace> -o yaml
+```
+
+
+Example output config map (success):
+
+```yaml
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: kubevirt-vm-latency-checkup-config
+  namespace: <target_namespace>
+  labels:
+    kiagnose/checkup-type: kubevirt-vm-latency
+data:
+  spec.timeout: 5m
+  spec.param.networkAttachmentDefinitionNamespace: <target_namespace>
+  spec.param.networkAttachmentDefinitionName: "blue-network"
+  spec.param.maxDesiredLatencyMilliseconds: "10"
+  spec.param.sampleDurationSeconds: "5"
+  spec.param.sourceNode: "worker1"
+  spec.param.targetNode: "worker2"
+  status.succeeded: "true"
+  status.failureReason: ""
+  status.completionTimestamp: "2022-01-01T09:00:00Z"
+  status.startTimestamp: "2022-01-01T09:00:07Z"
+  status.result.avgLatencyNanoSec: "177000"
+  status.result.maxLatencyNanoSec: "244000" 1
+  status.result.measurementDurationSec: "5"
+  status.result.minLatencyNanoSec: "135000"
+  status.result.sourceNode: "worker1"
+  status.result.targetNode: "worker2"
+```
+
+The maximum measured latency in nanoseconds.
+9. Optional: To view the detailed job log in case of checkup failure, use the following command:
+
+```terminal
+$ oc logs job.batch/kubevirt-vm-latency-checkup -n <target_namespace>
+```
+
+10. Delete the job and config map that you previously created by running the following commands:
+
+```terminal
+$ oc delete job -n <target_namespace> kubevirt-vm-latency-checkup
+```
+
+
+```terminal
+$ oc delete config-map -n <target_namespace> kubevirt-vm-latency-checkup-config
+```
+
+11. Optional: If you do not plan to run another checkup, delete the roles manifest:
+
+```terminal
+$ oc delete -f <latency_sa_roles_rolebinding>.yaml
+```
+
+
+# Running predefined storage checkups
+
+You can use a storage checkup to verify that the cluster storage is optimally configured for OpenShift Virtualization.
+
+Running a predefined checkup in an existing namespace involves setting up a service account for the checkup, creating the Role and RoleBinding objects for the service account, enabling permissions for the checkup, and creating the input config map and the checkup job. You can run a checkup multiple times.
+
+
+[IMPORTANT]
+----
+You must always:
+* Verify that the checkup image is from a trustworthy source before applying it.
+* Review the checkup permissions before creating the Role and RoleBinding objects.
+----
+
+## Retaining resources for troubleshooting storage checkups
+
+The predefined storage checkup includes skipTeardown configuration options, which control resource clean up after a storage checkup runs.
+By default, the skipTeardown field value is Never, which means that the checkup always performs teardown steps and deletes all resources after the checkup runs.
+
+You can retain resources for further inspection in case a failure occurs by setting the skipTeardown field to onfailure.
+
+* You have installed the OpenShift CLI (`oc`).
+
+1. Run the following command to edit the storage-checkup-config config map:
+
+```terminal
+$ oc edit configmap storage-checkup-config -n <checkup_namespace>
+```
+
+2. Configure the skipTeardown field to use the onfailure value. You can do this by modifying the storage-checkup-config config map, stored in the storage_checkup.yaml file:
+
+```yaml
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: storage-checkup-config
+  namespace: <checkup_namespace>
+data:
+  spec.param.skipTeardown: onfailure
+# ...
+```
+
+3. Reapply the storage-checkup-config config map by running the following command:
+
+```terminal
+$ oc apply -f storage_checkup.yaml -n <checkup_namespace>
+```
+
+
+## Running a storage checkup by using the web console
+
+You can run a storage checkup to validate that storage is working correctly for virtual machines.
+
+1. Navigate to Virtualization -> Checkups in the web console.
+2. Click the Storage tab.
+3. Click Install permissions.
+4. Click Run checkup.
+5. Enter a name for the checkup in the Name field.
+6. Enter a timeout value for the checkup in the Timeout (minutes) fields.
+7. Click Run.
+
+You can view the status of the storage checkup in the Checkups list on the Storage tab. Click on the name of the checkup for more details.
+
+## Running a storage checkup by using the CLI
+
+Use a predefined checkup to verify that the {product-title} cluster storage is configured optimally to run OpenShift Virtualization workloads.
+
+* You have installed the OpenShift CLI (`oc`).
+* The cluster administrator has created the required cluster-reader permissions for the storage checkup service account and namespace, such as in the following example:
+
+```yaml
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: kubevirt-storage-checkup-clustereader
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: cluster-reader
+subjects:
+- kind: ServiceAccount
+  name: storage-checkup-sa
+  namespace: <target_namespace> 1
+```
+
+The namespace where the checkup is to be run.
+
+1. Create a ServiceAccount, Role, and RoleBinding manifest file for the storage checkup.
+
+Example service account, role, and rolebinding manifest:
+
+```yaml
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: storage-checkup-sa
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: storage-checkup-role
+rules:
+  - apiGroups: [ "" ]
+    resources: [ "configmaps" ]
+    verbs: ["get", "update"]
+  - apiGroups: [ "kubevirt.io" ]
+    resources: [ "virtualmachines" ]
+    verbs: [ "create", "delete" ]
+  - apiGroups: [ "kubevirt.io" ]
+    resources: [ "virtualmachineinstances" ]
+    verbs: [ "get" ]
+  - apiGroups: [ "subresources.kubevirt.io" ]
+    resources: [ "virtualmachineinstances/addvolume", "virtualmachineinstances/removevolume" ]
+    verbs: [ "update" ]
+  - apiGroups: [ "kubevirt.io" ]
+    resources: [ "virtualmachineinstancemigrations" ]
+    verbs: [ "create" ]
+  - apiGroups: [ "cdi.kubevirt.io" ]
+    resources: [ "datavolumes" ]
+    verbs: [ "create", "delete" ]
+  - apiGroups: [ "" ]
+    resources: [ "persistentvolumeclaims" ]
+    verbs: [ "delete" ]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: storage-checkup-role
+subjects:
+  - kind: ServiceAccount
+    name: storage-checkup-sa
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: storage-checkup-role
+```
+
+2. Apply the ServiceAccount, Role, and RoleBinding manifest in the target namespace:
+
+```terminal
+$ oc apply -n <target_namespace> -f <storage_sa_roles_rolebinding>.yaml
+```
+
+3. Create a ConfigMap and Job manifest file. The config map contains the input parameters for the checkup job.
+
+Example input config map and job manifest:
+
+```yaml
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: storage-checkup-config
+  namespace: $CHECKUP_NAMESPACE
+data:
+  spec.timeout: 10m
+  spec.param.storageClass: ocs-storagecluster-ceph-rbd-virtualization
+  spec.param.vmiTimeout: 3m
+---
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: storage-checkup
+  namespace: $CHECKUP_NAMESPACE
+spec:
+  backoffLimit: 0
+  template:
+    spec:
+      serviceAccount: storage-checkup-sa
+      restartPolicy: Never
+      containers:
+        - name: storage-checkup
+          image: quay.io/kiagnose/kubevirt-storage-checkup:main
+          imagePullPolicy: Always
+          env:
+            - name: CONFIGMAP_NAMESPACE
+              value: $CHECKUP_NAMESPACE
+            - name: CONFIGMAP_NAME
+              value: storage-checkup-config
+```
+
+4. Apply the ConfigMap and Job manifest file in the target namespace to run the checkup:
+
+```terminal
+$ oc apply -n <target_namespace> -f <storage_configmap_job>.yaml
+```
+
+5. Wait for the job to complete:
+
+```terminal
+$ oc wait job storage-checkup -n <target_namespace> --for condition=complete --timeout 10m
+```
+
+6. Review the results of the checkup by running the following command:
+
+```terminal
+$ oc get configmap storage-checkup-config -n <target_namespace> -o yaml
+```
+
+
+Example output config map (success):
+
+```yaml
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: storage-checkup-config
+  labels:
+    kiagnose/checkup-type: kubevirt-storage
+data:
+  spec.timeout: 10m
+  status.succeeded: "true" 1
+  status.failureReason: "" 2
+  status.startTimestamp: "2023-07-31T13:14:38Z" 3
+  status.completionTimestamp: "2023-07-31T13:19:41Z" 4
+  status.result.cnvVersion: 4.20.2 5
+  status.result.defaultStorageClass: trident-nfs 6
+  status.result.goldenImagesNoDataSource: <data_import_cron_list> 7
+  status.result.goldenImagesNotUpToDate: <data_import_cron_list> 8
+  status.result.ocpVersion: 4.20.0 9
+  status.result.pvcBound: "true" 10
+  status.result.storageProfileMissingVolumeSnapshotClass: <storage_class_list> 11
+  status.result.storageProfilesWithEmptyClaimPropertySets: <storage_profile_list> 12
+  status.result.storageProfilesWithSmartClone: <storage_profile_list> 13
+  status.result.storageProfilesWithSpecClaimPropertySets: <storage_profile_list> 14
+  status.result.storageProfilesWithRWX: |-
+    ocs-storagecluster-ceph-rbd
+    ocs-storagecluster-ceph-rbd-virtualization
+    ocs-storagecluster-cephfs
+    trident-iscsi
+    trident-minio
+    trident-nfs
+    windows-vms
+  status.result.vmBootFromGoldenImage: VMI "vmi-under-test-dhkb8" successfully booted
+  status.result.vmHotplugVolume: |-
+    VMI "vmi-under-test-dhkb8" hotplug volume ready
+    VMI "vmi-under-test-dhkb8" hotplug volume removed
+  status.result.vmLiveMigration: VMI "vmi-under-test-dhkb8" migration completed
+  status.result.vmVolumeClone: 'DV cloneType: "csi-clone"'
+  status.result.vmsWithNonVirtRbdStorageClass: <vm_list> 15
+  status.result.vmsWithUnsetEfsStorageClass: <vm_list> 16
+```
+
+Specifies if the checkup is successful (true) or not (false).
+The reason for failure if the checkup fails.
+The time when the checkup started, in RFC 3339 time format.
+The time when the checkup has completed, in RFC 3339 time format.
+The OpenShift Virtualization version.
+Specifies if there is a default storage class.
+The list of golden images whose data source is not ready.
+The list of golden images whose data import cron is not up-to-date.
+The {product-title} version.
+Specifies if a PVC of 10Mi has been created and bound by the provisioner.
+The list of storage profiles using snapshot-based clone but missing VolumeSnapshotClass.
+The list of storage profiles with unknown provisioners.
+The list of storage profiles with smart clone support (CSI/snapshot).
+The list of storage profiles spec-overriden claimPropertySets.
+The list of virtual machines that use the Ceph RBD storage class when the virtualization storage class exists.
+The list of virtual machines that use an Elastic File Store (EFS) storage class where the GID and UID are not set in the storage class.
+7. Delete the job and config map that you previously created by running the following commands:
+
+```terminal
+$ oc delete job -n <target_namespace> storage-checkup
+```
+
+
+```terminal
+$ oc delete config-map -n <target_namespace> storage-checkup-config
+```
+
+8. Optional: If you do not plan to run another checkup, delete the ServiceAccount, Role, and RoleBinding manifest:
+
+```terminal
+$ oc delete -f <storage_sa_roles_rolebinding>.yaml
+```
+
+
+## Troubleshooting a failed storage checkup
+
+If a storage checkup fails, there are steps that you can take to identify the reason for failure.
+
+* You have installed the OpenShift CLI (`oc`).
+* You have downloaded the directory provided by the must-gather tool.
+
+1. Review the status.failureReason field in the storage-checkup-config config map by running the following command and observing the output:
+
+```terminal
+$ oc get configmap storage-checkup-config -n <namespace> -o yaml
+```
+
+
+Example output config map:
+
+```yaml
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: storage-checkup-config
+  labels:
+    kiagnose/checkup-type: kubevirt-storage
+data:
+  spec.timeout: 10m
+  status.succeeded: "false" 1
+  status.failureReason: "ErrNoDefaultStorageClass" 2
+# ...
+```
+
+If the checkup has failed, the status.succeeded value is false.
+If the checkup has failed, the status.failureReason field contains an error message. In this example output, the ErrNoDefaultStorageClass error message means that no default storage class is configured.
+2. Search the directory provided by the must-gather tool for logs, events, or terms related to the error in the data.status.failureReason field value.
+
+* Collecting data for Red Hat Support
+* Using the must-gather tool for OpenShift Virtualization
+
+## Storage checkup error codes
+
+The following error codes might appear in the storage-checkup-config config map after a storage checkup fails.
+
+
+
+# Additional resources
+
+* Connecting a virtual machine to a Linux bridge network

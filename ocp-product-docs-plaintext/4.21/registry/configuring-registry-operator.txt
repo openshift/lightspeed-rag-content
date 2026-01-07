@@ -1,0 +1,181 @@
+# Image Registry Operator in {product-title}
+
+
+
+# Image Registry on cloud platforms and OpenStack
+
+The Image Registry Operator installs a single instance of the OpenShift image registry and manages all registry configuration, including setting up registry storage.
+
+
+[NOTE]
+----
+Storage is only automatically configured when you install an installer-provisioned infrastructure cluster on AWS, Azure, Google Cloud, IBM(R), or RHOSP.
+When you install or upgrade an installer-provisioned infrastructure cluster on AWS, Azure, Google Cloud, IBM(R), or RHOSP, the Image Registry Operator sets the spec.storage.managementState parameter to Managed. If the spec.storage.managementState parameter is set to Unmanaged, the Image Registry Operator takes no action related to storage.
+----
+
+After the control plane deploys in the management cluster, the Operator creates a default configs.imageregistry.operator.openshift.io custom resource (CR) instance based on configuration detected in the cluster.
+
+If insufficient information is available to define a complete configs.imageregistry.operator.openshift.io CR, the incomplete resource is defined and the Operator updates the resource status with information about what is missing.
+
+
+[IMPORTANT]
+----
+The Image Registry Operator's behavior for managing the pruner is orthogonal to the managementState specified on the ClusterOperator object for the Image Registry Operator. If the Image Registry Operator is not in the Managed state, the image pruner can still be configured and managed by the Pruning custom resource.
+However, the managementState of the Image Registry Operator alters the behavior of the deployed image pruner job:
+* Managed: the --prune-registry flag for the image pruner is set to true.
+* Removed: the --prune-registry flag for the image pruner is set to false, meaning the image pruner job only prunes image metadata in etcd.
+----
+
+# Image Registry on bare metal, Nutanix, and vSphere
+
+## Image registry removed during installation
+
+On platforms that do not provide shareable object storage, the OpenShift Image Registry Operator bootstraps itself as Removed. This allows openshift-installer to complete installations on these platform types.
+
+After installation, you must edit the Image Registry Operator configuration to switch the managementState from Removed to Managed. When this has completed, you must configure storage.
+
+# Image Registry Operator distribution across availability zones
+
+The default configuration of the Image Registry Operator spreads image registry pods across topology zones to prevent delayed recovery times in case of a complete zone failure where all pods are impacted. Reference the following YAML to understand the default parameter values that the Image Registry Operator uses when the Operator deploys with a zone-related topology constraint:
+
+
+```yaml
+  topologySpreadConstraints:
+  - labelSelector:
+      matchLabels:
+        docker-registry: default
+    maxSkew: 1
+    topologyKey: kubernetes.io/hostname
+    whenUnsatisfiable: DoNotSchedule
+  - labelSelector:
+      matchLabels:
+        docker-registry: default
+    maxSkew: 1
+    topologyKey: node-role.kubernetes.io/worker
+    whenUnsatisfiable: DoNotSchedule
+  - labelSelector:
+      matchLabels:
+        docker-registry: default
+    maxSkew: 1
+    topologyKey: topology.kubernetes.io/zone
+    whenUnsatisfiable: DoNotSchedule
+```
+
+
+Reference the following YAML to understand the default parameter value that the Image Registry Operator uses when the Operator deploys with a zone-related topology constraint, which applies to bare metal and vSphere instances:
+
+
+```yaml
+ topologySpreadConstraints:
+  - labelSelector:
+      matchLabels:
+        docker-registry: default
+    maxSkew: 1
+    topologyKey: kubernetes.io/hostname
+    whenUnsatisfiable: DoNotSchedule
+  - labelSelector:
+      matchLabels:
+        docker-registry: default
+    maxSkew: 1
+    topologyKey: node-role.kubernetes.io/worker
+    whenUnsatisfiable: DoNotSchedule
+```
+
+
+As a cluster administrator. you can override the default topologySpreadConstraints section values by configuring the configs.imageregistry.operator.openshift.io/cluster spec file.
+
+# Additional resources
+
+* Configuring pod topology spread constraints
+
+# Image Registry Operator configuration parameters
+
+You can configure the Image Registry Operator using the configs.imageregistry.operator.openshift.io resource.
+The resource provides parameters for managing registry state, storage, logging, routing, and deployment settings.
+
+
+
+# Enabling the Image Registry default route by using a CRD
+
+In {product-title}, the Registry Operator controls the OpenShift image registry feature and you define this Operator in the configs.imageregistry.operator.openshift.io Custom Resource Definition (CRD). If you need to automatically enable the Image Registry default route, patch the Image Registry Operator CRD.
+
+* Patch the Image Registry Operator CRD:
+
+```terminal
+$ oc patch configs.imageregistry.operator.openshift.io/cluster --type merge -p '{"spec":{"defaultRoute":true}}'
+```
+
+
+# Configuring additional trust stores for image registry access
+
+You can add references to a config map that has additional certificate authorities (CAs) to be trusted during image registry access to the image.config.openshift.io/cluster custom resource (CR).
+
+* The certificate authorities (CAs) must be PEM-encoded.
+
+1. Create a config map in the openshift-config namespace, then and use the config map name in the AdditionalTrustedCA parameter of the image.config.openshift.io CR. This adds CAs that should be trusted when the cluster contacts external image registries.
+Image registry CA config map example
+
+```yaml
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: my-registry-ca
+data:
+  registry.example.com: |
+    -----BEGIN CERTIFICATE-----
+    ...
+    -----END CERTIFICATE-----
+  registry-with-port.example.com..5000: |
+    -----BEGIN CERTIFICATE-----
+    ...
+    -----END CERTIFICATE-----
+```
+
+
+where:
+data:registry.example.com::: An example hostname of a registry for which this CA is to be trusted.
+data:registry-with-port.example.com..5000::: An example hostname of a registry with the port for which this CA is to be trusted. If the registry has a port, such as registry-with-port.example.com:5000, : must be replaced with &#8230;&#8203;
+
+The PEM certificate content is the value for each additional registry CA to trust.
+2. Optional. Configure an additional CA by running the following command:
+
+```terminal
+$ oc create configmap registry-config --from-file=<external_registry_address>=ca.crt -n openshift-config
+```
+
+
+```terminal
+$ oc edit image.config.openshift.io cluster
+```
+
+
+```yaml
+spec:
+  additionalTrustedCA:
+    name: registry-config
+```
+
+
+# Configuring storage credentials for the Image Registry Operator
+
+In addition to the configs.imageregistry.operator.openshift.io Custom Resource (CR) and ConfigMap resources, storage credential configuration is provided to the Operator by a separate secret resource. This resource is located within the openshift-image-registry namespace.
+
+You can create an image-registry-private-configuration-user secret that in turn creates custom credentials needed for storage access and management. If default credentials exist, the custom credentials override the default credentials used by the Operator.
+
+* Create an {product-title} secret that contains the required keys.
+
+```terminal
+$ oc create secret generic image-registry-private-configuration-user --from-literal=KEY1=value1 --from-literal=KEY2=value2 --namespace openshift-image-registry
+```
+
+
+# Additional resources
+
+* Configuring the registry for AWS user-provisioned infrastructure
+* Configuring the registry for Google Cloud user-provisioned infrastructure
+* Configuring the registry for Azure user-provisioned infrastructure
+* Configuring the registry for bare metal
+* Configuring the registry for vSphere
+* Configuring the registry for RHOSP
+* Configuring the registry for Red Hat OpenShift Data Foundation
+* Configuring the registry for Nutanix

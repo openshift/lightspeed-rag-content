@@ -1,0 +1,1264 @@
+# Creating build inputs
+
+
+Use the following sections for an overview of build inputs, instructions on how
+to use inputs to provide source content for builds to operate on, and how to use
+build environments and create secrets.
+
+# Build inputs
+
+Use different build inputs in {product-title} to provide source content for your builds. Understanding the order of precedence helps ensure your builds use the correct sources.
+
+The following build inputs are available and listed in order of precedence:
+
+* Inline Dockerfile definitions
+* Content extracted from existing images
+* Git repositories
+* Binary (Local) inputs
+* Input secrets
+* External artifacts
+
+You can combine multiple inputs in a single build.
+However, as the inline Dockerfile takes precedence, it can overwrite any other file named Dockerfile provided by another input.
+Binary (local) input and Git repositories are mutually exclusive inputs.
+
+You can use input secrets when you do not want certain resources or credentials used during a build to be available in the final application image produced by the build, or want to consume a value that is defined in a secret resource. External artifacts can be used to pull in additional files that are not available as one of the other build input types.
+
+When you run a build:
+
+1. A working directory is constructed and all input content is placed in the working directory. For example, the input Git repository is cloned into the working directory, and files specified from input images are copied into the working directory using the target path.
+2. The build process changes directories into the contextDir, if one is defined.
+3. The inline Dockerfile, if any, is written to the current directory.
+4. The content from the current directory is provided to the build process
+for reference by the
+Dockerfile, custom builder logic, or
+assemble script. This means any input content that resides outside the contextDir is ignored by the build.
+
+The following example of a source definition includes multiple input types and an explanation of how they are combined. For more details on how each input type is defined, see the specific sections for each input type.
+
+
+```yaml
+source:
+  git:
+    uri: https://github.com/openshift/ruby-hello-world.git
+    ref: "master"
+  images:
+  - from:
+      kind: ImageStreamTag
+      name: myinputimage:latest
+      namespace: mynamespace
+    paths:
+    - destinationDir: app/dir/injected/dir
+      sourcePath: /usr/lib/somefile.jar
+  contextDir: "app/dir"
+  dockerfile: "FROM centos:7\nRUN yum install -y httpd"
+```
+
+
+where:
+
+uri:: Specifies the repository to be cloned into the working directory for the build.
+destinationDir:: Specifies the repository to be cloned into the working directory for the build.
+contextDir:: Specifies the working directory for the build becomes <original_workingdir>/app/dir.
+dockerFile:: A Dockerfile with this content is created in <original_workingdir>/app/dir, overwriting any existing file with that name.
+
+# Dockerfile source
+
+When you supply a dockerfile value, the content of this field is written to disk as a file named dockerfile. This is done after other input sources are processed, so if the input source repository contains a Dockerfile in the root directory, it is overwritten with this content.
+
+The source definition is part of the spec section in the BuildConfig:
+
+
+```yaml
+source:
+  dockerfile: "FROM centos:7\nRUN yum install -y httpd" 1
+```
+
+
+The dockerfile field contains an inline Dockerfile that is built.
+
+* The typical use for this field is to provide a Dockerfile to a docker strategy build.
+
+# Image source
+
+You can add additional files to the build process with images. Input images are referenced in the same way the From and To image targets are defined. This means both container images and image stream tags can be referenced. In conjunction with the image, you must provide one or more path pairs to indicate the path of the files or directories to copy the image and the destination to place them in the build context.
+
+The source path can be any absolute path within the image specified. The destination must be a relative directory path. At build time, the image is loaded and the indicated files and directories are copied into the context directory of the build process. This is the same directory into which the source repository content is cloned. If the source path ends in /. then the content of the directory is copied, but the directory itself is not created at the destination.
+
+Image inputs are specified in the source definition of the BuildConfig:
+
+
+```yaml
+source:
+  git:
+    uri: https://github.com/openshift/ruby-hello-world.git
+    ref: "master"
+  images: 1
+  - from: 2
+      kind: ImageStreamTag
+      name: myinputimage:latest
+      namespace: mynamespace
+    paths: 3
+    - destinationDir: injected/dir 4
+      sourcePath: /usr/lib/somefile.jar 5
+  - from:
+      kind: ImageStreamTag
+      name: myotherinputimage:latest
+      namespace: myothernamespace
+    pullSecret: mysecret 6
+    paths:
+    - destinationDir: injected/dir
+      sourcePath: /usr/lib/somefile.jar
+```
+
+
+An array of one or more input images and files.
+A reference to the image containing the files to be copied.
+An array of source/destination paths.
+The directory relative to the build root where the build process can access the file.
+The location of the file to be copied out of the referenced image.
+An optional secret provided if credentials are needed to access the input image.
+
+
+[NOTE]
+----
+If your cluster uses an ImageDigestMirrorSet, ImageTagMirrorSet, or ImageContentSourcePolicy object to configure repository mirroring, you can use only global pull secrets for mirrored registries. You cannot add a pull secret to a project.
+----
+
+When using an input image that requires a pull secret, you can link the pull secret to the service account used by the build. By default, builds use the builder service account. The pull secret is automatically added to the build if the secret contains a credential that matches the repository hosting the input image. To link a pull secret to the service account used by the build, run:
+
+
+```terminal
+$ oc secrets link builder dockerhub
+```
+
+
+
+[NOTE]
+----
+This feature is not supported for builds using the custom strategy.
+----
+
+When using an input image from a mirrored registry, if you get a build error: failed to pull image message, you can resolve the error by using either of the following methods:
+
+* Create an input secret that contains the authentication credentials for the builder image's repository and all known mirrors. In this case, create a pull secret for credentials to the image registry and its mirrors.
+* Use the input secret as the pull secret on the BuildConfig object.
+
+# Git source
+
+When specified, source code is fetched from the supplied location.
+
+If you supply an inline Dockerfile, it overwrites the Dockerfile in the contextDir of the Git repository.
+
+The source definition is part of the spec section in the BuildConfig:
+
+
+```yaml
+source:
+  git: 1
+    uri: "https://github.com/openshift/ruby-hello-world"
+    ref: "master"
+  contextDir: "app/dir" 2
+  dockerfile: "FROM openshift/ruby-22-centos7\nUSER example" 3
+```
+
+
+The git field contains the Uniform Resource Identifier (URI) to the remote Git repository of the source code. You must specify the value of the ref field to check out a specific Git reference. A valid ref can be a SHA1 tag or a branch name. The default value of the ref field is master.
+The contextDir field allows you to override the default location inside the source code repository where the build looks for the application source code. If your application exists inside a sub-directory, you can override the default location (the root folder) using this field.
+If the optional dockerfile field is provided, it should be a string containing a Dockerfile that overwrites any Dockerfile that may exist in the source repository.
+
+If the ref field denotes a pull request, the system uses a git fetch operation and then checkout FETCH_HEAD.
+
+When no ref value is provided, {product-title} performs a shallow clone (--depth=1). In this case, only the files associated with the most recent commit on the default branch (typically master) are downloaded. This results in repositories downloading faster, but without the full commit history. To perform a full git clone of the default branch of a specified repository, set ref to the name of the default branch (for example main).
+
+
+[WARNING]
+----
+Git clone operations that go through a proxy that is performing man in the middle (MITM) TLS hijacking or reencrypting of the proxied connection do not work.
+----
+
+## Using a proxy
+
+If your Git repository can only be accessed using a proxy, you can define the proxy to use in the source section of the build configuration. You can configure both an HTTP and HTTPS proxy to use. Both fields are optional. Domains for which no proxying should be performed can also be specified in the NoProxy field.
+
+
+[NOTE]
+----
+Your source URI must use the HTTP or HTTPS protocol for this to work.
+----
+
+
+```yaml
+source:
+  git:
+    uri: "https://github.com/openshift/ruby-hello-world"
+    ref: "master"
+    httpProxy: http://proxy.example.com
+    httpsProxy: https://proxy.example.com
+    noProxy: somedomain.com, otherdomain.com
+```
+
+
+
+[NOTE]
+----
+For Pipeline strategy builds, given the current restrictions with the Git plugin for Jenkins, any Git operations through the Git plugin do not leverage the HTTP or HTTPS proxy defined in the BuildConfig. The Git plugin only uses the proxy configured in the Jenkins UI at the Plugin Manager panel. This proxy is then used for all git interactions within Jenkins, across all jobs.
+----
+
+* You can find instructions on how to configure proxies through the Jenkins UI at JenkinsBehindProxy.
+
+## Source clone secrets
+
+Builder pods require access to any Git repositories defined as source for a build. Source clone secrets are used to provide the builder pod with access it would not normally have access to, such as private repositories or repositories with self-signed or untrusted SSL certificates.
+
+The following source clone secret configurations are supported:
+
+* A .gitconfig file
+* Basic authentication
+* SSH key authentication
+* Trusted certificate authorities
+
+
+[NOTE]
+----
+You can also use combinations of these configurations to meet your specific needs.
+----
+
+### Automatically adding a source clone secret to a build configuration
+
+When a BuildConfig is created, {product-title} can automatically populate its source clone secret reference. This behavior allows the resulting builds to automatically use the credentials stored in the referenced secret to authenticate to a remote Git repository, without requiring further configuration.
+
+To use this functionality, a secret containing the Git repository credentials must exist in the namespace in which the BuildConfig is later created. This secrets must include one or more annotations prefixed with build.openshift.io/source-secret-match-uri-. The value of each of these annotations is a Uniform Resource Identifier (URI) pattern, which is defined as follows. When a BuildConfig is created without a source clone secret reference and its Git source URI matches a URI pattern in a secret annotation, {product-title} automatically inserts a reference to that secret in the BuildConfig.
+
+A URI pattern must consist of:
+
+* A valid scheme: *://, git://, http://, https:// or ssh://
+* A host: *` or a valid hostname or IP address optionally preceded by *.
+* A path: /* or / followed by any characters optionally including * characters
+
+In all of the above, a * character is interpreted as a wildcard.
+
+
+[IMPORTANT]
+----
+URI patterns must match Git source URIs which are conformant to RFC3986. Do not include a username (or password) component in a URI pattern.
+For example, if you use ssh://git@bitbucket.atlassian.com:7999/ATLASSIAN jira.git for a git repository URL, the source secret must be specified as ssh://bitbucket.atlassian.com:7999/* (and not ssh://git@bitbucket.atlassian.com:7999/*).
+
+```terminal
+$ oc annotate secret mysecret \
+    'build.openshift.io/source-secret-match-uri-1=ssh://bitbucket.atlassian.com:7999/*'
+```
+
+----
+
+If multiple secrets match the Git URI of a particular BuildConfig, {product-title} selects the secret with the longest match. This allows for basic overriding, as in the following example.
+
+The following fragment shows two partial source clone secrets, the first matching any server in the domain mycorp.com accessed by HTTPS, and the second overriding access to servers mydev1.mycorp.com and mydev2.mycorp.com:
+
+
+```yaml
+kind: Secret
+apiVersion: v1
+metadata:
+  name: matches-all-corporate-servers-https-only
+  annotations:
+    build.openshift.io/source-secret-match-uri-1: https://*.mycorp.com/*
+data:
+  ...
+---
+kind: Secret
+apiVersion: v1
+metadata:
+  name: override-for-my-dev-servers-https-only
+  annotations:
+    build.openshift.io/source-secret-match-uri-1: https://mydev1.mycorp.com/*
+    build.openshift.io/source-secret-match-uri-2: https://mydev2.mycorp.com/*
+data:
+  ...
+```
+
+
+* Add a build.openshift.io/source-secret-match-uri- annotation to a pre-existing secret using:
+
+```terminal
+$ oc annotate secret mysecret \
+    'build.openshift.io/source-secret-match-uri-1=https://*.mycorp.com/*'
+```
+
+
+### Manually adding a source clone secret
+
+Source clone secrets can be added manually to a build configuration by adding a sourceSecret field to the source section inside the BuildConfig and setting it to the name of the secret that you created. In this example, it is the basicsecret.
+
+
+```yaml
+apiVersion: "build.openshift.io/v1"
+kind: "BuildConfig"
+metadata:
+  name: "sample-build"
+spec:
+  output:
+    to:
+      kind: "ImageStreamTag"
+      name: "sample-image:latest"
+  source:
+    git:
+      uri: "https://github.com/user/app.git"
+    sourceSecret:
+      name: "basicsecret"
+  strategy:
+    sourceStrategy:
+      from:
+        kind: "ImageStreamTag"
+        name: "python-33-centos7:latest"
+```
+
+
+You can also use the oc set build-secret command to set the source clone secret on an existing build configuration.
+
+* To set the source clone secret on an existing build configuration, enter the following command:
+
+```terminal
+$ oc set build-secret --source bc/sample-build basicsecret
+```
+
+
+### Creating a secret from a .gitconfig file
+
+If the cloning of your application is dependent on a .gitconfig file, then you can create a secret that contains it. Add it to the builder service account and then your BuildConfig.
+
+* To create a secret from a .gitconfig file:
+
+
+```terminal
+$ oc create secret generic <secret_name> --from-file=<path/to/.gitconfig>
+```
+
+
+
+[NOTE]
+----
+SSL verification can be turned off if sslVerify=false is set for the http
+section in your .gitconfig file:
+
+```text
+[http]
+        sslVerify=false
+```
+
+----
+
+### Creating a secret from a .gitconfig file for secured Git
+
+If your Git server is secured with two-way SSL and user name with password, you must add the certificate files to your source build and add references to the certificate files in the .gitconfig file.
+
+* You must have Git credentials.
+
+Add the certificate files to your source build and add references to the certificate files in the .gitconfig file.
+
+1. Add the client.crt, cacert.crt, and client.key files to the /var/run/secrets/openshift.io/source/ folder in the application source code.
+2. In the .gitconfig file for the server, add the [http] section shown in the following example:
+
+```terminal
+# cat .gitconfig
+```
+
+Example output
+
+```terminal
+[user]
+        name = <name>
+        email = <email>
+[http]
+        sslVerify = false
+        sslCert = /var/run/secrets/openshift.io/source/client.crt
+        sslKey = /var/run/secrets/openshift.io/source/client.key
+        sslCaInfo = /var/run/secrets/openshift.io/source/cacert.crt
+```
+
+3. Create the secret:
+
+```terminal
+$ oc create secret generic <secret_name> \
+--from-literal=username=<user_name> \1
+--from-literal=password=<password> \2
+--from-file=.gitconfig=.gitconfig \
+--from-file=client.crt=/var/run/secrets/openshift.io/source/client.crt \
+--from-file=cacert.crt=/var/run/secrets/openshift.io/source/cacert.crt \
+--from-file=client.key=/var/run/secrets/openshift.io/source/client.key
+```
+
+The user's Git user name.
+The password for this user.
+
+
+[IMPORTANT]
+----
+To avoid having to enter your password again, be sure to specify the source-to-image (S2I) image in your builds. However, if you cannot clone the repository, you must still specify your user name and password to promote the build.
+----
+
+* /var/run/secrets/openshift.io/source/ folder in the application source code.
+
+### Creating a secret from source code basic authentication
+
+Basic authentication requires either a combination of --username and --password, or a token to authenticate against the software configuration management (SCM) server.
+
+* User name and password to access the private repository.
+
+1. Create the secret first before using the --username and --password to access the private repository:
+
+```terminal
+$ oc create secret generic <secret_name> \
+    --from-literal=username=<user_name> \
+    --from-literal=password=<password> \
+    --type=kubernetes.io/basic-auth
+```
+
+2. Create a basic authentication secret with a token:
+
+```terminal
+$ oc create secret generic <secret_name> \
+    --from-literal=password=<token> \
+    --type=kubernetes.io/basic-auth
+```
+
+
+### Creating a secret from source code SSH key authentication
+
+SSH key based authentication requires a private SSH key.
+
+The repository keys are usually located in the $HOME/.ssh/ directory, and are named id_dsa.pub, id_ecdsa.pub, id_ed25519.pub, or id_rsa.pub by default.
+
+1. Generate SSH key credentials:
+
+```terminal
+$ ssh-keygen -t ed25519 -C "your_email@example.com"
+```
+
+
+[NOTE]
+----
+Creating a passphrase for the SSH key  prevents {product-title} from building. When prompted for a passphrase, leave it blank.
+----
+
+Two files are created: the public key and a corresponding private key (one of id_dsa, id_ecdsa, id_ed25519, or id_rsa). With both of these in place, consult your source control management (SCM) system&#8217;s manual on how to upload
+the public key. The private key is used to access your private repository.
+2. Before using the SSH key to access the private repository, create the secret:
+
+```terminal
+$ oc create secret generic <secret_name> \
+    --from-file=ssh-privatekey=<path/to/ssh/private/key> \
+    --from-file=<path/to/known_hosts> \1
+    --type=kubernetes.io/ssh-auth
+```
+
+Optional: Adding this field enables strict server host key check.
+
+[WARNING]
+----
+Skipping the known_hosts file while creating the secret makes the build vulnerable to a potential man-in-the-middle (MITM) attack.
+----
+
+[NOTE]
+----
+Ensure that the known_hosts file includes an entry for the host of your source code.
+----
+
+### Creating a secret from source code trusted certificate authorities
+
+The set of Transport Layer Security (TLS) certificate authorities (CA) that are trusted during a Git clone operation are built into the {product-title} infrastructure images. If your Git server uses a self-signed certificate or one signed by an authority not trusted by the image, you can create a secret that contains the certificate or disable TLS verification.
+
+If you create a secret for the CA certificate, {product-title} uses it to access your Git server during the Git clone operation. Using this method is significantly more secure than disabling Git SSL verification, which accepts any TLS certificate that is presented.
+
+Create a secret with a CA certificate file.
+
+1. If your CA uses Intermediate Certificate Authorities, combine the certificates for all CAs in a ca.crt file. Enter the following command:
+
+```terminal
+$ cat intermediateCA.crt intermediateCA.crt rootCA.crt > ca.crt
+```
+
+2. Create the secret by entering the following command:
+
+```terminal
+$ oc create secret generic mycert --from-file=ca.crt=</path/to/file> 1
+```
+
+You must use the key name ca.crt.
+
+### Source secret combinations
+
+You can combine the different methods for creating source clone secrets for your specific needs.
+
+#### Creating a SSH-based authentication secret with a .gitconfig file
+
+You can combine the different methods for creating source clone secrets for your specific needs, such as a SSH-based authentication secret with a .gitconfig file.
+
+* SSH authentication
+* A .gitconfig file
+
+* To create a SSH-based authentication secret with a .gitconfig file, enter the following command:
+
+```terminal
+$ oc create secret generic <secret_name> \
+    --from-file=ssh-privatekey=<path/to/ssh/private/key> \
+    --from-file=<path/to/.gitconfig> \
+    --type=kubernetes.io/ssh-auth
+```
+
+
+#### Creating a secret that combines a .gitconfig file and CA certificate
+
+You can combine the different methods for creating source clone secrets for your specific needs, such as a secret that combines a .gitconfig file and certificate authority (CA) certificate.
+
+* A .gitconfig file
+* CA certificate
+
+* To create a secret that combines a .gitconfig file and CA certificate, enter the following command:
+
+```terminal
+$ oc create secret generic <secret_name> \
+    --from-file=ca.crt=<path/to/certificate> \
+    --from-file=<path/to/.gitconfig>
+```
+
+
+#### Creating a basic authentication secret with a CA certificate
+
+You can combine the different methods for creating source clone secrets for your specific needs, such as a secret that combines a basic authentication and certificate authority (CA) certificate.
+
+* Basic authentication credentials
+* CA certificate
+
+* To create a basic authentication secret with a CA certificate, enter the following command:
+
+```terminal
+$ oc create secret generic <secret_name> \
+    --from-literal=username=<user_name> \
+    --from-literal=password=<password> \
+    --from-file=ca-cert=</path/to/file> \
+    --type=kubernetes.io/basic-auth
+```
+
+
+#### Creating a basic authentication secret with a Git configuration file
+
+You can combine the different methods for creating source clone secrets for your specific needs, such as a secret that combines a basic authentication and a .gitconfig file.
+
+* Basic authentication credentials
+* A .gitconfig file
+
+* To create a basic authentication secret with a .gitconfig file, enter the following command:
+
+```terminal
+$ oc create secret generic <secret_name> \
+    --from-literal=username=<user_name> \
+    --from-literal=password=<password> \
+    --from-file=</path/to/.gitconfig> \
+    --type=kubernetes.io/basic-auth
+```
+
+
+#### Creating a basic authentication secret with a .gitconfig file and CA certificate
+
+You can combine the different methods for creating source clone secrets for your specific needs, such as a secret that combines a basic authentication, .gitconfig file, and certificate authority (CA) certificate.
+
+* Basic authentication credentials
+* A .gitconfig file
+* CA certificate
+
+* To create a basic authentication secret with a .gitconfig file and CA certificate, enter the following command:
+
+```terminal
+$ oc create secret generic <secret_name> \
+    --from-literal=username=<user_name> \
+    --from-literal=password=<password> \
+    --from-file=</path/to/.gitconfig> \
+    --from-file=ca-cert=</path/to/file> \
+    --type=kubernetes.io/basic-auth
+```
+
+
+# Binary (local) source
+
+Streaming content from a local file system to the builder is called a Binary type build. The corresponding value of BuildConfig.spec.source.type is Binary for these builds.
+
+This source type is unique in that it is leveraged solely based on your use of the oc start-build.
+
+
+[NOTE]
+----
+Binary type builds require content to be streamed from the local file system, so automatically triggering a binary type build, like an image change trigger, is not possible. This is because the binary files cannot be provided. Similarly, you cannot launch binary type builds from the web console.
+----
+
+To utilize binary builds, invoke oc start-build with one of these options:
+
+* --from-file: The contents of the file you specify are sent as a binary stream to the builder. You can also specify a URL to a file. Then, the builder stores the data in a file with the same name at the top of the build context.
+* --from-dir and --from-repo: The contents are archived and sent as a binary stream to the builder. Then, the builder extracts the contents of the archive within the build context directory. With --from-dir, you can also specify a URL to an archive, which is extracted.
+* --from-archive: The archive you specify is sent to the builder, where it is extracted within the build context directory. This option behaves the same as --from-dir; an archive is created on your host first, whenever the argument to these options is a directory.
+
+In each of the previously listed cases:
+
+* If your BuildConfig already has a Binary source type defined, it is effectively ignored and replaced by what the client sends.
+* If your BuildConfig has a Git source type defined, it is dynamically disabled, since Binary and Git are mutually exclusive, and the data in the binary stream provided to the builder takes precedence.
+
+Instead of a file name, you can pass a URL with HTTP or HTTPS schema to --from-file and --from-archive. When using --from-file with a URL, the name of the file in the builder image is determined by the Content-Disposition header sent by the web server, or the last component of the URL path if the header is not present. No form of authentication is supported and it is not possible to use custom TLS certificate or disable certificate validation.
+
+When using oc new-build --binary=true, the command ensures that the restrictions associated with binary builds are enforced. The resulting BuildConfig has a source type of Binary, meaning that the only valid way to run a build for this BuildConfig is to use oc start-build with one of the --from options to provide the requisite binary data.
+
+The Dockerfile and contextDir source options have special meaning with binary builds.
+
+Dockerfile can be used with any binary build source. If Dockerfile is used and the binary stream is an archive, its contents serve as a replacement Dockerfile to any Dockerfile in the archive. If Dockerfile is used with the --from-file argument, and the file argument is named Dockerfile, the value from Dockerfile replaces the value from the binary stream.
+
+In the case of the binary stream encapsulating extracted archive content, the value of the contextDir field is interpreted as a subdirectory within the archive, and, if valid, the builder changes into that subdirectory before executing the build.
+
+# Input secrets and config maps
+
+
+[IMPORTANT]
+----
+To prevent the contents of input secrets and config maps from appearing in build output container images, use build volumes in your Docker build and source-to-image build strategies.
+----
+
+In some scenarios, build operations require credentials or other configuration data to access dependent resources, but it is undesirable for that information to be placed in source control. You can define input secrets and input config maps for this purpose.
+
+For example, when building a Java application with Maven, you can set up a private mirror of Maven Central or JCenter that is accessed by private keys. To download libraries from that private mirror, you have to supply the
+following:
+
+1. A settings.xml file configured with the mirror's URL and connection settings.
+2. A private key referenced in the settings file, such as ~/.ssh/id_rsa.
+
+For security reasons, you do not want to expose your credentials in the application image.
+
+This example describes a Java application, but you can use the same approach for adding SSL certificates into the /etc/ssl/certs directory, API keys or tokens, license files, and more.
+
+## What is a secret?
+
+The Secret object type provides a mechanism to hold sensitive information such as passwords, {product-title} client configuration files, dockercfg files, private source repository credentials, and so on. Secrets decouple sensitive content from the pods. You can mount secrets into containers using a volume plugin or the system can use secrets to perform actions on behalf of a pod.
+
+
+```yaml
+apiVersion: v1
+kind: Secret
+metadata:
+  name: test-secret
+  namespace: my-namespace
+type: Opaque 1
+data: 2
+  username: <username> 3
+  password: <password>
+stringData: 4
+  hostname: myapp.mydomain.com 5
+```
+
+
+Indicates the structure of the secret's key names and values.
+The allowable format for the keys in the data field must meet the guidelines in the DNS_SUBDOMAIN value in the Kubernetes identifiers glossary.
+The value associated with keys in the data map must be base64 encoded.
+Entries in the stringData map are converted to base64 and the entry are then moved to the data map automatically. This field is write-only. The value is only be returned by the data field.
+The value associated with keys in the stringData map is made up of plain text strings.
+
+### Properties of secrets
+
+Key properties include:
+
+* Secret data can be referenced independently from its definition.
+* Secret data volumes are backed by temporary file-storage facilities (tmpfs) and never come to rest on a node.
+* Secret data can be shared within a namespace.
+
+### Types of Secrets
+
+The value in the type field indicates the structure of the secret&#8217;s key names and values. The type can be used to enforce the presence of user names and keys in the secret object. If you do not want validation, use the opaque type, which is the default.
+
+Specify one of the following types to trigger minimal server-side validation to ensure the presence of specific key names in the secret data:
+
+* kubernetes.io/service-account-token. Uses a service account token.
+* kubernetes.io/dockercfg. Uses the .dockercfg file for required Docker credentials.
+* kubernetes.io/dockerconfigjson. Uses the .docker/config.json file for required Docker credentials.
+* kubernetes.io/basic-auth. Use with basic authentication.
+* kubernetes.io/ssh-auth. Use with SSH key authentication.
+* kubernetes.io/tls. Use with TLS certificate authorities.
+
+Specify type= Opaque if you do not want validation, which means the secret does not claim to conform to any convention for key names or values. An opaque secret, allows for unstructured key:value pairs that can contain arbitrary values.
+
+
+[NOTE]
+----
+You can specify other arbitrary types, such as example.com/my-secret-type. These types are not enforced server-side, but indicate that the creator of the
+secret intended to conform to the key/value requirements of that type.
+----
+
+### Updates to secrets
+
+When you modify the value of a secret, the value used by an already running pod does not dynamically change. To change a secret, you must delete the original pod and create a new pod, in some cases with an identical PodSpec.
+
+Updating a secret follows the same workflow as deploying a new container image. You can use the kubectl rolling-update command.
+
+The resourceVersion value in a secret is not specified when it is referenced. Therefore, if a secret is updated at the same time as pods are starting, the version of the secret that is used for the pod is not defined.
+
+
+[NOTE]
+----
+Currently, it is not possible to check the resource version of a secret object that was used when a pod was created. It is planned that pods report this information, so that a controller could restart ones using an old resourceVersion. In the interim, do not update the data of existing secrets, but create new ones with distinct names.
+----
+
+## Creating secrets
+
+You must create a secret before creating the pods that depend on that secret.
+
+When creating secrets:
+
+* Create a secret object with secret data.
+* Update the pod service account to allow the reference to the secret.
+* Create a pod, which consumes the secret as an environment variable or as a file using a secret volume.
+
+* To create a secret object from a JSON or YAML file, enter the following command:
+
+```terminal
+$ oc create -f <filename>
+```
+
+
+For example, you can create a secret from your local .docker/config.json file:
+
+```terminal
+$ oc create secret generic dockerhub \
+    --from-file=.dockerconfigjson=<path/to/.docker/config.json> \
+    --type=kubernetes.io/dockerconfigjson
+```
+
+
+This command generates a JSON specification of the secret named dockerhub and creates the object.
+YAML Opaque Secret Object Definition
+
+```yaml
+apiVersion: v1
+kind: Secret
+metadata:
+  name: mysecret
+type: Opaque 1
+data:
+  username: <username>
+  password: <password>
+```
+
+Specifies an opaque secret.
+Docker Configuration JSON File Secret Object Definition
+
+```yaml
+apiVersion: v1
+kind: Secret
+metadata:
+  name: aregistrykey
+  namespace: myapps
+type: kubernetes.io/dockerconfigjson 1
+data:
+  .dockerconfigjson:bm5ubm5ubm5ubm5ubm5ubm5ubm5ubmdnZ2dnZ2dnZ2dnZ2dnZ2dnZ2cgYXV0aCBrZXlzCg== 2
+```
+
+Specifies that the secret is using a docker configuration JSON file.
+The output of a base64-encoded docker configuration JSON file.
+
+## Using secrets
+
+After creating secrets, you can create a pod to reference your secret, get logs, and delete the pod.
+
+1. Create the pod to reference your secret by entering the following command:
+
+```terminal
+$ oc create -f <your_yaml_file>.yaml
+```
+
+2. Get the logs by entering the following command:
+
+```terminal
+$ oc logs secret-example-pod
+```
+
+3. Delete the pod by entering the following command:
+
+```terminal
+$ oc delete pod secret-example-pod
+```
+
+
+* Example YAML files with secret data:
+YAML file of a secret that will create four files
+
+```yaml
+apiVersion: v1
+kind: Secret
+metadata:
+  name: test-secret
+data:
+  username: <username> 1
+  password: <password> 2
+stringData:
+  hostname: myapp.mydomain.com 3
+  secret.properties: |- 4
+    property1=valueA
+    property2=valueB
+```
+
+File contains decoded values.
+File contains decoded values.
+File contains the provided string.
+File contains the provided data.
+YAML file of a pod populating files in a volume with secret data
+
+```yaml
+apiVersion: v1
+kind: Pod
+metadata:
+  name: secret-example-pod
+spec:
+  containers:
+    - name: secret-test-container
+      image: busybox
+      command: [ "/bin/sh", "-c", "cat /etc/secret-volume/*" ]
+      volumeMounts:
+          # name must match the volume name below
+          - name: secret-volume
+            mountPath: /etc/secret-volume
+            readOnly: true
+  volumes:
+    - name: secret-volume
+      secret:
+        secretName: test-secret
+  restartPolicy: Never
+```
+
+YAML file of a pod populating environment variables with secret data
+
+```yaml
+apiVersion: v1
+kind: Pod
+metadata:
+  name: secret-example-pod
+spec:
+  containers:
+    - name: secret-test-container
+      image: busybox
+      command: [ "/bin/sh", "-c", "export" ]
+      env:
+        - name: TEST_SECRET_USERNAME_ENV_VAR
+          valueFrom:
+            secretKeyRef:
+              name: test-secret
+              key: username
+  restartPolicy: Never
+```
+
+YAML file of a BuildConfig object that populates environment variables with secret data
+
+```yaml
+apiVersion: build.openshift.io/v1
+kind: BuildConfig
+metadata:
+  name: secret-example-bc
+spec:
+  strategy:
+    sourceStrategy:
+      env:
+      - name: TEST_SECRET_USERNAME_ENV_VAR
+        valueFrom:
+          secretKeyRef:
+            name: test-secret
+            key: username
+```
+
+
+## Adding input secrets and config maps
+
+To provide credentials and other configuration data to a build without placing them in source control, you can define input secrets and input config maps.
+
+In some scenarios, build operations require credentials or other configuration data to access dependent resources. To make that information available without placing it in source control, you can define input secrets and input config maps.
+
+To add an input secret, config maps, or both to an existing BuildConfig object:
+
+1. If the ConfigMap object does not exist, create it by entering the following command:
+
+```terminal
+$ oc create configmap settings-mvn \
+    --from-file=settings.xml=<path/to/settings.xml>
+```
+
+
+This creates a new config map named settings-mvn, which contains the plain text content of the settings.xml file.
+
+[TIP]
+----
+You can alternatively apply the following YAML to create the config map:
+
+```yaml
+apiVersion: core/v1
+kind: ConfigMap
+metadata:
+  name: settings-mvn
+data:
+  settings.xml: |
+    <settings>
+    … # Insert maven settings here
+    </settings>
+```
+
+----
+2. If the Secret object does not exist, create it by entering the following command:
+
+```terminal
+$ oc create secret generic secret-mvn \
+    --from-file=ssh-privatekey=<path/to/.ssh/id_rsa> \
+    --type=kubernetes.io/ssh-auth
+```
+
+
+This creates a new secret named secret-mvn, which contains the base64 encoded content of the id_rsa private key.
+
+[TIP]
+----
+You can alternatively apply the following YAML to create the input secret:
+
+```yaml
+apiVersion: core/v1
+kind: Secret
+metadata:
+  name: secret-mvn
+type: kubernetes.io/ssh-auth
+data:
+  ssh-privatekey: |
+    # Insert ssh private key, base64 encoded
+```
+
+----
+3. Add the config map and secret to the source section in the existing
+BuildConfig object:
+
+```yaml
+source:
+  git:
+    uri: https://github.com/wildfly/quickstart.git
+  contextDir: helloworld
+  configMaps:
+    - configMap:
+        name: settings-mvn
+  secrets:
+    - secret:
+        name: secret-mvn
+```
+
+4. To include the secret and config map in a new BuildConfig object, enter the following command:
+
+```terminal
+$ oc new-build \
+    openshift/wildfly-101-centos7~https://github.com/wildfly/quickstart.git \
+    --context-dir helloworld --build-secret “secret-mvn” \
+    --build-config-map "settings-mvn"
+```
+
+
+During the build, the build process copies the settings.xml and id_rsa files into the directory where the source code is located. In {product-title} S2I builder images, this is the image working directory, which is set using the WORKDIR instruction in the Dockerfile. If you want to specify another directory, add a destinationDir to the definition:
+
+```yaml
+source:
+  git:
+    uri: https://github.com/wildfly/quickstart.git
+  contextDir: helloworld
+  configMaps:
+    - configMap:
+        name: settings-mvn
+      destinationDir: ".m2"
+  secrets:
+    - secret:
+        name: secret-mvn
+      destinationDir: ".ssh"
+```
+
+
+You can also specify the destination directory when creating a new BuildConfig object by entering the following command:
+
+```terminal
+$ oc new-build \
+    openshift/wildfly-101-centos7~https://github.com/wildfly/quickstart.git \
+    --context-dir helloworld --build-secret “secret-mvn:.ssh” \
+    --build-config-map "settings-mvn:.m2"
+```
+
+
+In both cases, the settings.xml file is added to the ./.m2 directory of the build environment, and the id_rsa key is added to the ./.ssh directory.
+
+## Source-to-image strategy
+
+When using a Source strategy, all defined input secrets are copied to their respective destinationDir. If you left destinationDir empty, then the secrets are placed in the working directory of the builder image.
+
+The same rule is used when a destinationDir is a relative path. The secrets are placed in the paths that are relative to the working directory of the image. The final directory in the destinationDir path is created if it does not exist in the builder image. All preceding directories in the destinationDir must exist, or an error will occur.
+
+
+[NOTE]
+----
+Input secrets are added as world-writable, have 0666 permissions, and are truncated to size zero after executing the assemble script. This means that the secret files exist in the resulting image, but they are empty for security reasons.
+Input config maps are not truncated after the assemble script completes.
+----
+
+# External artifacts
+
+It is not recommended to store binary files in a source repository. Therefore, you must define a build which pulls additional files, such as Java .jar dependencies, during the build process. How this is done depends on the build strategy you are using.
+
+For a Source build strategy, you must put appropriate shell commands into the assemble script:
+
+
+```terminal
+#!/bin/sh
+APP_VERSION=1.0
+wget http://repository.example.com/app/app-$APP_VERSION.jar -O app.jar
+```
+
+
+
+```terminal
+#!/bin/sh
+exec java -jar app.jar
+```
+
+
+For a Docker build strategy, you must modify the Dockerfile and invoke
+shell commands with the RUN instruction:
+
+
+```terminal
+FROM jboss/base-jdk:8
+
+ENV APP_VERSION 1.0
+RUN wget http://repository.example.com/app/app-$APP_VERSION.jar -O app.jar
+
+EXPOSE 8080
+CMD [ "java", "-jar", "app.jar" ]
+```
+
+
+In practice, you may want to use an environment variable for the file location so that the specific file to be downloaded can be customized using an environment variable defined on the BuildConfig, rather than updating the
+Dockerfile or
+assemble script.
+
+You can choose between different methods of defining environment variables:
+
+* Using the .s2i/environment file (only for a Source build strategy)
+* Setting the variables in the BuildConfig object
+* Providing the variables explicitly using the oc start-build --env command (only for builds that are triggered manually)
+
+# Using docker credentials for private registries
+
+You can supply builds with a .docker/config.json file with valid credentials for private container registries. This allows you to push the output image into a private container image registry or pull a builder image from the private container image registry that requires authentication.
+
+You can supply credentials for multiple repositories within the same registry, each with credentials specific to that registry path.
+
+
+[NOTE]
+----
+For the {product-title} container image registry, this is not required because secrets are generated automatically for you by {product-title}.
+----
+
+The .docker/config.json file is found in your home directory by default and
+has the following format:
+
+
+```yaml
+auths:
+  index.docker.io/v1/: 1
+    auth: "YWRfbGzhcGU6R2labnRib21ifTE=" 2
+    email: "user@example.com" 3
+  docker.io/my-namespace/my-user/my-image: 4
+    auth: "GzhYWRGU6R2fbclabnRgbkSp=""
+    email: "user@example.com"
+  docker.io/my-namespace: 5
+    auth: "GzhYWRGU6R2deesfrRgbkSp=""
+    email: "user@example.com"
+```
+
+
+URL of the registry.
+Encrypted password.
+Email address for the login.
+URL and credentials for a specific image in a namespace.
+URL and credentials for a registry namespace.
+
+You can define multiple container image registries or define multiple repositories in the same registry. Alternatively, you can also add authentication entries to this file by running the docker login command. The file will be created if it does not exist.
+
+Kubernetes provides Secret objects, which can be used to store configuration and passwords.
+
+* You must have a .docker/config.json file.
+
+1. Create the secret from your local .docker/config.json file by entering the following command:
+
+```terminal
+$ oc create secret generic dockerhub \
+    --from-file=.dockerconfigjson=<path/to/.docker/config.json> \
+    --type=kubernetes.io/dockerconfigjson
+```
+
+
+This generates a JSON specification of the secret named dockerhub and creates the object.
+2. Add a pushSecret field into the output section of the BuildConfig and set it to the name of the secret that you created, which in the previous example is dockerhub:
+
+```yaml
+spec:
+  output:
+    to:
+      kind: "DockerImage"
+      name: "private.registry.com/org/private-image:latest"
+    pushSecret:
+      name: "dockerhub"
+```
+
+
+You can use the oc set build-secret command to set the push secret on the build configuration:
+
+```terminal
+$ oc set build-secret --push bc/sample-build dockerhub
+```
+
+
+You can also link the push secret to the service account used by the build instead of specifying the pushSecret field. By default, builds use the builder service account. The push secret is automatically added to the build if the secret contains a credential that matches the repository hosting the build&#8217;s output image.
+
+```terminal
+$ oc secrets link builder dockerhub
+```
+
+3. Pull the builder container image from a private container image registry by specifying the pullSecret field, which is part of the build strategy definition:
+
+```yaml
+strategy:
+  sourceStrategy:
+    from:
+      kind: "DockerImage"
+      name: "docker.io/user/private_repository"
+    pullSecret:
+      name: "dockerhub"
+```
+
+
+You can use the oc set build-secret command to set the pull secret on the build configuration:
+
+```terminal
+$ oc set build-secret --pull bc/sample-build dockerhub
+```
+
+
+[NOTE]
+----
+This example uses pullSecret in a Source build, but it is also applicable in Docker and Custom builds.
+----
+
+You can also link the pull secret to the service account used by the build instead of specifying the pullSecret field. By default, builds use the builder service account. The pull secret is automatically added to the build if the secret contains a credential that matches the repository hosting the build&#8217;s input image. To link the pull secret to the service account used by the build instead of specifying the pullSecret field, enter the following command:
+
+```terminal
+$ oc secrets link builder dockerhub
+```
+
+
+[NOTE]
+----
+You must specify a from image in the BuildConfig spec to take advantage of this feature. Docker strategy builds generated by oc new-build or oc new-app may not do this in some situations.
+----
+
+# Build environments
+
+As with pod environment variables, build environment variables can be defined in terms of references to other resources or variables using the Downward API. There are some exceptions, which are noted.
+
+You can also manage environment variables defined in the BuildConfig with the oc set env command.
+
+
+[NOTE]
+----
+Referencing container resources using valueFrom in build environment variables is not supported as the references are resolved before the container is created.
+----
+
+## Using build fields as environment variables
+
+You can inject information about the build object by setting the fieldPath environment variable source to the JsonPath of the field from which you are interested in obtaining the value.
+
+
+[NOTE]
+----
+Jenkins Pipeline strategy does not support valueFrom syntax for environment variables.
+----
+
+* Set the fieldPath environment variable source to the JsonPath of the field from which you are interested in obtaining the value:
+
+```yaml
+env:
+  - name: FIELDREF_ENV
+    valueFrom:
+      fieldRef:
+        fieldPath: metadata.name
+```
+
+
+## Using secrets as environment variables
+
+You can make key values from secrets available as environment variables using the valueFrom syntax.
+
+
+[IMPORTANT]
+----
+This method shows the secrets as plain text in the output of the build pod console. To avoid this, use input secrets and config maps instead.
+----
+
+* To use a secret as an environment variable, set the valueFrom syntax:
+
+```yaml
+apiVersion: build.openshift.io/v1
+kind: BuildConfig
+metadata:
+  name: secret-example-bc
+spec:
+  strategy:
+    sourceStrategy:
+      env:
+      - name: MYVAL
+        valueFrom:
+          secretKeyRef:
+            key: myval
+            name: mysecret
+```
+
+
+* Input secrets and config maps
+
+# Service serving certificate secrets
+
+Service serving certificate secrets are intended to support complex middleware applications that need out-of-the-box certificates. It has the same settings as the server certificates generated by the administrator tooling for nodes and masters.
+
+To secure communication to your service, have the cluster generate a signed serving certificate/key pair into a secret in your namespace.
+
+* Set the service.beta.openshift.io/serving-cert-secret-name annotation on your service with the value set to the name you want to use for your secret.
+
+Then, your PodSpec can mount that secret. When it is available, your pod runs. The certificate is good for the internal service DNS name, <service.name>.<service.namespace>.svc.
+
+The certificate and key are in PEM format, stored in tls.crt and tls.key respectively. The certificate/key pair is automatically replaced when it gets close to expiration. View the expiration date in the service.beta.openshift.io/expiry annotation on the secret, which is in RFC3339 format.
+
+
+[NOTE]
+----
+In most cases, the service DNS name <service.name>.<service.namespace>.svc is not externally routable. The primary use of <service.name>.<service.namespace>.svc is for intracluster or intraservice communication, and with re-encrypt routes.
+----
+
+Other pods can trust cluster-created certificates, which are only signed for
+internal DNS names, by using the certificate authority (CA) bundle in the /var/run/secrets/kubernetes.io/serviceaccount/service-ca.crt file that is automatically mounted in their pod.
+
+The signature algorithm for this feature is x509.SHA256WithRSA. To manually rotate, delete the generated secret. A new certificate is created.
+
+# Secrets restrictions
+
+To use a secret, a pod needs to reference the secret. A secret can be used with a pod in three ways:
+
+* To populate environment variables for containers.
+* As files in a volume mounted on one or more of its containers.
+* By kubelet when pulling images for the pod.
+
+Volume type secrets write data into the container as a file using the volume mechanism. imagePullSecrets use service accounts for the automatic injection of the secret into all pods in a namespaces.
+
+When a template contains a secret definition, the only way for the template to use the provided secret is to ensure that the secret volume sources are validated and that the specified object reference actually points to an object of type Secret. Therefore, a secret needs to be created before any pods that depend on it. The most effective way to ensure this is to have it get injected automatically through the use of a service account.
+
+Secret API objects reside in a namespace. They can only be referenced by pods in that same namespace.
+
+Individual secrets are limited to 1MB in size. This is to discourage the creation of large secrets that would exhaust apiserver and kubelet memory. However, creation of a number of smaller secrets could also exhaust memory.
