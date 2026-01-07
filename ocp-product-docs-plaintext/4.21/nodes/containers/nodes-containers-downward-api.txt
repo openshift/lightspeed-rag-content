@@ -1,0 +1,570 @@
+# Allowing containers to consume API objects
+
+
+The Downward API is a mechanism that allows containers to consume information
+about API objects without coupling to {product-title}.
+Such information includes the pod's name, namespace, and resource values.
+Containers can consume information from the downward API using environment
+variables or a volume plugin.
+
+# Expose pod information to Containers using the Downward API
+
+The Downward API contains such information as the pod&#8217;s name, project, and resource values. Containers can consume
+information from the downward API using environment variables or a volume
+plugin.
+
+Fields within the pod are selected using the FieldRef API type. FieldRef
+has two fields:
+
+
+
+Currently, the valid selectors in the v1 API include:
+
+
+
+The apiVersion field, if not specified, defaults to the API version of the
+enclosing pod template.
+
+# Understanding how to consume container values using the downward API
+
+You containers can consume API values using environment variables or a volume plugin.
+Depending on the method you choose, containers can consume:
+
+* Pod name
+* Pod project/namespace
+* Pod annotations
+* Pod labels
+
+Annotations and labels are available using only a volume plugin.
+
+## Consuming container values using environment variables
+
+When using a container&#8217;s environment variables, use the EnvVar type&#8217;s valueFrom field (of type EnvVarSource)
+to specify that the variable&#8217;s value should come from a FieldRef
+source instead of the literal value specified by the value field.
+
+Only constant attributes of the pod can be consumed this way, as environment
+variables cannot be updated once a process is started in a way that allows the
+process to be notified that the value of a variable has changed. The fields
+supported using environment variables are:
+
+* Pod name
+* Pod project/namespace
+
+1. Create a new pod spec that contains the environment variables you want the container to consume:
+1. Create a pod.yaml file similar to the following:
+
+```yaml
+apiVersion: v1
+kind: Pod
+metadata:
+  name: dapi-env-test-pod
+spec:
+  securityContext:
+    runAsNonRoot: true
+    seccompProfile:
+      type: RuntimeDefault
+  containers:
+    - name: env-test-container
+      image: gcr.io/google_containers/busybox
+      command: [ "/bin/sh", "-c", "env" ]
+      env:
+        - name: MY_POD_NAME
+          valueFrom:
+            fieldRef:
+              fieldPath: metadata.name
+        - name: MY_POD_NAMESPACE
+          valueFrom:
+            fieldRef:
+              fieldPath: metadata.namespace
+      securityContext:
+        allowPrivilegeEscalation: false
+        capabilities:
+          drop: [ALL]
+  restartPolicy: Never
+# ...
+```
+
+2. Create the pod from the pod.yaml file:
+
+```terminal
+$ oc create -f pod.yaml
+```
+
+
+* Check the container's logs for the MY_POD_NAME and MY_POD_NAMESPACE
+values:
+
+```terminal
+$ oc logs -p dapi-env-test-pod
+```
+
+
+## Consuming container values using a volume plugin
+
+You containers can consume API values using a volume plugin.
+
+Containers can consume:
+
+* Pod name
+* Pod project/namespace
+* Pod annotations
+* Pod labels
+
+To use the volume plugin:
+
+1. Create a new pod spec that contains the environment variables you want the container to consume:
+1. Create a volume-pod.yaml file similar to the following:
+
+```yaml
+kind: Pod
+apiVersion: v1
+metadata:
+  labels:
+    zone: us-east-coast
+    cluster: downward-api-test-cluster1
+    rack: rack-123
+  name: dapi-volume-test-pod
+  annotations:
+    annotation1: "345"
+    annotation2: "456"
+spec:
+  securityContext:
+    runAsNonRoot: true
+    seccompProfile:
+      type: RuntimeDefault
+  containers:
+    - name: volume-test-container
+      image: gcr.io/google_containers/busybox
+      command: ["sh", "-c", "cat /tmp/etc/pod_labels /tmp/etc/pod_annotations"]
+      volumeMounts:
+        - name: podinfo
+          mountPath: /tmp/etc
+          readOnly: false
+      securityContext:
+        allowPrivilegeEscalation: false
+        capabilities:
+          drop: [ALL]
+  volumes:
+  - name: podinfo
+    downwardAPI:
+      defaultMode: 420
+      items:
+      - fieldRef:
+          fieldPath: metadata.name
+        path: pod_name
+      - fieldRef:
+          fieldPath: metadata.namespace
+        path: pod_namespace
+      - fieldRef:
+          fieldPath: metadata.labels
+        path: pod_labels
+      - fieldRef:
+          fieldPath: metadata.annotations
+        path: pod_annotations
+  restartPolicy: Never
+# ...
+```
+
+2. Create the pod from the volume-pod.yaml file:
+
+```terminal
+$ oc create -f volume-pod.yaml
+```
+
+
+* Check the container's logs and verify the presence of the configured fields:
+
+```terminal
+$ oc logs -p dapi-volume-test-pod
+```
+
+Example output
+
+```terminal
+cluster=downward-api-test-cluster1
+rack=rack-123
+zone=us-east-coast
+annotation1=345
+annotation2=456
+kubernetes.io/config.source=api
+```
+
+
+# Understanding how to consume container resources using the Downward API
+
+When creating pods, you can use the Downward API to inject information about
+computing resource requests and limits so that image and application authors can
+correctly create an image for specific environments.
+
+You can do this using environment variable or a volume plugin.
+
+## Consuming container resources using environment variables
+
+When creating pods, you can use the Downward API to inject information about
+computing resource requests and limits using environment variables.
+
+When creating the pod configuration, specify environment variables that
+correspond to the contents of the resources field in the spec.container
+field.
+
+
+[NOTE]
+----
+If the resource limits are not included in the container configuration, the
+downward API defaults to the node's CPU and memory allocatable values.
+----
+
+1. Create a new pod spec that contains the resources you want to inject:
+1. Create a pod.yaml file similar to the following:
+
+```yaml
+apiVersion: v1
+kind: Pod
+metadata:
+  name: dapi-env-test-pod
+spec:
+  containers:
+    - name: test-container
+      image: gcr.io/google_containers/busybox:1.24
+      command: [ "/bin/sh", "-c", "env" ]
+      resources:
+        requests:
+          memory: "32Mi"
+          cpu: "125m"
+        limits:
+          memory: "64Mi"
+          cpu: "250m"
+      env:
+        - name: MY_CPU_REQUEST
+          valueFrom:
+            resourceFieldRef:
+              resource: requests.cpu
+        - name: MY_CPU_LIMIT
+          valueFrom:
+            resourceFieldRef:
+              resource: limits.cpu
+        - name: MY_MEM_REQUEST
+          valueFrom:
+            resourceFieldRef:
+              resource: requests.memory
+        - name: MY_MEM_LIMIT
+          valueFrom:
+            resourceFieldRef:
+              resource: limits.memory
+# ...
+```
+
+2. Create the pod from the pod.yaml file:
+
+```terminal
+$ oc create -f pod.yaml
+```
+
+
+## Consuming container resources using a volume plugin
+
+When creating pods, you can use the Downward API to inject information about
+computing resource requests and limits using a volume plugin.
+
+When creating the pod configuration, use the spec.volumes.downwardAPI.items
+field to describe the desired resources that correspond to the
+spec.resources field.
+
+
+[NOTE]
+----
+If the resource limits are not included in the container configuration, the
+Downward API defaults to the node's CPU and memory allocatable values.
+----
+
+1. Create a new pod spec that contains the resources you want to inject:
+1. Create a pod.yaml file similar to the following:
+
+```yaml
+apiVersion: v1
+kind: Pod
+metadata:
+  name: dapi-env-test-pod
+spec:
+  containers:
+    - name: client-container
+      image: gcr.io/google_containers/busybox:1.24
+      command: ["sh", "-c", "while true; do echo; if [[ -e /etc/cpu_limit ]]; then cat /etc/cpu_limit; fi; if [[ -e /etc/cpu_request ]]; then cat /etc/cpu_request; fi; if [[ -e /etc/mem_limit ]]; then cat /etc/mem_limit; fi; if [[ -e /etc/mem_request ]]; then cat /etc/mem_request; fi; sleep 5; done"]
+      resources:
+        requests:
+          memory: "32Mi"
+          cpu: "125m"
+        limits:
+          memory: "64Mi"
+          cpu: "250m"
+      volumeMounts:
+        - name: podinfo
+          mountPath: /etc
+          readOnly: false
+  volumes:
+    - name: podinfo
+      downwardAPI:
+        items:
+          - path: "cpu_limit"
+            resourceFieldRef:
+              containerName: client-container
+              resource: limits.cpu
+          - path: "cpu_request"
+            resourceFieldRef:
+              containerName: client-container
+              resource: requests.cpu
+          - path: "mem_limit"
+            resourceFieldRef:
+              containerName: client-container
+              resource: limits.memory
+          - path: "mem_request"
+            resourceFieldRef:
+              containerName: client-container
+              resource: requests.memory
+# ...
+```
+
+2. Create the pod from the volume-pod.yaml file:
+
+```terminal
+$ oc create -f volume-pod.yaml
+```
+
+
+# Consuming secrets using the Downward API
+
+When creating pods, you can use the downward API to inject secrets
+so image and application authors can create an image
+for specific environments.
+
+1. Create a secret to inject:
+1. Create a secret.yaml file similar to the following:
+
+```yaml
+apiVersion: v1
+kind: Secret
+metadata:
+  name: mysecret
+data:
+  password: <password>
+  username: <username>
+type: kubernetes.io/basic-auth
+```
+
+2. Create the secret object from the secret.yaml file:
+
+```terminal
+$ oc create -f secret.yaml
+```
+
+2. Create a pod that references the username field from the above Secret object:
+1. Create a pod.yaml file similar to the following:
+
+```yaml
+apiVersion: v1
+kind: Pod
+metadata:
+  name: dapi-env-test-pod
+spec:
+  securityContext:
+    runAsNonRoot: true
+    seccompProfile:
+      type: RuntimeDefault
+  containers:
+    - name: env-test-container
+      image: gcr.io/google_containers/busybox
+      command: [ "/bin/sh", "-c", "env" ]
+      env:
+        - name: MY_SECRET_USERNAME
+          valueFrom:
+            secretKeyRef:
+              name: mysecret
+              key: username
+      securityContext:
+        allowPrivilegeEscalation: false
+        capabilities:
+          drop: [ALL]
+  restartPolicy: Never
+# ...
+```
+
+2. Create the pod from the pod.yaml file:
+
+```terminal
+$ oc create -f pod.yaml
+```
+
+
+* Check the container's logs for the MY_SECRET_USERNAME value:
+
+```terminal
+$ oc logs -p dapi-env-test-pod
+```
+
+
+# Consuming configuration maps using the Downward API
+
+When creating pods, you can use the Downward API to inject configuration map values
+so image and application authors can create an image for specific environments.
+
+1. Create a config map with the values to inject:
+1. Create a configmap.yaml file similar to the following:
+
+```yaml
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: myconfigmap
+data:
+  mykey: myvalue
+```
+
+2. Create the config map from the configmap.yaml file:
+
+```terminal
+$ oc create -f configmap.yaml
+```
+
+2. Create a pod that references the above config map:
+1. Create a pod.yaml file similar to the following:
+
+```yaml
+apiVersion: v1
+kind: Pod
+metadata:
+  name: dapi-env-test-pod
+spec:
+  securityContext:
+    runAsNonRoot: true
+    seccompProfile:
+      type: RuntimeDefault
+  containers:
+    - name: env-test-container
+      image: gcr.io/google_containers/busybox
+      command: [ "/bin/sh", "-c", "env" ]
+      env:
+        - name: MY_CONFIGMAP_VALUE
+          valueFrom:
+            configMapKeyRef:
+              name: myconfigmap
+              key: mykey
+      securityContext:
+        allowPrivilegeEscalation: false
+        capabilities:
+          drop: [ALL]
+  restartPolicy: Always
+# ...
+```
+
+2. Create the pod from the pod.yaml file:
+
+```terminal
+$ oc create -f pod.yaml
+```
+
+
+* Check the container's logs for the MY_CONFIGMAP_VALUE value:
+
+```terminal
+$ oc logs -p dapi-env-test-pod
+```
+
+
+# Referencing environment variables
+
+When creating pods, you can reference the value of a previously defined
+environment variable by using the $() syntax. If the environment variable
+reference can not be resolved, the value will be left as the provided
+string.
+
+1. Create a pod that references an existing environment variable:
+1. Create a pod.yaml file similar to the following:
+
+```yaml
+apiVersion: v1
+kind: Pod
+metadata:
+  name: dapi-env-test-pod
+spec:
+  securityContext:
+    runAsNonRoot: true
+    seccompProfile:
+      type: RuntimeDefault
+  containers:
+    - name: env-test-container
+      image: gcr.io/google_containers/busybox
+      command: [ "/bin/sh", "-c", "env" ]
+      env:
+        - name: MY_EXISTING_ENV
+          value: my_value
+        - name: MY_ENV_VAR_REF_ENV
+          value: $(MY_EXISTING_ENV)
+      securityContext:
+        allowPrivilegeEscalation: false
+        capabilities:
+          drop: [ALL]
+  restartPolicy: Never
+# ...
+```
+
+2. Create the pod from the pod.yaml file:
+
+```terminal
+$ oc create -f pod.yaml
+```
+
+
+* Check the container's logs for the MY_ENV_VAR_REF_ENV value:
+
+```terminal
+$ oc logs -p dapi-env-test-pod
+```
+
+
+# Escaping environment variable references
+
+When creating a pod, you can escape an environment variable reference by using
+a double dollar sign. The value will then be set to a single dollar sign version
+of the provided value.
+
+1. Create a pod that references an existing environment variable:
+1. Create a pod.yaml file similar to the following:
+
+```yaml
+apiVersion: v1
+kind: Pod
+metadata:
+  name: dapi-env-test-pod
+spec:
+  securityContext:
+    runAsNonRoot: true
+    seccompProfile:
+      type: RuntimeDefault
+  containers:
+    - name: env-test-container
+      image: gcr.io/google_containers/busybox
+      command: [ "/bin/sh", "-c", "env" ]
+      env:
+        - name: MY_NEW_ENV
+          value: $$(SOME_OTHER_ENV)
+      securityContext:
+        allowPrivilegeEscalation: false
+        capabilities:
+          drop: [ALL]
+  restartPolicy: Never
+# ...
+```
+
+2. Create the pod from the pod.yaml file:
+
+```terminal
+$ oc create -f pod.yaml
+```
+
+
+* Check the container's logs for the MY_NEW_ENV value:
+
+```terminal
+$ oc logs -p dapi-env-test-pod
+```

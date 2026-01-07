@@ -1,0 +1,242 @@
+# Backing up workloads on OADP with {product-title}
+
+
+To back up and restore workloads on ROSA, you can use OADP. You can create a backup of a workload, restore it from the backup, and verify the restoration. You can also clean up the OADP Operator, backup storage, and AWS resources when they are no longer needed.
+
+# Performing a backup with OADP and {product-title}
+
+The following example hello-world application has no persistent volumes (PVs) attached. Perform a backup by using OpenShift API for Data Protection (OADP) with {product-title}.
+
+Either Data Protection Application (DPA) configuration will work.
+
+1. Create a workload to back up by running the following commands:
+
+```terminal
+$ oc create namespace hello-world
+```
+
+
+```terminal
+$ oc new-app -n hello-world --image=docker.io/openshift/hello-openshift
+```
+
+2. Expose the route by running the following command:
+
+```terminal
+$ oc expose service/hello-openshift -n hello-world
+```
+
+3. Check that the application is working by running the following command:
+
+```terminal
+$ curl `oc get route/hello-openshift -n hello-world -o jsonpath='{.spec.host}'`
+```
+
+
+You should see an output similar to the following example:
+
+```terminal
+Hello OpenShift!
+```
+
+4. Back up the workload by running the following command:
+
+```terminal
+$ cat << EOF | oc create -f -
+  apiVersion: velero.io/v1
+  kind: Backup
+  metadata:
+    name: hello-world
+    namespace: openshift-adp
+  spec:
+    includedNamespaces:
+    - hello-world
+    storageLocation: ${CLUSTER_NAME}-dpa-1
+    ttl: 720h0m0s
+EOF
+```
+
+5. Wait until the backup is complete, and then run the following command:
+
+```terminal
+$ watch "oc -n openshift-adp get backup hello-world -o json | jq .status"
+```
+
+
+You should see an output similar to the following example:
+
+```json
+{
+  "completionTimestamp": "2022-09-07T22:20:44Z",
+  "expiration": "2022-10-07T22:20:22Z",
+  "formatVersion": "1.1.0",
+  "phase": "Completed",
+  "progress": {
+    "itemsBackedUp": 58,
+    "totalItems": 58
+  },
+  "startTimestamp": "2022-09-07T22:20:22Z",
+  "version": 1
+}
+```
+
+6. Delete the demo workload by running the following command:
+
+```terminal
+$ oc delete ns hello-world
+```
+
+7. Restore the workload from the backup by running the following command:
+
+```terminal
+$ cat << EOF | oc create -f -
+  apiVersion: velero.io/v1
+  kind: Restore
+  metadata:
+    name: hello-world
+    namespace: openshift-adp
+  spec:
+    backupName: hello-world
+EOF
+```
+
+8. Wait for the Restore to finish by running the following command:
+
+```terminal
+$ watch "oc -n openshift-adp get restore hello-world -o json | jq .status"
+```
+
+
+You should see an output similar to the following example:
+
+```json
+{
+  "completionTimestamp": "2022-09-07T22:25:47Z",
+  "phase": "Completed",
+  "progress": {
+    "itemsRestored": 38,
+    "totalItems": 38
+  },
+  "startTimestamp": "2022-09-07T22:25:28Z",
+  "warnings": 9
+}
+```
+
+9. Check that the workload is restored by running the following command:
+
+```terminal
+$ oc -n hello-world get pods
+```
+
+
+You should see an output similar to the following example:
+
+```terminal
+NAME                              READY   STATUS    RESTARTS   AGE
+hello-openshift-9f885f7c6-kdjpj   1/1     Running   0          90s
+```
+
+10. Check the JSONPath by running the following command:
+
+```terminal
+$ curl `oc get route/hello-openshift -n hello-world -o jsonpath='{.spec.host}'`
+```
+
+
+You should see an output similar to the following example:
+
+```terminal
+Hello OpenShift!
+```
+
+
+
+[NOTE]
+----
+For troubleshooting tips, see the troubleshooting documentation.
+----
+
+# Cleaning up a cluster after a backup with OADP and ROSA STS
+
+If you need to uninstall the OpenShift API for Data Protection (OADP) Operator together with the backups and the S3 bucket from this example, follow these instructions.
+
+1. Delete the workload by running the following command:
+
+```terminal
+$ oc delete ns hello-world
+```
+
+2. Delete the Data Protection Application (DPA) by running the following command:
+
+```terminal
+$ oc -n openshift-adp delete dpa ${CLUSTER_NAME}-dpa
+```
+
+3. Delete the cloud storage by running the following command:
+
+```terminal
+$ oc -n openshift-adp delete cloudstorage ${CLUSTER_NAME}-oadp
+```
+
+
+[WARNING]
+----
+If this command hangs, you might need to delete the finalizer by running the following command:
+
+```terminal
+$ oc -n openshift-adp patch cloudstorage ${CLUSTER_NAME}-oadp -p '{"metadata":{"finalizers":null}}' --type=merge
+```
+
+----
+4. If the Operator is no longer required, remove it by running the following command:
+
+```terminal
+$ oc -n openshift-adp delete subscription oadp-operator
+```
+
+5. Remove the namespace from the Operator:
+
+```terminal
+$ oc delete ns openshift-adp
+```
+
+6. If the backup and restore resources are no longer required, remove them from the cluster by running the following command:
+
+```terminal
+$ oc delete backups.velero.io hello-world
+```
+
+7. To delete backup, restore and remote objects in AWS S3 run the following command:
+
+```terminal
+$ velero backup delete hello-world
+```
+
+8. If you no longer need the Custom Resource Definitions (CRD), remove them from the cluster by running the following command:
+
+```terminal
+$ for CRD in `oc get crds | grep velero | awk '{print $1}'`; do oc delete crd $CRD; done
+```
+
+9. Delete the AWS S3 bucket by running the following commands:
+
+```terminal
+$ aws s3 rm s3://${CLUSTER_NAME}-oadp --recursive
+```
+
+
+```terminal
+$ aws s3api delete-bucket --bucket ${CLUSTER_NAME}-oadp
+```
+
+10. Detach the policy from the role by running the following command:
+
+```terminal
+$ aws iam detach-role-policy --role-name "${ROLE_NAME}"  --policy-arn "${POLICY_ARN}"
+```
+
+11. Delete the role by running the following command:
+
+```terminal
+$ aws iam delete-role --role-name "${ROLE_NAME}"
+```

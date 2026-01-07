@@ -1,0 +1,381 @@
+# Operator Lifecycle Manager concepts and resources
+
+
+This guide provides an overview of the concepts that drive Operator Lifecycle Manager (OLM) in {product-title}.
+
+# What is Operator Lifecycle Manager (OLM) Classic?
+
+Operator Lifecycle Manager (OLM) Classic helps users install, update, and manage the lifecycle of Kubernetes native applications (Operators) and their associated services running across their {product-title} clusters. It is part of the Operator Framework, an open source toolkit designed to manage Operators in an effective, automated, and scalable way.
+
+![olm workflow]
+
+OLM runs by default in {product-title} {product-version}, which aids cluster administrators
+in installing, upgrading, and granting access to Operators running on their cluster. The {product-title} web console provides management screens for
+cluster administrators
+to install Operators, as well as grant specific projects access to use the catalog of Operators available on the cluster.
+
+For developers, a self-service experience allows provisioning and configuring instances of databases, monitoring, and big data services without having to be subject matter experts, because the Operator has that knowledge baked into it.
+
+# OLM resources
+
+The following custom resource definitions (CRDs) are defined and managed by Operator Lifecycle Manager (OLM):
+
+
+
+## Cluster service version
+
+A cluster service version (CSV) represents a specific version of a running Operator on your {product-title} cluster. It is a YAML manifest created from Operator metadata that assists Operator Lifecycle Manager (OLM) in running the Operator in the cluster.
+
+OLM requires this metadata about an Operator to ensure that it can be kept running safely on a cluster, and to provide information about how updates should be applied as new versions of the Operator are published. This is similar to packaging software for a traditional operating system; think of the packaging step for OLM as the stage at which you make your rpm, deb, or apk bundle.
+
+A CSV includes the metadata that accompanies an Operator container image, used to populate user interfaces with information such as its name, version, description, labels, repository link, and logo.
+
+A CSV is also a source of technical information required to run the Operator, such as which custom resources (CRs) it manages or depends on, RBAC rules, cluster requirements, and install strategies. This information tells OLM how to create required resources and set up the Operator as a deployment.
+
+## Catalog source
+
+A catalog source represents a store of metadata, typically by referencing an index image stored in a container registry. Operator Lifecycle Manager (OLM) queries catalog sources to discover and install Operators and their dependencies. The software catalog in the {product-title} web console also displays the Operators provided by catalog sources.
+
+
+[TIP]
+----
+Cluster administrators can view the full list of Operators provided by an enabled catalog source on a cluster by using the Administration -> Cluster Settings -> Configuration -> OperatorHub page in the web console.
+----
+
+The spec of a CatalogSource object indicates how to construct a pod or how to communicate with a service that serves the Operator Registry gRPC API.
+
+
+```yaml
+﻿apiVersion: operators.coreos.com/v1alpha1
+kind: CatalogSource
+metadata:
+  generation: 1
+  name: example-catalog 1
+  namespace: {global_ns} 2
+  annotations:
+    olm.catalogImageTemplate: 3
+      "quay.io/example-org/example-catalog:v{kube_major_version}.{kube_minor_version}.{kube_patch_version}"
+spec:
+  displayName: Example Catalog 4
+  image: quay.io/example-org/example-catalog:v1 5
+  priority: -400 6
+  publisher: Example Org
+  sourceType: grpc 7
+  grpcPodConfig:
+    securityContextConfig: <security_mode> 8
+    nodeSelector: 9
+      custom_label: <label>
+    priorityClassName: system-cluster-critical 10
+    tolerations: 11
+      - key: "key1"
+        operator: "Equal"
+        value: "value1"
+        effect: "NoSchedule"
+  updateStrategy:
+    registryPoll: 12
+      interval: 30m0s
+status:
+  connectionState:
+    address: example-catalog.{global_ns}.svc:50051
+    lastConnect: 2021-08-26T18:14:31Z
+    lastObservedState: READY 13
+  latestImageRegistryPoll: 2021-08-26T18:46:25Z 14
+  registryService: 15
+    createdAt: 2021-08-26T16:16:37Z
+    port: 50051
+    protocol: grpc
+    serviceName: example-catalog
+    serviceNamespace: {global_ns}
+```
+
+Name for the CatalogSource object. This value is also used as part of the name for the related pod that is created in the requested namespace.
+Namespace to create the catalog in. To make the catalog available cluster-wide in all namespaces, set this value to {global_ns}. The default Red Hat-provided catalog sources also use the {global_ns} namespace. Otherwise, set the value to a specific namespace to make the Operator only available in that namespace.
+Optional: To avoid cluster upgrades potentially leaving Operator installations in an unsupported state or without a continued update path, you can enable automatically changing your Operator catalog's index image version as part of cluster upgrades.
+
+Set the olm.catalogImageTemplate annotation to your index image name and use one or more of the Kubernetes cluster version variables as shown when constructing the template for the image tag. The annotation overwrites the spec.image field at run time. See the "Image template for custom catalog sources" section for more details.
+Display name for the catalog in the web console and CLI.
+Index image for the catalog. Optionally, can be omitted when using the olm.catalogImageTemplate annotation, which sets the pull spec at run time.
+Weight for the catalog source. OLM uses the weight for prioritization during dependency resolution. A higher weight indicates the catalog is preferred over lower-weighted catalogs.
+Source types include the following:
+* grpc with an image reference: OLM pulls the image and runs the pod, which is expected to serve a compliant API.
+* grpc with an address field: OLM attempts to contact the gRPC API at the given address. This should not be used in most cases.
+* configmap: OLM parses config map data and runs a pod that can serve the gRPC API over it.
+Specify the value of legacy or restricted. If the field is not set, the default value is legacy. In a future {product-title} release, it is planned that the default value will be restricted. If your catalog cannot run with restricted permissions, it is recommended that you manually set this field to legacy.
+Optional: For grpc type catalog sources, overrides the default node selector for the pod serving the content in spec.image, if defined.
+Optional: For grpc type catalog sources, overrides the default priority class name for the pod serving the content in spec.image, if defined. Kubernetes provides system-cluster-critical and system-node-critical priority classes by default. Setting the field to empty ("") assigns the pod the default priority. Other priority classes can be defined manually.
+Optional: For grpc type catalog sources, overrides the default tolerations for the pod serving the content in spec.image, if defined.
+Automatically check for new versions at a given interval to stay up-to-date.
+Last observed state of the catalog connection. For example:
+* READY: A connection is successfully established.
+* CONNECTING: A connection is attempting to establish.
+* TRANSIENT_FAILURE: A temporary problem has occurred while attempting to establish a connection, such as a timeout. The state will eventually switch back to CONNECTING and try again.
+
+See States of Connectivity in the gRPC documentation for more details.
+Latest time the container registry storing the catalog image was polled to ensure the image is up-to-date.
+Status information for the catalog's Operator Registry service.
+
+Referencing the name of a CatalogSource object in a subscription instructs OLM where to search to find a requested Operator:
+
+
+```yaml
+apiVersion: operators.coreos.com/v1alpha1
+kind: Subscription
+metadata:
+  name: example-operator
+  namespace: example-namespace
+spec:
+  channel: stable
+  name: example-operator
+  source: example-catalog
+  sourceNamespace: {global_ns}
+```
+
+* Understanding the software catalog
+* Red Hat-provided Operator catalogs
+* Adding a catalog source to a cluster
+* Catalog priority
+* Viewing Operator catalog source status by using the CLI
+* Understanding and managing pod security admission
+* Catalog source pod scheduling
+
+### Image template for custom catalog sources
+
+Operator compatibility with the underlying cluster can be expressed by a catalog source in various ways. One way, which is used for the default Red Hat-provided catalog sources, is to identify image tags for index images that are specifically created for a particular platform release, for example
+{product-title} {product-version}.
+
+During a cluster upgrade, the index image tag for the default Red Hat-provided catalog sources are updated automatically by the Cluster Version Operator (CVO) so that Operator Lifecycle Manager (OLM) pulls the updated version of the catalog. For example during an upgrade from {product-title} 4.19 to {product-version}, the spec.image field in the CatalogSource object for the redhat-operators catalog is updated from:
+
+
+```terminal
+registry.redhat.io/redhat/redhat-operator-index:v4.20
+```
+
+
+to:
+
+
+```terminal
+registry.redhat.io/redhat/redhat-operator-index:v4.20
+```
+
+
+However, the CVO does not automatically update image tags for custom catalogs. To ensure users are left with a compatible and supported Operator installation after a cluster upgrade, custom catalogs should also be kept updated to reference an updated index image.
+
+Starting in {product-title} 4.9, cluster administrators can add the olm.catalogImageTemplate annotation in the CatalogSource object for custom catalogs to an image reference that includes a template. The following Kubernetes version variables are supported for use in the template:
+
+* kube_major_version
+* kube_minor_version
+* kube_patch_version
+
+
+[NOTE]
+----
+You must specify the Kubernetes cluster version and not the {product-title} cluster version, as the latter is not currently available for templating.
+----
+
+Provided that you have created and pushed an index image with a tag specifying the updated Kubernetes version, setting this annotation enables the index image versions in custom catalogs to be automatically changed after a cluster upgrade. The annotation value is used to set or update the image reference in the spec.image field of the CatalogSource object. This helps avoid cluster upgrades leaving Operator installations in unsupported states or without a continued update path.
+
+
+[IMPORTANT]
+----
+You must ensure that the index image with the updated tag, in whichever registry it is stored in, is accessible by the cluster at the time of the cluster upgrade.
+----
+
+
+```yaml
+apiVersion: operators.coreos.com/v1alpha1
+kind: CatalogSource
+metadata:
+  generation: 1
+  name: example-catalog
+  namespace: openshift-marketplace
+  annotations:
+    olm.catalogImageTemplate:
+      "quay.io/example-org/example-catalog:v{kube_major_version}.{kube_minor_version}"
+spec:
+  displayName: Example Catalog
+  image: quay.io/example-org/example-catalog:v1.33
+  priority: -400
+  publisher: Example Org
+```
+
+
+[NOTE]
+----
+If the spec.image field and the olm.catalogImageTemplate annotation are both set, the spec.image field is overwritten by the resolved value from the annotation. If the annotation does not resolve to a usable pull spec, the catalog source falls back to the set spec.image value.
+If the spec.image field is not set and the annotation does not resolve to a usable pull spec, OLM stops reconciliation of the catalog source and sets it into a human-readable error condition.
+----
+
+For
+an {product-title} {product-version}
+cluster, which uses Kubernetes 1.33, the olm.catalogImageTemplate annotation in the preceding example resolves to the following image reference:
+
+
+```terminal
+quay.io/example-org/example-catalog:v1.33
+```
+
+
+For future releases of {product-title}, you can create updated index images for your custom catalogs that target the later Kubernetes version that is used by the later {product-title} version. With the olm.catalogImageTemplate annotation set before the upgrade, upgrading the cluster to the later {product-title} version would then automatically update the catalog&#8217;s index image as well.
+
+### Catalog health requirements
+
+Operator catalogs on a cluster are interchangeable from the perspective of installation resolution; a Subscription object might reference a specific catalog, but dependencies are resolved using all catalogs on the cluster.
+
+For example, if Catalog A is unhealthy, a subscription referencing Catalog A could resolve a dependency in Catalog B, which the cluster administrator might not have been expecting, because B normally had a lower catalog priority than A.
+
+As a result, OLM requires that all catalogs with a given global namespace (for example, the default openshift-marketplace namespace or a custom global namespace) are healthy. When a catalog is unhealthy, all Operator installation or update operations within its shared global namespace will fail with a CatalogSourcesUnhealthy condition. If these operations were permitted in an unhealthy state, OLM might make resolution and installation decisions that were unexpected to the cluster administrator.
+
+As a cluster administrator, if you observe an unhealthy catalog and want to consider the catalog as invalid and resume Operator installations, see the "Removing custom catalogs" or "Disabling the default software catalog sources" sections for information about removing the unhealthy catalog.
+
+* Removing custom catalogs
+* Disabling the default OperatorHub catalog sources
+
+## Subscription
+
+A subscription, defined by a Subscription object, represents an intention to install an Operator. It is the custom resource that relates an Operator to a catalog source.
+
+Subscriptions describe which channel of an Operator package to subscribe to, and whether to perform updates automatically or manually. If set to automatic, the subscription ensures Operator Lifecycle Manager (OLM) manages and upgrades the Operator to ensure that the latest version is always running in the cluster.
+
+
+```yaml
+apiVersion: operators.coreos.com/v1alpha1
+kind: Subscription
+metadata:
+  name: example-operator
+  namespace: example-namespace
+spec:
+  channel: stable
+  name: example-operator
+  source: example-catalog
+  sourceNamespace: {global_ns}
+```
+
+
+This Subscription object defines the name and namespace of the Operator, as well as the catalog from which the Operator data can be found. The channel, such as alpha, beta, or stable, helps determine which Operator stream should be installed from the catalog source.
+
+The names of channels in a subscription can differ between Operators, but the naming scheme should follow a common convention within a given Operator. For example, channel names might follow a minor release update stream for the application provided by the Operator (1.2, 1.3) or a release frequency (stable, fast).
+
+In addition to being easily visible from the {product-title} web console, it is possible to identify when there is a newer version of an Operator available by inspecting the status of the related subscription. The value associated with the currentCSV field is the newest version that is known to OLM, and installedCSV is the version that is installed on the cluster.
+
+* Multitenancy and Operator colocation
+* Viewing Operator subscription status by using the CLI
+
+## Install plan
+
+An install plan, defined by an InstallPlan object, describes a set of resources that Operator Lifecycle Manager (OLM) creates to install or upgrade to a specific version of an Operator. The version is defined by a cluster service version (CSV).
+
+To install an Operator, a cluster administrator, or a user who has been granted Operator installation permissions, must first create a Subscription object. A subscription represents the intent to subscribe to a stream of available versions of an Operator from a catalog source. The subscription then creates an InstallPlan object to facilitate the installation of the resources for the Operator.
+
+The install plan must then be approved according to one of the following approval strategies:
+
+* If the subscription's spec.installPlanApproval field is set to Automatic, the install plan is approved automatically.
+* If the subscription's spec.installPlanApproval field is set to Manual, the install plan must be manually approved by a cluster administrator or user with proper permissions.
+
+After the install plan is approved, OLM creates the specified resources and installs the Operator in the namespace that is specified by the subscription.
+
+
+```yaml
+apiVersion: operators.coreos.com/v1alpha1
+kind: InstallPlan
+metadata:
+  name: install-abcde
+  namespace: operators
+spec:
+  approval: Automatic
+  approved: true
+  clusterServiceVersionNames:
+    - my-operator.v1.0.1
+  generation: 1
+status:
+  ...
+  catalogSources: []
+  conditions:
+    - lastTransitionTime: '2021-01-01T20:17:27Z'
+      lastUpdateTime: '2021-01-01T20:17:27Z'
+      status: 'True'
+      type: Installed
+  phase: Complete
+  plan:
+    - resolving: my-operator.v1.0.1
+      resource:
+        group: operators.coreos.com
+        kind: ClusterServiceVersion
+        manifest: >-
+        ...
+        name: my-operator.v1.0.1
+        sourceName: redhat-operators
+        sourceNamespace: openshift-marketplace
+        version: v1alpha1
+      status: Created
+    - resolving: my-operator.v1.0.1
+      resource:
+        group: apiextensions.k8s.io
+        kind: CustomResourceDefinition
+        manifest: >-
+        ...
+        name: webservers.web.servers.org
+        sourceName: redhat-operators
+        sourceNamespace: openshift-marketplace
+        version: v1beta1
+      status: Created
+    - resolving: my-operator.v1.0.1
+      resource:
+        group: ''
+        kind: ServiceAccount
+        manifest: >-
+        ...
+        name: my-operator
+        sourceName: redhat-operators
+        sourceNamespace: openshift-marketplace
+        version: v1
+      status: Created
+    - resolving: my-operator.v1.0.1
+      resource:
+        group: rbac.authorization.k8s.io
+        kind: Role
+        manifest: >-
+        ...
+        name: my-operator.v1.0.1-my-operator-6d7cbc6f57
+        sourceName: redhat-operators
+        sourceNamespace: openshift-marketplace
+        version: v1
+      status: Created
+    - resolving: my-operator.v1.0.1
+      resource:
+        group: rbac.authorization.k8s.io
+        kind: RoleBinding
+        manifest: >-
+        ...
+        name: my-operator.v1.0.1-my-operator-6d7cbc6f57
+        sourceName: redhat-operators
+        sourceNamespace: openshift-marketplace
+        version: v1
+      status: Created
+      ...
+```
+
+* Multitenancy and Operator colocation
+* Allowing non-cluster administrators to install Operators
+
+## Operator groups
+
+An Operator group, defined by the OperatorGroup resource, provides multitenant configuration to OLM-installed Operators. An Operator group selects target namespaces in which to generate required RBAC access for its member Operators.
+
+The set of target namespaces is provided by a comma-delimited string stored in the olm.targetNamespaces annotation of a cluster service version (CSV). This annotation is applied to the CSV instances of member Operators and is projected into their deployments.
+
+* Operator groups
+
+## Operator conditions
+
+As part of its role in managing the lifecycle of an Operator, Operator Lifecycle Manager (OLM) infers the state of an Operator from the state of Kubernetes resources that define the Operator. While this approach provides some level of assurance that an Operator is in a given state, there are many instances where an Operator might need to communicate information to OLM that could not be inferred otherwise. This information can then be used by OLM to better manage the lifecycle of the Operator.
+
+OLM provides a custom resource definition (CRD) called OperatorCondition that allows Operators to communicate conditions to OLM. There are a set of supported conditions that influence management of the Operator by OLM when present in the Spec.Conditions array of an OperatorCondition resource.
+
+
+[NOTE]
+----
+By default, the Spec.Conditions array is not present in an OperatorCondition object until it is either added by a user or as a result of custom Operator logic.
+----
+
+* Operator conditions

@@ -1,0 +1,463 @@
+# Gateway API with {product-title} Networking
+
+
+{product-title} provides additional ways of configuring network traffic by using Gateway API with the Ingress Operator.
+
+[IMPORTANT]
+----
+Gateway API does not support user-defined networks (UDN).
+----
+
+# Overview of Gateway API
+
+Gateway API is an open source, community-managed, Kubernetes networking mechanism. It focuses on routing within the transport layer, L4, and the application layer, L7, for clusters. A variety of vendors offer many implementations of Gateway API.
+
+The project is an effort to provide a standardized ecosystem by using a portable API with broad community support. By integrating Gateway API functionality into the Ingress Operator, it enables a networking solution that aligns with existing community and upstream development efforts.
+
+Gateway API extends the functionality of the Ingress Operator to handle more granular cluster traffic and routing configurations. With these capabilities, you can create instances of Gateway APIs custom resource definitions (CRDs). For {product-title} clusters, the Ingress Operator creates the following resources:
+
+Gateway:: This resource describes how traffic can be translated to services within the cluster. For example, a specific load balancer configuration.
+GatewayClass:: This resource defines a set of Gateway objects that share a common configuration and behavior. For example, two separate GatewayClass objects might be created to distinguish a set of Gateway resources used for public or private applications.
+HTTPRoute:: This resource specifies the routing behavior of HTTP requests from a Gateway to a service, and is especially useful for multiplexing HTTP or terminated HTTPS connections.
+GRPCRoute:: This resource specifies the routing behavior of gRPC requests.
+ReferenceGrant:: This resource enables cross-namespace references. For example, it enables routes to forward traffic to backends that are in a different namespace.
+
+In {product-title}, the implementation of Gateway API is based on gateway.networking.k8s.io/v1, and all fields in this version are supported.
+
+## Benefits of Gateway API
+
+Gateway API provides the following benefits:
+
+* Portability: While {product-title} uses HAProxy to improve Ingress performance, Gateway API does not rely on vendor-specific annotations to provide certain behavior. To get comparable performance as HAProxy, the Gateway objects need to be horizontally scaled or their associated nodes need to be vertically scaled.
+* Separation of concerns: Gateway API uses a role-based approach to its resources, and more neatly fits into how a large organization structures its responsibilities and teams. Platform engineers might focus on GatewayClass resources, cluster admins might focus on configuring Gateway resources, and application developers might focus on routing their services with HTTPRoute resources.
+* Extensibility: Additional functionality is developed as a standardized CRD.
+
+## Limitations of Gateway API
+
+Gateway API has the following limitations:
+
+* Version incompatibilities: Gateway API ecosystem changes rapidly, and some implementations do not work with others because their featureset is based on differing versions of Gateway API.
+* Resource overhead: While more flexible, Gateway API uses multiple resource types to achieve an outcome. For smaller applications, the simplicity of traditional Ingress might be a better fit.
+
+# Gateway API implementation for {product-title}
+
+The Ingress Operator manages the lifecycle of Gateway API CRDs in a way that enables other vendor implementations to make use of CRDs defined in an {product-title} cluster.
+
+In some situations, Gateway API provides one or more fields that a vendor implementation does not support, but that implementation is otherwise compatible in schema with the rest of the fields. These "dead fields" can result in disrupted Ingress workloads, improperly provisioned applications and services, and security related issues. Because {product-title} uses a specific version of Gateway API CRDs, any use of third-party implementations of Gateway API must conform to the {product-title} implementation to ensure that all fields work as expected.
+
+Any CRDs created within an {product-title} {product-version} cluster are compatibly versioned and maintained by the Ingress Operator. If CRDs are already present but were not previously managed by the Ingress Operator, the Ingress Operator checks whether these configurations are compatible with Gateway API version supported by {product-title}, and creates an admin-gate that requires your acknowledgment of CRD succession.
+
+
+[IMPORTANT]
+----
+If you are updating your cluster from a previous {product-title} version that contains Gateway API CRDs change those resources so that they exactly match the version supported by {product-title}. Otherwise, you cannot update your cluster because those CRDs were not managed by {product-title}, and could contain functionality that is unsupported by Red Hat.
+----
+
+# Getting started with Gateway API for the Ingress Operator
+
+When you create a GatewayClass as shown in the first step, it configures Gateway API for use on your cluster.
+
+
+[IMPORTANT]
+----
+The {product-title} Gateway API implementation relies on the Cluster Ingress Operator (CIO) to install and manage a specific version of OpenShift Service Mesh (OSSM v3.x) in the openshift-ingress namespace.
+A conflict occurs if your cluster already has an active OpenShift Service Mesh (OSSM v2.x) subscription in any namespace. OSSM v2.x and OSSM v3.x cannot coexist on the same cluster.
+If a conflicting OSSM v2.x subscription is present when you create a GatewayClass resource, the Cluster Ingress Operator attempts to install the required OSSM v3.x components but fails this installation operation. As a result, Gateway API resources ,such as Gateway or HTTPRoute, have no effect and no proxy gets configured to route traffic. In {product-title} 4.19, this failure is silent; In {product-title} 4.20 and later, this conflict causes the ingress ClusterOperator to report a Degraded status.
+Before enabling Gateway API by creating a GatewayClass, verify that you do not have an active OSSM v2.x subscription on the cluster.
+----
+
+1. Create a GatewayClass object:
+1. Create a YAML file, openshift-default.yaml, that contains the following information:
+Example GatewayClass CR
+
+```yaml
+apiVersion: gateway.networking.k8s.io/v1
+kind: GatewayClass
+metadata:
+  name: openshift-default
+spec:
+  controllerName: openshift.io/gateway-controller/v1 1
+```
+
+The controller name.
+
+[IMPORTANT]
+----
+The controller name must be exactly as shown for the Ingress Operator to manage it. If you set this field to anything else, the Ingress Operator ignores the GatewayClass object and all associated Gateway, GRPCRoute, and HTTPRoute objects. The controller name is tied to the implementation of Gateway API in {product-title}, and openshift.io/gateway-controller/v1 is the only controller name allowed.
+----
+2. Run the following command to create the GatewayClass resource:
+
+```terminal
+$ oc create -f openshift-default.yaml
+```
+
+Example output
+
+```terminal
+gatewayclass.gateway.networking.k8s.io/openshift-default created
+```
+
+
+During the creation of the GatewayClass resource, the Ingress Operator installs a lightweight version of Red Hat OpenShift Service Mesh, an Istio custom resource, and a new deployment in the openshift-ingress namespace.
+3. Optional: Verify that the new deployment, istiod-openshift-gateway is ready and available:
+
+```terminal
+$ oc get deployment -n openshift-ingress
+```
+
+Example output
+
+```terminal
+NAME                       READY   UP-TO-DATE   AVAILABLE   AGE
+istiod-openshift-gateway   1/1     1            1           55s
+router-default             2/2     2            2           6h4m
+```
+
+2. Create a secret by running the following command:
+
+```terminal
+$ oc -n openshift-ingress create secret tls gwapi-wildcard --cert=wildcard.crt --key=wildcard.key
+```
+
+3. Get the domain of the Ingress Operator by running the following command:
+
+```terminal
+$ DOMAIN=$(oc get ingresses.config/cluster -o jsonpath={.spec.domain})
+```
+
+4. Create a Gateway object:
+1. Create a YAML file, example-gateway.yaml, that contains the following information:
+Example Gateway CR
+
+```yaml
+apiVersion: gateway.networking.k8s.io/v1
+kind: Gateway
+metadata:
+  name: example-gateway
+  namespace: openshift-ingress 1
+spec:
+  gatewayClassName: openshift-default 2
+  listeners:
+  - name: https 3
+    hostname: "*.gwapi.${DOMAIN}" 4
+    port: 443
+    protocol: HTTPS
+    tls:
+      mode: Terminate
+      certificateRefs:
+      - name: gwapi-wildcard 5
+    allowedRoutes:
+      namespaces:
+        from: All
+```
+
+The Gateway object must be created in the openshift-ingress namespace.
+The Gateway object must reference the name of the previously created GatewayClass object.
+The HTTPS listener listens for HTTPS requests that match a subdomain of the cluster domain. You use this listener to configure ingress to your applications by using Gateway API HTTPRoute resources.
+The hostname must be a subdomain of the Ingress Operator domain. If you use a domain, the listener tries to serve all traffic in that domain.
+The name of the previously created secret.
+2. Apply the resource by running the following command:
+
+```terminal
+$ oc apply -f example-gateway.yaml
+```
+
+3. Optional: When you create a Gateway object, Red Hat OpenShift Service Mesh automatically provisions a deployment and service with the same name. Verify this by running the following commands:
+* To verify the deployment, run the following command:
+
+```terminal
+$ oc get deployment -n openshift-ingress example-gateway-openshift-default
+```
+
+Example output
+
+```terminal
+NAME                                 READY   UP-TO-DATE   AVAILABLE   AGE
+example-gateway-openshift-default    1/1     1            1           25s
+```
+
+* To verify the service, run the following command:
+
+```terminal
+$ oc get service -n openshift-ingress example-gateway-openshift-default
+```
+
+Example output
+
+```terminal
+NAME                                TYPE           CLUSTER-IP   EXTERNAL-IP         PORT(S)      AGE
+example-gateway-openshift-default   LoadBalancer   10.1.2.3     <external_ipname>   <port_info>  47s
+```
+
+4. Optional: The Ingress Operator automatically creates a DNSRecord CR using the hostname from the listeners, and adds the label gateway.networking.k8s.io/gateway-name=example-gateway. Verify the status of the DNS record by running the following command:
+
+```terminal
+$ oc -n openshift-ingress get dnsrecord -l gateway.networking.k8s.io/gateway-name=example-gateway -o yaml
+```
+
+Example output
+
+```yaml
+kind: DNSRecord
+  ...
+status:
+  ...
+  zones:
+  - conditions:
+    - message: The DNS provider succeeded in ensuring the record
+      reason: ProviderSuccess
+      status: "True"
+      type: Published
+    dnsZone:
+      tags:
+        ...
+  - conditions:
+    - message: The DNS provider succeeded in ensuring the record
+      reason: ProviderSuccess
+      status: "True"
+      type: Published
+    dnsZone:
+      id: ...
+```
+
+5. Create an HTTPRoute resource that directs requests to your already-created namespace and application called example-app/example-app:
+1. Create a YAML file, example-route.yaml, that contains the following information:
+Example HTTPRoute CR
+
+```yaml
+apiVersion: gateway.networking.k8s.io/v1
+kind: HTTPRoute
+metadata:
+  name: example-route
+  namespace: example-app-ns 1
+spec:
+  parentRefs: 2
+  - name: example-gateway
+    namespace: openshift-ingress
+  hostnames: ["example.gwapi.${DOMAIN}"] 3
+  rules:
+  - backendRefs: 4
+    - name: example-app 5
+      port: 8443
+```
+
+The namespace you are deploying your application.
+This field must point to the Gateway object you previously configured.
+The hostname must match the one specified in the Gateway object. In this case, the listeners use a wildcard hostname.
+This field specifies the backend references that point to your service.
+The name of the Service for your application.
+2. Apply the resource by running the following command:
+
+```terminal
+$ oc apply -f example-route.yaml
+```
+
+Example output
+
+```terminal
+httproute.gateway.networking.k8s.io/example-route created
+```
+
+
+1. Verify that the Gateway object is deployed and has the condition Programmed by running the following command:
+
+```terminal
+$ oc wait -n openshift-ingress --for=condition=Programmed gateways.gateway.networking.k8s.io example-gateway
+```
+
+Example output
+
+```terminal
+gateway.gateway.networking.k8s.io/example-gateway condition met
+```
+
+2. Send a request to the configured HTTPRoute object hostname:
+
+```terminal
+$ curl -I --cacert <local cert file> https://example.gwapi.${DOMAIN}:443
+```
+
+
+# Gateway API deployment topologies
+
+Gateway API is designed to accomodate two topologies: shared gateways or dedicated gateways. Each topology has its own advantages and different security implications.
+
+Dedicated gateway:: Routes and any load balancers or proxies are served from the same namespace. The Gateway
+object restricts routes to a particular application namespace. This is the default topology when deploying a Gateway API resource in {product-title}.
+Shared gateway:: Routes are served from multiple namespaces or with multiple hostnames. The Gateway object filters allow routes from application namespaces by using the spec.listeners.allowedRoutes.namespaces field.
+
+## Dedicated gateway example
+
+The following example shows a dedicated Gateway resource, fin-gateway:
+
+
+```yaml
+apiVersion: gateway.networking.k8s.io/v1
+kind: Gateway
+metadata:
+  name: fin-gateway
+  namespace: openshift-ingress
+spec:
+  listeners: 1
+  - name: http
+    protocol: HTTP
+    port: 8080
+    hostname: "example.com"
+```
+
+
+Creating a Gateway resource without setting spec.listeners[].allowedRoutes results in implicitly setting the namespaces.from field to have the value Same.
+
+The following example shows the associated HTTPRoute resource, sales-db, which attaches to the dedicated Gateway object:
+
+
+```yaml
+apiVersion: gateway.networking.k8s.io/v1
+kind: HTTPRoute
+metadata:
+  name: sales-db
+  namespace: openshift-ingress
+spec:
+  parentRefs:
+  - name: fin-gateway
+  hostnames:
+  - sales-db.example.com
+  rules:
+    - backendRefs:
+        - name: sales-db
+        ¦ port: 8080
+```
+
+
+The HTTPRoute resource must have the name of the Gateway object as the value for its parentRefs field in order to attach to the gateway. Implicitly, the route is assumed to be in the same namespace as the Gateway object.
+
+## Shared gateway example
+
+The following example shows a Gateway resource, devops-gateway, that has a spec.listeners.allowedRoutes.namespaces label selector set to match any namespaces containing shared-gateway-access: "true":
+
+
+```yaml
+apiVersion: gateway.networking.k8s.io/v1
+kind: Gateway
+metadata:
+  name: devops-gateway
+  namespace: openshift-ingress
+listeners:
+  - name: https
+    protocol: HTTPS
+    hostname: "example.com"
+    allowedRoutes:
+      namespaces:
+        from: Selector
+        selector:
+        ¦ matchLabels:
+        ¦   shared-gateway-access: "true"
+```
+
+
+The following examples show the allowed namespaces for the devops-gateway resource:
+
+
+```yaml
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: dev
+  labels:
+    shared-gateway-access: "true"
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: ops
+  labels:
+    shared-gateway-access: "true"
+```
+
+
+In this example, two HTTPRoute resources, dev-portal and ops-home, are in different namespaces but are attached to the shared gateway:
+
+
+```yaml
+apiVersion: v1
+kind: HTTPRoute
+metadata:
+  name: dev-portal
+  namespace: dev
+spec:
+  parentRefs:
+  - name: devops-gateway
+    namespace: openshift-ingress
+  rules:
+  - backendRefs:
+    - name: dev-portal
+      port: 8080
+---
+apiVersion: v1
+kind: HTTPRoute
+metadata:
+  name: ops-home
+  namespace: ops
+spec:
+  parentRefs:
+  - name: devops-gateway
+    namespace: openshift-ingress
+  rules:
+  - backendRefs:
+    - name: ops-home
+      port: 8080
+```
+
+
+With a shared gateway topology, the routes must specify the namespace of the Gateway object it wants to attach to. Multiple Gateway objects can be deployed and shared across namespaces. When there are multiple shared gateways, this topology becomes conceptually similar to Ingress Controller sharding.
+
+# Ingress Operator is Degraded due to Gateway API and OSSM conflict
+
+In {product-title} 4.20 and later, if you create a GatewayClass resource while a conflicting OpenShift Service Mesh (OSSM) v2.x subscription exists, the ingress Cluster Operator (CIO) reports a Degraded status. This procedure details how to verify and resolve this conflict.
+
+The conflict occurs because the Gateway API implementation requires OSSM v3.x, which cannot coexist with OSSM v2.x. The CIO detects this conflict, stops the Gateway API provisioning, and reports the Degraded status to alert administrators.
+
+Your Cluster Operator reports a status of True and a type of Degraded with a reason of GatewayAPIOSSMConflict. Verify by running the following command:
+
+
+```terminal
+$ oc get clusteroperator ingress -o yaml
+```
+
+
+In the status section of the output, look for a Degraded condition with status: "True" and reason: GatewayAPIOSSMConflict.
+
+
+```yaml
+status:
+  conditions:
+
+    lastTransitionTime: "2025-10-22T17:00:00Z"
+
+    message: 'Failed to install OpenShift Service Mesh 3.x for Gateway API: A
+      conflicting OpenShift Service Mesh 2.x subscription was found. Remove the
+      GatewayClass resource or the conflicting OSSM 2.x subscription to resolve.'
+    reason: GatewayAPIOSSMConflict
+    status: "True"
+    type: Degraded
+```
+
+
+You can resolve this issue and clear the Degraded status either by removing the GatewayClass resource or by using Openshift Gateway API to remove the conflicting OpenShift Service Mesh v2.x subscription from the cluster.
+
+* If you do not intend to use the OpenShift Gateway API, remove the GatewayClass resource. This signals to the Ingress Operator to stop attempting to provision Gateway API.
+
+```terminal
+$ oc delete gatewayclass <gatewayclass-name>
+```
+
+* If you do intend to use the OpenShift Gateway API, you must remove the conflicting OpenShift Service Mesh v2.x subscription from the cluster.
+
+```terminal
+$ oc -n openshift-operators delete subscription <OSSM v2.x subscription name>
+```
+
+
+After the v2.x subscription is removed, the Ingress Operator automatically retries the installation of OSSM v3.x and completes the Gateway API provisioning.
+
+* Ingress Controller sharding.

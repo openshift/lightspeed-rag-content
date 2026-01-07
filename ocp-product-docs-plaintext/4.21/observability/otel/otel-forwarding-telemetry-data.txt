@@ -1,0 +1,409 @@
+# Forwarding telemetry data
+
+
+You can use the OpenTelemetry Collector to forward your telemetry data.
+
+# Forwarding traces to a TempoStack instance
+
+To configure forwarding traces to a TempoStack instance, you can deploy and configure the OpenTelemetry Collector. You can deploy the OpenTelemetry Collector in the deployment mode by using the specified processors, receivers, and exporters. For other modes, see the OpenTelemetry Collector documentation linked in Additional resources.
+
+* The Red Hat build of OpenTelemetry Operator is installed.
+* The Tempo Operator is installed.
+* A TempoStack instance is deployed on the cluster.
+
+1. Create a service account for the OpenTelemetry Collector.
+Example ServiceAccount
+
+```yaml
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: otel-collector-deployment
+```
+
+2. Create a cluster role for the service account.
+Example ClusterRole
+
+```yaml
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: otel-collector
+rules:
+- apiGroups: [""]
+  resources: ["pods", "namespaces",]
+  verbs: ["get", "watch", "list"] 1
+- apiGroups: ["apps"]
+  resources: ["replicasets"]
+  verbs: ["get", "watch", "list"] 2
+- apiGroups: ["config.openshift.io"]
+  resources: ["infrastructures", "infrastructures/status"]
+  verbs: ["get", "watch", "list"] 3
+```
+
+This example uses the Kubernetes Attributes Processor, which requires these permissions for the pods and namespaces resources.
+Also due to the Kubernetes Attributes Processor, these permissions are required for the replicasets resources.
+This example also uses the Resource Detection Processor, which requires these permissions for the infrastructures and status resources.
+3. Bind the cluster role to the service account.
+Example ClusterRoleBinding
+
+```yaml
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: otel-collector
+subjects:
+- kind: ServiceAccount
+  name: otel-collector-deployment
+  namespace: otel-collector-example
+roleRef:
+  kind: ClusterRole
+  name: otel-collector
+  apiGroup: rbac.authorization.k8s.io
+```
+
+4. Create the YAML file to define the OpenTelemetryCollector custom resource (CR).
+Example OpenTelemetryCollector
+
+```yaml
+apiVersion: opentelemetry.io/v1beta1
+kind: OpenTelemetryCollector
+metadata:
+  name: otel
+spec:
+  mode: deployment
+  serviceAccount: otel-collector-deployment
+  config:
+    receivers:
+      jaeger:
+        protocols:
+          grpc: {}
+          thrift_binary: {}
+          thrift_compact: {}
+          thrift_http: {}
+      opencensus: {}
+      otlp:
+        protocols:
+          grpc: {}
+          http: {}
+      zipkin: {}
+    processors:
+      batch: {}
+      k8sattributes: {}
+      memory_limiter:
+        check_interval: 1s
+        limit_percentage: 50
+        spike_limit_percentage: 30
+      resourcedetection:
+        detectors: [openshift]
+    exporters:
+      otlp:
+        endpoint: "tempo-simplest-distributor:4317" 1
+        tls:
+          insecure: true
+    service:
+      pipelines:
+        traces:
+          receivers: [jaeger, opencensus, otlp, zipkin] 2
+          processors: [memory_limiter, k8sattributes, resourcedetection, batch]
+          exporters: [otlp]
+```
+
+The Collector exporter is configured to export OTLP and points to the Tempo distributor endpoint, "tempo-simplest-distributor:4317" in this example, which is already created.
+The Collector is configured with a receiver for Jaeger traces, OpenCensus traces over the OpenCensus protocol, Zipkin traces over the Zipkin protocol, and OTLP traces over the gRPC protocol.
+
+
+[TIP]
+----
+You can deploy telemetrygen as a test:
+
+```yaml
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: telemetrygen
+spec:
+  template:
+    spec:
+      containers:
+        - name: telemetrygen
+          image: ghcr.io/open-telemetry/opentelemetry-collector-contrib/telemetrygen:latest
+          args:
+            - traces
+            - --otlp-endpoint=otel-collector:4317
+            - --otlp-insecure
+            - --duration=30s
+            - --workers=1
+      restartPolicy: Never
+  backoffLimit: 4
+```
+
+----
+
+* OpenTelemetry Collector (OpenTelemetry Documentation)
+* Deployment examples on GitHub (GitHub)
+
+# Forwarding logs to a LokiStack instance
+
+You can deploy the OpenTelemetry Collector to forward logs to a LokiStack instance by using the openshift-logging tenants mode.
+
+* The Red Hat build of OpenTelemetry Operator is installed.
+* The Loki Operator is installed.
+* A supported LokiStack instance is deployed on the cluster. For more information about the supported LokiStack configuration, see Logging.
+
+1. Create a service account for the OpenTelemetry Collector.
+Example ServiceAccount object
+
+```yaml
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: otel-collector-deployment
+  namespace: openshift-logging
+```
+
+2. Create a cluster role that grants the Collector's service account the permissions to push logs to the LokiStack application tenant.
+Example ClusterRole object
+
+```yaml
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: otel-collector-logs-writer
+rules:
+ - apiGroups: ["loki.grafana.com"]
+   resourceNames: ["logs"]
+   resources: ["application"]
+   verbs: ["create"]
+ - apiGroups: [""]
+   resources: ["pods", "namespaces", "nodes"]
+   verbs: ["get", "watch", "list"]
+ - apiGroups: ["apps"]
+   resources: ["replicasets"]
+   verbs: ["get", "list", "watch"]
+ - apiGroups: ["extensions"]
+   resources: ["replicasets"]
+   verbs: ["get", "list", "watch"]
+```
+
+3. Bind the cluster role to the service account.
+Example ClusterRoleBinding object
+
+```yaml
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: otel-collector-logs-writer
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: otel-collector-logs-writer
+subjects:
+  - kind: ServiceAccount
+    name: otel-collector-deployment
+    namespace: openshift-logging
+```
+
+4. Create an OpenTelemetryCollector custom resource (CR) object.
+Example OpenTelemetryCollector CR object
+
+```yaml
+apiVersion: opentelemetry.io/v1beta1
+kind: OpenTelemetryCollector
+metadata:
+  name: otel
+  namespace: openshift-logging
+spec:
+  serviceAccount: otel-collector-deployment
+  config:
+    extensions:
+      bearertokenauth:
+        filename: "/var/run/secrets/kubernetes.io/serviceaccount/token"
+    receivers:
+      otlp:
+        protocols:
+          grpc: {}
+          http: {}
+    processors:
+      k8sattributes: {}
+      resource:
+        attributes: 1
+          - key:  kubernetes.namespace_name
+            from_attribute: k8s.namespace.name
+            action: upsert
+          - key:  kubernetes.pod_name
+            from_attribute: k8s.pod.name
+            action: upsert
+          - key: kubernetes.container_name
+            from_attribute: k8s.container.name
+            action: upsert
+          - key: log_type
+            value: application
+            action: upsert
+      transform:
+        log_statements:
+          - context: log
+            statements:
+              - set(attributes["level"], ConvertCase(severity_text, "lower"))
+    exporters:
+      otlphttp:
+        endpoint: https://logging-loki-gateway-http.openshift-logging.svc.cluster.local:8080/api/logs/v1/application/otlp
+        encoding: json
+        tls:
+          ca_file: "/var/run/secrets/kubernetes.io/serviceaccount/service-ca.crt"
+        auth:
+          authenticator: bearertokenauth
+      debug:
+        verbosity: detailed
+    service:
+      extensions: [bearertokenauth] 2
+      pipelines:
+        logs:
+          receivers: [otlp]
+          processors: [k8sattributes, transform, resource]
+          exporters: [otlphttp] 3
+        logs/test:
+          receivers: [otlp]
+          processors: []
+          exporters: [debug]
+```
+
+Provides the following resource attributes to be used by the web console: kubernetes.namespace_name, kubernetes.pod_name, kubernetes.container_name, and log_type.
+Enables the BearerTokenAuth Extension that is required by the OTLP HTTP Exporter.
+Enables the OTLP HTTP Exporter to export logs from the Collector.
+
+
+[TIP]
+----
+You can deploy telemetrygen as a test:
+
+```yaml
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: telemetrygen
+spec:
+  template:
+    spec:
+      containers:
+        - name: telemetrygen
+          image: ghcr.io/open-telemetry/opentelemetry-collector-contrib/telemetrygen:v0.106.1
+          args:
+            - logs
+            - --otlp-endpoint=otel-collector.openshift-logging.svc.cluster.local:4317
+            - --otlp-insecure
+            - --duration=180s
+            - --workers=1
+            - --logs=10
+            - --otlp-attributes=k8s.container.name="telemetrygen"
+      restartPolicy: Never
+  backoffLimit: 4
+```
+
+----
+
+# Forwarding telemetry data to third-party systems
+
+The OpenTelemetry Collector exports telemetry data by using the OTLP exporter via the OpenTelemetry Protocol (OTLP) that is implemented over the gRPC or HTTP transports. If you need to forward telemetry data to your third-party system and it does not support the OTLP or other supported protocol in the Red Hat build of OpenTelemetry, then you can deploy an unsupported custom OpenTelemetry Collector that can receive telemetry data via the OTLP and export it to your third-party system by using a custom exporter.
+
+
+[WARNING]
+----
+Red Hat does not support custom deployments.
+----
+
+* You have developed your own unsupported custom exporter that can export telemetry data via the OTLP to your third-party system.
+
+* Deploy a custom Collector either through the OperatorHub or manually:
+* If your third-party system supports it, deploy the custom Collector by using the OperatorHub.
+* Deploy the custom Collector manually by using a config map, deployment, and service.
+Example of a custom Collector deployment
+
+```yaml
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: custom-otel-collector-config
+data:
+  otel-collector-config.yaml: |
+    receivers:
+      otlp:
+        protocols:
+          grpc:
+    exporters:
+      debug: {}
+      prometheus:
+    service:
+      pipelines:
+        traces:
+          receivers: [otlp]
+          exporters: [debug] 1
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: custom-otel-collector-deployment
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      component: otel-collector
+  template:
+    metadata:
+      labels:
+        component: otel-collector
+    spec:
+      containers:
+      - name: opentelemetry-collector
+        image: ghcr.io/open-telemetry/opentelemetry-collector-releases/opentelemetry-collector-contrib:latest 2
+        command:
+        - "/otelcol-contrib"
+        - "--config=/conf/otel-collector-config.yaml"
+        ports:
+        - name: otlp
+          containerPort: 4317
+          protocol: TCP
+        volumeMounts:
+        - name: otel-collector-config-vol
+          mountPath: /conf
+          readOnly: true
+      volumes:
+      - name: otel-collector-config-vol
+        configMap:
+          name: custom-otel-collector-config
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: custom-otel-collector-service 3
+  labels:
+    component: otel-collector
+spec:
+  type: ClusterIP
+  ports:
+  - name: otlp-grpc
+    port: 4317
+    targetPort: 4317
+  selector:
+    component: otel-collector
+```
+
+Replace debug with the required exporter for your third-party system.
+Replace the image with the required version of the OpenTelemetry Collector that has the required exporter for your third-party system.
+The service name is used in the Red Hat build of OpenTelemetry Collector CR to configure the OTLP exporter.
+
+# Forwarding telemetry data to AWS
+
+To forward telemetry data to AWS, use the OpenTelemetry Collector with the following exporters: AWS CloudWatch Logs Exporter for logs, AWS EMF Exporter for metrics, and AWS X-Ray Exporter for traces.
+
+* Exporters
+
+# Forwarding telemetry data to Google Cloud
+
+To forward telemetry data to Google Cloud Operations Suite, use the OpenTelemetry Collector with the Google Cloud Exporter. The exporter sends metrics to Google Cloud Monitoring, logs to Google Cloud Logging, and traces to Google Cloud Trace.
+
+* Exporters
+
+# Additional resources
+
+* OpenTelemetry Protocol (OTLP)

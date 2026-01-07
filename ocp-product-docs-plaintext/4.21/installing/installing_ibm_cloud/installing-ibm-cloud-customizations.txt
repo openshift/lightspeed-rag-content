@@ -1,0 +1,851 @@
+# Installing a cluster on IBM Cloud with customizations
+
+
+In {product-title} version {product-version}, you can install a customized cluster
+on IBM Cloud(R) by using installer-provisioned infrastructure with customizations, including network configuration options. In each, you modify parameters in the install-config.yaml file before you install the cluster.
+By customizing your network configuration, your cluster can coexist with existing IP address allocations in your environment and integrate with existing MTU and VXLAN configurations.
+You must set most of the network configuration parameters during installation, and you can modify only kubeProxy configuration parameters in a running cluster.
+
+# Prerequisites
+
+* You reviewed details about the {product-title} installation and update processes.
+* You read the documentation on selecting a cluster installation method and preparing it for users.
+* You configured an IBM Cloud(R) account to host the cluster.
+* If you use a firewall, you configured it to allow the sites that your cluster requires access to.
+* You configured the ccoctl utility before you installed the cluster. For more information, see Configuring IAM for IBM Cloud(R).
+
+# Internet access for {product-title}
+
+In {product-title} {product-version}, you require access to the internet to
+install
+your cluster.
+
+You must have internet access to perform the following actions:
+
+* Access OpenShift Cluster Manager to download the installation program and perform subscription management. If the cluster has internet access and you do not disable Telemetry, that service automatically entitles your cluster.
+* Access Quay.io to obtain the packages that are required to install your cluster.
+* Obtain the packages that are required to perform cluster updates.
+
+# Generating a key pair for cluster node SSH access
+
+During an {product-title} installation, you can provide an SSH public key to the installation program. The key is passed to the Red Hat Enterprise Linux CoreOS (RHCOS) nodes through their Ignition config files and is used to authenticate SSH access to the nodes. The key is added to the ~/.ssh/authorized_keys list for the core user on each node, which enables password-less authentication.
+
+After the key is passed to the nodes, you can use the key pair to SSH in to the RHCOS nodes as the user core. To access the nodes through SSH, the private key identity must be managed by SSH for your local user.
+
+If you want to SSH in to your cluster nodes to perform installation debugging or disaster recovery, you must provide the SSH public key during the installation process. The ./openshift-install gather command also requires the SSH public key to be in place on the cluster nodes.
+
+
+[IMPORTANT]
+----
+Do not skip this procedure in production environments, where disaster recovery and debugging is required.
+----
+
+
+[NOTE]
+----
+You must use a local key, not one that you configured with platform-specific approaches.
+----
+
+1. If you do not have an existing SSH key pair on your local machine to use for authentication onto your cluster nodes, create one. For example, on a computer that uses a Linux operating system, run the following command:
+
+```terminal
+$ ssh-keygen -t ed25519 -N '' -f <path>/<file_name> 1
+```
+
+Specify the path and file name, such as ~/.ssh/id_ed25519, of the new SSH key. If you have an existing key pair, ensure your public key is in the your ~/.ssh directory.
+
+[NOTE]
+----
+If you plan to install an {product-title} cluster that uses the RHEL cryptographic libraries that have been submitted to NIST for FIPS 140-2/140-3 Validation on only the x86_64, ppc64le, and s390x architectures, do not create a key that uses the ed25519 algorithm. Instead, create a key that uses the rsa or ecdsa algorithm.
+----
+2. View the public SSH key:
+
+```terminal
+$ cat <path>/<file_name>.pub
+```
+
+
+For example, run the following to view the ~/.ssh/id_ed25519.pub public key:
+
+```terminal
+$ cat ~/.ssh/id_ed25519.pub
+```
+
+3. Add the SSH private key identity to the SSH agent for your local user, if it has not already been added. SSH agent management of the key is required for password-less SSH authentication onto your cluster nodes, or if you want to use the ./openshift-install gather command.
+
+[NOTE]
+----
+On some distributions, default SSH private key identities such as ~/.ssh/id_rsa and ~/.ssh/id_dsa are managed automatically.
+----
+1. If the ssh-agent process is not already running for your local user, start it as a background task:
+
+```terminal
+$ eval "$(ssh-agent -s)"
+```
+
+Example output
+
+```terminal
+Agent pid 31874
+```
+
+
+[NOTE]
+----
+If your cluster is in FIPS mode, only use FIPS-compliant algorithms to generate the SSH key. The key must be either RSA or ECDSA.
+----
+4. Add your SSH private key to the ssh-agent:
+
+```terminal
+$ ssh-add <path>/<file_name> 1
+```
+
+Specify the path and file name for your SSH private key, such as ~/.ssh/id_ed25519
+Example output
+
+```terminal
+Identity added: /home/<you>/<path>/<file_name> (<computer_name>)
+```
+
+
+* When you install {product-title}, provide the SSH public key to the installation program.
+
+# Obtaining the installation program
+
+Before you install {product-title}, download the installation file on
+ the host you are using for installation.
+
+* You have a computer that runs Linux or macOS, with 500 MB of local disk space.
+
+1. Go to the Cluster Type page on the Red Hat Hybrid Cloud Console. If you have a Red Hat account, log in with your credentials. If you do not, create an account.
+
+[TIP]
+----
+You can also download the binaries for a specific {product-title} release.
+----
+2. Select your infrastructure provider from the Run it yourself section of the page.
+3. Select your host operating system and architecture from the dropdown menus under OpenShift Installer and click Download Installer.
+4. Place the downloaded file in the directory where you want to store the installation configuration files.
+
+[IMPORTANT]
+----
+* The installation program creates several files on the computer that you use to install your cluster. You must keep the installation program and the files that the installation program creates after you finish installing the cluster. Both of the files are required to delete the cluster.
+* Deleting the files created by the installation program does not remove your cluster, even if the cluster failed during installation. To remove your cluster, complete the {product-title} uninstallation procedures for your specific cloud provider.
+----
+5. Extract the installation program. For example, on a computer that uses a Linux operating system, run the following command:
+
+```terminal
+$ tar -xvf openshift-install-linux.tar.gz
+```
+
+6. Download your installation pull secret from Red Hat OpenShift Cluster Manager. This pull secret allows you to authenticate with the services that are provided by the included authorities, including Quay.io, which serves the container images for {product-title} components.
+
+
+[TIP]
+----
+Alternatively, you can retrieve the installation program from the Red Hat Customer Portal, where you can specify a version of the installation program to download.
+However, you must have an active subscription to access this page.
+----
+
+# Exporting the API key
+
+You must set the API key you created as a global variable; the installation program ingests the variable during startup to set the API key.
+
+* You have created either a user API key or service ID API key for your IBM Cloud(R) account.
+
+* Export your API key for your account as a global variable:
+
+```terminal
+$ export IC_API_KEY=<api_key>
+```
+
+
+
+[IMPORTANT]
+----
+You must set the variable name exactly as specified; the installation program expects the variable name to be present during startup.
+----
+
+# Creating the installation configuration file
+
+You can customize the {product-title} cluster you install on
+
+IBM Cloud&#174;.
+
+* You have the {product-title} installation program and the pull secret for your cluster.
+
+1. Create the install-config.yaml file.
+1. Change to the directory that contains the installation program and run the following command:
+
+```terminal
+$ ./openshift-install create install-config --dir <installation_directory>
+```
+
+* <installation_directory>: For <installation_directory>, specify the directory name to store the
+files that the installation program creates.
+
+When specifying the directory:
+* Verify that the directory has the execute permission. This permission is required to run Terraform binaries under the installation directory.
+* Use an empty directory. Some installation assets, such as bootstrap X.509 certificates, have short expiration intervals, therefore you must not reuse an installation directory. If you want to reuse individual files from another cluster installation, you can copy them into your directory. However, the file names for the installation assets might change between releases. Use caution when copying installation files from an earlier {product-title} version.
+2. At the prompts, provide the configuration details for your cloud:
+1. Optional: Select an SSH key to use to access your cluster machines.
+
+[NOTE]
+----
+For production {product-title} clusters on which you want to perform installation debugging or disaster recovery, specify an SSH key that your ssh-agent process uses.
+----
+2. Select ibmcloud as the platform to target.
+3. Select the region to deploy the cluster to.
+4. Select the base domain to deploy the cluster to. The base domain corresponds
+to the public DNS zone that you created for your cluster.
+5. Enter a descriptive name for your cluster.
+2. Modify the install-config.yaml file. You can find more information about the available parameters in the "Installation configuration parameters" section.
+3. Back up the install-config.yaml file so that you can use
+it to install multiple clusters.
+
+[IMPORTANT]
+----
+The install-config.yaml file is consumed during the installation process. If
+you want to reuse the file, you must back it up now.
+----
+
+* Installation configuration parameters for IBM Cloud(R)
+
+## Minimum resource requirements for cluster installation
+
+Each cluster machine must meet the following minimum requirements:
+
+
+
+
+
+
+[NOTE]
+----
+For {product-title} version 4.19, RHCOS is based on RHEL version 9.6, which updates the micro-architecture requirements. The following list contains the minimum instruction set architectures (ISA) that each architecture requires:
+* x86-64 architecture requires x86-64-v2 ISA
+* ARM64 architecture requires ARMv8.0-A ISA
+* IBM Power architecture requires Power 9 ISA
+* s390x architecture requires z14 ISA
+For more information, see Architectures (RHEL documentation).
+----
+
+If an instance type for your platform meets the minimum requirements for cluster machines, it is supported to use in {product-title}.
+
+* Optimizing storage
+
+## Tested instance types for IBM Cloud
+
+The following IBM Cloud&#174; instance types have been tested with {product-title}.
+
+https://raw.githubusercontent.com/openshift/installer/release-4.20/docs/user/ibmcloud/tested_instance_types_x86_64.md
+
+## Sample customized install-config.yaml file for IBM Cloud
+
+You can customize the install-config.yaml file to specify more details about your {product-title} cluster&#8217;s platform or modify the values of the required parameters.
+
+
+[IMPORTANT]
+----
+This sample YAML file is provided for reference only. You must obtain your install-config.yaml file by using the installation program and then modify it.
+----
+
+
+```yaml
+apiVersion: v1
+baseDomain: example.com 1
+controlPlane: 2 3
+  hyperthreading: Enabled 4
+  name: master
+  platform:
+    ibmcloud: {}
+  replicas: 3
+compute: 2 3
+- hyperthreading: Enabled 4
+  name: worker
+  platform:
+    ibmcloud: {}
+  replicas: 3
+metadata:
+  name: test-cluster 1
+networking:
+networking: 2
+  clusterNetwork:
+  - cidr: 10.128.0.0/14
+    hostPrefix: 23
+  machineNetwork:
+  - cidr: 10.0.0.0/16
+  networkType: OVNKubernetes 5
+  serviceNetwork:
+  - 172.30.0.0/16
+platform:
+  ibmcloud:
+    region: us-south 1
+credentialsMode: Manual
+publish: External
+pullSecret: '{"auths": ...}' 1
+fips: false 6
+sshKey: ssh-ed25519 AAAA... 7
+```
+
+
+Required. The installation program prompts you for this value.
+If you do not provide these parameters and values, the installation program provides the default value.
+The controlPlane section is a single mapping, but the compute section is a sequence of mappings. To meet the requirements of the different data structures, the first line of the compute section must begin with a hyphen, -, and the first line of the controlPlane section must not. Only one control plane pool is used.
+Enables or disables simultaneous multithreading, also known as Hyper-Threading. By default, simultaneous multithreading is enabled to increase the performance of your machines' cores. You can disable it by setting the parameter value to Disabled. If you disable simultaneous multithreading in some cluster machines, you must disable it in all cluster machines.
+
+[IMPORTANT]
+----
+If you disable simultaneous multithreading, ensure that your capacity planning accounts for the dramatically decreased machine performance. Use larger machine types, such as n1-standard-8, for your machines if you disable simultaneous multithreading.
+----
+The cluster network plugin to install. The default value OVNKubernetes is the only supported value.
+Enables or disables FIPS mode. By default, FIPS mode is not enabled. If FIPS mode is enabled, the Red Hat Enterprise Linux CoreOS (RHCOS) machines that {product-title} runs on bypass the default Kubernetes cryptography suite and use the cryptography modules that are provided with RHCOS instead.
+
+[IMPORTANT]
+----
+To enable FIPS mode for your cluster, you must run the installation program from a Red Hat Enterprise Linux (RHEL) computer configured to operate in FIPS mode. For more information about configuring FIPS mode on RHEL, see Installing the system in FIPS mode.
+When running Red Hat Enterprise Linux (RHEL) or Red Hat Enterprise Linux CoreOS (RHCOS) booted in FIPS mode, {product-title} core components use the RHEL cryptographic libraries that have been submitted to NIST for FIPS 140-2/140-3 Validation on only the x86_64, ppc64le, and s390x architectures.
+----
+Optional: provide the sshKey value that you use to access the machines in your cluster.
+
+[NOTE]
+----
+For production {product-title} clusters on which you want to perform installation debugging or disaster recovery, specify an SSH key that your ssh-agent process uses.
+----
+
+## Configuring the cluster-wide proxy during installation
+
+Production environments can deny direct access to the internet and instead have
+an HTTP or HTTPS proxy available. You can configure a new {product-title}
+cluster to use a proxy by configuring the proxy settings in the
+install-config.yaml file.
+
+* You have an existing install-config.yaml file.
+* You reviewed the sites that your cluster requires access to and determined whether any of them need to bypass the proxy. By default, all cluster egress traffic is proxied, including calls to hosting cloud provider APIs. You added sites to the Proxy object's spec.noProxy field to bypass the proxy if necessary.
+
+[NOTE]
+----
+The Proxy object status.noProxy field is populated with the values of the networking.machineNetwork[].cidr, networking.clusterNetwork[].cidr, and networking.serviceNetwork[] fields from your installation configuration.
+For installations on Amazon Web Services (AWS), Google Cloud, Microsoft Azure, and Red Hat OpenStack Platform (RHOSP), the Proxy object status.noProxy field is also populated with the instance metadata endpoint (169.254.169.254).
+----
+
+1. Edit your install-config.yaml file and add the proxy settings. For example:
+
+```yaml
+apiVersion: v1
+baseDomain: my.domain.com
+proxy:
+  httpProxy: http://<username>:<pswd>@<ip>:<port> 1
+  httpsProxy: https://<username>:<pswd>@<ip>:<port> 2
+  noProxy: example.com 3
+additionalTrustBundle: | 4
+    -----BEGIN CERTIFICATE-----
+    <MY_TRUSTED_CA_CERT>
+    -----END CERTIFICATE-----
+additionalTrustBundlePolicy: <policy_to_add_additionalTrustBundle> 5
+```
+
+A proxy URL to use for creating HTTP connections outside the cluster. The
+URL scheme must be http.
+A proxy URL to use for creating HTTPS connections outside the cluster.
+A comma-separated list of destination domain names, IP addresses, or other network CIDRs to exclude from proxying. Preface a domain with . to match subdomains only. For example, .y.com matches x.y.com, but not y.com. Use * to bypass the proxy for all destinations.
+If provided, the installation program generates a config map that is named user-ca-bundle in
+the openshift-config namespace that contains one or more additional CA
+certificates that are required for proxying HTTPS connections. The Cluster Network
+Operator then creates a trusted-ca-bundle config map that merges these contents
+with the Red Hat Enterprise Linux CoreOS (RHCOS) trust bundle, and this config map is referenced in the trustedCA field of the Proxy object. The additionalTrustBundle field is required unless
+the proxy's identity certificate is signed by an authority from the RHCOS trust
+bundle.
+Optional: The policy to determine the configuration of the Proxy object to reference the user-ca-bundle config map in the trustedCA field. The allowed values are Proxyonly and Always. Use Proxyonly to reference the user-ca-bundle config map only when http/https proxy is configured. Use Always to always reference the user-ca-bundle config map. The default value is Proxyonly.
+
+[NOTE]
+----
+The installation program does not support the proxy readinessEndpoints field.
+----
+
+[NOTE]
+----
+If the installer times out, restart and then complete the deployment by using the wait-for command of the installer. For example:
+
+```terminal
+$ ./openshift-install wait-for install-complete --log-level debug
+```
+
+----
+2. Save the file and reference it when installing {product-title}.
+
+The installation program creates a cluster-wide proxy that is named cluster that uses the proxy
+settings in the provided install-config.yaml file. If no proxy settings are
+provided, a cluster Proxy object is still created, but it will have a nil
+spec.
+
+
+[NOTE]
+----
+Only the Proxy object named cluster is supported, and no additional
+proxies can be created.
+----
+
+# Manually creating IAM
+
+Installing the cluster requires that the Cloud Credential Operator (CCO) operate in manual mode. While the installation program configures the CCO for manual mode, you must specify the identity and access management secrets for you cloud provider.
+
+You can use the Cloud Credential Operator (CCO) utility (ccoctl) to create the required IBM Cloud&#174; resources.
+
+* You have configured the ccoctl binary.
+* You have an existing install-config.yaml file.
+
+1. Edit the install-config.yaml configuration file so that the file includes the credentialsMode parameter set to Manual.
+Example install-config.yaml configuration file
+
+```yaml
+apiVersion: v1
+baseDomain: cluster1.example.com
+credentialsMode: Manual
+compute:
+- architecture: amd64
+  hyperthreading: Enabled
+```
+
+* credentialsMode: Set the credentialsMode parameter to Manual.
+2. To generate the manifests, run the following command from the directory that includes the installation program:
+
+```terminal
+$ ./openshift-install create manifests --dir <installation_directory>
+```
+
+3. From the directory that includes the installation program, set a $RELEASE_IMAGE variable with the release image from your installation file by running the following command:
+
+```terminal
+$ RELEASE_IMAGE=$(./openshift-install version | awk '/release image/ {print $3}')
+```
+
+4. Extract the list of CredentialsRequest custom resources (CRs) from the {product-title} release image by running the following command:
+
+```terminal
+$ oc adm release extract \
+  --from=$RELEASE_IMAGE \
+  --credentials-requests \
+  --include \
+  --install-config=<path_to_directory_with_installation_configuration>/install-config.yaml \
+  --to=<path_to_directory_for_credentials_requests>
+```
+
+* --included: Includes only the manifests that your specific cluster configuration requires.
+* <path_to_directory_with_installation_configuration>: Specify the location of the install-config.yaml file.
+* <path_to_directory_for_credentials_requests>: Specify the path to the directory where you want to store the CredentialsRequest objects. If the specified directory does not exist, this command creates it.
+
+This command creates a YAML file for each CredentialsRequest object.
+Sample CredentialsRequest object
+
+```yaml
+  apiVersion: cloudcredential.openshift.io/v1
+  kind: CredentialsRequest
+  metadata:
+    labels:
+      controller-tools.k8s.io: "1.0"
+    name: openshift-image-registry-ibmcos
+    namespace: openshift-cloud-credential-operator
+  spec:
+    secretRef:
+      name: installer-cloud-credentials
+      namespace: openshift-image-registry
+    providerSpec:
+      apiVersion: cloudcredential.openshift.io/v1
+      kind: IBMCloudProviderSpec
+      policies:
+      - attributes:
+        - name: serviceName
+          value: cloud-object-storage
+        roles:
+        - crn:v1:bluemix:public:iam::::role:Viewer
+        - crn:v1:bluemix:public:iam::::role:Operator
+        - crn:v1:bluemix:public:iam::::role:Editor
+        - crn:v1:bluemix:public:iam::::serviceRole:Reader
+        - crn:v1:bluemix:public:iam::::serviceRole:Writer
+      - attributes:
+        - name: resourceType
+          value: resource-group
+        roles:
+        - crn:v1:bluemix:public:iam::::role:Viewer
+```
+
+5. Create the service ID for each credential request, assign the policies defined, create an API key, and generate the secret:
+
+```terminal
+$ ccoctl ibmcloud create-service-id \
+  --credentials-requests-dir=<path_to_credential_requests_directory> \
+  --name=<cluster_name> \
+  --output-dir=<installation_directory> \
+  --resource-group-name=<resource_group_name>
+```
+
+* <path_to_credential_requests_directory>: Specify the directory containing the files for the CredentialsRequest objects.
+* <cluster_name>: Specify the name of the {product-title} cluster.
+* <installation_directory>: Optional parameter. Specify the directory in which you want the ccoctl utility to create objects. By default, the utility creates objects in the directory in which you run the commands.
+* <resource_group_name>: Optional parameter. Specify the name of the resource group used for scoping the access policies.
+
+[NOTE]
+----
+If you enabled Technology Preview features by using the TechPreviewNoUpgrade feature set for your cluster, you must include the --enable-tech-preview parameter in the configuration for the CredentialsRequest object.
+If you provided a wrong resource group name, the installation fails during the bootstrap phase. To find the correct resource group name, run the following command:
+
+```terminal
+$ grep resourceGroupName <installation_directory>/manifests/cluster-infrastructure-02-config.yml
+```
+
+----
+
+* Check that the appropriate secrets exist in the manifests directory of your cluster.
+
+# Network configuration phases
+
+There are two phases prior to {product-title} installation where you can customize the network configuration.
+
+Phase 1:: You can customize the following network-related fields in the install-config.yaml file before you create the manifest files:
+* networking.networkType
+* networking.clusterNetwork
+* networking.serviceNetwork
+* networking.machineNetwork
+* nodeNetworking
+
+For more information, see "Installation configuration parameters".
+
+[NOTE]
+----
+Set the networking.machineNetwork to match the Classless Inter-Domain Routing (CIDR) where the preferred subnet is located.
+----
+
+[IMPORTANT]
+----
+The CIDR range 172.17.0.0/16 is reserved by libVirt. You cannot use any other CIDR range that overlaps with the 172.17.0.0/16 CIDR range for networks in your cluster.
+----
+Phase 2:: After creating the manifest files by running openshift-install create manifests, you can define a customized Cluster Network Operator manifest with only the fields you want to modify. You can use the manifest to specify an advanced network configuration.
+
+During phase 2, you cannot override the values that you specified in phase 1 in the install-config.yaml file. However, you can customize the network plugin during phase 2.
+
+# Specifying advanced network configuration
+
+You can use advanced network configuration for your network plugin to integrate your cluster into your existing network environment.
+
+You can specify advanced network configuration only before you install the cluster.
+
+
+[IMPORTANT]
+----
+Customizing your network configuration by modifying the {product-title} manifest files created by the installation program is not supported. Applying a manifest file that you create, as in the following procedure, is supported.
+----
+
+* You have created the install-config.yaml file and completed any modifications to it.
+
+1. Change to the directory that contains the installation program and create the manifests:
+
+```terminal
+$ ./openshift-install create manifests --dir <installation_directory> 1
+```
+
+<installation_directory> specifies the name of the directory that contains the install-config.yaml file for your cluster.
+2. Create a stub manifest file for the advanced network configuration that is named cluster-network-03-config.yml in the <installation_directory>/manifests/ directory:
+
+```yaml
+apiVersion: operator.openshift.io/v1
+kind: Network
+metadata:
+  name: cluster
+spec:
+```
+
+3. Specify the advanced network configuration for your cluster in the cluster-network-03-config.yml file, such as in the following example:
+
+```yaml
+apiVersion: operator.openshift.io/v1
+kind: Network
+metadata:
+  name: cluster
+spec:
+  defaultNetwork:
+    ovnKubernetesConfig:
+      ipsecConfig:
+        mode: Full
+```
+4. Optional: Back up the manifests/cluster-network-03-config.yml file. The
+installation program consumes the manifests/ directory when you create the
+Ignition config files.
+5. Remove the Kubernetes manifest files that define the control plane machines and compute MachineSets:
+
+```terminal
+$ rm -f openshift/99_openshift-cluster-api_master-machines-*.yaml openshift/99_openshift-cluster-api_worker-machineset-*.yaml
+```
+
+
+Because you create and manage these resources yourself, you do not have
+to initialize them.
+* You can preserve the MachineSet files to create compute machines by using the machine API, but you must update references to them to match your environment.
+
+# Cluster Network Operator configuration
+
+The configuration for the cluster network is specified as part of the Cluster Network Operator (CNO) configuration and stored in a custom resource (CR) object that is named cluster. The CR specifies the fields for the Network API in the operator.openshift.io API group.
+
+The CNO configuration inherits the following fields during cluster installation from the Network API in the Network.config.openshift.io API group:
+
+clusterNetwork:: IP address pools from which pod IP addresses are allocated.
+serviceNetwork:: IP address pool for services.
+defaultNetwork.type:: Cluster network plugin. OVNKubernetes is the only supported plugin during installation.
+
+You can specify the cluster network plugin configuration for your cluster by setting the fields for the defaultNetwork object in the CNO object named cluster.
+
+## Cluster Network Operator configuration object
+
+The fields for the Cluster Network Operator (CNO) are described in the following table:
+
+
+
+
+[IMPORTANT]
+----
+For a cluster that needs to deploy objects across multiple networks, ensure that you specify the same value for the clusterNetwork.hostPrefix parameter for each network type that is defined in the install-config.yaml file. Setting a different value for each clusterNetwork.hostPrefix parameter can impact the OVN-Kubernetes network plugin, where the plugin cannot effectively route object traffic among different nodes.
+----
+
+### defaultNetwork object configuration
+
+The values for the defaultNetwork object are defined in the following table:
+
+
+
+#### Configuration for the OVN-Kubernetes network plugin
+
+The following table describes the configuration fields for the OVN-Kubernetes network plugin:
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+```yaml
+defaultNetwork:
+  type: OVNKubernetes
+  ovnKubernetesConfig:
+    mtu: 1400
+    genevePort: 6081
+    ipsecConfig:
+      mode: Full
+```
+
+
+# Deploying the cluster
+
+You can install {product-title} on a compatible cloud platform.
+
+
+[IMPORTANT]
+----
+You can run the create cluster command of the installation program only once, during initial installation.
+----
+
+* You have configured an account with the cloud platform that hosts your cluster.
+* You have the {product-title} installation program and the pull secret for your cluster.
+* You have verified that the cloud provider account on your host has the correct permissions to deploy the cluster. An account with incorrect permissions causes the installation process to fail with an error message that displays the missing permissions.
+
+* In the directory that contains the installation program, initialize the cluster deployment by running the following command:
+
+```terminal
+$ ./openshift-install create cluster --dir <installation_directory> \ 1
+    --log-level=info 2
+```
+
+For <installation_directory>, specify the
+location of your customized ./install-config.yaml file.
+To view different installation details, specify warn, debug, or
+error instead of info.
+
+When the cluster deployment completes successfully:
+
+* The terminal displays directions for accessing your cluster, including a link to the web console and credentials for the kubeadmin user.
+* Credential information also outputs to <installation_directory>/.openshift_install.log.
+
+
+[IMPORTANT]
+----
+Do not delete the installation program or the files that the installation program creates. Both are required to delete the cluster.
+----
+
+
+```terminal
+...
+INFO Install complete!
+INFO To access the cluster as the system:admin user when using 'oc', run 'export KUBECONFIG=/home/myuser/install_dir/auth/kubeconfig'
+INFO Access the OpenShift web-console here: https://console-openshift-console.apps.mycluster.example.com
+INFO Login to the console with user: "kubeadmin", and password: "password"
+INFO Time elapsed: 36m22s
+```
+
+
+
+[IMPORTANT]
+----
+* The Ignition config files that the installation program generates contain certificates that expire after 24 hours, which are then renewed at that time. If the cluster is shut down before renewing the certificates and the cluster is later restarted after the 24 hours have elapsed, the cluster automatically recovers the expired certificates. The exception is that you must manually approve the pending node-bootstrapper certificate signing requests (CSRs) to recover kubelet certificates. See the documentation for Recovering from expired control plane certificates for more information.
+* It is recommended that you use Ignition config files within 12 hours after they are generated because the 24-hour certificate rotates from 16 to 22 hours after the cluster is installed. By using the Ignition config files within 12 hours, you can avoid installation failure if the certificate update runs during installation.
+----
+
+# Installing the OpenShift CLI on Linux
+
+You can install the OpenShift CLI (`oc`) binary on Linux.
+
+
+[IMPORTANT]
+----
+If you installed an earlier version of oc, you cannot use it to complete all of the commands in {product-title}.
+Download and install the new version of oc.
+----
+
+1. Navigate to the Download {product-title} page on the Red Hat Customer Portal.
+2. Select the architecture from the Product Variant list.
+3. Select the appropriate version from the Version list.
+4. Click Download Now next to the OpenShift v{product-version} Linux Clients entry and save the file.
+5. Unpack the archive:
+
+```terminal
+$ tar xvf <file>
+```
+
+6. Place the oc binary in a directory that is on your PATH.
+
+To check your PATH, execute the following command:
+
+```terminal
+$ echo $PATH
+```
+
+
+* After you install the OpenShift CLI, it is available using the oc command:
+
+```terminal
+$ oc <command>
+```
+
+
+# Installing the OpenShift CLI on Windows
+
+You can install the OpenShift CLI (`oc`) binary on Windows.
+
+
+[IMPORTANT]
+----
+If you installed an earlier version of oc, you cannot use it to complete all of the commands in {product-title}.
+Download and install the new version of oc.
+----
+
+1. Navigate to the Download {product-title} page on the Red Hat Customer Portal.
+2. Select the appropriate version from the Version list.
+3. Click Download Now next to the OpenShift v{product-version} Windows Client entry and save the file.
+4. Extract the archive with a ZIP program.
+5. Move the oc binary to a directory that is on your PATH variable.
+
+To check your PATH variable, open the command prompt and execute the following command:
+
+```terminal
+C:\> path
+```
+
+
+* After you install the OpenShift CLI, it is available using the oc command:
+
+```terminal
+C:\> oc <command>
+```
+
+
+# Installing the OpenShift CLI on macOS
+
+You can install the OpenShift CLI (`oc`) binary on macOS.
+
+
+[IMPORTANT]
+----
+If you installed an earlier version of oc, you cannot use it to complete all of the commands in {product-title}.
+Download and install the new version of oc.
+----
+
+1. Navigate to the Download {product-title} page on the Red Hat Customer Portal.
+2. Select the architecture from the Product Variant list.
+3. Select the appropriate version from the Version list.
+4. Click Download Now next to the OpenShift v{product-version} macOS Clients entry and save the file.
+
+[NOTE]
+----
+For macOS arm64, choose the OpenShift v{product-version} macOS arm64 Client entry.
+----
+5. Unpack and unzip the archive.
+6. Move the oc binary to a directory on your PATH variable.
+
+To check your PATH variable, open a terminal and execute the following command:
+
+```terminal
+$ echo $PATH
+```
+
+
+* Verify your installation by using an oc command:
+
+```terminal
+$ oc <command>
+```
+
+
+# Logging in to the cluster by using the CLI
+
+You can log in to your cluster as a default system user by exporting the cluster kubeconfig file.
+The kubeconfig file contains information about the cluster that is used by the CLI to connect a client to the correct cluster and API server.
+The file is specific to a cluster and is created during {product-title} installation.
+
+* You deployed an {product-title} cluster.
+* You installed the OpenShift CLI (`oc`).
+
+1. Export the kubeadmin credentials by running the following command:
+
+```terminal
+$ export KUBECONFIG=<installation_directory>/auth/kubeconfig 1
+```
+
+For <installation_directory>, specify the path to the directory that you stored
+the installation files in.
+2. Verify you can run oc commands successfully using the exported configuration by running the following command:
+
+```terminal
+$ oc whoami
+```
+
+Example output
+
+```terminal
+system:admin
+```
+
+
+* Accessing the web console
+
+# Telemetry access for {product-title}
+
+In {product-title} {product-version}, the Telemetry service, which runs by default to provide metrics about cluster health and the success of updates, requires internet access. If your cluster is connected to the internet, Telemetry runs automatically, and your cluster is registered to OpenShift Cluster Manager.
+
+After you confirm that your OpenShift Cluster Manager inventory is correct, either maintained automatically by Telemetry or manually by using OpenShift Cluster Manager, use subscription watch to track your {product-title} subscriptions at the account or multi-cluster level.
+
+* About remote health monitoring
+
+# Next steps
+
+* Customize your cluster.
+* If necessary, you can
+Remote health reporting.

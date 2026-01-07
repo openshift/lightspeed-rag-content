@@ -1,0 +1,178 @@
+# Using Init Containers to perform tasks before a pod is deployed
+
+
+{product-title} provides init containers, which are specialized containers
+that run before application containers and can contain utilities or setup scripts not present in an app image.
+
+# Understanding Init Containers
+
+You can use an Init Container resource to perform tasks before the rest of a pod is deployed.
+
+A pod can have Init Containers in addition to application containers. Init
+containers allow you to reorganize setup scripts and binding code.
+
+An Init Container can:
+
+* Contain and run utilities that are not desirable to include in the app Container image for security reasons.
+* Contain utilities or custom code for setup that is not present in an app image. For example, there is no requirement to make an image FROM another image just to use a tool like sed, awk, python, or dig during setup.
+* Use Linux namespaces so that they have different filesystem views from app containers, such as access to secrets that application containers are not able to access.
+
+Each Init Container must complete successfully before the next one is started. So, Init Containers provide an easy way to block or delay the startup of app containers until some set of preconditions are met.
+
+For example, the following are some ways you can use Init Containers:
+
+* Wait for a service to be created with a shell command like:
+
+```terminal
+for i in {1..100}; do sleep 1; if dig myservice; then exit 0; fi; done; exit 1
+```
+
+* Register this pod with a remote server from the downward API with a command like:
+
+```terminal
+$ curl -X POST http://$MANAGEMENT_SERVICE_HOST:$MANAGEMENT_SERVICE_PORT/register -d ‘instance=$()&ip=$()’
+```
+
+* Wait for some time before starting the app Container with a command like sleep 60.
+* Clone a git repository into a volume.
+* Place values into a configuration file and run a template tool to dynamically generate a configuration file for the main app Container. For example, place the POD_IP value in a configuration and generate the main app configuration file using Jinja.
+
+See the Kubernetes documentation for more information.
+
+# Creating Init Containers
+
+The following example outlines a simple pod which has two Init Containers. The first waits for myservice and the second waits for mydb. After both containers complete, the pod begins.
+
+1. Create the pod for the Init Container:
+1. Create a YAML file similar to the following:
+
+```yaml
+apiVersion: v1
+kind: Pod
+metadata:
+  name: myapp-pod
+  labels:
+    app: myapp
+spec:
+  securityContext:
+    runAsNonRoot: true
+    seccompProfile:
+      type: RuntimeDefault
+  containers:
+  - name: myapp-container
+    image: registry.access.redhat.com/ubi9/ubi:latest
+    command: ['sh', '-c', 'echo The app is running! && sleep 3600']
+    securityContext:
+      allowPrivilegeEscalation: false
+      capabilities:
+        drop: [ALL]
+  initContainers:
+  - name: init-myservice
+    image: registry.access.redhat.com/ubi9/ubi:latest
+    command: ['sh', '-c', 'until getent hosts myservice; do echo waiting for myservice; sleep 2; done;']
+    securityContext:
+      allowPrivilegeEscalation: false
+      capabilities:
+        drop: [ALL]
+  - name: init-mydb
+    image: registry.access.redhat.com/ubi9/ubi:latest
+    command: ['sh', '-c', 'until getent hosts mydb; do echo waiting for mydb; sleep 2; done;']
+    securityContext:
+      allowPrivilegeEscalation: false
+      capabilities:
+        drop: [ALL]
+```
+
+2. Create the pod:
+
+```terminal
+$ oc create -f myapp.yaml
+```
+
+3. View the status of the pod:
+
+```terminal
+$ oc get pods
+```
+
+Example output
+
+```terminal
+NAME                          READY     STATUS              RESTARTS   AGE
+myapp-pod                     0/1       Init:0/2            0          5s
+```
+
+
+The pod status, Init:0/2, indicates it is waiting for the two services.
+2. Create the myservice service.
+1. Create a YAML file similar to the following:
+
+```yaml
+kind: Service
+apiVersion: v1
+metadata:
+  name: myservice
+spec:
+  ports:
+  - protocol: TCP
+    port: 80
+    targetPort: 9376
+```
+
+2. Create the pod:
+
+```terminal
+$ oc create -f myservice.yaml
+```
+
+3. View the status of the pod:
+
+```terminal
+$ oc get pods
+```
+
+Example output
+
+```terminal
+NAME                          READY     STATUS              RESTARTS   AGE
+myapp-pod                     0/1       Init:1/2            0          5s
+```
+
+
+The pod status, Init:1/2, indicates it is waiting for one service, in this case the mydb service.
+3. Create the mydb service:
+1. Create a YAML file similar to the following:
+
+```yaml
+kind: Service
+apiVersion: v1
+metadata:
+  name: mydb
+spec:
+  ports:
+  - protocol: TCP
+    port: 80
+    targetPort: 9377
+```
+
+2. Create the pod:
+
+```terminal
+$ oc create -f mydb.yaml
+```
+
+3. View the status of the pod:
+
+```terminal
+$ oc get pods
+```
+
+Example output
+
+```terminal
+NAME                          READY     STATUS              RESTARTS   AGE
+myapp-pod                     1/1       Running             0          2m
+```
+
+
+The pod status indicated that it is no longer waiting for the services and is running.

@@ -1,0 +1,425 @@
+# Operator Lifecycle Manager dependency resolution
+
+
+This guide outlines dependency resolution and custom resource definition (CRD) upgrade lifecycles with Operator Lifecycle Manager (OLM) in {product-title}.
+
+# About dependency resolution
+
+Operator Lifecycle Manager (OLM) manages the dependency resolution and upgrade lifecycle of running Operators. In many ways, the problems OLM faces are similar to other system or language package managers, such as yum and rpm.
+
+However, there is one constraint that similar systems do not generally have that OLM does: because Operators are always running, OLM attempts to ensure that you are never left with a set of Operators that do not work with each other.
+
+As a result, OLM must never create the following scenarios:
+
+* Install a set of Operators that require APIs that cannot be provided
+* Update an Operator in a way that breaks another that depends upon it
+
+This is made possible with two types of data:
+
+Properties:: Typed metadata about the Operator that constitutes the public interface for it in the dependency resolver. Examples include the group/version/kind (GVK) of the APIs provided by the Operator and the semantic version (semver) of the Operator.
+Constraints or dependencies:: An Operator's requirements that should be satisfied by other Operators that might or might not have already been installed on the target cluster. These act as queries or filters over all available Operators and constrain the selection during dependency resolution and installation. Examples include requiring a specific API to be available on the cluster or expecting a particular Operator with a particular version to be installed.
+
+OLM converts these properties and constraints into a system of Boolean formulas and passes them to a SAT solver, a program that establishes Boolean satisfiability, which does the work of determining what Operators should be installed.
+
+# Operator properties
+
+All Operators in a catalog have the following properties:
+
+olm.package:: Includes the name of the package and the version of the Operator
+olm.gvk:: A single property for each provided API from the cluster service version (CSV)
+
+Additional properties can also be directly declared by an Operator author by including a properties.yaml file in the metadata/ directory of the Operator bundle.
+
+
+```yaml
+properties:
+- type: olm.kubeversion
+  value:
+    version: "1.16.0"
+```
+
+
+## Arbitrary properties
+
+Operator authors can declare arbitrary properties in a properties.yaml file in the metadata/ directory of the Operator bundle. These properties are translated into a map data structure that is used as an input to the Operator Lifecycle Manager (OLM) resolver at runtime.
+
+These properties are opaque to the resolver as it does not understand the properties, but it can evaluate the generic constraints against those properties to determine if the constraints can be satisfied given the properties list.
+
+
+```yaml
+properties:
+  - property:
+      type: color
+      value: red
+  - property:
+      type: shape
+      value: square
+  - property:
+      type: olm.gvk
+      value:
+        group: olm.coreos.io
+        version: v1alpha1
+        kind: myresource
+```
+
+
+This structure can be used to construct a Common Expression Language (CEL) expression for generic constraints.
+
+* Common Expression Language (CEL) constraints
+
+# Operator dependencies
+
+The dependencies of an Operator are listed in a dependencies.yaml file in the metadata/ folder of a bundle. This file is optional and currently only used to specify explicit Operator-version dependencies.
+
+The dependency list contains a type field for each item to specify what kind of dependency this is. The following types of Operator dependencies are supported:
+
+olm.package:: This type indicates a dependency for a specific Operator version. The dependency information must include the package name and the version of the package in semver format. For example, you can specify an exact version such as 0.5.2 or a range of versions such as >0.5.1.
+olm.gvk:: With this type, the author can specify a dependency with group/version/kind (GVK) information, similar to existing CRD and API-based usage in a CSV. This is a path to enable Operator authors to consolidate all dependencies, API or explicit versions, to be in the same place.
+olm.constraint:: This type declares generic constraints on arbitrary Operator properties.
+
+In the following example, dependencies are specified for a Prometheus Operator and etcd CRDs:
+
+
+```yaml
+dependencies:
+  - type: olm.package
+    value:
+      packageName: prometheus
+      version: ">0.27.0"
+  - type: olm.gvk
+    value:
+      group: etcd.database.coreos.com
+      kind: EtcdCluster
+      version: v1beta2
+```
+
+
+# Generic constraints
+
+An olm.constraint property declares a dependency constraint of a particular type, differentiating non-constraint and constraint properties. Its value field is an object containing a failureMessage field holding a string-representation of the constraint message. This message is surfaced as an informative comment to users if the constraint is not satisfiable at runtime.
+
+The following keys denote the available constraint types:
+
+gvk:: Type whose value and interpretation is identical to the olm.gvk type
+package:: Type whose value and interpretation is identical to the olm.package type
+cel:: A Common Expression Language (CEL) expression evaluated at runtime by the Operator Lifecycle Manager (OLM) resolver over arbitrary bundle properties and cluster information
+all, any, not:: Conjunction, disjunction, and negation constraints, respectively, containing one or more concrete constraints, such as gvk or a nested compound constraint
+
+## Common Expression Language (CEL) constraints
+
+The cel constraint type supports Common Expression Language (CEL) as the expression language. The cel struct has a rule field which contains the CEL expression string that is evaluated against Operator properties at runtime to determine if the Operator satisfies the constraint.
+
+
+```yaml
+type: olm.constraint
+value:
+  failureMessage: 'require to have "certified"'
+  cel:
+    rule: 'properties.exists(p, p.type == "certified")'
+```
+
+
+The CEL syntax supports a wide range of logical operators, such as AND and OR. As a result, a single CEL expression can have multiple rules for multiple conditions that are linked together by these logical operators. These rules are evaluated against a dataset of multiple different properties from a bundle or any given source, and the output is solved into a single bundle or Operator that satisfies all of those rules within a single constraint.
+
+
+```yaml
+type: olm.constraint
+value:
+  failureMessage: 'require to have "certified" and "stable" properties'
+  cel:
+    rule: 'properties.exists(p, p.type == "certified") && properties.exists(p, p.type == "stable")'
+```
+
+
+## Compound constraints (all, any, not)
+
+Compound constraint types are evaluated following their logical definitions.
+
+The following is an example of a conjunctive constraint (all) of two packages and one GVK. That is, they must all be satisfied by installed bundles:
+
+
+```yaml
+schema: olm.bundle
+name: red.v1.0.0
+properties:
+- type: olm.constraint
+  value:
+    failureMessage: All are required for Red because...
+    all:
+      constraints:
+      - failureMessage: Package blue is needed for...
+        package:
+          name: blue
+          versionRange: '>=1.0.0'
+      - failureMessage: GVK Green/v1 is needed for...
+        gvk:
+          group: greens.example.com
+          version: v1
+          kind: Green
+```
+
+
+The following is an example of a disjunctive constraint (any) of three versions of the same GVK. That is, at least one must be satisfied by installed bundles:
+
+
+```yaml
+schema: olm.bundle
+name: red.v1.0.0
+properties:
+- type: olm.constraint
+  value:
+    failureMessage: Any are required for Red because...
+    any:
+      constraints:
+      - gvk:
+          group: blues.example.com
+          version: v1beta1
+          kind: Blue
+      - gvk:
+          group: blues.example.com
+          version: v1beta2
+          kind: Blue
+      - gvk:
+          group: blues.example.com
+          version: v1
+          kind: Blue
+```
+
+
+The following is an example of a negation constraint (not) of one version of a GVK. That is, this GVK cannot be provided by any bundle in the result set:
+
+
+```yaml
+schema: olm.bundle
+name: red.v1.0.0
+properties:
+- type: olm.constraint
+  value:
+  all:
+    constraints:
+    - failureMessage: Package blue is needed for...
+      package:
+        name: blue
+        versionRange: '>=1.0.0'
+    - failureMessage: Cannot be required for Red because...
+      not:
+        constraints:
+        - gvk:
+            group: greens.example.com
+            version: v1alpha1
+            kind: greens
+```
+
+
+The negation semantics might appear unclear in the not constraint context. To clarify, the negation is really instructing the resolver to remove any possible solution that includes a particular GVK, package at a version, or satisfies some child compound constraint from the result set.
+
+As a corollary, the not compound constraint should only be used within all or any constraints, because negating without first selecting a possible set of dependencies does not make sense.
+
+## Nested compound constraints
+
+A nested compound constraint, one that contains at least one child compound constraint along with zero or more simple constraints, is evaluated from the bottom up following the procedures for each previously described constraint type.
+
+The following is an example of a disjunction of conjunctions, where one, the other, or both can satisfy the constraint:
+
+
+```yaml
+schema: olm.bundle
+name: red.v1.0.0
+properties:
+- type: olm.constraint
+  value:
+    failureMessage: Required for Red because...
+    any:
+      constraints:
+      - all:
+          constraints:
+          - package:
+              name: blue
+              versionRange: '>=1.0.0'
+          - gvk:
+              group: blues.example.com
+              version: v1
+              kind: Blue
+      - all:
+          constraints:
+          - package:
+              name: blue
+              versionRange: '<1.0.0'
+          - gvk:
+              group: blues.example.com
+              version: v1beta1
+              kind: Blue
+```
+
+
+
+[NOTE]
+----
+The maximum raw size of an olm.constraint type is 64KB to limit resource exhaustion attacks.
+----
+
+# Dependency preferences
+
+There can be many options that equally satisfy a dependency of an Operator. The dependency resolver in Operator Lifecycle Manager (OLM) determines which option best fits the requirements of the requested Operator. As an Operator author or user, it can be important to understand how these choices are made so that dependency resolution is clear.
+
+## Catalog priority
+
+On {product-title} clusters, OLM reads catalog sources to know which Operators are available for installation.
+
+
+```yaml
+apiVersion: "operators.coreos.com/v1alpha1"
+kind: "CatalogSource"
+metadata:
+  name: "my-operators"
+  namespace: "operators"
+spec:
+  sourceType: grpc
+  grpcPodConfig:
+    securityContextConfig: <security_mode> 1
+  image: example.com/my/operator-index:v1
+  displayName: "My Operators"
+  priority: 100
+```
+
+
+Specify the value of legacy or restricted. If the field is not set, the default value is legacy. In a future {product-title} release, it is planned that the default value will be restricted.
+
+[NOTE]
+----
+If your catalog cannot run with restricted permissions, it is recommended that you manually set this field to legacy.
+----
+
+A CatalogSource object has a priority field, which is used by the resolver to know how to prefer options for a dependency.
+
+There are two rules that govern catalog preference:
+
+* Options in higher-priority catalogs are preferred to options in lower-priority catalogs.
+* Options in the same catalog as the dependent are preferred to any other catalogs.
+
+## Channel ordering
+
+An Operator package in a catalog is a collection of update channels that a user can subscribe to in {product-title} clusters. Channels can be used to provide a particular stream of updates for a minor release (1.2, 1.3) or a release frequency (stable, fast).
+
+It is likely that a dependency might be satisfied by Operators in the same package, but different channels. For example, version 1.2 of an Operator might exist in both the stable and fast channels.
+
+Each package has a default channel, which is always preferred to non-default channels. If no option in the default channel can satisfy a dependency, options are considered from the remaining channels in lexicographic order of the channel name.
+
+## Order within a channel
+
+There are almost always multiple options to satisfy a dependency within a single channel. For example, Operators in one package and channel provide the same set of APIs.
+
+When a user creates a subscription, they indicate which channel to receive updates from. This immediately reduces the search to just that one channel. But within the channel, it is likely that many Operators satisfy a dependency.
+
+Within a channel, newer Operators that are higher up in the update graph are preferred. If the head of a channel satisfies a dependency, it will be tried first.
+
+## Other constraints
+
+In addition to the constraints supplied by package dependencies, OLM includes additional constraints to represent the desired user state and enforce resolution invariants.
+
+### Subscription constraint
+
+A subscription constraint filters the set of Operators that can satisfy a subscription. Subscriptions are user-supplied constraints for the dependency resolver. They declare the intent to either install a new Operator if it is not already on the cluster, or to keep an existing Operator updated.
+
+### Package constraint
+
+Within a namespace, no two Operators may come from the same package.
+
+## Additional resources
+
+* Catalog health requirements
+
+# CRD upgrades
+
+OLM upgrades a custom resource definition (CRD) immediately if it is owned by a singular cluster service version (CSV). If a CRD is owned by multiple CSVs, then the CRD is upgraded when it has satisfied all of the following backward compatible conditions:
+
+* All existing serving versions in the current CRD are present in the new CRD.
+* All existing instances, or custom resources, that are associated with the serving versions of the CRD are valid when validated against the validation schema of the new CRD.
+
+# Dependency best practices
+
+When specifying dependencies, there are best practices you should consider.
+
+Depend on APIs or a specific version range of Operators:: Operators can add or remove APIs at any time; always specify an olm.gvk dependency on any APIs your Operators requires. The exception to this is if you are specifying olm.package constraints instead.
+Set a minimum version:: The Kubernetes documentation on API changes describes what changes are allowed for Kubernetes-style Operators. These versioning conventions allow an Operator to update an API without bumping the API version, as long as the API is backwards-compatible.
+
+For Operator dependencies, this means that knowing the API version of a dependency might not be enough to ensure the dependent Operator works as intended.
+
+For example:
+* TestOperator v1.0.0 provides v1alpha1 API version of the MyObject resource.
+* TestOperator v1.0.1 adds a new field spec.newfield to MyObject, but still at v1alpha1.
+
+Your Operator might require the ability to write spec.newfield into the MyObject resource. An olm.gvk constraint alone is not enough for OLM to determine that you need TestOperator v1.0.1 and not TestOperator v1.0.0.
+
+Whenever possible, if a specific Operator that provides an API is known ahead of time, specify an additional olm.package constraint to set a minimum.
+Omit a maximum version or allow a very wide range:: Because Operators provide cluster-scoped resources such as API services and CRDs, an Operator that specifies a small window for a dependency might unnecessarily constrain updates for other consumers of that dependency.
+
+Whenever possible, do not set a maximum version. Alternatively, set a very wide semantic range to prevent conflicts with other Operators. For example, >1.0.0 <2.0.0.
+
+Unlike with conventional package managers, Operator authors explicitly encode that updates are safe through channels in OLM. If an update is available for an existing subscription, it is assumed that the Operator author is indicating that it can update from the previous version. Setting a maximum version for a dependency overrides the update stream of the author by unnecessarily truncating it at a particular upper bound.
+
+[NOTE]
+----
+Cluster administrators cannot override dependencies set by an Operator author.
+----
+
+However, maximum versions can and should be set if there are known incompatibilities that must be avoided. Specific versions can be omitted with the version range syntax, for example > 1.0.0 !1.2.1.
+
+* Kubernetes documentation: Changing the API
+
+# Dependency caveats
+
+When specifying dependencies, there are caveats you should consider.
+
+No compound constraints (AND):: There is currently no method for specifying an AND relationship between constraints. In other words, there is no way to specify that one Operator depends on another Operator that both provides a given API and has version >1.1.0.
+
+This means that when specifying a dependency such as:
+
+```yaml
+dependencies:
+- type: olm.package
+  value:
+    packageName: etcd
+    version: ">3.1.0"
+- type: olm.gvk
+  value:
+    group: etcd.database.coreos.com
+    kind: EtcdCluster
+    version: v1beta2
+```
+
+
+It would be possible for OLM to satisfy this with two Operators: one that provides EtcdCluster and one that has version >3.1.0. Whether that happens, or whether an Operator is selected that satisfies both constraints, depends on the ordering that potential options are visited. Dependency preferences and ordering options are well-defined and can be reasoned about, but to exercise caution, Operators should stick to one mechanism or the other.
+Cross-namespace compatibility:: OLM performs dependency resolution at the namespace scope. It is possible to get into an update deadlock if updating an Operator in one namespace would be an issue for an Operator in another namespace, and vice-versa.
+
+# Example dependency resolution scenarios
+
+In the following examples, a provider is an Operator which "owns" a CRD or API service.
+
+## Example: Deprecating dependent APIs
+
+A and B are APIs (CRDs):
+
+* The provider of A depends on B.
+* The provider of B has a subscription.
+* The provider of B updates to provide C but deprecates B.
+
+This results in:
+
+* B no longer has a provider.
+* A no longer works.
+
+This is a case OLM prevents with its upgrade strategy.
+
+## Example: Version deadlock
+
+A and B are APIs:
+
+* The provider of A requires B.
+* The provider of B requires A.
+* The provider of A updates to (provide A2, require B2) and deprecate A.
+* The provider of B updates to (provide B2, require A2) and deprecate B.
+
+If OLM attempts to update A without simultaneously updating B, or vice-versa, it is unable to progress to new versions of the Operators, even though a new compatible set can be found.
+
+This is another case OLM prevents with its upgrade strategy.

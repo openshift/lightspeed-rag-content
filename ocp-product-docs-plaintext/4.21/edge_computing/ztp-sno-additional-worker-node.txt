@@ -1,0 +1,471 @@
+# Expanding single-node OpenShift clusters with GitOps ZTP
+
+
+You can expand single-node OpenShift clusters with GitOps Zero Touch Provisioning (ZTP). When you add worker nodes to single-node OpenShift clusters, the original single-node OpenShift cluster retains the control plane node role. Adding worker nodes does not require any downtime for the existing single-node OpenShift cluster.
+
+[NOTE]
+----
+Although there is no specified limit on the number of worker nodes that you can add to a single-node OpenShift cluster, you must revaluate the reserved CPU allocation on the control plane node for the additional worker nodes.
+----
+If you require workload partitioning on the worker node, you must deploy and remediate the managed cluster policies on the hub cluster before installing the node. This way, the workload partitioning MachineConfig objects are rendered and associated with the worker machine config pool before the GitOps ZTP workflow applies the MachineConfig ignition file to the worker node.
+It is recommended that you first remediate the policies, and then install the worker node.
+If you create the workload partitioning manifests after installing the worker node, you must drain the node manually and delete all the pods managed by daemon sets. When the managing daemon sets create the new pods, the new pods undergo the workload partitioning process.
+
+[IMPORTANT]
+----
+Adding worker nodes to single-node OpenShift clusters with GitOps ZTP is a Technology Preview feature only. Technology Preview features are not supported with Red Hat production service level agreements (SLAs) and might not be functionally complete. Red Hat does not recommend using them in production. These features provide early access to upcoming product features, enabling customers to test functionality and provide feedback during the development process.
+For more information about the support scope of Red Hat Technology Preview features, see Technology Preview Features Support Scope.
+----
+* For more information about single-node OpenShift clusters tuned for vDU application deployments, see Reference configuration for deploying vDUs on single-node OpenShift.
+* For more information about worker nodes, see Adding worker nodes to single-node OpenShift clusters.
+* For information about removing a worker node from an expanded single-node OpenShift cluster, see Removing managed cluster nodes by using the command line interface.
+
+# Applying profiles to the worker node with PolicyGenerator or PolicyGenTemplate resources
+
+You can configure the additional worker node with a DU profile.
+
+You can apply a RAN distributed unit (DU) profile to the worker node cluster using the GitOps Zero Touch Provisioning (ZTP) common, group, and site-specific PolicyGenerator or  PolicyGenTemplate resources. The GitOps ZTP pipeline that is linked to the ArgoCD policies application includes the following CRs that you can find in the relevant out/argocd/example folder when you extract the ztp-site-generate container:
+
+/acmpolicygenerator resources:: 
+* acm-common-ranGen.yaml
+* acm-group-du-sno-ranGen.yaml
+* acm-example-sno-site.yaml
+* ns.yaml
+* kustomization.yaml
+/policygentemplates resources:: 
+* common-ranGen.yaml
+* group-du-sno-ranGen.yaml
+* example-sno-site.yaml
+* ns.yaml
+* kustomization.yaml
+
+Configuring the DU profile on the worker node is considered an upgrade. To initiate the upgrade flow, you must update the existing policies or create additional ones. Then, you must create a ClusterGroupUpgrade CR to reconcile the policies in the group of clusters.
+
+# Ensuring PTP and SR-IOV daemon selector compatibility
+
+If the DU profile was deployed using the GitOps Zero Touch Provisioning (ZTP) plugin version 4.11 or earlier, the PTP and SR-IOV Operators might be configured to place the daemons only on nodes labeled as master. This configuration prevents the PTP and SR-IOV daemons from operating on the worker node. If the PTP and SR-IOV daemon node selectors are incorrectly configured on your system, you must change the daemons before proceeding with the worker DU profile configuration.
+
+1. Check the daemon node selector settings of the PTP Operator on one of the spoke clusters:
+
+```terminal
+$ oc get ptpoperatorconfig/default -n openshift-ptp -ojsonpath='{.spec}' | jq
+```
+
+Example output for PTP Operator
+
+```json
+{"daemonNodeSelector":{"node-role.kubernetes.io/master":""}} 1
+```
+
+If the node selector is set to master, the spoke was deployed with the version of the GitOps ZTP plugin that requires changes.
+2. Check the daemon node selector settings of the SR-IOV Operator on one of the spoke clusters:
+
+```terminal
+$  oc get sriovoperatorconfig/default -n \
+openshift-sriov-network-operator -ojsonpath='{.spec}' | jq
+```
+
+Example output for SR-IOV Operator
+
+```json
+{"configDaemonNodeSelector":{"node-role.kubernetes.io/worker":""},"disableDrain":false,"enableInjector":true,"enableOperatorWebhook":true} 1
+```
+
+If the node selector is set to master, the spoke was deployed with the version of the GitOps ZTP plugin that requires changes.
+3. In the group policy, add the following complianceType and spec entries:
+
+```yaml
+spec:
+    - fileName: PtpOperatorConfig.yaml
+      policyName: "config-policy"
+      complianceType: mustonlyhave
+      spec:
+        daemonNodeSelector:
+          node-role.kubernetes.io/worker: ""
+    - fileName: SriovOperatorConfig.yaml
+      policyName: "config-policy"
+      complianceType: mustonlyhave
+      spec:
+        configDaemonNodeSelector:
+          node-role.kubernetes.io/worker: ""
+```
+
+
+[IMPORTANT]
+----
+Changing the daemonNodeSelector field causes temporary PTP synchronization loss and SR-IOV connectivity loss.
+----
+4. Commit the changes in Git, and then push to the Git repository being monitored by the GitOps ZTP ArgoCD application.
+
+# PTP and SR-IOV node selector compatibility
+
+The PTP configuration resources and SR-IOV network node policies use node-role.kubernetes.io/master: "" as the node selector. If the additional worker nodes have the same NIC configuration as the control plane node, the policies used to configure the control plane node can be reused for the worker nodes. However, the node selector must be changed to select both node types, for example with the "node-role.kubernetes.io/worker" label.
+
+# Using PolicyGenerator CRs to apply worker node policies to worker nodes
+
+You can create policies for worker nodes using {policy-gen-cr} CRs.
+
+1. Create the following {policy-gen-cr} CR:
+
+```yaml
+apiVersion: policy.open-cluster-management.io/v1
+kind: PolicyGenerator
+metadata:
+    name: example-sno-workers
+placementBindingDefaults:
+    name: example-sno-workers-placement-binding
+policyDefaults:
+    namespace: example-sno
+    placement:
+        labelSelector:
+            matchExpressions:
+                - key: sites
+                  operator: In
+                  values:
+                    - example-sno 1
+    remediationAction: inform
+    severity: low
+    namespaceSelector:
+        exclude:
+            - kube-*
+        include:
+            - '*'
+    evaluationInterval:
+        compliant: 10m
+        noncompliant: 10s
+policies:
+    - name: example-sno-workers-config-policy
+      policyAnnotations:
+        ran.openshift.io/ztp-deploy-wave: "10"
+      manifests:
+        - path: source-crs/PerformanceProfile-MCP-worker.yaml
+          patches:
+            - metadata:
+                name: openshift-worker-node-performance-profile
+              spec:
+                cpu: 2
+                    isolated: 4-47
+                    reserved: 0-3
+                hugepages:
+                    defaultHugepagesSize: 1G
+                    pages:
+                        - count: 32
+                          size: 1G
+                realTimeKernel:
+                    enabled: true
+        - path: source-crs/TunedPerformancePatch-MCP-worker.yaml
+          patches:
+            - metadata:
+                name: performance-patch-worker
+              spec:
+                profile:
+                    - data: |
+                      [main]
+                      summary=Configuration changes profile inherited from performance created tuned
+                      include=openshift-node-performance-openshift-worker-node-performance-profile
+                      [bootloader]
+                      cmdline_crash=nohz_full=4-47 3
+                      [sysctl]
+                      kernel.timer_migration=1
+                      [scheduler]
+                      group.ice-ptp=0:f:10:*:ice-ptp.*
+                      [service]
+                      service.stalld=start,enable
+                      service.chronyd=stop,disable
+                      name: performance-patch-worker
+                recommend:
+                    - profile: performance-patch-worker
+```
+
+The policies are applied to all clusters with this label.
+The cpu.isolated and cpu.reserved fields must be configured for each specific hardware platform.
+The cmdline_crash CPU set must match the cpu.isolated set in the PerformanceProfile section.
+You can generate the content of crio and kubelet configuration files.
+2. Add the created policy template to the Git repository monitored by the ArgoCD policies application.
+3. Add the policy in the kustomization.yaml file.
+4. Commit the changes in Git, and then push to the Git repository being monitored by the GitOps ZTP ArgoCD application.
+5. To remediate the new policies to your spoke cluster, create a TALM custom resource:
+
+```terminal
+$ cat <<EOF | oc apply -f -
+apiVersion: ran.openshift.io/v1alpha1
+kind: ClusterGroupUpgrade
+metadata:
+  name: example-sno-worker-policies
+  namespace: default
+spec:
+  backup: false
+  clusters:
+  - example-sno
+  enable: true
+  managedPolicies:
+  - group-du-sno-config-policy
+  - example-sno-workers-config-policy
+  - example-sno-config-policy
+  preCaching: false
+  remediationStrategy:
+    maxConcurrency: 1
+EOF
+```
+
+
+# Using PolicyGenTemplate CRs to apply worker node policies to worker nodes
+
+You can create policies for worker nodes using {policy-gen-cr} CRs.
+
+1. Create the following {policy-gen-cr} CR:
+
+```yaml
+apiVersion: ran.openshift.io/v1
+kind: PolicyGenTemplate
+metadata:
+  name: "example-sno-workers"
+  namespace: "example-sno"
+spec:
+  bindingRules:
+    sites: "example-sno" 1
+  mcp: "worker" 2
+  sourceFiles:
+    - fileName: MachineConfigGeneric.yaml 3
+      policyName: "config-policy"
+      metadata:
+        labels:
+          machineconfiguration.openshift.io/role: worker
+        name: enable-workload-partitioning
+      spec:
+        config:
+          storage:
+            files:
+            - contents:
+                source: data:text/plain;charset=utf-8;base64,W2NyaW8ucnVudGltZS53b3JrbG9hZHMubWFuYWdlbWVudF0KYWN0aXZhdGlvbl9hbm5vdGF0aW9uID0gInRhcmdldC53b3JrbG9hZC5vcGVuc2hpZnQuaW8vbWFuYWdlbWVudCIKYW5ub3RhdGlvbl9wcmVmaXggPSAicmVzb3VyY2VzLndvcmtsb2FkLm9wZW5zaGlmdC5pbyIKcmVzb3VyY2VzID0geyAiY3B1c2hhcmVzIiA9IDAsICJjcHVzZXQiID0gIjAtMyIgfQo=
+              mode: 420
+              overwrite: true
+              path: /etc/crio/crio.conf.d/01-workload-partitioning
+              user:
+                name: root
+            - contents:
+                source: data:text/plain;charset=utf-8;base64,ewogICJtYW5hZ2VtZW50IjogewogICAgImNwdXNldCI6ICIwLTMiCiAgfQp9Cg==
+              mode: 420
+              overwrite: true
+              path: /etc/kubernetes/openshift-workload-pinning
+              user:
+                name: root
+    - fileName: PerformanceProfile.yaml
+      policyName: "config-policy"
+      metadata:
+        name: openshift-worker-node-performance-profile
+      spec:
+        cpu: 4
+          isolated: "4-47"
+          reserved: "0-3"
+        hugepages:
+          defaultHugepagesSize: 1G
+          pages:
+            - size: 1G
+              count: 32
+        realTimeKernel:
+          enabled: true
+    - fileName: TunedPerformancePatch.yaml
+      policyName: "config-policy"
+      metadata:
+        name: performance-patch-worker
+      spec:
+        profile:
+          - name: performance-patch-worker
+            data: |
+              [main]
+              summary=Configuration changes profile inherited from performance created tuned
+              include=openshift-node-performance-openshift-worker-node-performance-profile
+              [bootloader]
+              cmdline_crash=nohz_full=4-47 5
+              [sysctl]
+              kernel.timer_migration=1
+              [scheduler]
+              group.ice-ptp=0:f:10:*:ice-ptp.*
+              [service]
+              service.stalld=start,enable
+              service.chronyd=stop,disable
+        recommend:
+        - profile: performance-patch-worker
+```
+
+The policies are applied to all clusters with this label.
+The MCP field must be set to worker.
+This generic MachineConfig CR is used to configure workload partitioning on the worker node.
+The cpu.isolated and cpu.reserved fields must be configured for each particular hardware platform.
+The cmdline_crash CPU set must match the cpu.isolated set in the PerformanceProfile section.
+You can generate the content of crio and kubelet configuration files.
+2. Add the created policy template to the Git repository monitored by the ArgoCD policies application.
+3. Add the policy in the kustomization.yaml file.
+4. Commit the changes in Git, and then push to the Git repository being monitored by the GitOps ZTP ArgoCD application.
+5. To remediate the new policies to your spoke cluster, create a TALM custom resource:
+
+```terminal
+$ cat <<EOF | oc apply -f -
+apiVersion: ran.openshift.io/v1alpha1
+kind: ClusterGroupUpgrade
+metadata:
+  name: example-sno-worker-policies
+  namespace: default
+spec:
+  backup: false
+  clusters:
+  - example-sno
+  enable: true
+  managedPolicies:
+  - group-du-sno-config-policy
+  - example-sno-workers-config-policy
+  - example-sno-config-policy
+  preCaching: false
+  remediationStrategy:
+    maxConcurrency: 1
+EOF
+```
+
+
+# Adding worker nodes to single-node OpenShift clusters with GitOps ZTP
+
+You can add one or more worker nodes to existing single-node OpenShift clusters to increase available CPU resources in the cluster.
+
+* Install and configure RHACM 2.6 or later in an {product-title} 4.11 or later bare-metal hub cluster
+* Install Topology Aware Lifecycle Manager in the hub cluster
+* Install Red Hat OpenShift GitOps in the hub cluster
+* Use the GitOps ZTP ztp-site-generate container image version 4.12 or later
+* Deploy a managed single-node OpenShift cluster with GitOps ZTP
+* Configure the Central Infrastructure Management as described in the RHACM documentation
+* Configure the DNS serving the cluster to resolve the internal API endpoint api-int.<cluster_name>.<base_domain>
+
+1. If you deployed your cluster by using the example-sno.yaml SiteConfig manifest, add your new worker node to the spec.clusters['example-sno'].nodes list:
+
+```yaml
+nodes:
+- hostName: "example-node2.example.com"
+  role: "worker"
+  bmcAddress: "idrac-virtualmedia+https://[1111:2222:3333:4444::bbbb:1]/redfish/v1/Systems/System.Embedded.1"
+  bmcCredentialsName:
+    name: "example-node2-bmh-secret"
+  bootMACAddress: "AA:BB:CC:DD:EE:11"
+  bootMode: "UEFI"
+  nodeNetwork:
+    interfaces:
+      - name: eno1
+        macAddress: "AA:BB:CC:DD:EE:11"
+    config:
+      interfaces:
+        - name: eno1
+          type: ethernet
+          state: up
+          macAddress: "AA:BB:CC:DD:EE:11"
+          ipv4:
+            enabled: false
+          ipv6:
+            enabled: true
+            address:
+            - ip: 1111:2222:3333:4444::1
+              prefix-length: 64
+      dns-resolver:
+        config:
+          search:
+          - example.com
+          server:
+          - 1111:2222:3333:4444::2
+      routes:
+        config:
+        - destination: ::/0
+          next-hop-interface: eno1
+          next-hop-address: 1111:2222:3333:4444::1
+          table-id: 254
+```
+
+2. Create a BMC authentication secret for the new host, as referenced by the bmcCredentialsName field in the spec.nodes section of your SiteConfig file:
+
+```yaml
+apiVersion: v1
+data:
+  password: "password"
+  username: "username"
+kind: Secret
+metadata:
+  name: "example-node2-bmh-secret"
+  namespace: example-sno
+type: Opaque
+```
+
+3. Commit the changes in Git, and then push to the Git repository that is being monitored by the GitOps ZTP ArgoCD application.
+
+When the ArgoCD cluster application synchronizes, two new manifests appear on the hub cluster generated by the GitOps ZTP plugin:
+* BareMetalHost
+* NMStateConfig
+
+[IMPORTANT]
+----
+The cpuset field should not be configured for the worker node. Workload partitioning for worker nodes is added through management policies after the node installation is complete.
+----
+
+You can monitor the installation process in several ways.
+
+* Check if the preprovisioning images are created by running the following command:
+
+```terminal
+$ oc get ppimg -n example-sno
+```
+
+Example output
+
+```terminal
+NAMESPACE       NAME            READY   REASON
+example-sno     example-sno     True    ImageCreated
+example-sno     example-node2   True    ImageCreated
+```
+
+* Check the state of the bare-metal hosts:
+
+```terminal
+$ oc get bmh -n example-sno
+```
+
+Example output
+
+```terminal
+NAME            STATE          CONSUMER   ONLINE   ERROR   AGE
+example-sno     provisioned               true             69m
+example-node2   provisioning              true             4m50s 1
+```
+
+The provisioning state indicates that node booting from the installation media is in progress.
+* Continuously monitor the installation process:
+1. Watch the agent install process by running the following command:
+
+```terminal
+$ oc get agent -n example-sno --watch
+```
+
+Example output
+
+```terminal
+NAME                                   CLUSTER   APPROVED   ROLE     STAGE
+671bc05d-5358-8940-ec12-d9ad22804faa   example-sno   true       master   Done
+[...]
+14fd821b-a35d-9cba-7978-00ddf535ff37   example-sno   true       worker   Starting installation
+14fd821b-a35d-9cba-7978-00ddf535ff37   example-sno   true       worker   Installing
+14fd821b-a35d-9cba-7978-00ddf535ff37   example-sno   true       worker   Writing image to disk
+[...]
+14fd821b-a35d-9cba-7978-00ddf535ff37   example-sno   true       worker   Waiting for control plane
+[...]
+14fd821b-a35d-9cba-7978-00ddf535ff37   example-sno   true       worker   Rebooting
+14fd821b-a35d-9cba-7978-00ddf535ff37   example-sno   true       worker   Done
+```
+
+2. When the worker node installation is finished, the worker node certificates are approved automatically. At this point, the worker appears in the ManagedClusterInfo status. Run the following command to see the status:
+
+```terminal
+$ oc get managedclusterinfo/example-sno -n example-sno -o \
+jsonpath='{range .status.nodeList[*]}{.name}{"\t"}{.conditions}{"\t"}{.labels}{"\n"}{end}'
+```
+
+Example output
+
+```terminal
+example-sno	[{"status":"True","type":"Ready"}]	{"node-role.kubernetes.io/master":"","node-role.kubernetes.io/worker":""}
+example-node2	[{"status":"True","type":"Ready"}]	{"node-role.kubernetes.io/worker":""}
+```

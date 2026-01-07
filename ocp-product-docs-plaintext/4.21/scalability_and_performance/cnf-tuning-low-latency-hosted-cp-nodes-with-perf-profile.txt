@@ -1,0 +1,388 @@
+# Tuning hosted control planes for low latency with the performance profile
+
+
+Tune hosted control planes for low latency by applying a performance profile. With the performance profile, you can restrict CPUs for infrastructure and application containers and configure huge pages, Hyper-Threading, and CPU partitions for latency-sensitive processes.
+
+# Creating a performance profile for hosted control planes
+
+You can create a cluster performance profile by using the Performance Profile Creator (PPC) tool. The PPC is a function of the Node Tuning Operator.
+
+The PPC combines information about your cluster with user-supplied configurations to generate a performance profile that is appropriate to your hardware, topology, and use-case.
+
+The following is a high-level workflow for creating and applying a performance profile in your cluster:
+
+1. Gather information about your cluster using the must-gather command.
+2. Use the PPC tool to create a performance profile.
+3. Apply the performance profile to your cluster.
+
+## Gathering data about your hosted control planes cluster for the PPC
+
+The Performance Profile Creator (PPC) tool requires must-gather data. As a cluster administrator, run the must-gather command to capture information about your cluster.
+
+* You have cluster-admin role access to the management cluster.
+* You installed the OpenShift CLI (`oc`).
+
+1. Export the management cluster kubeconfig file by running the following command:
+
+```terminal
+$ export MGMT_KUBECONFIG=<path_to_mgmt_kubeconfig>
+```
+
+2. List all node pools across all namespaces by running the following command:
+
+```terminal
+$ oc --kubeconfig="$MGMT_KUBECONFIG" get np -A
+```
+
+Example output
+
+```terminal
+NAMESPACE   NAME                     CLUSTER       DESIRED NODES   CURRENT NODES   AUTOSCALING   AUTOREPAIR   VERSION   UPDATINGVERSION   UPDATINGCONFIG   MESSAGE
+clusters    democluster-us-east-1a   democluster   1               1               False         False        4.17.0    False             True
+```
+
+* The output shows the namespace clusters in the management cluster where the NodePool resource is defined.
+* The name of the NodePool resource, for example democluster-us-east-1a.
+* The HostedCluster this NodePool belongs to. For example, democluster.
+3. On the management cluster, run the following command to list available secrets:
+
+```terminal
+$ oc get secrets -n clusters
+```
+
+Example output
+
+```terminal
+NAME                              TYPE                      DATA   AGE
+builder-dockercfg-25qpp           kubernetes.io/dockercfg   1      128m
+default-dockercfg-mkvlz           kubernetes.io/dockercfg   1      128m
+democluster-admin-kubeconfig      Opaque                    1      127m
+democluster-etcd-encryption-key   Opaque                    1      128m
+democluster-kubeadmin-password    Opaque                    1      126m
+democluster-pull-secret           Opaque                    1      128m
+deployer-dockercfg-8lfpd          kubernetes.io/dockercfg   1      128m
+```
+
+4. Extract the kubeconfig file for the hosted cluster by running the following command:
+
+```terminal
+$ oc get secret <secret_name> -n <cluster_namespace> -o jsonpath='{.data.kubeconfig}' | base64 -d > hosted-cluster-kubeconfig
+```
+
+Example
+
+```terminal
+$ oc get secret democluster-admin-kubeconfig -n clusters -o jsonpath='{.data.kubeconfig}' | base64 -d > hosted-cluster-kubeconfig
+```
+
+5. To create a must-gather bundle for the hosted cluster, open a separate terminal window and run the following commands:
+1. Export the hosted cluster kubeconfig file:
+
+```terminal
+$ export HC_KUBECONFIG=<path_to_hosted_cluster_kubeconfig>
+```
+
+Example
+
+```terminal
+$ export HC_KUBECONFIG=~/hostedcpkube/hosted-cluster-kubeconfig
+```
+
+2. Navigate to the directory where you want to store the must-gather data.
+3. Gather the troubleshooting data for your hosted cluster:
+
+```terminal
+$ oc --kubeconfig="$HC_KUBECONFIG" adm must-gather
+```
+
+4. Create a compressed file from the must-gather directory that was just created in your working directory. For example, on a computer that uses a Linux operating system, run the following command:
+
+```terminal
+$ tar -czvf must-gather.tar.gz must-gather.local.1203869488012141147
+```
+
+
+* Gathering data about your cluster
+
+## Running the Performance Profile Creator on a hosted cluster using Podman
+
+As a cluster administrator, you can use Podman with the Performance Profile Creator (PPC) tool to create a performance profile.
+
+For more information about PPC arguments, see "Performance Profile Creator arguments".
+
+The PPC tool is designed to be hosted-cluster aware. When it detects a hosted cluster from the must-gather data it automatically takes the following actions:
+
+* Recognizes that there is no machine config pool (MCP).
+* Uses node pools as the source of truth for compute node configurations instead of MCPs.
+* Does not require you to specify the node-pool-name value explicitly unless you want to target a specific pool.
+
+
+[IMPORTANT]
+----
+The PPC uses the must-gather data from your hosted cluster to create the performance profile. If you make any changes to your cluster, such as relabeling a node targeted for performance configuration, you must re-create the must-gather data before running PPC again.
+----
+
+* Access to the cluster as a user with the cluster-admin role.
+* A hosted cluster is installed.
+* Installation of Podman and the OpenShift CLI (`oc`).
+* Access to the Node Tuning Operator image.
+* Access to the must-gather data for your cluster.
+
+1. On the hosted cluster, use Podman to authenticate to registry.redhat.io by running the following command:
+
+```terminal
+$ podman login registry.redhat.io
+```
+
+
+```bash
+Username: <user_name>
+Password: <password>
+```
+
+2. Create a performance profile on the hosted cluster, by running the following command. The example uses sample PPC arguments and values:
+
+```terminal
+$ podman run --entrypoint performance-profile-creator \
+    -v /path/to/must-gather:/must-gather:z \1
+    registry.redhat.io/openshift4/ose-cluster-node-tuning-rhel9-operator:v{product-version} \
+    --must-gather-dir-path /must-gather \
+    --reserved-cpu-count=2 \2
+    --rt-kernel=false \3
+    --split-reserved-cpus-across-numa=false \ 4
+    --topology-manager-policy=single-numa-node \5
+    --node-pool-name=democluster-us-east-1a \
+    --power-consumption-mode=ultra-low-latency \6
+    --offlined-cpu-count=1 \7
+    > my-hosted-cp-performance-profile.yaml
+```
+
+Mounts the local directory where the output of an oc adm must-gather was created into the container.
+Specifies two reserved CPUs.
+Disables the real-time kernel.
+Disables reserved CPUs splitting across NUMA nodes.
+Specifies the NUMA topology policy. If installing the NUMA Resources Operator, this must be set to single-numa-node.
+Specifies minimal latency at the cost of increased power consumption.
+Specifies one offlined CPU.
+Example output
+
+```terminal
+level=info msg="Nodes names targeted by democluster-us-east-1a pool are: ip-10-0-129-110.ec2.internal "
+level=info msg="NUMA cell(s): 1"
+level=info msg="NUMA cell 0 : [0 2 1 3]"
+level=info msg="CPU(s): 4"
+level=info msg="2 reserved CPUs allocated: 0,2 "
+level=info msg="1 isolated CPUs allocated: 1"
+level=info msg="Additional Kernel Args based on configuration: []
+```
+
+3. Review the created YAML file by running the following command:
+
+```terminal
+$ cat my-hosted-cp-performance-profile
+```
+
+Example output
+
+```yaml
+---
+apiVersion: v1
+data:
+  tuning: |
+    apiVersion: performance.openshift.io/v2
+    kind: PerformanceProfile
+    metadata:
+      creationTimestamp: null
+      name: performance
+    spec:
+      cpu:
+        isolated: "1"
+        offlined: "3"
+        reserved: 0,2
+      net:
+        userLevelNetworking: false
+      nodeSelector:
+        node-role.kubernetes.io/worker: ""
+      numa:
+        topologyPolicy: single-numa-node
+      realTimeKernel:
+        enabled: false
+      workloadHints:
+        highPowerConsumption: true
+        perPodPowerManagement: false
+        realTime: true
+    status: {}
+kind: ConfigMap
+metadata:
+  name: performance
+  namespace: clusters
+```
+
+
+* Performance Profile Creator arguments
+
+## Configuring low-latency tuning in a hosted cluster
+
+To set low latency with the performance profile on the nodes in your hosted cluster, you can use the Node Tuning Operator. In hosted control planes, you can configure low-latency tuning by creating config maps that contain Tuned objects and referencing those config maps in your node pools. The tuned object in this case is a PerformanceProfile object that defines the performance profile you want to apply to the nodes in a node pool.
+
+1. Export the management cluster kubeconfig file by running the following command:
+
+```terminal
+$ export MGMT_KUBECONFIG=<path_to_mgmt_kubeconfig>
+```
+
+2. Create the ConfigMap object in the management cluster by running the following command:
+
+```terminal
+$ oc --kubeconfig="$MGMT_KUBECONFIG" apply -f my-hosted-cp-performance-profile.yaml
+```
+
+3. Edit the NodePool object in the clusters namespace adding the spec.tuningConfig field and the name of the created performance profile in that field by running the following command:
+
+```terminal
+$ oc edit np -n clusters
+```
+
+
+```yaml
+apiVersion: hypershift.openshift.io/v1beta1
+kind: NodePool
+metadata:
+  annotations:
+    hypershift.openshift.io/nodePoolCurrentConfig: 2f752a2c
+    hypershift.openshift.io/nodePoolCurrentConfigVersion: 998aa3ce
+    hypershift.openshift.io/nodePoolPlatformMachineTemplate: democluster-us-east-1a-3dff55ec
+  creationTimestamp: "2025-04-09T09:41:55Z"
+  finalizers:
+  - hypershift.openshift.io/finalizer
+  generation: 1
+  labels:
+    hypershift.openshift.io/auto-created-for-infra: democluster
+  name: democluster-us-east-1a
+  namespace: clusters
+  ownerReferences:
+  - apiVersion: hypershift.openshift.io/v1beta1
+    kind: HostedCluster
+    name: democluster
+    uid: af77e390-c289-433c-9d29-3aee8e5dc76f
+  resourceVersion: "53056"
+  uid: 11efa47c-5a7b-476c-85cf-a274f748a868
+spec:
+  tuningConfig:
+  - name: performance
+  arch: amd64
+  clusterName: democluster
+  management:
+```
+
+
+[NOTE]
+----
+You can reference the same profile in multiple node pools. In hosted control planes, the Node Tuning Operator appends a hash of the node pool name and namespace to the name of the Tuned custom resources to distinguish them. After you make the changes, the system detects that a configuration change is required and starts a rolling update of the nodes in that pool to apply the new configuration.
+----
+
+1. List all node pools across all namespaces by running the following command:
+
+```terminal
+$ oc --kubeconfig="$MGMT_KUBECONFIG" get np -A
+```
+
+Example output
+
+```terminal
+NAMESPACE   NAME                     CLUSTER       DESIRED NODES   CURRENT NODES   AUTOSCALING   AUTOREPAIR   VERSION   UPDATINGVERSION   UPDATINGCONFIG   MESSAGE
+clusters    democluster-us-east-1a   democluster   1               1               False         False        4.17.0    False             True
+```
+
+
+[NOTE]
+----
+The UPDATINGCONFIG field indicates whether the node pool is in the process of updating its configuration. During this update, the UPDATINGCONFIG field in the node pool's status becomes True. The new configuration is considered fully applied only when the UPDATINGCONFIG field returns to False.
+----
+2. List all config maps in the clusters-democluster namespace by running the following command:
+
+```terminal
+$ oc --kubeconfig="$MGMT_KUBECONFIG" get cm -n clusters-democluster
+```
+
+Example output
+
+```terminal
+NAME                                                 DATA   AGE
+aggregator-client-ca                                 1      69m
+auth-config                                          1      68m
+aws-cloud-config                                     1      68m
+aws-ebs-csi-driver-trusted-ca-bundle                 1      66m
+...                                                  1      67m
+kubelet-client-ca                                    1      69m
+kubeletconfig-performance-democluster-us-east-1a     1      22m
+...
+ovnkube-identity-cm                                  2      66m
+performance-democluster-us-east-1a                   1      22m
+...
+tuned-performance-democluster-us-east-1a             1      22m
+```
+
+
+The output shows a kubeletconfig kubeletconfig-performance-democluster-us-east-1a and a performance profile performance-democluster-us-east-1a has been created. The Node Tuning Operator syncs the Tuned objects into the hosted cluster. You can verify which Tuned objects are defined and which profiles are applied to each node.
+3. List available secrets on the management cluster by running the following command:
+
+```terminal
+$ oc get secrets -n clusters
+```
+
+Example output
+
+```terminal
+NAME                              TYPE                      DATA   AGE
+builder-dockercfg-25qpp           kubernetes.io/dockercfg   1      128m
+default-dockercfg-mkvlz           kubernetes.io/dockercfg   1      128m
+democluster-admin-kubeconfig      Opaque                    1      127m
+democluster-etcd-encryption-key   Opaque                    1      128m
+democluster-kubeadmin-password    Opaque                    1      126m
+democluster-pull-secret           Opaque                    1      128m
+deployer-dockercfg-8lfpd          kubernetes.io/dockercfg   1      128m
+```
+
+4. Extract the kubeconfig file for the hosted cluster by running the following command:
+
+```terminal
+$ oc get secret <secret_name> -n clusters -o jsonpath='{.data.kubeconfig}' | base64 -d > hosted-cluster-kubeconfig
+```
+
+Example
+
+```terminal
+$ oc get secret democluster-admin-kubeconfig -n clusters -o jsonpath='{.data.kubeconfig}' | base64 -d > hosted-cluster-kubeconfig
+```
+
+5. Export the hosted cluster kubeconfig by running the following command:
+
+```terminal
+$ export HC_KUBECONFIG=<path_to_hosted-cluster-kubeconfig>
+```
+
+6. Verify that the kubeletconfig is mirrored in the hosted cluster by running the following command:
+
+```terminal
+$ oc --kubeconfig="$HC_KUBECONFIG" get cm -n openshift-config-managed | grep kubelet
+```
+
+Example output
+
+```terminal
+kubelet-serving-ca                            			1   79m
+kubeletconfig-performance-democluster-us-east-1a		1   15m
+```
+
+7. Verify that the single-numa-node policy is set on the hosted cluster by running the following command:
+
+```terminal
+$ oc --kubeconfig="$HC_KUBECONFIG" get cm kubeletconfig-performance-democluster-us-east-1a -o yaml -n openshift-config-managed | grep single
+```
+
+Example output
+
+```terminal
+    topologyManagerPolicy: single-numa-node
+```
