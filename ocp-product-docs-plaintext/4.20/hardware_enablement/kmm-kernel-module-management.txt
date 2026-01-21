@@ -1281,18 +1281,20 @@ The spec.clusterSelector field can be customized to target select clusters only.
 
 # Customizing upgrades for kernel modules
 
+The Kernel Module Management (KMM) Operator periodically upgrades Module resources in the cluster, typically during a cluster upgrade.
+
 Use this procedure to upgrade the kernel module while running maintenance operations on the node, including rebooting the node, if needed. To minimize the impact on the workloads running in the cluster, run the kernel upgrade process sequentially, one node at a time.
 
 
 [NOTE]
 ----
-This procedure requires knowledge of the workload utilizing the kernel module and must be managed by the cluster administrator.
+This procedure requires knowledge of the workload using the kernel module and must be managed by the cluster administrator.
 ----
 
 * Before upgrading, set the kmm.node.kubernetes.io/version-module.<module_namespace>.<module_name>=$moduleVersion label on all the nodes that are used by the kernel module.
-* Terminate all user application workloads on the node or move them to another node.
+* End all user application workloads on the node or move them to another node.
 * Unload the currently loaded kernel module.
-* Ensure that the user workload (the application running in the cluster that is accessing kernel module) is not running on the node prior to kernel module unloading and that the workload is back running on the node after the new kernel module version has been loaded.
+* Ensure that the user workload (the application running in the cluster that is accessing kernel module) is not running on the node before the kernel module unloads and that the workload is back running on the node after the new kernel module version has been loaded.
 
 1. Ensure that the device plugin managed by KMM on the node is unloaded.
 2. Update the following fields in the Module custom resource (CR):
@@ -1300,7 +1302,7 @@ This procedure requires knowledge of the workload utilizing the kernel module an
 * version
 
 The update should be atomic; that is, both the containerImage and version fields must be updated simultaneously.
-3. Terminate any workload using the kernel module on the node being upgraded.
+3. End any workload using the kernel module on the node being upgraded.
 4. Remove the kmm.node.kubernetes.io/version-module.<module_namespace>.<module_name> label on the node.
 Run the following command to unload the kernel module from the node:
 
@@ -1322,6 +1324,14 @@ $ oc label node/<node_name> kmm.node.kubernetes.io/version-module.<module_namesp
 ----
 Because of Kubernetes limitations in label names, the combined length of Module name and namespace must not exceed 39 characters.
 ----
+
+The Operator labels the node with a version.ready label to indicate that the new version of the kernel module is loaded and is ready to be used:
+Example output
+
+```terminal
+`kmm.node.kubernetes.io/<module-namespace>.<module-name>.version.ready=<module-version>`
+```
+
 7. Restore any workload that leverages the kernel module on the node.
 8. Reload the device plugin managed by KMM on the node.
 
@@ -1432,6 +1442,48 @@ metadata:
 
 
 * About MachineConfigPool
+
+# Managing Day 1 kmod images
+
+Kmod images using the Day 1 utility can be managed by the KMM Operator for full lifecycle management.
+
+In cases where a kmod was installed using the Day 1 utility and a MachineConfig is present in the cluster you can create a Module in the cluster targetting the same kmod and kernel as the MachineConfig. The KMM Operator attempts to load the kmod, but nothing will happen since it is already loaded in the kernel. Future upgrades can be done like Day 2 operations by updating the Module CR in the cluster.
+
+The problem with this approach is if a sudden node reboot occurs, the node is rebooted with the kmod from the MachineConfig and not the kmod from the Module if a kmod upgrade was performed.
+
+Using a BootMachineConfig (BMC) CRD can mitigate this issue. When a Day 1 kmod is transitioned to the KMM Operator using a Module, a BMC needs to be created in the cluster to address the sudden reboot issues by ensuring that the MachineConfig is updated with the correct values without triggering a node reboot.
+
+The following example shows a typical BootMachineConfig CRD:
+
+
+```yaml
+apiVersion: kmm.sigs.x-k8s.io/v1beta1
+ kind: BootModuleConfig
+ metadata:
+  name: example-bmc
+  namespace: openshift-machine-config-operator
+ spec:
+  machineConfigName: worker-kmod-config
+  machineConfigPoolName: worker
+  kernelModuleImage: quay.io/example/kmod
+  kernelModuleName: my_module
+  inTreeModulesToRemove:
+    - intree_module_1
+    - intree_module_2
+  firmwareFilesPath: /firmware
+  workerImage: quay.io/<USER>/kernel-module-management-worker:latest
+ status:
+  conditions: []
+```
+
+
+machineConfigName:: The machineConfig that is targeted by the BMC.
+machineConfigPoolName:: The machineConfig pool that is linked to the targeted machineConfig.
+kernelModuleImage:: The kernel module container image that contains the kernel module .ko file without the tag. The pull service determines the kernel version of the node and then uses this value as a tag for the kernel module image. Before upgrading the cluster, all you need to do is to create a kernel module image with the appropriate tag, without any need to update the Day 1 machineConfig. When the node is rebooted, the pull service pulls the correct image.
+kernelModuleName:: The name of the kernel module to be loaded (the name of the .ko file without the .ko).
+inTreeModulesToRemove:: An optional list of the in-tree kernel module to remove prior to loading the OOT kernel module.
+firmwareFilesPath:: An optional path of the firmware files in the kernel module container image.
+workerImage:: An optional KMM worker image. If not specified, the current worker image is used.
 
 # Debugging and troubleshooting
 

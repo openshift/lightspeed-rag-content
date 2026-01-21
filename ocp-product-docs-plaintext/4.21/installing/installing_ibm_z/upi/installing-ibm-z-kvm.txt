@@ -26,7 +26,7 @@ Be sure to also review this site list if you are configuring a proxy.
 
 # Preparing the user-provisioned infrastructure
 
-Before you install {product-title} on user-provisioned infrastructure, you must prepare the underlying infrastructure.
+To ensure a successful deployment and meet cluster requirements in {product-title}, prepare your user-provisioned infrastructure before starting the installation. Configuring your compute, network, and storage components in advance provides the stable foundation necessary for the installation program to function correctly.
 
 This section provides details about the high-level steps required to set up your cluster infrastructure in preparation for an {product-title} installation. This includes configuring IP networking and network connectivity for your cluster nodes,
 enabling the required ports through your firewall, and setting up the required DNS and load balancing infrastructure.
@@ -71,15 +71,101 @@ See the User-provisioned DNS requirements section for more information about the
 See the Validating DNS resolution for user-provisioned infrastructure section for detailed DNS validation steps.
 7. Provision the required API and application ingress load balancing infrastructure. See the Load balancing requirements for user-provisioned infrastructure section for more information about the requirements.
 
-
 [NOTE]
 ----
 Some load balancing solutions require the DNS name resolution for the cluster nodes to be in place before the load balancing is initialized.
 ----
 
+## Example load balancer configuration for user-provisioned clusters
+
+Reference the example API and application Ingress load balancer configuration so that you can understand how to meet the load balancing requirements for user-provisioned clusters.
+
+The sample is an /etc/haproxy/haproxy.cfg configuration for an HAProxy load balancer. The example is not meant to provide advice for choosing one load balancing solution over another.
+
+
+[TIP]
+----
+If you are using HAProxy as a load balancer, you can check that the haproxy process is listening on ports 6443, 22623, 443, and 80 by running netstat -nltupe on the HAProxy node.
+----
+
+In the example, the same load balancer is used for the Kubernetes API and application ingress traffic. In production scenarios, you can deploy the API and application ingress load balancers separately so that you can scale the load balancer infrastructure for each in isolation.
+
+
+[NOTE]
+----
+If you are using HAProxy as a load balancer and SELinux is set to enforcing, you must ensure that the HAProxy service can bind to the configured TCP port by running setsebool -P haproxy_connect_any=1.
+----
+
+
+```text
+global
+  log         127.0.0.1 local2
+  pidfile     /var/run/haproxy.pid
+  maxconn     4000
+  daemon
+defaults
+  mode                    http
+  log                     global
+  option                  dontlognull
+  option http-server-close
+  option                  redispatch
+  retries                 3
+  timeout http-request    10s
+  timeout queue           1m
+  timeout connect         10s
+  timeout client          1m
+  timeout server          1m
+  timeout http-keep-alive 10s
+  timeout check           10s
+  maxconn                 3000
+listen api-server-6443
+  bind *:6443
+  mode tcp
+  option  httpchk GET /readyz HTTP/1.0
+  option  log-health-checks
+  balance roundrobin
+  server bootstrap bootstrap.ocp4.example.com:6443 verify none check check-ssl inter 10s fall 2 rise 3 backup
+  server master0 master0.ocp4.example.com:6443 weight 1 verify none check check-ssl inter 10s fall 2 rise 3
+  server master1 master1.ocp4.example.com:6443 weight 1 verify none check check-ssl inter 10s fall 2 rise 3
+  server master2 master2.ocp4.example.com:6443 weight 1 verify none check check-ssl inter 10s fall 2 rise 3
+listen machine-config-server-22623
+  bind *:22623
+  mode tcp
+  server bootstrap bootstrap.ocp4.example.com:22623 check inter 1s backup
+  server master0 master0.ocp4.example.com:22623 check inter 1s
+  server master1 master1.ocp4.example.com:22623 check inter 1s
+  server master2 master2.ocp4.example.com:22623 check inter 1s
+listen ingress-router-443
+  bind *:443
+  mode tcp
+  balance source
+  server compute0 compute0.ocp4.example.com:443 check inter 1s
+  server compute1 compute1.ocp4.example.com:443 check inter 1s
+listen ingress-router-80
+  bind *:80
+  mode tcp
+  balance source
+  server compute0 compute0.ocp4.example.com:80 check inter 1s
+  server compute1 compute1.ocp4.example.com:80 check inter 1s
+```
+
+
+where:
+
+listen api-server-6443:: Port 6443 handles the Kubernetes API traffic and points to the control plane machines.
+server bootstrap bootstrap.ocp4.example.com:: The bootstrap entries must be in place before the {product-title} cluster installation and they must be removed after the bootstrap process is complete.
+listen machine-config-server:: Port 22623 handles the machine config server traffic and points to the control plane machines.
+listen ingress-router-443:: Port 443 handles the HTTPS traffic and points to the machines that run the Ingress Controller pods. The Ingress Controller pods run on the compute machines by default.
+listen ingress-router-80:: Port 80 handles the HTTP traffic and points to the machines that run the Ingress Controller pods. The Ingress Controller pods run on the compute machines by default.
+
+[NOTE]
+----
+If you are deploying a three-node cluster with zero compute nodes, the Ingress Controller pods run on the control plane nodes. In three-node cluster deployments, you must configure your application Ingress load balancer to route HTTP and HTTPS traffic to the control plane nodes.
+----
+
 # Manually creating the installation configuration file
 
-Installing the cluster requires that you manually create the installation configuration file.
+To customise your {product-title} deployment and meet specific network requirements, manually create the installation configuration file. This ensures that the installation program uses your tailored settings rather than default values during the setup process.
 
 * You have an SSH public key on your local machine for use with the installation program. You can use the key for SSH authentication onto your cluster nodes for debugging and disaster recovery.
 * You have obtained the {product-title} installation program and the pull secret for your
@@ -113,85 +199,100 @@ Back up the install-config.yaml file now, because the installation process consu
 
 ## Sample install-config.yaml file for IBM Z
 
-You can customize the install-config.yaml file to specify more details about your {product-title} cluster&#8217;s platform or modify the values of the required parameters.
+You can customize the install-config.yaml file to specify more details about your {product-title} cluster platform or modify the values of the required parameters.
 
 
 ```yaml
 apiVersion: v1
-baseDomain: example.com 1
-compute: 2
-- hyperthreading: Enabled 3
+baseDomain: example.com
+compute:
+- hyperthreading: Enabled
   name: worker
-  replicas: 0 4
+  replicas: 0
   architecture: s390x
-controlPlane: 2
-  hyperthreading: Enabled 3
+controlPlane:
+  hyperthreading: Enabled
   name: master
-  replicas: 3 5
+  replicas: 3
   architecture: s390x
 metadata:
-  name: test 6
+  name: test
 networking:
   clusterNetwork:
-  - cidr: 10.128.0.0/14 7
-    hostPrefix: 23 8
-  networkType: OVNKubernetes 9
-  serviceNetwork: 10
+  - cidr: 10.128.0.0/14
+    hostPrefix: 23
+  networkType: OVNKubernetes
+  serviceNetwork:
   - 172.30.0.0/16
 platform:
-  none: {} 11
-fips: false 12
-pullSecret: '{"auths": ...}' 13
-sshKey: 'ssh-ed25519 AAAA...' 14
+  none: {}
+fips: false
+pullSecret: '{"auths": ...}'
+sshKey: 'ssh-ed25519 AAAA...'
 ```
 
 
-The base domain of the cluster. All DNS records must be sub-domains of this base and include the cluster name.
-The controlPlane section is a single mapping, but the compute section is a sequence of mappings. To meet the requirements of the different data structures, the first line of the compute section must begin with a hyphen, -, and the first line of the controlPlane section must not. Only one control plane pool is used.
-Specifies whether to enable or disable simultaneous multithreading (SMT), or hyperthreading. By default, SMT is enabled to increase the performance of the cores in your machines. You can disable it by setting the parameter value to Disabled. If you disable SMT, you must disable it in all cluster machines; this includes both control plane and compute machines.
+where:
+
+baseDomain:: Specifies the base domain of the cluster. All DNS records must be sub-domains of this base and include the cluster name.
+compute:: Specifies the compute node configurations, which is a sequence of mappings. To meet the requirements of the different data structures, the first line of the compute section must begin with a hyphen, -.
+controlPlane:: Specifies the controlPlane node configurations, which is a single mapping. To meet the requirements of the different data structures, the first line of the controlPlane section must not. Only one control plane pool is used.
+hyperthreading:: Specifies whether to enable or disable simultaneous multithreading (SMT), or hyperthreading. By default, SMT is enabled to increase the performance of the cores in your machines. You can disable it by setting the parameter value to Disabled. If you disable SMT, you must disable it in all cluster machines; this includes both control plane and compute machines.
+
 
 [NOTE]
 ----
 Simultaneous multithreading (SMT) is enabled by default. If SMT is not available on your {product-title} nodes, the hyperthreading parameter has no effect.
 ----
 
+
 [IMPORTANT]
 ----
 If you disable hyperthreading, whether on your {product-title} nodes or in the install-config.yaml file, ensure that your capacity planning accounts for the dramatically decreased machine performance.
 ----
-You must set this value to 0 when you install {product-title} on user-provisioned infrastructure. In installer-provisioned installations, the parameter controls the number of compute machines that the cluster creates and manages for you. In user-provisioned installations, you must manually deploy the compute machines before you finish installing the cluster.
+
+compute.replicas:: Specifies the number of compute machines that the cluster creates and manages for you on installer-provisioned installations. You must set this value to 0 when you install {product-title} on user-provisioned infrastructure. Additionally for user-provisioned installations, you must manually deploy the compute machines before you finish installing the cluster.
+
 
 [NOTE]
 ----
 If you are installing a three-node cluster, do not deploy any compute machines when you install the Red Hat Enterprise Linux CoreOS (RHCOS) machines.
 ----
-The number of control plane machines that you add to the cluster. Because the cluster uses these values as the number of etcd endpoints in the cluster, the value must match the number of control plane machines that you deploy.
-The cluster name that you specified in your DNS records.
-A block of IP addresses from which pod IP addresses are allocated. This block must not overlap with existing physical networks. These IP addresses are used for the pod network. If you need to access the pods from an external network, you must configure load balancers and routers to manage the traffic.
+
+controlPlane.replicas:: Specifies the number of control plane machines that you add to the cluster. Because the cluster uses these values as the number of etcd endpoints in the cluster, the value must match the number of control plane machines that you deploy.
+metadata.name:: Specifies the cluster name that you specified in your DNS records.
+clusterNetwork.cidr:: Specifies a block of IP addresses from which pod IP addresses are allocated. This block must not overlap with existing physical networks. These IP addresses are used for the pod network. If you need to access the pods from an external network, you must configure load balancers and routers to manage the traffic.
+
 
 [NOTE]
 ----
 Class E CIDR range is reserved for a future use. To use the Class E CIDR range, you must ensure your networking environment accepts the IP addresses within the Class E CIDR range.
 ----
-The subnet prefix length to assign to each individual node. For example, if hostPrefix is set to 23, then each node is assigned a /23 subnet out of the given cidr, which allows for 510 (2^(32 - 23) - 2) pod IP addresses. If you are required to provide access to nodes from an external network, configure load balancers and routers to manage the traffic.
-The cluster network plugin to install. The default value OVNKubernetes is the only supported value.
-The IP address pool to use for service IP addresses. You can enter only one IP address pool. This block must not overlap with existing physical networks. If you need to access the services from an external network, configure load balancers and routers to manage the traffic.
-You must set the platform to none. You cannot provide additional platform configuration variables for
+
+cidr.hostPrefix:: Specifies the subnet prefix length to assign to each individual node. For example, if hostPrefix is set to 23, then each node is assigned a /23 subnet out of the given cidr, which allows for 510 (2^(32 - 23) - 2) pod IP addresses. If you are required to provide access to nodes from an external network, configure load balancers and routers to manage the traffic.
+networkType:: Specifies the cluster network plugin to install. The default value OVNKubernetes is the only supported value.
+serviceNetwork:: Specifies the IP address pool to use for service IP addresses. You can enter only one IP address pool. This block must not overlap with existing physical networks. If you need to access the services from an external network, configure load balancers and routers to manage the traffic.
+platform:: Specifies the platform. You must set the platform to none. You cannot provide additional platform configuration variables for
 IBM Z(R) infrastructure.
+
 
 [IMPORTANT]
 ----
 Clusters that are installed with the platform type none are unable to use some features, such as managing compute machines with the Machine API. This limitation applies even if the compute machines that are attached to the cluster are installed on a platform that would normally support the feature. This parameter cannot be changed after installation.
 ----
-Whether to enable or disable FIPS mode. By default, FIPS mode is not enabled. If FIPS mode is enabled, the Red Hat Enterprise Linux CoreOS (RHCOS) machines that {product-title} runs on bypass the default Kubernetes cryptography suite and use the cryptography modules that are provided with RHCOS instead.
+
+fips:: Specifies either enabling or disabling FIPS mode. By default, FIPS mode is not enabled. If FIPS mode is enabled, the Red Hat Enterprise Linux CoreOS (RHCOS) machines that {product-title} runs on bypass the default Kubernetes cryptography suite and use the cryptography modules that are provided with RHCOS instead.
+
 
 [IMPORTANT]
 ----
 To enable FIPS mode for your cluster, you must run the installation program from a Red Hat Enterprise Linux (RHEL) computer configured to operate in FIPS mode. For more information about configuring FIPS mode on RHEL, see Switching RHEL to FIPS mode.
 When running Red Hat Enterprise Linux (RHEL) or Red Hat Enterprise Linux CoreOS (RHCOS) booted in FIPS mode, {product-title} core components use the RHEL cryptographic libraries that have been submitted to NIST for FIPS 140-2/140-3 Validation on only the x86_64, ppc64le, and s390x architectures.
 ----
-The pull secret from Red Hat OpenShift Cluster Manager. This pull secret allows you to authenticate with the services that are provided by the included authorities, including Quay.io, which serves the container images for {product-title} components.
-The SSH public key for the core user in Red Hat Enterprise Linux CoreOS (RHCOS).
+
+pullSecret:: Specifies the pull secret from Red Hat OpenShift Cluster Manager. This pull secret allows you to authenticate with the services that are provided by the included authorities, including Quay.io, which serves the container images for {product-title} components.
+sshKey:: Specifies the SSH public key for the core user in Red Hat Enterprise Linux CoreOS (RHCOS).
+
 
 [NOTE]
 ----
@@ -1014,7 +1115,7 @@ Example output
 
 ```terminal
 INFO Waiting up to 30m0s for the Kubernetes API at https://api.test.example.com:6443...
-INFO API v1.33.4 up
+INFO API v1.34.2 up
 INFO Waiting up to 30m0s for bootstrapping to complete...
 INFO It is now safe to remove the bootstrap resources
 ```
@@ -1077,9 +1178,9 @@ Example output
 
 ```terminal
 NAME      STATUS    ROLES   AGE  VERSION
-master-0  Ready     master  63m  v1.33.4
-master-1  Ready     master  63m  v1.33.4
-master-2  Ready     master  64m  v1.33.4
+master-0  Ready     master  63m  v1.34.2
+master-1  Ready     master  63m  v1.34.2
+master-2  Ready     master  64m  v1.34.2
 ```
 
 
@@ -1171,11 +1272,11 @@ Example output
 
 ```terminal
 NAME      STATUS    ROLES   AGE  VERSION
-master-0  Ready     master  73m  v1.33.4
-master-1  Ready     master  73m  v1.33.4
-master-2  Ready     master  74m  v1.33.4
-worker-0  Ready     worker  11m  v1.33.4
-worker-1  Ready     worker  11m  v1.33.4
+master-0  Ready     master  73m  v1.34.2
+master-1  Ready     master  73m  v1.34.2
+master-2  Ready     master  74m  v1.34.2
+worker-0  Ready     worker  11m  v1.34.2
+worker-1  Ready     worker  11m  v1.34.2
 ```
 
 
