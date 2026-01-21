@@ -21,7 +21,6 @@ import typing
 import requests
 
 LOG = logging.getLogger(__name__)
-LOG.setLevel(logging.DEBUG)
 
 
 class MetadataProcessor:
@@ -31,6 +30,9 @@ class MetadataProcessor:
     Specifically, the `url_function` which is meant to derive URL
     from the name of a document, is not implemented.
     """
+
+    def __init__(self, hermetic_build: bool):
+        self.hermetic_build = hermetic_build
 
     def get_file_title(self, file_path: str) -> str:
         """Extract title from the plaintext doc file."""
@@ -59,8 +61,8 @@ class MetadataProcessor:
     def populate(self, file_path: str) -> dict[str, typing.Any]:
         """Populate title and metadata with docs URL.
 
-        Populate the docs_url and title metadata elements with docs URL
-        and the page's title.
+        Populate the docs_url, title and url_reachable metadata elements with docs URL,
+        the page's title and if the url is reachable.
 
         Args:
             file_path: str: file path in str
@@ -75,7 +77,8 @@ class MetadataProcessor:
         }
 
         url_reachable = True
-        if not self.ping_url(docs_url):
+        
+        if not self.hermetic_build and not self.ping_url(docs_url):
             LOG.warning(
                 'URL not reachable: %(url)s (Title: "%(title)s", '
                 "File path: %(file_path)s)",
@@ -83,7 +86,7 @@ class MetadataProcessor:
             )
             url_reachable = False
 
-        print(
+        LOG.debug(
             'Metadata populated for: "%(title)s" (URL: %(url)s, File '
             "path: %(file_path)s)",
             document,
