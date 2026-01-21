@@ -14,17 +14,20 @@
 #    under the License.
 """Document processing for vector database."""
 
+import asyncio
 import json
 import logging
 import os
 import tempfile
 import time
+from io import BytesIO
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Optional, Union
 
 import faiss
 from llama_index.core import Settings, SimpleDirectoryReader, VectorStoreIndex
 from llama_index.core.llms.utils import resolve_llm
+from llama_index.core.node_parser import MarkdownNodeParser
 from llama_index.core.readers.base import BaseReader
 from llama_index.core.schema import Document, TextNode
 from llama_index.core.storage.storage_context import StorageContext
@@ -65,6 +68,14 @@ class _BaseDB:
     def __init__(self, config: _Config):
         self.config = config
 
+        if config.vector_store_type.startswith("llamastack"):
+            if config.manual_chunking:
+                Settings.chunk_size = self.config.chunk_size
+                Settings.chunk_overlap = self.config.chunk_overlap
+            if config.doc_type in ("markdown", "html"):
+                Settings.node_parser = MarkdownNodeParser()
+            return
+
         if config.manual_chunking:
             Settings.chunk_size = self.config.chunk_size
             Settings.chunk_overlap = self.config.chunk_overlap
@@ -72,6 +83,9 @@ class _BaseDB:
                 model_name=str(self.config.embeddings_model_dir)
             )
             Settings.llm = resolve_llm(None)
+        # HTML uses MarkdownNodeParser since HTMLReader converts to Markdown
+        if config.doc_type in ("markdown", "html"):
+            Settings.node_parser = MarkdownNodeParser()
 
     @staticmethod
     def _got_whitespace(text: str) -> bool:
@@ -183,45 +197,85 @@ class _LlamaIndexDB(_BaseDB):
 
 class _LlamaStackDB(_BaseDB):
     # Lllama-stack faiss vector-db uses IndexFlatL2 (it's hardcoded for now)
-    TEMPLATE = """version: '2'
-image_name: ollama
+    TEMPLATE = """version: 2
+image_name: starter
+
 apis:
-  - inference
-  - vector_io
-  - tool_runtime
+- files
+- tool_runtime
+- vector_io
+- inference
+
+server:
+  port: 8321
+conversations_store:
+  db_path: /tmp/conversations.db
+  type: sqlite
+metadata_store:
+  db_path: /tmp/registry.db
+  type: sqlite
+
 providers:
   inference:
-    - provider_id: sentence-transformers
-      provider_type: inline::sentence-transformers
-      config: {{}}
-  vector_io:
-    - provider_id: {index_id}
-      provider_type: inline::{provider_type}
-      config:
-        kvstore:
-          type: sqlite
-          namespace: null
-          db_path: {kv_db_path}
-        {vector_io_cfg}
+  - config: {{}}
+    provider_id: sentence-transformers
+    provider_type: inline::sentence-transformers
+  files:
+  - config:
+      metadata_store:
+        table_name: files_metadata
+        backend: sql_files
+      storage_dir: /tmp/files
+    provider_id: meta-reference-files
+    provider_type: inline::localfs
   tool_runtime:
-  - provider_id: rag-runtime
+  - config: {{}}
+    provider_id: rag-runtime
     provider_type: inline::rag-runtime
-    config: {{}}
-models:
+  vector_io:
+  - config:
+      persistence:
+        namespace: vector_io::{provider_type}
+        backend: kv_default
+    provider_id: {provider_type}
+    provider_type: inline::{provider_type}
+storage:
+  backends:
+    kv_default:
+      type: kv_sqlite
+      db_path: {kv_db_path}
+    sql_files:
+      type: sql_sqlite
+      db_path: {sql_db_path}
+    sql_default:
+      type: sql_sqlite
+      db_path: /tmp/sql_store.db
+  stores:
+    metadata:
+      namespace: registry
+      backend: kv_default
+    inference:
+      table_name: inference_store
+      backend: sql_default
+    conversations:
+      table_name: openai_conversations
+      backend: sql_default
+registered_resources:
+  models:
   - metadata:
       embedding_dimension: {dimension}
     model_id: {model_name}
     provider_id: sentence-transformers
     provider_model_id: {model_name_or_dir}
     model_type: embedding
-tool_groups:
+  shields: []
+  vector_dbs: []
+  datasets: []
+  scoring_fns: []
+  benchmarks: []
+  tool_groups:
   - toolgroup_id: builtin::rag
     provider_id: rag-runtime
-vector_dbs:
-  - vector_db_id: {index_id}
-    embedding_model: {model_name}
-    embedding_dimension: {dimension}
-    provider_id: {index_id}
 """
     CFG_FILENAME = "llama-stack.yaml"
 
@@ -279,16 +333,21 @@ vector_dbs:
 
         self.document_class = llama_stack.apis.tools.rag_tool.RAGDocument  # type: ignore
         self.client_class = (
-            llama_stack.distribution.library_client.LlamaStackAsLibraryClient  # type: ignore
+            llama_stack.core.library_client.AsyncLlamaStackAsLibraryClient  # type: ignore
         )
         self.documents: list[
             dict[str, Any] | llama_stack.apis.tools.rag_tool.RAGDocument  # type: ignore
         ] = []
 
-    def write_yaml_config(self, index_id: str, filename: str, db_file: str) -> None:
+    @property
+    def provider_type(self) -> str:
+        """Extract provider type from vector_store_type (e.g., 'llamastack-faiss' -> 'faiss')."""
+        return self.config.vector_store_type.split("-", 1)[1]
+
+    def write_yaml_config(
+        self, index_id: str, filename: str, db_file: str, files_metadata_db_file: str
+    ) -> None:
         """Write a llama-stack configuration file using class templates."""
-        # remove "llamastack-" from the string
-        provider_type = self.config.vector_store_type.split("-", 1)[1]
         if self.config.vector_store_type == "llamastack-faiss":
             vector_io_cfg = ""
         else:
@@ -297,9 +356,10 @@ vector_dbs:
         with open(filename, "w", encoding="utf-8") as fd:
             data = self.TEMPLATE.format(
                 index_id=index_id,
-                provider_type=provider_type,
+                provider_type=self.provider_type,
                 vector_io_cfg=vector_io_cfg,
                 kv_db_path=db_file,
+                sql_db_path=files_metadata_db_file,
                 model_name=self.config.model_name,
                 model_name_or_dir=self.model_name_or_dir,
                 dimension=self.config.embedding_dimension,
@@ -310,12 +370,12 @@ vector_dbs:
         """Start llama-stack as a library and return the client.
 
         Return type is really
-          llama_stack.distribution.library_client.LlamaStackAsLibraryClient
+          llama_stack.core.library_client.LlamaStackAsLibraryClient
 
         But we do dynamic import, so we don't have it for static typechecking
         """
         client = self.client_class(cfg_file)
-        client.initialize()
+        asyncio.run(client.initialize())
         return client
 
     def add_docs(self, docs: list[Document]) -> None:
@@ -349,6 +409,162 @@ vector_dbs:
                 for doc in docs
             )
 
+    async def _insert_prechunked_documents(self, client: Any, index: str) -> None:
+        """Insert pre-chunked documents into the vector store.
+
+        This method uses two new llama-stack APIs (OpenAI compatible):
+        1. vector_stores API: Creates a new vector store
+        2. files API: Creates empty placeholder files for citation metadata
+           (provides document ID, URL, and title for citations)
+        And the vector_io API: Inserts chunks with embeddings
+
+        The empty files serve as citation anchors, linking chunks back to their
+        source documents without storing duplicate content (we don't use files downstream).
+        """
+        vector_store = await client.vector_stores.create(
+            name=index,
+            extra_body={
+                "provider_id": self.provider_type,
+                "embedding_model": f"sentence-transformers/{self.model_name_or_dir}",
+                "embedding_dimension": self.config.embedding_dimension,
+            },
+        )
+
+        async def upload_file(chunk_indices: list[int]) -> str:
+            """Upload a placeholder file and update all related chunks.
+
+            We upload an empty file to get the correct references in OpenAI format downstream.
+
+            Args:
+                chunk_indices: List of indices in self.documents for chunks from same source
+
+            Returns:
+                File ID
+            """
+            first_chunk = self.documents[chunk_indices[0]]
+            doc_metadata = first_chunk["metadata"]
+
+            docs_url = doc_metadata.get("docs_url", "")
+            title = doc_metadata.get("title", "")
+            doc_uuid = doc_metadata["document_id"]
+
+            # Create filename: {uuid}::{url}::{title}.txt
+            filename = f"{doc_uuid}::{docs_url}::{title}"
+
+            file_obj = BytesIO("".encode("utf-8"))  # Empty file for citation anchor
+            file_obj.name = f"{filename}.txt"
+
+            uploaded_file = await client.files.create(
+                file=file_obj,
+                purpose="assistants",
+            )
+
+            # Update ALL chunks from this source document with the file_id
+            for chunk_idx in chunk_indices:
+                self.documents[chunk_idx]["metadata"]["document_id"] = uploaded_file.id
+                self.documents[chunk_idx]["chunk_metadata"][
+                    "document_id"
+                ] = uploaded_file.id
+                self.documents[chunk_idx]["metadata"]["filename"] = filename
+
+            return str(uploaded_file.id)
+
+        # Group chunks by source document
+        doc_groups: dict[tuple[str, str], list[int]] = {}
+        for idx, chunk in enumerate(self.documents):
+            metadata = chunk["metadata"]
+            docs_url = metadata.get("docs_url", "")
+            title = metadata.get("title", "")
+            doc_key = (docs_url, title)
+            if doc_key not in doc_groups:
+                doc_groups[doc_key] = []
+            doc_groups[doc_key].append(idx)
+
+        upload_tasks = [
+            upload_file(chunk_indices) for chunk_indices in doc_groups.values()
+        ]
+        results = await asyncio.gather(*upload_tasks, return_exceptions=True)
+        for result in results:
+            if isinstance(result, Exception):
+                LOG.error("Failed to upload file: %s", result)
+
+        # Note: parameter is vector_db_id, not vector_store_id, will probably change soon
+        await client.vector_io.insert(
+            vector_db_id=vector_store.id, chunks=self.documents
+        )
+
+    async def _upload_and_process_file_batches(self, client: Any, index: str) -> None:
+        """Upload files and process them in batch using file_batches."""
+        vector_store = await client.vector_stores.create(
+            name=index,
+            extra_body={
+                "provider_id": self.provider_type,
+                "embedding_model": f"sentence-transformers/{self.model_name_or_dir}",
+                "embedding_dimension": self.config.embedding_dimension,
+            },
+        )
+
+        async def upload_file(rag_doc: Any) -> str:
+            """Upload a single file to the Files API."""
+            doc_metadata = rag_doc.metadata
+
+            docs_url = doc_metadata.get("docs_url", "")
+            title = doc_metadata.get("title", "")
+            doc_uuid = rag_doc.document_id
+
+            # Match working format: {uuid}::{url}::{title}.txt
+            filename = f"{doc_uuid}::{docs_url}::{title}"
+
+            file_obj = BytesIO(rag_doc.content.encode("utf-8"))
+            file_obj.name = f"{filename}.txt"
+
+            uploaded_file = await client.files.create(
+                file=file_obj,
+                purpose="assistants",
+            )
+            return str(uploaded_file.id)
+
+        upload_tasks = [upload_file(doc) for doc in self.documents]
+        results = await asyncio.gather(*upload_tasks, return_exceptions=True)
+
+        file_ids = []
+        for uploaded_file_id in results:
+            if isinstance(uploaded_file_id, Exception):
+                LOG.error("Failed to upload file: %s", uploaded_file_id)
+            else:
+                file_ids.append(uploaded_file_id)
+
+        batch = await client.vector_stores.file_batches.create(
+            vector_store_id=vector_store.id,
+            file_ids=file_ids,
+            chunking_strategy={
+                "type": "static",
+                "static": {
+                    "max_chunk_size_tokens": self.config.chunk_size,
+                    "chunk_overlap_tokens": self.config.chunk_overlap,
+                },
+            },
+        )
+
+        # Wait for batch completion
+        max_wait = 24 * 60 * 60
+        start_time = time.time()
+
+        while batch.status == "in_progress" and (time.time() - start_time) < max_wait:
+            await asyncio.sleep(2)
+            batch = await client.vector_stores.file_batches.retrieve(
+                vector_store_id=vector_store.id, batch_id=batch.id
+            )
+
+        if batch.status != "completed":
+            error_msg = (
+                f"Batch processing failed with status '{batch.status}'. "
+                f"Completed {batch.file_counts.completed}/{batch.file_counts.total} files. "
+                f"Failed: {batch.file_counts.failed}, In progress: {batch.file_counts.in_progress}"
+            )
+            LOG.error(error_msg)
+            raise RuntimeError(error_msg)
+
     def save(
         self,
         index: str,
@@ -359,20 +575,18 @@ vector_dbs:
         """Save in the vector database all the documents we added."""
         os.makedirs(output_dir, exist_ok=True)
         db_file = os.path.realpath(os.path.join(output_dir, self.db_filename))
+        files_metadata_db_file = os.path.realpath(
+            os.path.join(output_dir, "files_metadata.db")
+        )
         cfg_file = os.path.join(output_dir, self.CFG_FILENAME)
         # There's no need to register the DB because the YAML includes it
-        self.write_yaml_config(index, cfg_file, db_file)
+        self.write_yaml_config(index, cfg_file, db_file, files_metadata_db_file)
         client = self._start_llama_stack(cfg_file)
-
         try:
             if self.config.manual_chunking:
-                client.vector_io.insert(vector_db_id=index, chunks=self.documents)
+                asyncio.run(self._insert_prechunked_documents(client, index))
             else:
-                client.tool_runtime.rag_tool.insert(
-                    documents=self.documents,
-                    vector_db_id=index,
-                    chunk_size_in_tokens=self.config.chunk_size,
-                )
+                asyncio.run(self._upload_and_process_file_batches(client, index))
         except Exception as exc:
             LOG.error("Failed to insert document: %s", exc)
             raise
@@ -391,6 +605,7 @@ class DocumentProcessor:
         vector_store_type: str = "faiss",
         table_name: Optional[str] = None,
         manual_chunking: bool = True,
+        doc_type: str = "text",
     ):
         """Initialize instance."""
         if vector_store_type == "postgres" and not table_name:
@@ -406,6 +621,7 @@ class DocumentProcessor:
             vector_store_type=vector_store_type,
             table_name=table_name,
             manual_chunking=manual_chunking,
+            doc_type=doc_type,
         )
 
         self._check_config(self.config)
