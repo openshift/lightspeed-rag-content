@@ -46,6 +46,7 @@ LABEL url="https://github.com/openshift/lightspeed-rag-content"
 LABEL vendor="Red Hat, Inc."
 LABEL version=0.0.1
 LABEL summary="Red Hat OpenShift Lightspeed BYO Knowledge Tools"
+LABEL konflux.additional-tags="latest"
 
 ENV _BUILDAH_STARTED_IN_USERNS=""
 ENV BUILDAH_ISOLATION=chroot

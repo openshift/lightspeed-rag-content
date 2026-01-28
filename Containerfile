@@ -68,5 +68,6 @@ LABEL url="https://github.com/openshift/lightspeed-rag-content"
 LABEL vendor="Red Hat, Inc."
 LABEL version=0.0.1
 LABEL summary="Red Hat OpenShift Lightspeed RAG content"
+LABEL konflux.additional-tags="latest"
 
 USER 65532:65532
