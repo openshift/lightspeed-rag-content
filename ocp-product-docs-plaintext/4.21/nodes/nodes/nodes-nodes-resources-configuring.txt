@@ -1,16 +1,17 @@
-# Allocating resources for nodes in an {product-title} cluster
+# Allocating resources for nodes in an Red Hat OpenShift Container Platform cluster
 
 
-To provide more reliable scheduling and minimize node resource overcommitment, reserve a portion of the CPU and memory resources for use by the underlying node components, such as kubelet and kube-proxy, and the remaining system components, such as sshd and NetworkManager. By specifying the resources to reserve, you provide the scheduler with more information about the remaining CPU and memory resources that a node has available for use by pods. You can allow {product-title} to automatically determine the optimal system-reserved CPU and memory resources for your nodes or you can manually determine and set the best resources for your nodes.
+By default, upon node start up Red Hat OpenShift Container Platform automatically calculates and reserves a portion of the CPU and memory resources for use by the underlying node components, such as kubelet and kube-proxy, and the remaining system components, such as sshd and NetworkManager. Review the information in this section to determine if these automatic settings are appropriate for your cluster.
+You can modify the CPU and memory resources for these node and system components, as needed, by creating a Kubelet Config CR.
 
 [IMPORTANT]
 ----
-To manually set resource values, you must use a kubelet config CR. You cannot use a machine config CR.
+If you updated your cluster from a version earlier than 4.21, automatic allocation of system resources is disabled by default. To enable the feature, delete the 50-worker-auto-sizing-disabled machine config.
 ----
 
 # Understanding how to allocate resources for nodes
 
-CPU and memory resources reserved for node components in {product-title} are based on two node settings:
+CPU and memory resources reserved for node components in Red Hat OpenShift Container Platform are based on two node settings: kube-reserved and system-reserved. These settings are automatically configured upon node start up, or you can manually set these values as needed.
 
 
 
@@ -24,7 +25,31 @@ introduction of allocatable resources.
 Any CPUs specifically reserved using the reservedSystemCPUs parameter are not available for allocation using kube-reserved or system-reserved.
 ----
 
-## How {product-title} computes allocated resources
+By default, Red Hat OpenShift Container Platform uses a script on each worker node to automatically determine the optimal system-reserved CPU and memory resources for nodes. The script runs on node start up and uses the following calculations by default.
+
+Memory reservation:: The memory reservation is weighted. For smaller nodes, Red Hat OpenShift Container Platform reserves a higher percentage of memory. For larger nodes, Red Hat OpenShift Container Platform reserves a smaller percentage of the remaining capacity.
+
+Red Hat OpenShift Container Platform uses the following calculations to determine how much memory to reserve for node and system components:
+* 25% of the first 4 GiB of memory
+* 20% of the next 4 GiB of memory (up to 8 GiB)
+* 10% of the next 8 GiB of memory (up to 16 GiB)
+* 6% of the next 112 GiB of memory (up to 128 GiB)
+* 2% of any memory above 128 GiB
+
+For example, on node with 16 GiB of memory, Red Hat OpenShift Container Platform reserves 2.6 GiB for node and system components, leaving approximately 13.4 GiB for workloads.
+CPU reservation:: Red Hat OpenShift Container Platform uses the following logic to determine how much CPU to reserve for node and system components:
+* Red Hat OpenShift Container Platform starts with a base allocation for 1 CPU in fractions of a core (60 millicores = 0.06 CPU core).
+* Then, it increments 12 millicores (0.012 CPU) for every additional core beyond the first.
+* The result is compared against a minimum floor of 0.5 CPU. If the calculated value is less than 0.5, the system enforces a reservation of 0.5 CPU.
+
+For example, on a 4-core node, 0.5 vCPU is reserved for node and system components, leaving 3.5 vCPUs for workloads. Note that 1000 millicores is equal to 1CPU/vCPU.
+
+[IMPORTANT]
+----
+If you updated your cluster from a version earlier than 4.21, automatic allocation of system resources is disabled by default. To enable the feature, delete the 50-worker-auto-sizing-disabled machine config.
+----
+
+## How Red Hat OpenShift Container Platform computes allocated resources
 
 An allocated amount of a resource is computed based on the following formula:
 
@@ -42,7 +67,7 @@ The withholding of Hard-Eviction-Thresholds from Allocatable improves system rel
 
 If Allocatable is negative, it is set to 0.
 
-Each node reports the system resources that are used by the container runtime and kubelet. To simplify configuring the system-reserved parameter, view the resource use for the node by using the node summary API. The node summary is available at /api/v1/nodes/<node>/proxy/stats/summary.
+Each node reports the system resources that are used by the container runtime and kubelet. To simplify configuring the system-reserved parameter, view the resource use for the node by using the node summary API. The node summary is available at /api/v1/nodes/<node>/proxy/stats/summary. For more information, use the "Node metrics data" link in the Additional resources section.
 
 ## How nodes enforce resource constraints
 
@@ -99,20 +124,17 @@ the cluster.
 
 # Understanding process ID limits
 
-In {product-title}, consider these two supported limits for process ID (PID) usage before you schedule work on your cluster:
+In Red Hat OpenShift Container Platform, consider these two supported limits for process ID (PID) usage before you schedule work on your cluster:
 
 * Maximum number of PIDs per pod.
 
-The default value is 4,096 in {product-title} 4.11 and later. This value is controlled by the podPidsLimit parameter set on the node.
+The default value is 4,096 in Red Hat OpenShift Container Platform 4.11 and later. This value is controlled by the podPidsLimit parameter set on the node.
 
 When a pod exceeds the allowed maximum number of PIDs per pod, the pod might stop functioning correctly and might be evicted from the node. See the Kubernetes documentation for eviction signals and thresholds for more information.
 
 When a node exceeds the allowed maximum number of PIDs per node, the node can become unstable because new processes cannot have PIDs assigned. If existing processes cannot complete without creating additional processes, the entire node can become unusable and require reboot. This situation can result in data loss, depending on the processes and applications being run. Customer administrators and Red&#160;Hat Site Reliability Engineering are notified when this threshold is reached, and a Worker node is experiencing PIDPressure warning will appear in the cluster logs.
 
-* Creating a KubeletConfig CR to edit kubelet parameters
-* Allocating resources for nodes in an {product-title} cluster
-
-## Risks of setting higher process ID limits for {product-title} pods
+## Risks of setting higher process ID limits for Red Hat OpenShift Container Platform pods
 
 The podPidsLimit parameter for a pod controls the maximum number of processes and threads that can run simultaneously in that pod.
 
@@ -122,77 +144,58 @@ If you are running a large number of pods per node, and you have a high podPidsL
 
 To find the maximum number of pods that you can run simultaneously on a single node without exceeding the PID maximum for the node, divide 3,650,000 by your podPidsLimit value. For example, if your podPidsLimit value is 16,384, and you expect the pods to use close to that number of process IDs, you can safely run 222 pods on a single node.
 
-# Automatically allocating resources for nodes
+# Manually allocating resources for nodes
 
-{product-title} can automatically determine the optimal system-reserved CPU and memory resources for nodes associated with a specific machine config pool and update the nodes with those values when the nodes start. By default, the system-reserved CPU is 500m and system-reserved memory is 1Gi.
+As an administrator, you can manually set system-reserved CPU and memory resources for your nodes. Setting these values ensures that your cluster is running efficiently and prevents node failure due to resource starvation of system components.
 
-To automatically determine and allocate the system-reserved resources on nodes, create a KubeletConfig custom resource (CR) to set the autoSizingReserved: true parameter. A script on each node calculates the optimal values for the respective reserved resources based on the installed CPU and memory capacity on each node. The script takes into account that increased capacity requires a corresponding increase in the reserved resources.
-
-Automatically determining the optimal system-reserved settings ensures that your cluster is running efficiently and prevents node failure due to resource starvation of system components, such as CRI-O and kubelet, without your needing to manually calculate and update the values.
-
-This feature is disabled by default.
-
-1. Obtain the label associated with the static MachineConfigPool object for the type of node you want to configure by entering the following command:
-
-```terminal
-$ oc edit machineconfigpool <name>
-```
+By default, Red Hat OpenShift Container Platform uses a script on each worker node to automatically determine the optimal system-reserved CPU and memory resources for nodes associated with a specific machine config pool and update the nodes with those values. The script runs on node start up.
 
 
-For example:
-
-```terminal
-$ oc edit machineconfigpool worker
-```
-
-Example output
-
-```yaml
-apiVersion: machineconfiguration.openshift.io/v1
-kind: MachineConfigPool
-metadata:
-  creationTimestamp: "2022-11-16T15:34:25Z"
-  generation: 4
-  labels:
-    pools.operator.machineconfiguration.openshift.io/worker: "" 1
-  name: worker
-#...
-```
-
-The label appears under Labels.
-
-[TIP]
+[IMPORTANT]
 ----
-If an appropriate label is not present, add a key/value pair such as:
-
-```
-$ oc label machineconfigpool worker custom-kubelet=small-pods
-```
-
+If you updated your cluster from a version earlier than 4.21, automatic allocation of system resources is disabled by default. To enable the feature, delete the 50-worker-auto-sizing-disabled machine config.
 ----
 
-1. Create a custom resource (CR) for your configuration change:
+However, you can manually set these values by using a KubeletConfig custom resource (CR) that includes a set of <resource_type>=<resource_quantity> pairs (for example, cpu=200m,memory=512Mi). You must use the spec.autoSizingReserved: false parameter in the KubeletConfig CR to override the default Red Hat OpenShift Container Platform behavior of automatically setting the systemReserved values.
+
+For memory and ephemeral-storage, you specify the resource quantity in units of bytes, such as 200Ki, 50Mi, or 5Gi. By default, the system-reserved CPU is 500m and system-reserved memory is 1Gi. For the cpu type, you specify the resource quantity in units of cores, such as 200m, 0.5, or 1. Note that 1000 millicores is equal to 1CPU/vCPU.
+
+For details on the recommended system-reserved values, refer to the recommended system-reserved values.
+
+
+[IMPORTANT]
+----
+To manually set resource values, you must use a kubelet configuration. You cannot use a machine config.
+----
+
+* Obtain the label associated with the static MachineConfigPool CRD for the type of node you want to configure by entering the following command:
+
+1. Create a custom resource (CR) for your configuration change.
 Sample configuration for a resource allocation CR
 
 ```yaml
 apiVersion: machineconfiguration.openshift.io/v1
 kind: KubeletConfig
 metadata:
-  name: dynamic-node 1
+  name: set-allocatable
 spec:
-  autoSizingReserved: true 2
+  autoSizingReserved: false
   machineConfigPoolSelector:
     matchLabels:
-      pools.operator.machineconfiguration.openshift.io/worker: "" 3
+      pools.operator.machineconfiguration.openshift.io/worker: ""
+  kubeletConfig:
+    systemReserved:
+      cpu: 1000m
+      memory: 4Gi
+      ephemeral-storage: 50Mi
 #...
 ```
 
-Assign a name to CR.
-Add the autoSizingReserved parameter set to true to allow {product-title} to automatically determine and allocate the system-reserved resources on the nodes associated with the specified label. To disable automatic allocation on those nodes, set this parameter to false.
-Specify the label from the machine config pool that you configured in the "Prerequisites" section. You can choose any desired labels for the machine config pool, such as custom-kubelet: small-pods, or the default label, pools.operator.machineconfiguration.openshift.io/worker: "".
-
-The previous example enables automatic resource allocation on all worker nodes. {product-title} drains the nodes, applies the kubelet config, and restarts the nodes.
-2. Create the CR by entering the following command:
+metadata.name:: Specifies a name for the CR.
+spec.autoSizingReserved:: Specify false to override the default Red Hat OpenShift Container Platform behavior of automatically setting the systemReserved values.
+spec.machineConfigPoolSelector.matchLabels:: Specifies a label from the machine config pool.
+spec.kubeletConfig.systemReserved:: Specifies the resources to reserve for the node components and system components.
+2. Run the following command to create the CR:
 
 ```terminal
 $ oc create -f <file_name>.yaml
@@ -215,91 +218,15 @@ $ oc debug node/<node_name>
 Example output
 
 ```terminal
-SYSTEM_RESERVED_MEMORY=3Gi
-SYSTEM_RESERVED_CPU=0.08
+SYSTEM_RESERVED_MEMORY=4Gi
+SYSTEM_RESERVED_CPU=1000m
+SYSTEM_RESERVED_ES=50Mi
 ```
 
 
-The kubelet uses the system-reserved values in the /etc/node-sizing.env file. In the previous example, the worker nodes are allocated 0.08 CPU and 3 Gi of memory. It can take several minutes for the optimal values to appear.
+The kubelet uses the system-reserved values in the /etc/node-sizing.env file.
 
-# Manually allocating resources for nodes
+# Additional resources
 
-{product-title} supports the CPU and memory resource types for allocation. The ephemeral-resource resource type is also supported. For the cpu type, you specify the resource quantity in units of cores, such as 200m, 0.5, or 1. For memory and ephemeral-storage, you specify the resource quantity in units of bytes, such as 200Ki, 50Mi, or 5Gi. By default, the system-reserved CPU is 500m and system-reserved memory is 1Gi.
-
-As an administrator, you can set these values by using a kubelet config custom resource (CR) through a set of <resource_type>=<resource_quantity> pairs
-(e.g., cpu=200m,memory=512Mi).
-
-
-[IMPORTANT]
-----
-You must use a kubelet config CR to manually set resource values. You cannot use a machine config CR.
-----
-
-For details on the recommended system-reserved values, refer to the recommended system-reserved values.
-
-1. Obtain the label associated with the static MachineConfigPool CRD for the type of node you want to configure by entering the following command:
-
-```terminal
-$ oc edit machineconfigpool <name>
-```
-
-
-For example:
-
-```terminal
-$ oc edit machineconfigpool worker
-```
-
-Example output
-
-```yaml
-apiVersion: machineconfiguration.openshift.io/v1
-kind: MachineConfigPool
-metadata:
-  creationTimestamp: "2022-11-16T15:34:25Z"
-  generation: 4
-  labels:
-    pools.operator.machineconfiguration.openshift.io/worker: "" 1
-  name: worker
-#...
-```
-
-The label appears under Labels.
-
-[TIP]
-----
-If the label is not present, add a key/value pair such as:
-
-```
-$ oc label machineconfigpool worker custom-kubelet=small-pods
-```
-
-----
-
-1. Create a custom resource (CR) for your configuration change.
-Sample configuration for a resource allocation CR
-
-```yaml
-apiVersion: machineconfiguration.openshift.io/v1
-kind: KubeletConfig
-metadata:
-  name: set-allocatable 1
-spec:
-  machineConfigPoolSelector:
-    matchLabels:
-      pools.operator.machineconfiguration.openshift.io/worker: "" 2
-  kubeletConfig:
-    systemReserved: 3
-      cpu: 1000m
-      memory: 1Gi
-#...
-```
-
-Assign a name to CR.
-Specify the label from the machine config pool.
-Specify the resources to reserve for the node components and system components.
-2. Run the following command to create the CR:
-
-```terminal
-$ oc create -f <file_name>.yaml
-```
+* Creating a KubeletConfig CR to edit kubelet parameters
+* Node metrics data (Kubernetes documentation)
