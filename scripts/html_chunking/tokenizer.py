@@ -48,14 +48,32 @@ class TokenCounter:
         if self.tokenizer is not None:
             return
 
+        # Try to use the embedding model's tokenizer
         try:
             embed_model = LlamaIndexSettings.embed_model
+
+            # Check if it's a HuggingFaceEmbedding with model_name
+            if hasattr(embed_model, 'model_name'):
+                model_name = embed_model.model_name
+                self.hf_tokenizer = AutoTokenizer.from_pretrained(model_name)
+                self.tokenizer = lambda text: self.hf_tokenizer.encode(
+                    text, add_special_tokens=False
+                )
+                return
+
+            # Try accessing tokenizer directly (for other embedding models)
             if hasattr(embed_model, 'tokenizer'):
                 self.tokenizer = lambda text: embed_model.tokenizer.encode(text)  # type: ignore[attr-defined]
+                return
+
+            # Try accessing nested _model.tokenizer (sentence-transformers structure)
+            if hasattr(embed_model, '_model') and hasattr(embed_model._model, 'tokenizer'):
+                self.tokenizer = lambda text: embed_model._model.tokenizer.encode(text)
                 return
         except (AttributeError, ValueError, ImportError, RuntimeError):
             pass
 
+        # Fallback to gpt2 (should only happen if no embed_model is configured)
         try:
             self.hf_tokenizer = AutoTokenizer.from_pretrained("gpt2")
             self.tokenizer = lambda text: self.hf_tokenizer.encode(text, add_special_tokens=False)
@@ -143,8 +161,16 @@ class TokenCounter:
                 return len(html_text.split())
 
 
-# Create a singleton instance for convenience
-token_counter = TokenCounter()
+# Singleton instance (lazy initialization)
+_token_counter = None
+
+
+def _get_token_counter():
+    """Get or create the global TokenCounter instance."""
+    global _token_counter
+    if _token_counter is None:
+        _token_counter = TokenCounter()
+    return _token_counter
 
 
 def count_tokens(text: str) -> int:
@@ -156,7 +182,7 @@ def count_tokens(text: str) -> int:
     Returns:
         The number of tokens in the text.
     """
-    return token_counter.count_tokens(text)
+    return _get_token_counter().count_tokens(text)
 
 
 def count_html_tokens(html_text: str, count_tag_tokens: bool = True) -> int:
@@ -169,7 +195,7 @@ def count_html_tokens(html_text: str, count_tag_tokens: bool = True) -> int:
     Returns:
         The number of tokens in the HTML text.
     """
-    return token_counter.count_html_tokens(html_text, count_tag_tokens)
+    return _get_token_counter().count_html_tokens(html_text, count_tag_tokens)
 
 
 def set_custom_tokenizer(tokenizer_func: Callable[[str], list[str]]) -> None:
@@ -178,5 +204,5 @@ def set_custom_tokenizer(tokenizer_func: Callable[[str], list[str]]) -> None:
     Args:
         tokenizer_func: A function that takes a string and returns a list of tokens.
     """
-    global token_counter
-    token_counter = TokenCounter(tokenizer_func)
+    global _token_counter
+    _token_counter = TokenCounter(tokenizer_func)
