@@ -1,0 +1,1283 @@
+# Automatically adjust pod resource levels with the vertical pod autoscaler
+
+
+The Red Hat OpenShift Container Platform Vertical Pod Autoscaler Operator (VPA) automatically reviews the historic and current CPU and memory resources for containers in pods. The VPA can update the resource limits and requests based on the usage values it learns. By using individual custom resources (CR), the VPA updates all the pods in a project associated with any built-in workload objects. This includes the following list of object types:
+* Deployment
+* DeploymentConfig
+* StatefulSet
+* Job
+* DaemonSet
+* ReplicaSet
+* ReplicationController
+The VPA can also update certain custom resource object that manage pods. For more information, see Example custom resources for the Vertical Pod Autoscaler.
+The VPA helps you to understand the optimal CPU and memory usage for your pods and can automatically maintain pod resources through the pod lifecycle.
+
+# About the Vertical Pod Autoscaler Operator
+
+The Vertical Pod Autoscaler Operator (VPA) is implemented as an API resource and a custom resource (CR). The CR determines the actions for the VPA to take with the pods associated with a specific workload object, such as a daemon set, replication controller, and so forth, in a project.
+
+The VPA consists of three components, each of which has its own pod in the VPA namespace:
+
+Recommender:: The VPA recommender monitors the current and past resource consumption. Based on this data, the VPA recommender determines the optimal CPU and memory resources for the pods in the associated workload object.
+Updater:: The VPA updater checks if the pods in the associated workload object have the correct resources. If the resources are correct, the updater takes no action. If the resources are not correct, the updater ensures that the pods have the updated requests. The way in which the VPA updates the resources depends on the update mode, as described in About the Vertical Pod Autoscaler Operator modes later in this section.
+Admission controller:: The VPA admission controller sets the correct resource requests on each new pod in the associated workload object. This applies whether the pod is new or the controller re-created the pod due to the VPA updater actions.
+
+You can use the default recommender or use your own alternative recommender to autoscale based on your own algorithms.
+
+The default recommender automatically computes historic and current CPU and memory usage for the containers in those pods. The default recommender uses this data to determine optimized resource limits and requests to ensure that these pods are operating efficiently at all times. For example, the default recommender suggests reduced resources for pods that are requesting more resources than they are using and increased resources for pods that are not requesting enough.
+
+Depending upon the VPA mode, the VPA can automatically update any pods that are out of alignment with these recommendations one at a time, so that your applications can continue to serve requests with no downtime. The VPA updates the pods with optimized resource limits and requests before admitting the pods to a node. If you do not want the VPA to update pods, you can view the VPA resource limits and requests and manually update the pods as needed.
+
+
+[NOTE]
+----
+By default, workload objects must specify a minimum of two replicas for the VPA to automatically delete their pods. Workload objects that specify fewer replicas than this minimum are not deleted. If you manually delete these pods, when the workload object redeploys the pods, the VPA updates the new pods with its recommendations. You can change this minimum by modifying the VerticalPodAutoscalerController object as shown in Changing the VPA minimum value.
+----
+
+For example, if you have a pod that uses 50% of the CPU but only requests 10%, the VPA determines that the pod is consuming more CPU than requested. Depending upon the VPA mode, the VPA updates the pod or you can manually update the pod at a convenient time.
+
+For developers, you can use the VPA to help ensure that your pods active during periods of high demand by scheduling pods onto nodes that have appropriate resources for each pod.
+
+Administrators can use the VPA to better use cluster resources, such as preventing pods from reserving more CPU resources than needed. The VPA monitors the resources that workloads are actually using and adjusts the resource requirements so capacity is available to other workloads. The VPA also maintains the ratios between limits and requests specified in the initial container configuration.
+
+
+[NOTE]
+----
+If you stop running the VPA or delete a specific VPA CR in your cluster, the resource requests for the pods already modified by the VPA do not change. However, any new pods get the resources defined in the workload object, not the previous recommendations made by the VPA.
+----
+
+## About the Vertical Pod Autoscaler Operator modes
+
+You can set one of the following VPA modes by using a VerticalPodAutoscaler CR:
+
+* InPlaceOrRecreate. In this mode, the VPA automatically applies the recommended CPU and memory resources throughout the pod lifetime. When any pod in the project is out of alignment with the VPA recommendations, the VPA attempts to apply updates in-place, without restarting the pod. If the VPA is not able to update the containers in-place, the VPA deletes the pod. When redeployed by the workload object, the VPA uses a mutating admission webhook to update the new pod with its recommendations. For specific information about in-place updates, see "About the in-place-or-recreate mode".
+
+The container&#8217;s resize policy dictates the way in which InPlaceOrRecreate mode updates are applied. If the policy is set to NotRequired, the VPA attempts to update the container without restarting. If the policy is RestartContainer, the VPA always restarts the container upon the update.
+* Recreate and Auto. In either of these modes, the VPA automatically applies the recommended CPU and memory resources throughout the pod lifetime. When any pod in the project is out of alignment with the VPA recommendations, the VPA deletes the pod. When redeployed by the workload object, the VPA uses a mutating admission webhook to update the new pod with its recommendations. Use the Recreate mode rarely, only if you need to ensure that when the resource request changes the pods restart.
+
+[IMPORTANT]
+----
+The Auto VPA mode is a deprecated feature. Deprecated functionality is still included in Red Hat OpenShift Container Platform and continues to be supported; however, it will be removed in a future release of this product and is not recommended for new deployments.
+For the most recent list of major functionality that has been deprecated or removed within Red Hat OpenShift Container Platform, refer to the Deprecated and removed features section of the Red Hat OpenShift Container Platform release notes.
+----
+* Initial. In this mode, the VPA applies the recommended CPU and memory resources mode only at pod creation.
+* Off. In this mode, the VPA mode only provides the recommended resource limits and requests. You can then manually apply the recommendations. The Off mode does not update pods.
+
+## About the in-place-or-recreate mode
+
+The Vertical Pod Autoscaler Operator (VPA) contains an optional InPlaceOrRecreate mode. This mode instructs the VPA to attempt to perform an in-place pod resize when updating CPU or memory resources, where the VPA first attempts to update the resources in a running pod without recreating the pod. If an in-place resize is not possible, the VPA falls back to the Recreate mode and restarts the pod in order to update the resources.
+
+When in InPlaceOrRecreate mode, the VPA falls back to always recreating pods in the following scenarios:
+
+* The in-place update is considered infeasible for reasons including the following reasons:
+* The requested resources exceed the node's total capacity.
+* The pod is a static pod.
+* The containers has swap enabled.
+* The pod is managed by a static cpuManagerPolicy or memoryManagerPolicy parameter.
+* The update is deferred for more than 5 minutes. A deferred update is one that is currently not possible, but might become possible at a later time. For example, if another pod is removed from the node, the requested resources might become available. The kubelet retries the resize when conditions on the node change.
+* The update is in progress for more than 1 hour.
+* The pod QoS class would change due to the update.
+* The update would downscale the memory limit.
+
+If a container in a pod has a RestartContainer container resize policy, which requires a restart upon a resource update, a VPA in InPlaceOrRecreate mode honors the resize policy and restarts the container.
+
+For more information on in-place updates, see "Adjust pod resource levels without pod disruption".
+
+* About using the Vertical Pod Autoscaler Operator
+* Adjust pod resource levels without pod disruption
+
+# Installing the Vertical Pod Autoscaler Operator
+
+You can use the Red Hat OpenShift Container Platform web console to install the Vertical Pod Autoscaler Operator (VPA).
+
+1. In the Red Hat OpenShift Container Platform web console, click Ecosystem -> Software Catalog.
+2. Choose  VerticalPodAutoscaler from the list of available Operators, and click Install.
+3. On the Install Operator page, ensure that the Operator recommended namespace option
+is selected. This installs the Operator in the mandatory openshift-vertical-pod-autoscaler namespace, which
+is automatically created if it does not exist.
+4. Click Install.
+
+1. Verify the installation by listing the VPA components:
+1. Navigate to Workloads -> Pods.
+2. Select the openshift-vertical-pod-autoscaler project from the drop-down menu and verify that there are four pods running.
+3. Navigate to Workloads -> Deployments to verify that there are four deployments running.
+2. Optional: Verify the installation in the Red Hat OpenShift Container Platform CLI using the following command:
+
+```terminal
+$ oc get all -n openshift-vertical-pod-autoscaler
+```
+
+
+The output shows four pods and four deployments:
+Example output
+
+```terminal
+NAME                                                    READY   STATUS    RESTARTS   AGE
+pod/vertical-pod-autoscaler-operator-85b4569c47-2gmhc   1/1     Running   0          3m13s
+pod/vpa-admission-plugin-default-67644fc87f-xq7k9       1/1     Running   0          2m56s
+pod/vpa-recommender-default-7c54764b59-8gckt            1/1     Running   0          2m56s
+pod/vpa-updater-default-7f6cc87858-47vw9                1/1     Running   0          2m56s
+
+NAME                  TYPE        CLUSTER-IP      EXTERNAL-IP   PORT(S)   AGE
+service/vpa-webhook   ClusterIP   172.30.53.206   <none>        443/TCP   2m56s
+
+NAME                                               READY   UP-TO-DATE   AVAILABLE   AGE
+deployment.apps/vertical-pod-autoscaler-operator   1/1     1            1           3m13s
+deployment.apps/vpa-admission-plugin-default       1/1     1            1           2m56s
+deployment.apps/vpa-recommender-default            1/1     1            1           2m56s
+deployment.apps/vpa-updater-default                1/1     1            1           2m56s
+
+NAME                                                          DESIRED   CURRENT   READY   AGE
+replicaset.apps/vertical-pod-autoscaler-operator-85b4569c47   1         1         1       3m13s
+replicaset.apps/vpa-admission-plugin-default-67644fc87f       1         1         1       2m56s
+replicaset.apps/vpa-recommender-default-7c54764b59            1         1         1       2m56s
+replicaset.apps/vpa-updater-default-7f6cc87858                1         1         1       2m56s
+```
+
+
+# Moving the Vertical Pod Autoscaler Operator components
+
+The Vertical Pod Autoscaler Operator (VPA) and each component has its own pod in the VPA namespace on the control plane nodes. You can move the VPA Operator and component pods to infrastructure or worker nodes by adding a node selector to the VPA subscription and the VerticalPodAutoscalerController CR.
+
+You can create and use infrastructure nodes to host only infrastructure components. For example, the default router, the integrated container image registry, and the components for cluster metrics and monitoring. These infrastructure nodes are not counted toward the total number of subscriptions that are required to run the environment. For more information, see Creating infrastructure machine sets.
+
+You can move the components to the same node or separate nodes as appropriate for your organization.
+
+The following example shows the default deployment of the VPA pods to the control plane nodes.
+
+
+```terminal
+NAME                                                READY   STATUS    RESTARTS   AGE     IP            NODE                  NOMINATED NODE   READINESS GATES
+vertical-pod-autoscaler-operator-6c75fcc9cd-5pb6z   1/1     Running   0          7m59s   10.128.2.24   c416-tfsbj-master-1   <none>           <none>
+vpa-admission-plugin-default-6cb78d6f8b-rpcrj       1/1     Running   0          5m37s   10.129.2.22   c416-tfsbj-master-1   <none>           <none>
+vpa-recommender-default-66846bd94c-dsmpp            1/1     Running   0          5m37s   10.129.2.20   c416-tfsbj-master-0   <none>           <none>
+vpa-updater-default-db8b58df-2nkvf                  1/1     Running   0          5m37s   10.129.2.21   c416-tfsbj-master-1   <none>           <none>
+```
+
+
+1. Move the VPA Operator pod by adding a node selector to the Subscription custom resource (CR) for the VPA Operator:
+1. Edit the CR:
+
+```terminal
+$ oc edit Subscription vertical-pod-autoscaler -n openshift-vertical-pod-autoscaler
+```
+
+2. Add a node selector to match the node role label on the node where you want to install the VPA Operator pod:
+
+```terminal
+apiVersion: operators.coreos.com/v1alpha1
+kind: Subscription
+metadata:
+  labels:
+    operators.coreos.com/vertical-pod-autoscaler.openshift-vertical-pod-autoscaler: ""
+  name: vertical-pod-autoscaler
+# ...
+spec:
+  config:
+    nodeSelector:
+      node-role.kubernetes.io/<node_role>: "" 1
+```
+
+Specifies the node role of the node where you want to move the VPA Operator pod.
+
+[NOTE]
+----
+If the infra node uses taints, you need to add a toleration to the Subscription CR.
+For example:
+
+```terminal
+apiVersion: operators.coreos.com/v1alpha1
+kind: Subscription
+metadata:
+  labels:
+    operators.coreos.com/vertical-pod-autoscaler.openshift-vertical-pod-autoscaler: ""
+  name: vertical-pod-autoscaler
+# ...
+spec:
+  config:
+    nodeSelector:
+      node-role.kubernetes.io/infra: ""
+    tolerations: 1
+    - key: "node-role.kubernetes.io/infra"
+      operator: "Exists"
+      effect: "NoSchedule"
+```
+
+----
+Specifies a toleration for a taint on the node where you want to move the VPA Operator pod.
+2. Move each VPA component by adding node selectors to the VerticalPodAutoscaler custom resource (CR):
+1. Edit the CR:
+
+```terminal
+$ oc edit VerticalPodAutoscalerController default -n openshift-vertical-pod-autoscaler
+```
+
+2. Add node selectors to match the node role label on the node where you want to install the VPA components:
+
+```terminal
+apiVersion: autoscaling.openshift.io/v1
+kind: VerticalPodAutoscalerController
+metadata:
+  name: default
+  namespace: openshift-vertical-pod-autoscaler
+# ...
+spec:
+  deploymentOverrides:
+    admission:
+      container:
+        resources: {}
+      nodeSelector:
+        node-role.kubernetes.io/<node_role>: "" 1
+    recommender:
+      container:
+        resources: {}
+      nodeSelector:
+        node-role.kubernetes.io/<node_role>: "" 2
+    updater:
+      container:
+        resources: {}
+      nodeSelector:
+        node-role.kubernetes.io/<node_role>: "" 3
+```
+
+Optional: Specifies the node role for the VPA admission pod.
+Optional: Specifies the node role for the VPA recommender pod.
+Optional: Specifies the node role for the VPA updater pod.
+
+[NOTE]
+----
+If a target node uses taints, you need to add a toleration to the VerticalPodAutoscalerController CR.
+For example:
+
+```terminal
+apiVersion: autoscaling.openshift.io/v1
+kind: VerticalPodAutoscalerController
+metadata:
+  name: default
+  namespace: openshift-vertical-pod-autoscaler
+# ...
+spec:
+  deploymentOverrides:
+    admission:
+      container:
+        resources: {}
+      nodeSelector:
+        node-role.kubernetes.io/worker: ""
+      tolerations: 1
+      - key: "my-example-node-taint-key"
+        operator: "Exists"
+        effect: "NoSchedule"
+    recommender:
+      container:
+        resources: {}
+      nodeSelector:
+        node-role.kubernetes.io/worker: ""
+      tolerations: 2
+      - key: "my-example-node-taint-key"
+        operator: "Exists"
+        effect: "NoSchedule"
+    updater:
+      container:
+        resources: {}
+      nodeSelector:
+        node-role.kubernetes.io/worker: ""
+      tolerations: 3
+      - key: "my-example-node-taint-key"
+        operator: "Exists"
+        effect: "NoSchedule"
+```
+
+----
+Specifies a toleration for the admission controller pod for a taint on the node where you want to install the pod.
+Specifies a toleration for the recommender pod for a taint on the node where you want to install the pod.
+Specifies a toleration for the updater pod for a taint on the node where you want to install the pod.
+
+* You can verify the pods have moved by using the following command:
+
+```terminal
+$ oc get pods -n openshift-vertical-pod-autoscaler -o wide
+```
+
+
+The pods are no longer deployed to the control plane nodes. In the following example output, the node is now an infra node, not a control plane node.
+Example output
+
+```terminal
+NAME                                                READY   STATUS    RESTARTS   AGE     IP            NODE                              NOMINATED NODE   READINESS GATES
+vertical-pod-autoscaler-operator-6c75fcc9cd-5pb6z   1/1     Running   0          7m59s   10.128.2.24   c416-tfsbj-infra-eastus3-2bndt   <none>           <none>
+vpa-admission-plugin-default-6cb78d6f8b-rpcrj       1/1     Running   0          5m37s   10.129.2.22   c416-tfsbj-infra-eastus1-lrgj8   <none>           <none>
+vpa-recommender-default-66846bd94c-dsmpp            1/1     Running   0          5m37s   10.129.2.20   c416-tfsbj-infra-eastus1-lrgj8   <none>           <none>
+vpa-updater-default-db8b58df-2nkvf                  1/1     Running   0          5m37s   10.129.2.21   c416-tfsbj-infra-eastus1-lrgj8   <none>           <none>
+```
+
+
+# About using the Vertical Pod Autoscaler Operator
+
+To use the Vertical Pod Autoscaler Operator (VPA), you create a VPA custom resource (CR) for a workload object in your cluster. The VPA learns and applies the optimal CPU and memory resources for the pods associated with that workload object. You can use a VPA with a deployment, stateful set, job, daemon set, replica set, or replication controller workload object. The VPA CR must be in the same project as the pods that you want to check.
+
+You use the VPA CR to associate a workload object and specify the mode that the VPA operates in. You can also use the CR to opt-out certain containers from VPA evaluation and updates.
+
+For example, a pod has the following limits and requests:
+
+
+```yaml
+resources:
+  limits:
+    cpu: 1
+    memory: 500Mi
+  requests:
+    cpu: 500m
+    memory: 100Mi
+```
+
+
+After creating a VPA that is set to Recreate, the VPA learns the resource usage and deletes the pod. When redeployed, the pod uses the new resource limits and requests:
+
+
+```yaml
+resources:
+  limits:
+    cpu: 50m
+    memory: 1250Mi
+  requests:
+    cpu: 25m
+    memory: 262144k
+```
+
+
+You can view the VPA recommendations by using the following command:
+
+
+```terminal
+$ oc get vpa <vpa-name> --output yaml
+```
+
+
+After a few minutes, the output shows the recommendations for CPU and memory requests, similar to the following:
+
+
+```yaml
+...
+status:
+...
+  recommendation:
+    containerRecommendations:
+    - containerName: frontend
+      lowerBound:
+        cpu: 25m
+        memory: 262144k
+      target:
+        cpu: 25m
+        memory: 262144k
+      uncappedTarget:
+        cpu: 25m
+        memory: 262144k
+      upperBound:
+        cpu: 262m
+        memory: "274357142"
+    - containerName: backend
+      lowerBound:
+        cpu: 12m
+        memory: 131072k
+      target:
+        cpu: 12m
+        memory: 131072k
+      uncappedTarget:
+        cpu: 12m
+        memory: 131072k
+      upperBound:
+        cpu: 476m
+        memory: "498558823"
+...
+```
+
+
+The output shows the recommended resources, target, the minimum recommended resources, lowerBound, the highest recommended resources, upperBound, and the most recent  resource recommendations, uncappedTarget.
+
+The VPA uses the lowerBound and upperBound values to determine if a pod needs updating. If a pod has resource requests less than the lowerBound values or more than the upperBound values, the VPA terminates and recreates the pod with the target values.
+
+* Adjust pod resource levels without pod disruption
+
+## Changing the VPA minimum value
+
+By default, workload objects must specify a minimum of two replicas in order for the VPA to automatically delete and update their pods. As a result, workload objects that specify fewer than two replicas are not automatically acted upon by the VPA. The VPA does update new pods from these workload objects if a process external to the VPA restarts the pods. You can change this cluster-wide minimum value by modifying the minReplicas parameter in the VerticalPodAutoscalerController custom resource (CR).
+
+For example, if you set minReplicas to 3, the VPA does not delete and update pods for workload objects that specify fewer than three replicas.
+
+
+[NOTE]
+----
+If you set minReplicas to 1, the VPA can delete the only pod for a workload object that specifies only one replica. Use this setting with one-replica objects only if your workload can tolerate downtime whenever the VPA deletes a pod to adjust its resources. To avoid unwanted downtime with one-replica objects, configure the VPA CRs with the podUpdatePolicy set to Initial, which automatically updates the pod only when a process external to the VPA restarts, or Off, which you can use to update the pod manually at an appropriate time for your application.
+----
+
+
+```yaml
+apiVersion: autoscaling.openshift.io/v1
+kind: VerticalPodAutoscalerController
+metadata:
+  creationTimestamp: "2021-04-21T19:29:49Z"
+  generation: 2
+  name: default
+  namespace: openshift-vertical-pod-autoscaler
+  resourceVersion: "142172"
+  uid: 180e17e9-03cc-427f-9955-3b4d7aeb2d59
+spec:
+  minReplicas: 3 1
+  podMinCPUMillicores: 25
+  podMinMemoryMb: 250
+  recommendationOnly: false
+  safetyMarginFraction: 0.15
+```
+
+
+Specify the minimum number of replicas in a workload object for the VPA to act on. Any objects with replicas fewer than the minimum are not automatically deleted by the VPA.
+
+## Automatically applying VPA recommendations
+
+To use the VPA to automatically update pods, create a VPA CR for a specific workload object with updateMode set to InPlaceOrRecreate or Recreate.
+
+When the pods are created for the workload object, the VPA constantly monitors the containers to analyze their CPU and memory needs. The VPA updates any pods that do not meet the VPA recommendations for CPU and memory to use the new resource limits and requests based on the VPA recommendations, honoring any pod disruption budget set for your applications. The recommendations are added to the status field of the VPA CR for reference.
+
+
+[NOTE]
+----
+By default, workload objects must specify a minimum of two replicas in order for the VPA to automatically delete their pods. Workload objects that specify fewer replicas than this minimum are not deleted. If you manually delete these pods, when the workload object redeploys the pods, the VPA does update the new pods with its recommendations. You can change this minimum by modifying the VerticalPodAutoscalerController object as shown in Changing the VPA minimum value.
+----
+
+
+```yaml
+apiVersion: autoscaling.k8s.io/v1
+kind: VerticalPodAutoscaler
+metadata:
+  name: vpa-recommender
+spec:
+  targetRef:
+    apiVersion: "apps/v1"
+    kind:       Deployment 1
+    name:       frontend 2
+  updatePolicy:
+    updateMode: "InPlaceOrRecreate" 3
+```
+
+
+The type of workload object you want this VPA CR to manage.
+The name of the workload object you want this VPA CR to manage.
+Set the mode to InPlaceOrRecreate or Recreate:
+* InPlaceOrRecreate. The VPA attempts to update the workload object with the new resource requests without re-creating the pod. If the VPA is unable to update the object in place, the VPA re-creates it.
+* Recreate. The VPA assigns resource requests on pod creation and updates the existing pods by terminating them. Use this mode rarely, only if you need to ensure that when the resource request changes the pods restart.
+
+
+[NOTE]
+----
+Before a VPA can determine recommendations for resources and apply the recommended resources to new pods, operating pods must exist and be running in the project.
+If a workload's resource usage, such as CPU and memory, is consistent, the VPA can determine recommendations for resources in a few minutes. If a workload's resource usage is inconsistent, the VPA must collect metrics at various resource usage intervals for the VPA to make an accurate recommendation.
+----
+
+## Automatically applying VPA recommendations on pod creation
+
+To use the VPA to apply the recommended resources only when a pod is first deployed, create a VPA CR for a specific workload object with updateMode set to Initial.
+
+Then, manually delete any pods associated with the workload object that you want to use the VPA recommendations. In the Initial mode, the VPA does not delete pods and does not update the pods as it learns new resource recommendations.
+
+
+```yaml
+apiVersion: autoscaling.k8s.io/v1
+kind: VerticalPodAutoscaler
+metadata:
+  name: vpa-recommender
+spec:
+  targetRef:
+    apiVersion: "apps/v1"
+    kind:       Deployment 1
+    name:       frontend 2
+  updatePolicy:
+    updateMode: "Initial" 3
+```
+
+
+The type of workload object you want this VPA CR to manage.
+The name of the workload object you want this VPA CR to manage.
+Set the mode to Initial. The VPA assigns resources when pods are created and does not change the resources during the lifetime of the pod.
+
+
+[NOTE]
+----
+Before a VPA can determine recommended resources and apply the recommendations to new pods, operating pods must exist and be running in the project.
+To obtain the most accurate recommendations from the VPA, wait at least 8 days for the pods to run and for the VPA to stabilize.
+----
+
+## Manually applying VPA recommendations
+
+To use the VPA to only determine the recommended CPU and memory values, create a VPA CR for a specific workload object with updateMode set to Off.
+
+When the pods are created for that workload object, the VPA analyzes the CPU and memory needs of the containers and records those recommendations in the status field of the VPA CR. The VPA does not update the pods as it determines new resource recommendations.
+
+
+```yaml
+apiVersion: autoscaling.k8s.io/v1
+kind: VerticalPodAutoscaler
+metadata:
+  name: vpa-recommender
+spec:
+  targetRef:
+    apiVersion: "apps/v1"
+    kind:       Deployment 1
+    name:       frontend 2
+  updatePolicy:
+    updateMode: "Off" 3
+```
+
+
+The type of workload object you want this VPA CR to manage.
+The name of the workload object you want this VPA CR to manage.
+Set the mode to Off.
+
+You can view the recommendations by using the following command.
+
+
+```terminal
+$ oc get vpa <vpa-name> --output yaml
+```
+
+
+With the recommendations, you can edit the workload object to add CPU and memory requests, then delete and redeploy the pods by using the recommended resources.
+
+
+[NOTE]
+----
+Before a VPA can determine recommended resources and apply the recommendations to new pods, operating pods must exist and be running in the project.
+To obtain the most accurate recommendations from the VPA, wait at least 8 days for the pods to run and for the VPA to stabilize.
+----
+
+## Exempting containers from applying VPA recommendations
+
+If your workload object has multiple containers and you do not want the VPA to evaluate and act on all of the containers, create a VPA CR for a specific workload object and add a resourcePolicy to opt-out specific containers.
+
+When the VPA updates the pods with recommended resources, any containers with a resourcePolicy are not updated and the VPA does not present recommendations for those containers in the pod.
+
+
+```yaml
+apiVersion: autoscaling.k8s.io/v1
+kind: VerticalPodAutoscaler
+metadata:
+  name: vpa-recommender
+spec:
+  targetRef:
+    apiVersion: "apps/v1"
+    kind:       Deployment 1
+    name:       frontend 2
+  updatePolicy:
+    updateMode: "InPlaceOrRecreate" 3
+  resourcePolicy: 4
+    containerPolicies:
+    - containerName: my-opt-sidecar
+      mode: "Off"
+```
+
+
+The type of workload object you want this VPA CR to manage.
+The name of the workload object you want this VPA CR to manage.
+Set the mode to InPlaceOrRecreate, Recreate, Initial, or Off. Use the Recreate mode rarely. For example, use this mode to ensure that the pods restart when the resources are updated.
+Specify the containers that you do not want updated by the VPA and set the mode to Off.
+
+For example, a pod has two containers, the same resource requests and limits:
+
+
+```yaml
+# ...
+spec:
+  containers:
+  - name: frontend
+    resources:
+      limits:
+        cpu: 1
+        memory: 500Mi
+      requests:
+        cpu: 500m
+        memory: 100Mi
+  - name: backend
+    resources:
+      limits:
+        cpu: "1"
+        memory: 500Mi
+      requests:
+        cpu: 500m
+        memory: 100Mi
+# ...
+```
+
+
+After launching a VPA CR with the backend container set to opt-out, the VPA terminates and recreates the pod with the recommended resources applied only to the frontend container:
+
+
+```yaml
+...
+spec:
+  containers:
+    name: frontend
+    resources:
+      limits:
+        cpu: 50m
+        memory: 1250Mi
+      requests:
+        cpu: 25m
+        memory: 262144k
+...
+    name: backend
+    resources:
+      limits:
+        cpu: "1"
+        memory: 500Mi
+      requests:
+        cpu: 500m
+        memory: 100Mi
+...
+```
+
+
+## Performance tuning the VPA Operator
+
+As a cluster administrator, you can tune the performance of your Vertical Pod Autoscaler Operator (VPA) to limit the rate at which the VPA makes requests of the Kubernetes API server and to specify the CPU and memory resources for the VPA recommender, updater, and admission controller component pods.
+
+You can also configure the VPA to monitor only those workloads a VPA custom resource (CR) manages. By default, the VPA monitors every workload in the cluster. As a result, the VPA accrues and stores 8 days of historical data for all workloads. The can be used by the VPA if a new VPA CR is created for a workload. However, this causes the VPA to use significant CPU and memory. This can cause the VPA to fail, particularly on larger clusters. By configuring the VPA to monitor only workloads with a VPA CR, you can save on CPU and memory resources. One tradeoff is that where you have a running workload and you create a VPA CR to manage that workload. The VPA does not have any historical data for that workload. As a result, the initial recommendations are not as useful as those after the workload is running for some time.
+
+Use these tunings to ensure the VPA has enough resources to operate at peak efficiency and to prevent throttling, and a possible delay in pod admissions.
+
+You can perform the following tunings on the VPA components by editing the VerticalPodAutoscalerController custom resource (CR):
+
+* To prevent throttling and pod admission delays, set the queries per second (QPS) and burst rates for VPA requests of the Kubernetes API server by using the kube-api-qps and kube-api-burst parameters.
+* To ensure enough CPU and memory, set the CPU and memory requests for VPA component pods by using the standard cpu and memory resource requests.
+* To configure the VPA to monitor only workloads that the VPA CR manages, set the memory-saver parameter to true for the recommender component.
+
+For guidelines on the resources and rate limits that you could set for each VPA component, the following tables provide recommended baseline values, depending on the size of your cluster and other factors.
+
+
+[IMPORTANT]
+----
+These recommended values derive from internal Red Hat testing on clusters that are not necessarily representative of real-world clusters. Before you configure a production cluster, ensure you test these values in a non-production cluster.
+----
+
+
+
+1. c is the number of containers in the cluster.
+
+
+[NOTE]
+----
+It is recommended that you set the memory limit on your containers to at least double the recommended requests in the table. However, because CPU is a compressible resource, setting CPU limits for containers can throttle the VPA. As such, it is recommended that you do not set a CPU limit on your containers.
+----
+
+
+
+1. QPS specifies the queries per second (QPS) limit when making requests to Kubernetes API server. The default for the updater and recommender pods is 5.0.
+2. Burst specifies the burst limit when making requests to Kubernetes API server. The default for the updater and recommender pods is 10.0.
+
+
+[NOTE]
+----
+If you have more than 4,000 VPAs in your cluster, it is recommended that you start performance tuning with the values in the table and slowly increase the values until you achieve the required recommender and updater latency and performance. Adjust these values slowly because increased QPS and Burst can affect cluster health and slow down the Kubernetes API server if too many API requests are sent to the API server from the VPA components.
+----
+
+The following example VPA controller CR is for a cluster with 1,000 to 2,000 containers and a pod creation surge of 26 to 50. The CR sets the following values:
+
+* The container memory and CPU requests for all three VPA components
+* The container memory limit for all three VPA components
+* The QPS and burst rates for all three VPA components
+* The memory-saver parameter to true for the VPA recommender component
+
+
+```yaml
+apiVersion: autoscaling.openshift.io/v1
+kind: VerticalPodAutoscalerController
+metadata:
+  name: default
+  namespace: openshift-vertical-pod-autoscaler
+spec:
+  deploymentOverrides:
+    admission: 1
+      container:
+        args: 2
+          - '--kube-api-qps=50.0'
+          - '--kube-api-burst=100.0'
+        resources:
+          requests: 3
+            cpu: 40m
+            memory: 150Mi
+          limits:
+            memory: 300Mi
+    recommender: 4
+      container:
+        args:
+          - '--kube-api-qps=60.0'
+          - '--kube-api-burst=120.0'
+          - '--memory-saver=true' 5
+        resources:
+          requests:
+            cpu: 75m
+            memory: 275Mi
+          limits:
+            memory: 550Mi
+    updater: 6
+      container:
+        args:
+          - '--kube-api-qps=60.0'
+          - '--kube-api-burst=120.0'
+        resources:
+          requests:
+            cpu: 80m
+            memory: 350M
+          limits:
+            memory: 700Mi
+  minReplicas: 2
+  podMinCPUMillicores: 25
+  podMinMemoryMb: 250
+  recommendationOnly: false
+  safetyMarginFraction: 0.15
+```
+
+
+Specifies the tuning parameters for the VPA admission controller.
+Specifies the API QPS and burst rates for the VPA admission controller.
+* kube-api-qps: Specifies the queries per second (QPS) limit when making requests to Kubernetes API server. The default is 5.0.
+* kube-api-burst: Specifies the burst limit when making requests to Kubernetes API server. The default is 10.0.
+Specifies the resource requests and limits for the VPA admission controller pod.
+Specifies the tuning parameters for the VPA recommender.
+Specifies that the VPA Operator monitors only workloads with a VPA CR. The default is false.
+Specifies the tuning parameters for the VPA updater.
+
+You can verify that the settings were applied to each VPA component pod.
+
+
+```yaml
+apiVersion: v1
+kind: Pod
+metadata:
+  name: vpa-updater-default-d65ffb9dc-hgw44
+  namespace: openshift-vertical-pod-autoscaler
+# ...
+spec:
+  containers:
+  - args:
+    - --logtostderr
+    - --v=1
+    - --min-replicas=2
+    - --kube-api-qps=60.0
+    - --kube-api-burst=120.0
+# ...
+    resources:
+      requests:
+        cpu: 80m
+        memory: 350M
+# ...
+```
+
+
+
+```yaml
+apiVersion: v1
+kind: Pod
+metadata:
+  name: vpa-admission-plugin-default-756999448c-l7tsd
+  namespace: openshift-vertical-pod-autoscaler
+# ...
+spec:
+  containers:
+  - args:
+    - --logtostderr
+    - --v=1
+    - --tls-cert-file=/data/tls-certs/tls.crt
+    - --tls-private-key=/data/tls-certs/tls.key
+    - --client-ca-file=/data/tls-ca-certs/service-ca.crt
+    - --webhook-timeout-seconds=10
+    - --kube-api-qps=50.0
+    - --kube-api-burst=100.0
+# ...
+    resources:
+      requests:
+        cpu: 40m
+        memory: 150Mi
+# ...
+```
+
+
+
+```yaml
+apiVersion: v1
+kind: Pod
+metadata:
+  name: vpa-recommender-default-74c979dbbc-znrd2
+  namespace: openshift-vertical-pod-autoscaler
+# ...
+spec:
+  containers:
+  - args:
+    - --logtostderr
+    - --v=1
+    - --recommendation-margin-fraction=0.15
+    - --pod-recommendation-min-cpu-millicores=25
+    - --pod-recommendation-min-memory-mb=250
+    - --kube-api-qps=60.0
+    - --kube-api-burst=120.0
+    - --memory-saver=true
+# ...
+    resources:
+      requests:
+        cpu: 75m
+        memory: 275Mi
+# ...
+```
+
+
+## Custom memory bump-up after OOM event
+
+If your cluster experiences an OOM (out of memory) event, the Vertical Pod Autoscaler Operator (VPA) increases the memory recommendation. The basis for the recommendation is the memory consumption observed during the OOM event and a specified multiplier value to prevent future crashes due to insufficient memory.
+
+The recommendation is the higher of two calculations: the memory in use by the pod when the OOM event happened multiplied by a specified number of bytes or a specified percentage. The following formula represents the calculation:
+
+
+```text
+recommendation = max(memory-usage-in-oom-event + oom-min-bump-up-bytes, memory-usage-in-oom-event * oom-bump-up-ratio)
+```
+
+
+You can configure the memory increase by specifying the following values in the recommender pod:
+
+* oom-min-bump-up-bytes. This value, in bytes, is a specific increase in memory after an OOM event occurs. The default is 100MiB.
+* oom-bump-up-ratio. This value is a percentage increase in memory when the OOM event occurred. The default value is 1.2.
+
+For example, if the pod memory usage during an OOM event is 100 MB, and oom-min-bump-up-bytes is set to 150 MB with a oom-min-bump-ratio of 1.2. After an OOM event, the VPA recommends increasing the memory request for that pod to 150 MB, as it is higher than at 120 MB (100 MB * 1.2).
+
+
+```yaml
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: vpa-recommender-default
+  namespace: openshift-vertical-pod-autoscaler
+# ...
+spec:
+# ...
+  template:
+# ...
+    spec
+      containers:
+      - name: recommender
+        args:
+        - --oom-bump-up-ratio=2.0
+        - --oom-min-bump-up-bytes=524288000
+# ...
+```
+
+
+* Understanding OOM kill policy
+
+## Using an alternative recommender
+
+You can use your own recommender to autoscale based on your own algorithms. If you do not specify an alternative recommender, Red Hat OpenShift Container Platform uses the default recommender, which suggests CPU and memory requests based on historical usage. Because there is no universal recommendation policy that applies to all types of workloads, you might want to create and deploy different recommenders for specific workloads.
+
+For example, the default recommender might not accurately predict future resource usage when containers exhibit certain resource behaviors. Examples are cyclical patterns that alternate between usage spikes and idling as used by monitoring applications, or recurring and repeating patterns used with deep learning applications. Using the default recommender with these usage behaviors might result in significant over-provisioning and Out of Memory (OOM) kills for your applications.
+
+
+[NOTE]
+----
+Instructions for how to create a recommender are beyond the scope of this documentation.
+----
+
+To use an alternative recommender for your pods:
+
+1. Create a service account for the alternative recommender and bind that service account to the required cluster role:
+
+```yaml
+apiVersion: v1 1
+kind: ServiceAccount
+metadata:
+  name: alt-vpa-recommender-sa
+  namespace: <namespace_name>
+---
+apiVersion: rbac.authorization.k8s.io/v1 2
+kind: ClusterRoleBinding
+metadata:
+  name: system:example-metrics-reader
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: system:metrics-reader
+subjects:
+- kind: ServiceAccount
+  name: alt-vpa-recommender-sa
+  namespace: <namespace_name>
+---
+apiVersion: rbac.authorization.k8s.io/v1 3
+kind: ClusterRoleBinding
+metadata:
+  name: system:example-vpa-actor
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: system:vpa-actor
+subjects:
+- kind: ServiceAccount
+  name: alt-vpa-recommender-sa
+  namespace: <namespace_name>
+---
+apiVersion: rbac.authorization.k8s.io/v1 4
+kind: ClusterRoleBinding
+metadata:
+  name: system:example-vpa-target-reader-binding
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: system:vpa-target-reader
+subjects:
+- kind: ServiceAccount
+  name: alt-vpa-recommender-sa
+  namespace: <namespace_name>
+```
+
+Creates a service account for the recommender in the namespace that displays the recommender.
+Binds the recommender service account to the metrics-reader role. Specify the namespace for where to deploy the recommender.
+Binds the recommender service account to the vpa-actor role. Specify the namespace for where to deploy the recommender.
+Binds the recommender service account to the vpa-target-reader role. Specify the namespace for where to display the recommender.
+2. To add the alternative recommender to the cluster, create a Deployment object similar to the following:
+
+```yaml
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: alt-vpa-recommender
+  namespace: <namespace_name>
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: alt-vpa-recommender
+  template:
+    metadata:
+      labels:
+        app: alt-vpa-recommender
+    spec:
+      containers: 1
+      - name: recommender
+        image: quay.io/example/alt-recommender:latest 2
+        imagePullPolicy: Always
+        resources:
+          limits:
+            cpu: 200m
+            memory: 1000Mi
+          requests:
+            cpu: 50m
+            memory: 500Mi
+        ports:
+        - name: prometheus
+          containerPort: 8942
+        securityContext:
+          allowPrivilegeEscalation: false
+          capabilities:
+            drop:
+              - ALL
+          seccompProfile:
+            type: RuntimeDefault
+      serviceAccountName: alt-vpa-recommender-sa 3
+      securityContext:
+        runAsNonRoot: true
+```
+
+Creates a container for your alternative recommender.
+Specifies your recommender image.
+Associates the service account that you created for the recommender.
+
+A new pod is created for the alternative recommender in the same namespace.
+
+```terminal
+$ oc get pods
+```
+
+Example output
+
+```terminal
+NAME                                        READY   STATUS    RESTARTS   AGE
+frontend-845d5478d-558zf                    1/1     Running   0          4m25s
+frontend-845d5478d-7z9gx                    1/1     Running   0          4m25s
+frontend-845d5478d-b7l4j                    1/1     Running   0          4m25s
+vpa-alt-recommender-55878867f9-6tp5v        1/1     Running   0          9s
+```
+
+3. Configure a Vertical Pod Autoscaler Operator (VPA) custom resource (CR) that includes the name of the alternative recommender Deployment object.
+Example VPA CR to include the alternative recommender
+
+```yml
+apiVersion: autoscaling.k8s.io/v1
+kind: VerticalPodAutoscaler
+metadata:
+  name: vpa-recommender
+  namespace: <namespace_name>
+spec:
+  recommenders:
+    - name: alt-vpa-recommender 1
+  targetRef:
+    apiVersion: "apps/v1"
+    kind:       Deployment 2
+    name:       frontend
+```
+
+Specifies the name of the alternative recommender deployment.
+Specifies the name of an existing workload object you want this VPA to manage.
+
+# Using the Vertical Pod Autoscaler Operator
+
+You can use the Vertical Pod Autoscaler Operator (VPA) by creating a VPA custom resource (CR). The CR indicates the pods to analyze and determines the actions for the VPA to take with those pods.
+
+You can use the VPA to scale built-in resources such as deployments or stateful sets, and custom resources that manage pods. For more information, see "About using the Vertical Pod Autoscaler Operator".
+
+* Ensure the workload object that you want to autoscale exists.
+* Ensure that if you want to use an alternative recommender, a deployment including that recommender exists.
+
+To create a VPA CR for a specific workload object:
+
+1. Change to the location of the project for the workload object you want to scale.
+1. Create a VPA CR YAML file:
+
+```yaml
+apiVersion: autoscaling.k8s.io/v1
+kind: VerticalPodAutoscaler
+metadata:
+  name: vpa-recommender
+spec:
+  targetRef:
+    apiVersion: "apps/v1"
+    kind:       Deployment 1
+    name:       frontend 2
+  updatePolicy:
+    updateMode: "InPlaceOrRecreate" 3
+  resourcePolicy: 4
+    containerPolicies:
+    - containerName: my-opt-sidecar
+      mode: "Off"
+  recommenders: 5
+    - name: my-recommender
+```
+
+Specify the type of workload object you want this VPA to manage: Deployment, StatefulSet, Job, DaemonSet, ReplicaSet, or ReplicationController.
+Specify the name of an existing workload object you want this VPA to manage.
+Specify the VPA mode:
+* InPlaceOrRecreate to automatically apply the recommended resources on pods associated with the workload object. The VPA attempts to update the workload object with the new resources without re-creating the pod. If the VPA is unable to update the object in place, the VPA re-creates it.
+* Recreate to automatically apply the recommended resources on pods associated with the workload object. The VPA terminates existing pods and creates new pods with the recommended resource limits and requests. Use the Recreate mode only if you need to ensure that the pods restart whenever the resource request changes.
+* Initial to automatically apply the recommended resources to newly-created pods associated with the workload object. The VPA does not update the pods as it learns new resource recommendations.
+* Off to only generate resource recommendations for the pods associated with the workload object. The VPA does not update the pods as it learns new resource recommendations and does not apply the recommendations to new pods.
+Optional. Specify the containers you want to opt-out and set the mode to Off.
+Optional. Specify an alternative recommender.
+2. Create the VPA CR:
+
+```terminal
+$ oc create -f <file-name>.yaml
+```
+
+
+After a few moments, the VPA learns the resource usage of the containers in the pods associated with the workload object.
+
+You can view the VPA recommendations by using the following command:
+
+```terminal
+$ oc get vpa <vpa-name> --output yaml
+```
+
+
+The output shows the recommendations for CPU and memory requests, similar to the following:
+Example output
+
+```yaml
+apiVersion: autoscaling.k8s.io/v1
+kind: VerticalPodAutoscaler
+metadata:
+  name: vpa-recommender
+# ...
+status:
+# ...
+  recommendation:
+    containerRecommendations:
+    - containerName: frontend
+      lowerBound: 1
+        cpu: 25m
+        memory: 262144k
+      target: 2
+        cpu: 25m
+        memory: 262144k
+      uncappedTarget: 3
+        cpu: 25m
+        memory: 262144k
+      upperBound: 4
+        cpu: 262m
+        memory: "274357142"
+    - containerName: backend
+      lowerBound:
+        cpu: 12m
+        memory: 131072k
+      target:
+        cpu: 12m
+        memory: 131072k
+      uncappedTarget:
+        cpu: 12m
+        memory: 131072k
+      upperBound:
+        cpu: 476m
+        memory: "498558823"
+
+...
+```
+
+lowerBound is the minimum recommended resource levels.
+target is the recommended resource levels.
+upperBound is the highest recommended resource levels.
+uncappedTarget is the most recent resource recommendations.
+
+## Example custom resources for the Vertical Pod Autoscaler
+
+The Vertical Pod Autoscaler Operator (VPA) can update not only built-in resources such as deployments or stateful sets, but also custom resources that manage pods.
+
+To use the VPA with a custom resource when you create the CustomResourceDefinition (CRD) object, you must configure the labelSelectorPath field in the /scale subresource. The /scale subresource creates a Scale object. The labelSelectorPath field defines the JSON path inside the custom resource that corresponds to status.selector in the Scale object and in the custom resource. The following is an example of a CustomResourceDefinition and a CustomResource that fulfills these requirements, along with a VerticalPodAutoscaler definition that targets the custom resource. The following example shows the /scale subresource contract.
+
+
+[NOTE]
+----
+This example does not result in the VPA scaling pods because there is no controller for the custom resource that allows it to own any pods. As such, you must write a controller in a language supported by Kubernetes to manage the reconciliation and state management between the custom resource and your pods. The example illustrates the configuration for the VPA to understand the custom resource as scalable.
+----
+
+
+```yaml
+apiVersion: apiextensions.k8s.io/v1
+kind: CustomResourceDefinition
+metadata:
+  name: scalablepods.testing.openshift.io
+spec:
+  group: testing.openshift.io
+  versions:
+  - name: v1
+    served: true
+    storage: true
+    schema:
+      openAPIV3Schema:
+        type: object
+        properties:
+          spec:
+            type: object
+            properties:
+              replicas:
+                type: integer
+                minimum: 0
+              selector:
+                type: string
+          status:
+            type: object
+            properties:
+              replicas:
+                type: integer
+    subresources:
+      status: {}
+      scale:
+        specReplicasPath: .spec.replicas
+        statusReplicasPath: .status.replicas
+        labelSelectorPath: .spec.selector 1
+  scope: Namespaced
+  names:
+    plural: scalablepods
+    singular: scalablepod
+    kind: ScalablePod
+    shortNames:
+    - spod
+```
+
+
+Specifies the JSON path that corresponds to status.selector field of the custom resource object.
+
+
+```yaml
+apiVersion: testing.openshift.io/v1
+kind: ScalablePod
+metadata:
+  name: scalable-cr
+  namespace: default
+spec:
+  selector: "app=scalable-cr" 1
+  replicas: 1
+```
+
+
+Specify the label type to apply to managed pods. This is the field that the labelSelectorPath references in the custom resource definition object.
+
+
+```yaml
+apiVersion: autoscaling.k8s.io/v1
+kind: VerticalPodAutoscaler
+metadata:
+  name: scalable-cr
+  namespace: default
+spec:
+  targetRef:
+    apiVersion: testing.openshift.io/v1
+    kind: ScalablePod
+    name: scalable-cr
+  updatePolicy:
+    updateMode: "InPlaceOrRecreate"
+```
+
+
+# Uninstalling the Vertical Pod Autoscaler Operator
+
+You can remove the Vertical Pod Autoscaler Operator (VPA) from your Red Hat OpenShift Container Platform cluster. After uninstalling, the resource requests for the pods that are already modified by an existing VPA custom resource (CR) do not change. The resources defined in the workload object, not the previous recommendations made by the VPA, are allocated to any new pods.
+
+
+[NOTE]
+----
+You can remove a specific VPA CR by using the oc delete vpa <vpa-name> command. The same actions apply for resource requests as uninstalling the vertical pod autoscaler.
+----
+
+After removing the VPA, it is recommended that you remove the other components associated with the Operator to avoid potential issues.
+
+* You installed the VPA.
+
+1. In the Red Hat OpenShift Container Platform web console, click Ecosystem -> Installed Operators.
+2. Switch to the openshift-vertical-pod-autoscaler project.
+3. For the VerticalPodAutoscaler  Operator, click the Options menu Options menu and select Uninstall Operator.
+4. Optional: To remove all operands associated with the Operator, in the dialog box, select Delete all operand instances for this operator checkbox.
+5. Click Uninstall.
+6. Optional: Use the OpenShift CLI to remove the VPA components:
+1. Delete the VPA namespace:
+
+```terminal
+$ oc delete namespace openshift-vertical-pod-autoscaler
+```
+
+2. Delete the VPA custom resource definition (CRD) objects:
+
+```terminal
+$ oc delete crd verticalpodautoscalercheckpoints.autoscaling.k8s.io
+```
+
+
+```terminal
+$ oc delete crd verticalpodautoscalercontrollers.autoscaling.openshift.io
+```
+
+
+```terminal
+$ oc delete crd verticalpodautoscalers.autoscaling.k8s.io
+```
+
+
+Deleting the CRDs removes the associated roles, cluster roles, and role bindings.
+
+[NOTE]
+----
+This action removes from the cluster all user-created VPA CRs. If you re-install the VPA, you must create these objects again.
+----
+3. Delete the MutatingWebhookConfiguration object by running the following command:
+
+```terminal
+$ oc delete MutatingWebhookConfiguration vpa-webhook-config
+```
+
+4. Delete the VPA Operator:
+
+```terminal
+$ oc delete operator/vertical-pod-autoscaler.openshift-vertical-pod-autoscaler
+```

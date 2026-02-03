@@ -1,0 +1,427 @@
+# Deploying Zero Trust Workload Identity Manager operands
+
+
+Deploy the Zero Trust Workload Identity Manager operands by creating their custom resources in a specific order. Adhering to the sequence helps ensure the successful installation of components, such as the SPIRE Server, SPIRE Agent, and SPIFFE CSI driver.
+You must deploy the operands in the following sequence to ensure successful installation:
+* ZeroTrustWorkloadIdentityManager CR
+* SPIRE Server
+* SPIRE Agent
+* SPIFFE CSI driver
+* SPIRE OIDC discovery provider
+
+# About the ZeroTrustWorkloadIdentityManager custom resource
+
+The ZeroTrustWorkloadIdentityManager is the primary custom resource that initializes the SPIRE deployments. This primary resource defines the trust domain and cluster name to help ensure secure workload identity management.
+
+Reference the complete YAML specification to correctly structure the ZeroTrustWorkloadIdentityManager CR. This example helps you identify required fields and immutable parameters for your configuration.
+
+
+```yaml
+apiVersion: operator.openshift.io/v1alpha1
+kind: ZeroTrustWorkloadIdentityManager
+metadata:
+ name: cluster
+ labels:
+   app.kubernetes.io/name: zero-trust-workload-identity-manager
+   app.kubernetes.io/managed-by: zero-trust-workload-identity-manager
+spec:
+  trustDomain: "example.com"
+  clusterName: "production-cluster"
+  bundleConfigMap: "spire-bundle"
+```
+
+
+where:
+
+trustDomain:: Specifies tThe trust domain to be used for the SPIFFE identifiers. Must be a valid SPIFFE trust domain (lowercase alphanumeric, hyphens, and dots). Maximum length is 255 characters. Once set, this field is immutable.
+clusterName:: Specifies tThe name that identifies this cluster within the trust domain. Must be a valid DNS-1123 subdomain with a maximum length of 63 characters. Once set, this field is immutable.
+bundleConfigMap:: Specifies the name of the ConfigMap that stores the SPIRE trust bundle. This ConfigMap contains the root certificates for the trust domain and is created and maintained by the Operator. Must be a valid Kubernetes name with a maximum length of 253 characters. This field is optional (defaults to spire-bundle) and once set, is immutable.
+
+# Deploying the SPIRE Server
+
+Deploy the SPIRE Server by configuring the SpireServer custom resource (CR). This establishes a central authority that manages and issues identities to the workloads in your cluster.
+
+* You have access to the cluster as a user with the cluster-admin role.
+* You have installed Zero Trust Workload Identity Manager in the cluster.
+
+1. Create the SpireServer CR:
+1. Create a YAML file that defines the SpireServer CR, for example, SpireServer.yaml:
+Example SpireServer.yaml
+
+```yaml
+aapiVersion: operator.openshift.io/v1alpha1
+kind: SpireServer
+metadata:
+ name: cluster
+spec:
+  logLevel: "info"
+  logFormat: "text"
+  jwtIssuer: "https://oidc-discovery.apps.cluster.example.com"
+  caValidity: "24h"
+  defaultX509Validity: "1h"
+  defaultJWTValidity: "5m"
+  jwtKeyType: "rsa-248"
+  caSubject:
+    country: "US"
+    organization: "Example Corporation"
+    commonName: "SPIRE Server CA"
+  persistence:
+    size: "5Gi"
+    accessMode: "ReadWriteOnce"
+    storageClass: "gp3-csi"
+  datastore:
+    databaseType: "sqlite3"
+    connectionString: "/run/spire/data/datastore.sqlite3"
+    tlsSecretName: ""
+    maxOpenConns: 100
+    maxIdleConns: 10
+    connMaxLifetime: 0
+    disableMigration: "false"
+  federation:
+    bundleEndpoint:
+      profile: "https_spiffe"
+      refreshHint: 300
+    federatesWith: []
+    managedRoute: "true"
+```
+
+
+where:
+name:: Specifies that the value mmust be 'cluster'.
+logLevel:: Specifies the logging level for the SPIRE Server. The valid options are debug, info, warn, and error.
+logFormat:: Specifies the logging format for the SPIRE Server. The valid options are text and json.
+jwtIssuer:: Specifies the JWT issuer URL. Must be a valid HTTPS or HTTP URL with a maximum length of 512 characters.
+caValidity:: Specifies the validity period (Time to Live (TTL)) for the SPIRE Server's CA certificate. This determines how long the server's root or intermediate certificate is valid. The format is a duration string (for example, 24h, 168h).
+defaultX509Validity:: Specifies the default validity period (TTL) for X.509 SVIDs issued to workloads. This value is used if a specific TTL is not configured for a registration entry.
+defaultJWTValidity:: Specifies thedefault validity period (TTL) for JWT SVIDs issued to workloads. This value is used if a specific TTL is not configured for a registration entry.
+jwtKeyType:: Specifies the key type used for JWT signing. The valid options are rsa-2048, rsa-4096, ec-p256, and ec-p384. This field is optional.
+country:: Specifies the country for the SPIRE Server certificate authority (CA). Must be an ISO 3166-1 alpha-2 country code (2 characters).
+organization:: Specifies the organization for the SPIRE Server CA. Maximum length is 64 characters.
+commonName:: Specifies the common name for the SPIRE Server CA. Maximum length is 255 characters.
+size:: Specifies the size of the persistent volume (for example, 1Gi, 5Gi). Once set, this field is immutable.
+accessMode:: Specifies the access mode for the persistent volume. The valid options are ReadWriteOnce, ReadWriteOncePod, and ReadWriteMany. Once set, this field is immutable.
+storageClass:: Specifies the storage class to be used for the PVC. Once set, this field is immutable.
+databaseType:: Specifies the type of database to use for the datastore. The valid options are sql, sqlite3, postgres, mysql, aws_postgresql, and aws_mysql.
+connectionString:: Specifies the connection string for the database. For PostgreSQL with SSL, include sslmode and certificate paths (for example, dbname=spire user=spire host=postgres.example.com sslmode=verify-full).
+tlsSecretName:: Specifies the name of a Kubernetes Secret containing TLS certificates for database connections. The Secret will be mounted at /run/spire/db/certs. This field is optional.
+maxOpenConns:: Specifies the maximum number of open database connections. Must be between 1 and 10000.
+maxIdleConns:: Specifies the maximum number of idle database connections in the pool. Must be between 0 and 10000.
+connMaxLifetime:: Specifies the maximum lifetime of a database connection in seconds. A value of 0 means connections are not closed due to age.
+disableMigration:: Specifies whether to disable automatic database migration. The valid options are true and false.
+profile:: Specifies the bundle endpoint authentication profile for federation. The valid options are https_spiffe and https_web.
+refreshHint:: Specifies the hint for bundle refresh interval in seconds. Must be between 60 and 3600.
+federatesWith:: Specifies the list of trust domains this cluster federates with. Each entry requires trustDomain, bundleEndpointUrl, and bundleEndpointProfile.
+managedRoute:: Specifies either enabling or disabling automatic route creation for the federation endpoint. Set to true to allow automatic exposure through a managed OpenShift Route, or false to manually configure routing.
+2. Apply the configuration by running the following command:
+
+```terminal
+$ oc apply -f SpireServer.yaml
+```
+
+
+* Verify that the stateful set of SPIRE Server is ready and available by running the following command:
+
+```terminal
+$ oc get statefulset -l app.kubernetes.io/name=server -n zero-trust-workload-identity-manager
+```
+
+Example output
+
+```terminal
+NAME            READY   AGE
+spire-server    1/1     65s
+```
+
+* Verify that the status of the SPIRE Server pod is Running by running the following command:
+
+```terminal
+$ oc get po -l app.kubernetes.io/name=server -n zero-trust-workload-identity-manager
+```
+
+Example output
+
+```terminal
+NAME               READY   STATUS    RESTARTS        AGE
+spire-server-0     2/2     Running   1 (108s ago)    111s
+```
+
+* Verify that the persistent volume claim (PVC) is bound, by running the following command:
+
+```terminal
+$ oc get pvc -l app.kubernetes.io/name=server -n zero-trust-workload-identity-manager
+```
+
+Example output
+
+```terminal
+NAME                        STATUS    VOLUME                                     CAPACITY   ACCESS MODES  STORAGECLASS  VOLUMEATTRIBUTECLASS  AGE
+spire-data-spire-server-0   Bound     pvc-27a36535-18a1-4fde-ab6d-e7ee7d3c2744   5Gi        RW0           gp3-csi       <unset>               22m
+```
+
+
+# Deploying the SPIRE Agent
+
+Use the SpireAgent custom resource to configure the SPIRE Agent DaemonSet on your nodes. This defines how the agent verifies workloads and manages identity attestation across your Red Hat OpenShift Container Platform cluster.
+
+* You have access to the cluster as a user with the cluster-admin role.
+* You have installed Zero Trust Workload Identity Manager in the cluster.
+
+1. Create the SpireAgent CR:
+1. Create a YAML file that defines the SpireAgent CR, for example, SpireAgent.yaml:
+Example SpireAgent.yaml
+
+```yaml
+apiVersion: operator.openshift.io/v1alpha1
+kind: SpireAgent
+metadata:
+ name: cluster
+spec:
+  socketPath: "/run/spire/agent-sockets"
+  logLevel: "info"
+  logFormat: "text"
+  nodeAttestor:
+    k8sPSATEnabled: "true"
+  workloadAttestors:
+    k8sEnabled: "true"
+    workloadAttestorsVerification:
+      type: "auto"
+      hostCertBasePath: "/etc/kubernetes"
+      hostCertFileName: "kubelet-ca.crt"
+    disableContainerSelectors: "false"
+    useNewContainerLocator: "true"
+```
+
+
+where:
+name:: Must be named 'cluster'.
+socketPath:: Specifies the directory on the host where the SPIRE agent socket is created. This directory is shared with the SPIFFE CSI driver via the hostPath volume. Must match the SpiffeCSIDriver.spec.agentSocketPath for workloads to access the socket. Must be an absolute path with a maximum length of 256 characters.
+logLevel:: Specifies the logging level for the SPIRE Server. The valid options are debug, info, warn, and error.
+logFormat:: Specifies the logging format for the SPIRE Server. The valid options are text and json.
+k8sPSATEnabled:: Specifies whether Kubernetes Projected Service Account Token (PSAT) node attestation is enabled. When enabled, the SPIRE agent uses K8s PSATs to prove its identity to the SPIRE server during node attestation. The valid options are true and false.
+k8sEnabled:: Specifies whether the Kubernetes workload attestor is enabled. When enabled, the SPIRE agent can verify workload identities using Kubernetes pod information and service account tokens. The valid options are true and false.
+type:: Specifies the kubelet certificate verification mode. The valid options are auto, hostCert, and skip.
+hostCertBasePath:: Specifies the directory containing the kubelet CA certificate. Required when type is hostCert. Optional when type is auto (defaults to /etc/kubernetes if not specified).
+hostCertFileName:: Specifies the file name for the kubelet's CA certificate. When combined with hostCertBasePath, forms the full path. Required when type is hostCert. Optional when type is auto. Defaults to kubelet-ca.crt if not specified.
+disableContainerSelectors:: Specifies whether to disable container selectors in the Kubernetes workload attestor. Set to true if using holdApplicationUntilProxyStarts in Istio. The valid options are true and false.
+useNewContainerLocator:: Specifies enabling the new container locator algorithm that has support for cgroups v2. The valid options are true and false.
+2. Apply the configuration by running the following command:
+
+```terminal
+$ oc apply -f SpireAgent.yaml
+```
+
+
+* Verify that the daemon set of the SPIRE Agent is ready and available by running the following command:
+
+```terminal
+$ oc get daemonset -l app.kubernetes.io/name=agent -n zero-trust-workload-identity-manager
+```
+
+Example output
+
+```terminal
+NAME          DESIRED   CURRENT   READY   UP-TO-DATE   AVAILABLE   NODE SELECTOR   AGE
+spire-agent   3         3         3       3            3           <none>          10m
+```
+
+* Verify that the status of SPIRE Agent pods is Running by running the following command:
+
+```terminal
+$ oc get po -l app.kubernetes.io/name=agent -n zero-trust-workload-identity-manager
+```
+
+Example output
+
+```terminal
+NAME                READY   STATUS    RESTARTS   AGE
+spire-agent-dp4jb   1/1     Running   0          12m
+spire-agent-nvwjm   1/1     Running   0          12m
+spire-agent-vtvlk   1/1     Running   0          12m
+```
+
+
+# Deploying the SPIFFE Container Storage Interface driver
+
+Configure the Container Storage Interface (CSI) driver using the SpiffeCSIDriver CR. This configuration mounts SPIFFE sockets directly into workload pods, which allows your applications to access the SPIFFE Workload API securely.
+
+* You have access to the cluster as a user with the cluster-admin role.
+* You have installed Zero Trust Workload Identity Manager in the cluster.
+
+1. Create the SpiffeCSIDriver CR:
+1. Create a YAML file that defines the SpiffeCSIDriver CR object, for example, SpiffeCSIDriver.yaml:
+Example SpiffeCSIDriver.yaml
+
+```yaml
+apiVersion: operator.openshift.io/v1alpha1
+kind: SpiffeCSIDriver
+metadata:
+ name: cluster
+spec:
+  agentSocketPath: "/run/spire/agent-sockets"
+  pluginName: "csi.spiffe.io"
+```
+
+
+where:
+name:: Specifies that the name must be 'cluster'.
+agentSocketPath:: Specifies the path to the directory containing the SPIRE agent's Workload API socket. This directory is bind-mounted into workload containers by the CSI driver. The directory is shared between the SPIRE agent and CSI driver via a hostPath volume. Must be an absolute path with a maximum length of 256 characters. This value must match SpireAgent.spec.socketPath for workloads to access the socket.
+pluginName:: Specifies the name of the CSI plugin. This sets the CSI driver name that is deployed to the cluster and used in VolumeMount configurations. Must match the driver name referenced in the workload pods. Must be a valid domain name format (for example, csi.spiffe.io) with a maximum length of 127 characters.
+2. Apply the configuration by running the following command:
+
+```terminal
+$ oc apply -f SpiffeCSIDriver.yaml
+```
+
+
+* Verify that the daemon set of the SPIFFE CSI driver is ready and available by running the following command:
+
+```terminal
+$ oc get daemonset -l app.kubernetes.io/name=spiffe-csi-driver -n zero-trust-workload-identity-manager
+```
+
+Example output
+
+```terminal
+NAME                      DESIRED   CURRENT   READY   UP-TO-DATE   AVAILABLE   NODE SELECTOR   AGE
+spire-spiffe-csi-driver   3         3         3       3            3           <none>          114s
+```
+
+* Verify that the status of SPIFFE Container Storage Interface (CSI) Driver pods is Running by running the following command:
+
+```terminal
+$ oc get po -l app.kubernetes.io/name=spiffe-csi-driver -n zero-trust-workload-identity-manager
+```
+
+Example output
+
+```terminal
+NAME                            READY   STATUS    RESTARTS   AGE
+spire-spiffe-csi-driver-gpwcp   2/2     Running   0          2m37s
+spire-spiffe-csi-driver-rrbrd   2/2     Running   0          2m37s
+spire-spiffe-csi-driver-w6s6q   2/2     Running   0          2m37s
+```
+
+
+# Deploying the SPIRE OpenID Connect Discovery Provider
+
+Deploy the SPIRE OpenID Connect (OIDC) Discovery Provider by configuring the SpireOIDCDiscoveryProvider CR. This allows you to define the trust domain and JSON web token (JWT) issuer for your cluster.
+
+* You have access to the cluster as a user with the cluster-admin role.
+* You have installed Zero Trust Workload Identity Manager in the cluster.
+
+1. Create the SpireOIDCDiscoveryProvider CR:
+1. Create a YAML file that defines the SpireOIDCDiscoveryProvider CR, for example, SpireOIDCDiscoveryProvider.yaml:
+Example SpireOIDCDiscoveryProvider.yaml
+
+```yaml
+aapiVersion: operator.openshift.io/v1alpha1
+kind: SpireOIDCDiscoveryProvider
+metadata:
+ name: cluster
+spec:
+  logLevel: "info"
+  logFormat: "text"
+  csiDriverName: "csi.spiffe.io"
+  jwtIssuer: "https://oidc-discovery.apps.cluster.example.com"
+  replicaCount: 1
+  managedRoute: "true"
+  externalSecretRef: ""
+```
+
+
+where:
+name:: Specifies that the value must be 'cluster'.
+logLevel:: Specifies the logging level for the SPIRE Server. The valid options are debug, info, warn, and error.
+logFormat:: Specifies the logging format for the SPIRE Server. The valid options are text and json.
+csiDriverName:: Specifies the name of the CSI driver to use for mounting the Workload API socket. This must match the SpiffeCSIDriver.spec.pluginName value for the OIDC provider to access SPIFFE identities. Must be a valid DNS subdomain format (for example, csi.spiffe.io) with a maximum length of 127 characters.
+jwtIssuer:: Specifies the JWT issuer URL. Must be a valid HTTPS or HTTP URL with a maximum length of 512 characters. This value must match the SpireServer.spec.jwtIssuer value.
+replicaCount:: Specifies the number of replicas for the OIDC Discovery Provider deployment. Must be between 1 and 5.
+managedRoute:: Specifies  whether the Operator automatically creates an OpenShift route for the OIDC Discovery Provider endpoints. Set to true to have the Operator automatically create and maintain an OpenShift route for OIDC discovery endpoints (*.apps.). Set to false for administrators to manually configure routes or ingress.
+externalSecretRef:: Specifies a reference to an externally managed secret that contains the TLS certificate for the OIDC Discovery Provider route host. Must be a valid Kubernetes secret reference name with a maximum length of 253 characters. This field is optional.
+2. Apply the configuration by running the following command:
+
+```terminal
+$ oc apply -f SpireOIDCDiscoveryProvider.yaml
+```
+
+
+1. Verify that the deployment of OIDC Discovery Provider is ready and available by running the following command:
+
+```terminal
+$ oc get deployment -l app.kubernetes.io/name=spiffe-oidc-discovery-provider -n zero-trust-workload-identity-manager
+```
+
+Example output
+
+```terminal
+NAME                                    READY  UP-TO-DATE  AVAILABLE  AGE
+spire-spiffe-oidc-discovery-provider    1/1    1           1          2m58s
+```
+
+2. Verify that the status of OIDC Discovery Provider pods is Running by running the following command:
+
+```terminal
+$ oc get po -l app.kubernetes.io/name=spiffe-oidc-discovery-provider -n zero-trust-workload-identity-manager
+```
+
+Example output
+
+```terminal
+NAME                                                    READY   STATUS    RESTARTS   AGE
+spire-spiffe-oidc-discovery-provider-64586d599f-lcc94   2/2     Running   0          7m15s
+```
+
+
+# Verify the health of the operands
+
+View the status fields to verify the operational health of managed components. This information helps you confirm that the SPIRE Server, SPIRE Agent, SPIFFE CSI driver, and the SPIRE OIDC discovery provider operands are ready and functioning correctly.
+
+* To verify the operands, run the following command:
+
+```terminal
+oc get ZeroTrustWorkloadIdentityManager cluster -o yaml
+```
+
+Example output
+
+```yaml
+status:
+  conditions:
+  - lastTransitionTime: "2025-12-16T10:59:06Z"
+    message: All components are ready
+    reason: Ready
+    status: "True"
+    type: Ready
+  - lastTransitionTime: "2025-12-16T10:59:06Z"
+    message: All operand CRs are ready
+    reason: Ready
+    status: "True"
+    type: OperandsAvailable
+  operands:
+  - kind: SpireServer
+    message: Ready
+    name: cluster
+    ready: "true"
+  - kind: SpireAgent
+    message: Ready
+    name: cluster
+    ready: "true"
+  - kind: SpiffeCSIDriver
+    message: Ready
+    name: cluster
+    ready: "true"
+  - kind: SpireOIDCDiscoveryProvider
+    message: Ready
+    name: cluster
+    ready: "true"
+   # ...
+```
+
+
+This status is reflected when all operands are healthy and stable.
+
+
+[IMPORTANT]
+----
+The Operator adds the owner reference for the ZeroTrustWorkloadIdentityManager CR on the other operands' CRs. This causes the operands' resources to be deleted once the ZeroTrustWorkloadIdentityManager CRs are deleted.
+----

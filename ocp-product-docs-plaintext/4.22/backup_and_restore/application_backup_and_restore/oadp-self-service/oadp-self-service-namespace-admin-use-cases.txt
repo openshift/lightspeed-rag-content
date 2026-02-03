@@ -1,0 +1,623 @@
+# OADP Self-Service namespace admin use cases
+
+
+Use OADP Self-Service as a namespace administrator to create backup storage locations, perform backup and restore operations, and review operation logs for your authorized namespaces. This helps you to manage data protection independently without cluster admin access.
+
+# Creating a NonAdminBackupStorageLocation CR
+
+Create a NonAdminBackupStorageLocation (NABSL) custom resource (CR) to define backup storage locations in your authorized namespace. With this feature, you can store backups in a cloud storage that meets your application requirements.
+
+* You are logged in to the cluster as a namespace admin user.
+* The cluster administrator has installed the OADP Operator.
+* The cluster administrator has configured the DataProtectionApplication (DPA) CR to enable OADP Self-Service.
+* The cluster administrator has created a namespace for you and has authorized you to operate from that namespace.
+
+1. Create a Secret CR by using the cloud credentials file content for your cloud provider. Run the following command:
+
+```terminal
+$ oc create secret generic cloud-credentials -n test-nac-ns --from-file <cloud_key_name>=<cloud_credentials_file>
+```
+
+
+where:
+<cloud_key_name>:: Specifies the cloud provider key name. In this example, the Secret name is cloud-credentials and the authorized namespace name is test-nac-ns.
+<cloud_credentials_file>:: Specifies the cloud credentials file name.
+2. To create a NonAdminBackupStorageLocation CR, create a YAML manifest file with the following configuration:
+Example NonAdminBackupStorageLocation CR
+
+```yaml
+apiVersion: oadp.openshift.io/v1alpha1
+kind: NonAdminBackupStorageLocation
+metadata:
+  name: test-nabsl
+  namespace: test-nac-ns
+spec:
+  backupStorageLocationSpec:
+    config:
+      profile: default
+      region: <region_name>
+    credential:
+      key: cloud
+      name: cloud-credentials
+    objectStorage:
+      bucket: <bucket_name>
+      prefix: velero
+    provider: aws
+```
+
+
+where:
+namespace:: Specifies the namespace you are authorized to operate from. For example, test-nac-ns.
+<region_name>:: Specifies the region name for your cloud provider.
+<bucket_name>:: Specifies the bucket name for storing backups.
+3. To apply the NABSL CR configuration, run the following command:
+
+```terminal
+$ oc apply -f <nabsl_cr_filename>
+```
+
+
+Replace <nabsl_cr_filename> with the file name containing the NABSL CR configuration.
+
+1. To verify that the NABSL CR is in the New phase and is pending administrator approval, run the following command:
+
+```terminal
+$ oc get nabsl test-nabsl -o yaml
+```
+
+Example output
+
+```yaml
+apiVersion: oadp.openshift.io/v1alpha1
+kind: NonAdminBackupStorageLocation
+...
+status:
+  conditions:
+  - lastTransitionTime: "2025-02-26T09:07:15Z"
+    message: NonAdminBackupStorageLocation spec validation successful
+    reason: BslSpecValidation
+    status: "True"
+    type: Accepted
+  - lastTransitionTime: "2025-02-26T09:07:15Z"
+    message: NonAdminBackupStorageLocationRequest approval pending
+    reason: BslSpecApprovalPending
+    status: "False"
+    type: ClusterAdminApproved
+  phase: New
+  veleroBackupStorageLocation:
+    nacuuid: test-nac-test-bsl-c...d4389a1930
+    name: test-nac-test-bsl-cd....1930
+    namespace: openshift-adp
+```
+
+
+where:
+message:: Contains the NonAdminBackupStorageLocationRequest approval pending message.
+phase:: Specifies the status of the phase. In this example, the phase is New.
+2. After the cluster administrator approves the NonAdminBackupStorageLocationRequest CR request, verify that the NABSL CR is successfully created by running the following command:
+
+```terminal
+$ oc get nabsl test-nabsl -o yaml
+```
+
+Example output
+
+```yaml
+apiVersion: oadp.openshift.io/v1alpha1
+kind: NonAdminBackupStorageLocation
+metadata:
+  creationTimestamp: "2025-02-19T09:30:34Z"
+  finalizers:
+  - nonadminbackupstoragelocation.oadp.openshift.io/finalizer
+  generation: 1
+  name: test-nabsl
+  namespace: test-nac-ns
+  resourceVersion: "159973"
+  uid: 4a..80-3260-4ef9-a3..5a-00...d1922
+spec:
+  backupStorageLocationSpec:
+    credential:
+      key: cloud
+      name: cloud-credentials
+    objectStorage:
+      bucket: oadp...51rrdqj
+      prefix: velero
+    provider: aws
+status:
+  conditions:
+  - lastTransitionTime: "2025-02-19T09:30:34Z"
+    message: NonAdminBackupStorageLocation spec validation successful
+    reason: BslSpecValidation
+    status: "True"
+    type: Accepted
+  - lastTransitionTime: "2025-02-19T09:30:34Z"
+    message: Secret successfully created in the OADP namespace
+    reason: SecretCreated
+    status: "True"
+    type: SecretSynced
+  - lastTransitionTime: "2025-02-19T09:30:34Z"
+    message: BackupStorageLocation successfully created in the OADP namespace
+    reason: BackupStorageLocationCreated
+    status: "True"
+    type: BackupStorageLocationSynced
+  phase: Created
+  veleroBackupStorageLocation:
+    nacuuid: test-nac-..f933a-4ec1-4f6a-8099-ee...b8b26
+    name: test-nac-test-nabsl-36...11ab8b26
+    namespace: openshift-adp
+    status:
+      lastSyncedTime: "2025-02-19T11:47:10Z"
+      lastValidationTime: "2025-02-19T11:47:31Z"
+      phase: Available
+```
+
+
+where:
+message: NonAdminBackupStorageLocation spec validation successful:: Specifies that the NABSL spec is validated and approved by the cluster administrator.
+message: Secret successfully created in the OADP namespace:: Specifies that the secret object is successfully created in the openshift-adp namespace.
+message: BackupStorageLocation successfully created in the OADP namespace:: Specifies that the associated Velero BackupStorageLocation is successfully created in the openshift-adp namespace.
+nacuuid:: Specifies the NAC that is orchestrating the NABSL CR.
+name:: Specifies the name of the associated Velero backup storage location object.
+phase: Available:: Specifies that the NABSL is ready for use.
+
+# Creating a NonAdminBackup CR
+
+Create a NonAdminBackup (NAB) custom resource (CR) to back up application resources in your authorized namespace. This helps you to protect your application data and configuration without requiring cluster administrator privileges.
+
+After you create a NAB CR, the CR undergoes the following phases:
+
+* The initial phase for the CR is New.
+* The CR creation request goes to the NonAdminController (NAC) for reconciliation and validation.
+* Upon successful validation and creation of the Velero backup object, the status.phase field of the NAB CR is updated to the next phase, which is, Created.
+
+Review the following important points when creating a NAB CR:
+
+* The NonAdminBackup CR creates the Velero backup object securely so that other namespace admin users cannot access the CR.
+* As a namespace admin user, you can only specify your authorized namespace in the NAB CR. You get an error when you specify a namespace you are not authorized to use.
+
+* You are logged in to the cluster as a namespace admin user.
+* The cluster administrator has installed the OADP Operator.
+* The cluster administrator has configured the DataProtectionApplication (DPA) CR to enable OADP Self-Service.
+* The cluster administrator has created a namespace for you and has authorized you to operate from that namespace.
+* Optional: You can create and use a NonAdminBackupStorageLocation (NABSL) CR to store the backup data. If you do not use a NABSL CR, then the backup is stored in the default backup storage location configured in the DPA.
+
+1. To create a NonAdminBackup CR, create a YAML manifest file with the following configuration:
+Example NonAdminBackup CR
+
+```yaml
+apiVersion: oadp.openshift.io/v1alpha1
+kind: NonAdminBackup
+metadata:
+  name: test-nab
+spec:
+  backupSpec:
+    defaultVolumesToFsBackup: true
+    snapshotMoveData: false
+    storageLocation: test-bsl
+```
+
+
+where:
+name:: Specifies a name for the NAB CR. For example, test-nab.
+defaultVolumesToFsBackup:: Specifies whether to use File System Backup (FSB). Set to true to use FSB.
+snapshotMoveData:: Specifies whether to back up data volumes by using the Data Mover. Set to true to use Data Mover. This example uses FSB for backup.
+storageLocation:: Specifies a NABSL CR as a storage location. If you do not set a storageLocation, then the default backup storage location configured in the DPA is used.
+2. To apply the NAB CR configuration, run the following command:
+
+```terminal
+$ oc apply -f <nab_cr_filename>
+```
+
+
+Replace <nab_cr_filename> with the file name containing the NAB CR configuration.
+
+* To verify that the NAB CR is successfully created, run the following command:
+
+```terminal
+$ oc get nab test-nab -o yaml
+```
+
+Example output
+
+```yaml
+apiVersion: oadp.openshift.io/v1alpha1
+kind: NonAdminBackup
+metadata:
+  creationTimestamp: "2025-03-06T10:02:56Z"
+  finalizers:
+  - nonadminbackup.oadp.openshift.io/finalizer
+  generation: 2
+  name: test-nab
+  namespace: test-nac-ns
+  resourceVersion: "134316"
+  uid: c5...4c8a8
+spec:
+  backupSpec:
+    csiSnapshotTimeout: 0s
+    defaultVolumesToFsBackup: true
+    hooks: {}
+    itemOperationTimeout: 0s
+    metadata: {}
+    storageLocation: test-bsl
+    ttl: 0s
+status:
+  conditions:
+  - lastTransitionTime: "202...56Z"
+    message: backup accepted
+    reason: BackupAccepted
+    status: "True"
+    type: Accepted
+  - lastTransitionTime: "202..T10:02:56Z"
+    message: Created Velero Backup object
+    reason: BackupScheduled
+    status: "True"
+    type: Queued
+  dataMoverDataUploads: {}
+  fileSystemPodVolumeBackups:
+    completed: 2
+    total: 2
+  phase: Created
+  queueInfo:
+    estimatedQueuePosition: 0
+  veleroBackup:
+    nacuuid: test-nac-test-nab-d2...a9b14
+    name: test-nac-test-nab-d2...b14
+    namespace: openshift-adp
+    spec:
+      csiSnapshotTimeout: 10m0s
+      defaultVolumesToFsBackup: true
+      excludedResources:
+      - nonadminbackups
+      - nonadminrestores
+      - nonadminbackupstoragelocations
+      - securitycontextconstraints
+      - clusterroles
+      - clusterrolebindings
+      - priorityclasses
+      - customresourcedefinitions
+      - virtualmachineclusterinstancetypes
+      - virtualmachineclusterpreferences
+      hooks: {}
+      includedNamespaces:
+      - test-nac-ns
+      itemOperationTimeout: 4h0m0s
+      metadata: {}
+      snapshotMoveData: false
+      storageLocation: test-nac-test-bsl-bf..02b70a
+      ttl: 720h0m0s
+    status:
+      completionTimestamp: "2025-0..3:13Z"
+      expiration: "2025..2:56Z"
+      formatVersion: 1.1.0
+      hookStatus: {}
+      phase: Completed
+      progress:
+        itemsBackedUp: 46
+        totalItems: 46
+      startTimestamp: "2025-..56Z"
+      version: 1
+      warnings: 1
+```
+
+
+where:
+namespace:: Specifies the namespace name that the NonAdminController CR sets on the Velero backup object to back up.
+message: backup accepted:: Specifies that the NAC has reconciled and validated the NAB CR and has created the Velero backup object.
+fileSystemPodVolumeBackups:: Specifies the number of volumes that are backed up by using FSB.
+phase: Created:: Specifies that the NAB CR is in the Created phase.
+estimatedQueuePosition:: Specifies the queue position of the backup object. There can be multiple backups in process, and each backup object is assigned a queue position. When the backup is complete, the queue position is set to 0.
+nacuuid:: Specifies that the NAC creates the Velero backup object and sets the value for the nacuuid field.
+name:: Specifies the name of the associated Velero backup object.
+status:: Specifies the status of the Velero backup object.
+phase: Completed:: Specifies that the Velero backup object is in the Completed phase and the backup is successful.
+
+# Deleting a NonAdminBackup CR
+
+As a namespace admin user, you can delete a NonAdminBackup (NAB) custom resource (CR).
+
+* You are logged in to the cluster as a namespace admin user.
+* The cluster administrator has installed the OADP Operator.
+* The cluster administrator has configured the DataProtectionApplication (DPA) CR to enable OADP Self-Service.
+* The cluster administrator has created a namespace for you and has authorized you to operate from that namespace.
+* You have created a NAB CR in your authorized namespace.
+
+1. Edit the NonAdminBackup CR YAML manifest file by running the following command:
+
+```terminal
+$ oc edit <nab_cr> -n <authorized_namespace>
+```
+
+
+where:
+<nab_cr>:: Specifies the name of the NAB CR to be deleted.
+<authorized_namespace>:: Specifies the name of your authorized namespace.
+2. Update the NAB CR YAML manifest file and add the deleteBackup flag as shown in the following example:
+
+```yaml
+apiVersion: oadp.openshift.io/v1alpha1
+kind: NonAdminBackup
+metadata:
+  name: <nab_cr>
+spec:
+  backupSpec:
+    includedNamespaces:
+    - <authorized_namespace>
+    deleteBackup: true
+```
+
+
+where:
+<nab_cr>:: Specify the name of the NAB CR to be deleted.
+<authorized_namespace>:: Specify the name of your authorized namespace.
+deleteBackup: true:: Add the deleteBackup flag and set it to true.
+
+* Verify that the NAB CR is deleted by running the following command:
+
+```terminal
+$ oc get nab <nab_cr>
+```
+
+
+<nab_cr> is the name of the NAB CR you deleted.
+
+You should see an output as shown in the following example:
+
+```terminal
+Error from server (NotFound): nonadminbackups.oadp.openshift.io "test-nab" not found
+```
+
+
+# Creating a NonAdminRestore CR
+
+Create a NonAdminRestore (NAR) custom resource (CR) to restore application resources from a backup to your authorized namespace. This provides an ability to recover your application data and configuration without requiring cluster administrator privileges.
+
+* You are logged in to the cluster as a namespace admin user.
+* The cluster administrator has installed the OADP Operator.
+* The cluster administrator has configured the DataProtectionApplication (DPA) CR to enable OADP Self-Service.
+* The cluster administrator has created a namespace for you and has authorized you to operate from that namespace.
+* You have a backup of your application by creating a NonAdminBackup (NAB) CR.
+
+1. To create a NonAdminRestore CR, create a YAML manifest file with the following configuration:
+Example NonAdminRestore CR
+
+```yaml
+apiVersion: oadp.openshift.io/v1alpha1
+kind: NonAdminRestore
+metadata:
+  name: test-nar
+spec:
+  restoreSpec:
+    backupName: test-nab
+```
+
+
+where:
+name:: Specifies a name for the NAR CR. For example, test-nar.
+backupName:: Specifies the name of the NAB CR you want to restore from. For example, test-nab.
+2. To apply the NAR CR configuration, run the following command:
+
+```terminal
+$ oc apply -f <nar_cr_filename>
+```
+
+
+Replace <nar_cr_filename> with the file name containing the NAR CR configuration.
+
+1. To verify that the NAR CR is successfully created, run the following command:
+
+```terminal
+$ oc get nar test-nar -o yaml
+```
+
+Example output
+
+```yaml
+apiVersion: oadp.openshift.io/v1alpha1
+kind: NonAdminRestore
+metadata:
+  creationTimestamp: "2025-..:15Z"
+  finalizers:
+  - nonadminrestore.oadp.openshift.io/finalizer
+  generation: 2
+  name: test-nar
+  namespace: test-nac-ns
+  resourceVersion: "156517"
+  uid: f9f5...63ef34
+spec:
+  restoreSpec:
+    backupName: test-nab
+    hooks: {}
+    itemOperationTimeout: 0s
+status:
+  conditions:
+  - lastTransitionTime: "2025..15Z"
+    message: restore accepted
+    reason: RestoreAccepted
+    status: "True"
+    type: Accepted
+  - lastTransitionTime: "2025-03-06T11:22:15Z"
+    message: Created Velero Restore object
+    reason: RestoreScheduled
+    status: "True"
+    type: Queued
+  dataMoverDataDownloads: {}
+  fileSystemPodVolumeRestores:
+    completed: 2
+    total: 2
+  phase: Created
+  queueInfo:
+    estimatedQueuePosition: 0
+  veleroRestore:
+    nacuuid: test-nac-test-nar-c...1ba
+    name: test-nac-test-nar-c7...1ba
+    namespace: openshift-adp
+    status:
+      completionTimestamp: "2025...22:44Z"
+      hookStatus: {}
+      phase: Completed
+      progress:
+        itemsRestored: 28
+        totalItems: 28
+      startTimestamp: "2025..15Z"
+      warnings: 7
+```
+
+
+where:
+message: restore accepted:: Specifies that the NonAdminController (NAC) CR has reconciled and validated the NAR CR.
+fileSystemPodVolumeRestores:: Specifies the number of volumes that are restored.
+phase: Created:: Specifies that the NAR CR is in the Created phase.
+estimatedQueuePosition:: Specifies the queue position of the restore object. There can be multiple restores in process, and each restore is assigned a queue position. When the restore is complete, the queue position is set to 0.
+nacuuid:: Specifies that the NAC creates the Velero restore object and sets the nacuuid value.
+name:: Specifies the name of the associated Velero restore object.
+phase: Completed:: Specifies that the Velero restore object is in the Completed phase and the restore is successful.
+
+# About NonAdminDownloadRequest CR
+
+Review backup and restore logs by using the NonAdminDownloadRequest (NADR) custom resource (CR). This helps you troubleshoot backup and restore issues without cluster administrator assistance.
+
+The NADR CR provides information that is equivalent to what a cluster administrator can access by using the velero backup describe --details command.
+
+After the NADR CR request is validated, a secure download URL is generated to access the requested information.
+
+You can download the following NADR resources:
+
+
+
+# Reviewing NAB and NAR logs
+
+Create a NonAdminDownloadRequest (NADR) custom resource (CR) to access and review detailed logs for NonAdminBackup (NAB) and NonAdminRestore (NAR) operations. This helps you troubleshoot backup and restore issues independently.
+
+
+[NOTE]
+----
+You can review the NAB logs only if you are using a NonAdminBackupStorageLocation (NABSL) CR as a backup storage location for the backup.
+----
+
+* You are logged in to the cluster as a namespace admin user.
+* The cluster administrator has installed the OADP Operator.
+* The cluster administrator has configured the DataProtectionApplication (DPA) CR to enable OADP Self-Service.
+* The cluster administrator has created a namespace for you and has authorized you to operate from that namespace.
+* You have a backup of your application by creating a NAB CR.
+* You have restored the application by creating a NAR CR.
+
+1. To review NAB CR logs, create a NonAdminDownloadRequest CR and specify the NAB CR name as shown in the following example:
+Example NonAdminDownloadRequest CR
+
+```yaml
+apiVersion: oadp.openshift.io/v1alpha1
+kind: NonAdminDownloadRequest
+metadata:
+  name: test-nadr-backup
+spec:
+  target:
+    kind: BackupLog
+    name: test-nab
+```
+
+
+where:
+kind:: Specifies BackupLog as the value for the kind field of the NADR CR.
+name:: Specifies the name of the NAB CR.
+2. Verify that the NADR CR is processed by running the following command:
+
+```terminal
+$ oc get nadr test-nadr-backup -o yaml
+```
+
+Example output
+
+```yaml
+apiVersion: oadp.openshift.io/v1alpha1
+kind: NonAdminDownloadRequest
+metadata:
+  creationTimestamp: "2025-03-06T10:05:22Z"
+  generation: 1
+  name: test-nadr-backup
+  namespace: test-nac-ns
+  resourceVersion: "134866"
+  uid: 520...8d9
+spec:
+  target:
+    kind: BackupLog
+    name: test-nab
+status:
+  conditions:
+  - lastTransitionTime: "202...5:22Z"
+    message: ""
+    reason: Success
+    status: "True"
+    type: Processed
+  phase: Created
+  velero:
+    status:
+      downloadURL: https://...
+      expiration: "202...22Z"
+      phase: Processed
+```
+
+
+where:
+downloadURL:: The status.downloadURL field contains the download URL of the NAB logs. You can use the downloadURL to download and review the NAB logs.
+phase:: The status.phase is Processed.
+3. Download and analyze the backup information by using the status.downloadURL URL.
+4. To review NAR CR logs, create a NonAdminDownloadRequest CR and specify the NAR CR name as shown in the following example:
+Example NonAdminDownloadRequest CR
+
+```yaml
+apiVersion: oadp.openshift.io/v1alpha1
+kind: NonAdminDownloadRequest
+metadata:
+  name: test-nadr-restore
+spec:
+  target:
+    kind: RestoreLog
+    name: test-nar
+```
+
+
+where:
+kind:: Specifies RestoreLog as the value for the kind field of the NADR CR.
+name:: Specifies the name of the NAR CR.
+5. Verify that the NADR CR is processed by running the following command:
+
+```terminal
+$ oc get nadr test-nadr-restore -o yaml
+```
+
+Example output
+
+```yaml
+apiVersion: oadp.openshift.io/v1alpha1
+kind: NonAdminDownloadRequest
+metadata:
+  creationTimestamp: "2025-03-06T11:26:01Z"
+  generation: 1
+  name: test-nadr-restore
+  namespace: test-nac-ns
+  resourceVersion: "157842"
+  uid: f3e...7862f
+spec:
+  target:
+    kind: RestoreLog
+    name: test-nar
+status:
+  conditions:
+  - lastTransitionTime: "202..:01Z"
+    message: ""
+    reason: Success
+    status: "True"
+    type: Processed
+  phase: Created
+  velero:
+    status:
+      downloadURL: https://...
+      expiration: "202..:01Z"
+      phase: Processed
+```
+
+
+where:
+downloadURL:: The status.downloadURL field contains the download URL of the NAR logs. You can use the downloadURL to download and review the NAR logs.
+phase:: The status.phase is Processed.
+6. Download and analyze the restore information by using the status.downloadURL URL.

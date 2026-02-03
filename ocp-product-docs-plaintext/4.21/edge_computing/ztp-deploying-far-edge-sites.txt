@@ -1,4 +1,4 @@
-# Installing managed clusters with RHACM and SiteConfig resources
+# Installing managed clusters with RHACM and ClusterInstance resources
 
 
 You can provision Red Hat OpenShift Container Platform clusters at scale with Red Hat Advanced Cluster Management (RHACM) using the assisted service and the GitOps plugin policy generator with core-reduction technology enabled. The GitOps Zero Touch Provisioning (ZTP) pipeline performs the cluster installations. GitOps ZTP can be used in a disconnected environment.
@@ -90,8 +90,8 @@ Add the required Secret custom resources (CRs) for the managed bare-metal host t
 
 [NOTE]
 ----
-The secrets are referenced from the SiteConfig CR by name. The namespace
-must match the SiteConfig namespace.
+The secrets are referenced from the ClusterInstance CR by name. The namespace
+must match the ClusterInstance namespace.
 ----
 
 1. Create a YAML secret file containing credentials for the host Baseboard Management Controller (BMC) and a pull secret required for installing OpenShift and all add-on cluster Operators:
@@ -118,15 +118,17 @@ data:
 type: kubernetes.io/dockerconfigjson
 ```
 
-Must match the namespace configured in the related SiteConfig CR
+Must match the namespace configured in the related ClusterInstance CR
 Base64-encoded values for password and username
-Must match the namespace configured in the related SiteConfig CR
+Must match the namespace configured in the related ClusterInstance CR
 Base64-encoded pull secret
 2. Add the relative path to example-sno-secret.yaml to the kustomization.yaml file that you use to install the cluster.
 
 # Configuring Discovery ISO kernel arguments for installations using GitOps ZTP
 
-The GitOps Zero Touch Provisioning (ZTP) workflow uses the Discovery ISO as part of the Red Hat OpenShift Container Platform installation process on managed bare-metal hosts. You can edit the InfraEnv resource to specify kernel arguments for the Discovery ISO. This is useful for cluster installations with specific environmental requirements. For example, configure the rd.net.timeout.carrier kernel argument for the Discovery ISO to facilitate static networking for the cluster or to receive a DHCP address before downloading the root file system during installation.
+The GitOps Zero Touch Provisioning (ZTP) workflow uses the Discovery ISO as part of the Red Hat OpenShift Container Platform installation process on managed bare-metal hosts. You can edit the InfraEnv resource to specify kernel arguments for the Discovery ISO. This is useful for cluster installations with specific environmental requirements.
+
+For example, configure the rd.net.timeout.carrier kernel argument for the Discovery ISO to facilitate static networking for the cluster or to receive a DHCP address before downloading the root file system during installation.
 
 
 [NOTE]
@@ -142,7 +144,7 @@ In Red Hat OpenShift Container Platform 4.21, you can only add kernel arguments.
 
 [NOTE]
 ----
-The InfraEnv CR in this example uses template syntax such as {{ .Cluster.ClusterName }} that is populated based on values in the SiteConfig CR. The SiteConfig CR automatically populates values for these templates during deployment. Do not edit the templates manually.
+The InfraEnv CR in this example uses template syntax such as {{ .Cluster.ClusterName }} that is populated based on values in the ClusterInstance CR. The ClusterInstance CR automatically populates values for these templates during deployment. Do not edit the templates manually.
 ----
 
 ```yaml
@@ -175,26 +177,55 @@ spec:
 
 Specify the append operation to add a kernel argument.
 Specify the kernel argument you want to configure. This example configures the audit kernel argument and the trace kernel argument.
-2. Commit the InfraEnv-example.yaml CR to the same location in your Git repository that has the SiteConfig CR and push your changes. The following example shows a sample Git repository structure:
+2. Commit the InfraEnv-example.yaml file to your Git repository and push your changes. The following example shows a sample Git repository structure:
 
 ```text
 ~/example-ztp/install
           └── site-install
-               ├── siteconfig-example.yaml
+               ├── clusterinstance-example.yaml
                ├── InfraEnv-example.yaml
-               ...
+               └── kustomization.yaml
 ```
 
-3. Edit the spec.clusters.crTemplates specification in the SiteConfig CR to reference the InfraEnv-example.yaml CR in your Git repository:
+3. Update the kustomization.yaml file to use the configMapGenerator field to package the InfraEnv CR into a ConfigMap:
 
 ```yaml
-clusters:
-  crTemplates:
-    InfraEnv: "InfraEnv-example.yaml"
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+resources:
+  - clusterinstance-example.yaml 1
+configMapGenerator:
+  - name: custom-infraenv-cm 2
+    namespace: example-cluster 3
+    files:
+      - InfraEnv-example.yaml
+generatorOptions:
+  disableNameSuffixHash: true
 ```
 
+The name of the ClusterInstance CR.
+The name of the ConfigMap that contains the custom InfraEnv CR.
+The namespace must match the ClusterInstance namespace.
+4. In your ClusterInstance CR, reference the ConfigMap in the spec.templateRefs field:
 
-When you are ready to deploy your cluster by committing and pushing the SiteConfig CR, the build pipeline uses the custom InfraEnv-example CR in your Git repository to configure the infrastructure environment, including the custom kernel arguments.
+```yaml
+apiVersion: siteconfig.open-cluster-management.io/v1alpha1
+kind: ClusterInstance
+metadata:
+  name: "example-cluster"
+  namespace: "example-cluster"
+spec:
+  clusterName: "example-cluster"
+  templateRefs:
+    - name: custom-infraenv-cm 1
+      namespace: example-cluster
+# ...
+```
+
+Reference to the ConfigMap CR that contains the custom InfraEnv CR template.
+5. Commit the ClusterInstance CR and kustomization.yaml to your Git repository and push your changes.
+
+When the Argo CD pipeline syncs the changes, the SiteConfig Operator uses the custom InfraEnv-example CR from the generated ConfigMap to configure the infrastructure environment, including the custom kernel arguments.
 
 To verify that the kernel arguments are applied, after the Discovery image verifies that Red Hat OpenShift Container Platform is ready for installation, you can SSH to the target host before the installation process begins. At that point, you can view the kernel arguments for the Discovery ISO in the /proc/cmdline file.
 
@@ -211,18 +242,18 @@ $ cat /proc/cmdline
 ```
 
 
-# Deploying a managed cluster with SiteConfig and GitOps ZTP
+# Deploying a managed cluster with ClusterInstance and GitOps ZTP
 
-Use the following procedure to create a SiteConfig custom resource (CR) and related files and initiate the GitOps Zero Touch Provisioning (ZTP) cluster deployment.
+Use the following procedure to create a ClusterInstance custom resource (CR) and related files and initiate the GitOps Zero Touch Provisioning (ZTP) cluster deployment.
 
 
-[IMPORTANT]
+[NOTE]
 ----
-SiteConfig v1 is deprecated starting with Red Hat OpenShift Container Platform version 4.18. Equivalent and improved functionality is now available through the SiteConfig Operator using the ClusterInstance custom resource. For more information, see Procedure to transition from SiteConfig CRs to the ClusterInstance API.
-For more information about the SiteConfig Operator, see SiteConfig.
+You require Red Hat Advanced Cluster Management (RHACM) version 2.12 or later to install the SiteConfig Operator and use the ClusterInstance CR.
 ----
 
 * You have installed the OpenShift CLI (oc).
+* You installed the SiteConfig Operator in the hub cluster.
 * You have logged in to the hub cluster as a user with cluster-admin privileges.
 * You configured the hub cluster for generating the required installation and policy CRs.
 * You created a Git repository where you manage your custom site configuration data. The repository must be accessible from the hub cluster and you must configure it as a source repository for the ArgoCD application. See "Preparing the GitOps ZTP site configuration repository" for more information.
@@ -233,9 +264,9 @@ When you create the source repository, ensure that you patch the ArgoCD applicat
 ----
 * To be ready for provisioning managed clusters, you require the following for each bare-metal host:
 Network connectivity:: Your network requires DNS. Managed cluster hosts should be reachable from the hub cluster. Ensure that Layer 3 connectivity exists between the hub cluster and the managed cluster host.
-Baseboard Management Controller (BMC) details:: GitOps ZTP uses BMC username and password details to connect to the BMC during cluster installation. The GitOps ZTP plugin manages the ManagedCluster CRs on the hub cluster based on the SiteConfig CR in your site Git repo. You create individual BMCSecret CRs for each host manually.
+Baseboard Management Controller (BMC) details:: GitOps ZTP uses BMC username and password details to connect to the BMC during cluster installation. The GitOps ZTP plugin manages the ManagedCluster CRs on the hub cluster based on the ClusterInstance CR in your site Git repo. You create individual BMCSecret CRs for each host manually.
 
-1. Create the required managed cluster secrets on the hub cluster. These resources must be in a namespace with a name matching the cluster name. For example, in out/argocd/example/siteconfig/example-sno.yaml, the cluster name and namespace is example-sno.
+1. Create the required managed cluster secrets on the hub cluster. These resources must be in a namespace with a name matching the cluster name. For example, in out/argocd/example/clusterinstance/example-sno.yaml, the cluster name and namespace is example-sno.
 1. Export the cluster namespace by running the following command:
 
 ```terminal
@@ -252,172 +283,170 @@ $ oc create namespace $CLUSTERNS
 
 [NOTE]
 ----
-The secrets are referenced from the SiteConfig custom resource (CR) by name. The namespace must match the SiteConfig namespace.
+The secrets are referenced from the ClusterInstance custom resource (CR) by name. The namespace must match the ClusterInstance namespace.
 ----
-3. Create a SiteConfig CR for your cluster in your local clone of the Git repository:
-1. Choose the appropriate example for your CR from the  out/argocd/example/siteconfig/ folder.
+3. Create a ClusterInstance CR for your cluster in your local clone of the Git repository:
+1. Choose the appropriate example for your CR from the  out/argocd/example/clusterinstance/ folder.
 The folder includes example files for single node, three-node, and standard clusters:
 * example-sno.yaml
 * example-3node.yaml
 * example-standard.yaml
 2. Change the cluster and host details in the example file to match the type of cluster you want. For example:
-Example single-node OpenShift SiteConfig CR
+Example single-node OpenShift ClusterInstance CR
 
 ```yaml
-# example-node1-bmh-secret & assisted-deployment-pull-secret need to be created under same namespace example-sno
+# example-node1-bmh-secret & assisted-deployment-pull-secret need to be created under same namespace example-ai-sno
 ---
-apiVersion: ran.openshift.io/v1
-kind: SiteConfig
+apiVersion: siteconfig.open-cluster-management.io/v1alpha1
+kind: ClusterInstance
 metadata:
-  name: "example-sno"
-  namespace: "example-sno"
+  name: "example-ai-sno"
+  namespace: "example-ai-sno"
 spec:
   baseDomain: "example.com"
   pullSecretRef:
     name: "assisted-deployment-pull-secret"
-  clusterImageSetNameRef: "openshift-4.18"
+  clusterImageSetNameRef: "openshift-4.21"
   sshPublicKey: "ssh-rsa AAAA..."
-  clusters:
-    - clusterName: "example-sno"
-      networkType: "OVNKubernetes"
-      # installConfigOverrides is a generic way of passing install-config
-      # parameters through the siteConfig.  The 'capabilities' field configures
-      # the composable openshift feature.  In this 'capabilities' setting, we
-      # remove all the optional set of components.
-      # Notes:
-      # - OperatorLifecycleManager is needed for 4.15 and later
-      # - NodeTuning is needed for 4.13 and later, not for 4.12 and earlier
-      # - Ingress is needed for 4.16 and later
-      installConfigOverrides: |
+  clusterName: "example-ai-sno"
+  networkType: "OVNKubernetes"
+  # installConfigOverrides is a generic way of passing install-config
+  # parameters through the siteConfig.  The 'capabilities' field configures
+  # the composable openshift feature.  In this 'capabilities' setting, we
+  # remove all the optional set of components.
+  # Notes:
+  # - OperatorLifecycleManager is needed for 4.15 and later
+  # - NodeTuning is needed for 4.13 and later, not for 4.12 and earlier
+  # - Ingress is needed for 4.16 and later
+  installConfigOverrides: |
+    {
+      "capabilities": {
+        "baselineCapabilitySet": "None",
+        "additionalEnabledCapabilities": [
+          "NodeTuning",
+          "OperatorLifecycleManager",
+          "Ingress"
+        ]
+      }
+    }
+  # Include references to extraManifest ConfigMaps.
+  extraManifestsRefs:
+    - name: sno-extra-manifest-configmap
+  extraLabels:
+    ManagedCluster:
+      # These example cluster labels correspond to the bindingRules in the PolicyGenTemplate examples
+      du-profile: "latest"
+      # These example cluster labels correspond to the bindingRules in the PolicyGenTemplate examples in ../policygentemplates:
+      # ../policygentemplates/common-ranGen.yaml will apply to all clusters with 'common: true'
+      common: "true"
+      # ../policygentemplates/group-du-sno-ranGen.yaml will apply to all clusters with 'group-du-sno: ""'
+      group-du-sno: ""
+      # ../policygentemplates/example-sno-site.yaml will apply to all clusters with 'sites: "example-sno"'
+      # Normally this should match or contain the cluster name so it only applies to a single cluster
+      sites : "example-sno"
+  clusterNetwork:
+    - cidr: 1001:1::/48
+      hostPrefix: 64
+  machineNetwork:
+    - cidr: 1111:2222:3333:4444::/64
+  serviceNetwork:
+    - cidr: 1001:2::/112
+  additionalNTPSources:
+    - 1111:2222:3333:4444::2
+  # Initiates the cluster for workload partitioning. Setting specific reserved/isolated CPUSets is done via PolicyTemplate
+  # please see Workload Partitioning Feature for a complete guide.
+  cpuPartitioningMode: AllNodes
+  templateRefs:
+    - name: ai-cluster-templates-v1
+      namespace: open-cluster-management
+  nodes:
+    - hostName: "example-node1.example.com"
+      role: "master"
+      bmcAddress: "idrac-virtualmedia+https://[1111:2222:3333:4444::bbbb:1]/redfish/v1/Systems/System.Embedded.1"
+      bmcCredentialsName:
+        name: "example-node1-bmh-secret"
+      bootMACAddress: "AA:BB:CC:DD:EE:11"
+      # Use UEFISecureBoot to enable secure boot, UEFI to disable.
+      bootMode: "UEFISecureBoot"
+      rootDeviceHints:
+        deviceName: "/dev/disk/by-path/pci-0000:01:00.0-scsi-0:2:0:0"
+      # disk partition at `/var/lib/containers` with ignitionConfigOverride. Some values must be updated. See DiskPartitionContainer.md in argocd folder for more details
+      ignitionConfigOverride: |
         {
-          "capabilities": {
-            "baselineCapabilitySet": "None",
-            "additionalEnabledCapabilities": [
-              "NodeTuning",
-              "OperatorLifecycleManager",
-              "Ingress"
+          "ignition": {
+            "version": "3.2.0"
+          },
+          "storage": {
+            "disks": [
+              {
+                "device": "/dev/disk/by-path/pci-0000:01:00.0-scsi-0:2:0:0",
+                "partitions": [
+                  {
+                    "label": "var-lib-containers",
+                    "sizeMiB": 0,
+                    "startMiB": 250000
+                  }
+                ],
+                "wipeTable": false
+              }
+            ],
+            "filesystems": [
+              {
+                "device": "/dev/disk/by-partlabel/var-lib-containers",
+                "format": "xfs",
+                "mountOptions": [
+                  "defaults",
+                  "prjquota"
+                ],
+                "path": "/var/lib/containers",
+                "wipeFilesystem": true
+              }
+            ]
+          },
+          "systemd": {
+            "units": [
+              {
+                "contents": "# Generated by Butane\n[Unit]\nRequires=systemd-fsck@dev-disk-by\\x2dpartlabel-var\\x2dlib\\x2dcontainers.service\nAfter=systemd-fsck@dev-disk-by\\x2dpartlabel-var\\x2dlib\\x2dcontainers.service\n\n[Mount]\nWhere=/var/lib/containers\nWhat=/dev/disk/by-partlabel/var-lib-containers\nType=xfs\nOptions=defaults,prjquota\n\n[Install]\nRequiredBy=local-fs.target",
+                "enabled": true,
+                "name": "var-lib-containers.mount"
+              }
             ]
           }
         }
-      # It is strongly recommended to include crun manifests as part of the additional install-time manifests for 4.13+.
-      # The crun manifests can be obtained from source-crs/optional-extra-manifest/ and added to the git repo ie.sno-extra-manifest.
-      # extraManifestPath: sno-extra-manifest
-      clusterLabels:
-        # These example cluster labels correspond to the bindingRules in the PolicyGenTemplate examples
-        du-profile: "latest"
-        # These example cluster labels correspond to the bindingRules in the PolicyGenTemplate examples in ../policygentemplates:
-        # ../acmpolicygenerator/common-ranGen.yaml will apply to all clusters with 'common: true'
-        common: true
-        # ../policygentemplates/group-du-sno-ranGen.yaml will apply to all clusters with 'group-du-sno: ""'
-        group-du-sno: ""
-        # ../policygentemplates/example-sno-site.yaml will apply to all clusters with 'sites: "example-sno"'
-        # Normally this should match or contain the cluster name so it only applies to a single cluster
-        sites: "example-sno"
-      clusterNetwork:
-        - cidr: 1001:1::/48
-          hostPrefix: 64
-      machineNetwork:
-        - cidr: 1111:2222:3333:4444::/64
-      serviceNetwork:
-        - 1001:2::/112
-      additionalNTPSources:
-        - 1111:2222:3333:4444::2
-      # Initiates the cluster for workload partitioning. Setting specific reserved/isolated CPUSets is done via PolicyTemplate
-      # please see Workload Partitioning Feature for a complete guide.
-      cpuPartitioningMode: AllNodes
-      # Optionally; This can be used to override the KlusterletAddonConfig that is created for this cluster:
-      #crTemplates:
-      #  KlusterletAddonConfig: "KlusterletAddonConfigOverride.yaml"
-      nodes:
-        - hostName: "example-node1.example.com"
-          role: "master"
-          # Optionally; This can be used to configure desired BIOS setting on a host:
-          #biosConfigRef:
-          #  filePath: "example-hw.profile"
-          bmcAddress: "idrac-virtualmedia+https://[1111:2222:3333:4444::bbbb:1]/redfish/v1/Systems/System.Embedded.1"
-          bmcCredentialsName:
-            name: "example-node1-bmh-secret"
-          bootMACAddress: "AA:BB:CC:DD:EE:11"
-          # Use UEFISecureBoot to enable secure boot.
-          bootMode: "UEFISecureBoot"
-          rootDeviceHints:
-            deviceName: "/dev/disk/by-path/pci-0000:01:00.0-scsi-0:2:0:0"
-          #crTemplates:
-          #  BareMetalHost: "bmhOverride.yaml"
-          # disk partition at `/var/lib/containers` with ignitionConfigOverride. Some values must be updated. See DiskPartitionContainer.md for more details
-          ignitionConfigOverride: |
-            {
-              "ignition": {
-                "version": "3.2.0"
-              },
-              "storage": {
-                "disks": [
-                  {
-                    "device": "/dev/disk/by-id/wwn-0x6b07b250ebb9d0002a33509f24af1f62",
-                    "partitions": [
-                      {
-                        "label": "var-lib-containers",
-                        "sizeMiB": 0,
-                        "startMiB": 250000
-                      }
-                    ],
-                    "wipeTable": false
-                  }
-                ],
-                "filesystems": [
-                  {
-                    "device": "/dev/disk/by-partlabel/var-lib-containers",
-                    "format": "xfs",
-                    "mountOptions": [
-                      "defaults",
-                      "prjquota"
-                    ],
-                    "path": "/var/lib/containers",
-                    "wipeFilesystem": true
-                  }
-                ]
-              },
-              "systemd": {
-                "units": [
-                  {
-                    "contents": "# Generated by Butane\n[Unit]\nRequires=systemd-fsck@dev-disk-by\\x2dpartlabel-var\\x2dlib\\x2dcontainers.service\nAfter=systemd-fsck@dev-disk-by\\x2dpartlabel-var\\x2dlib\\x2dcontainers.service\n\n[Mount]\nWhere=/var/lib/containers\nWhat=/dev/disk/by-partlabel/var-lib-containers\nType=xfs\nOptions=defaults,prjquota\n\n[Install]\nRequiredBy=local-fs.target",
-                    "enabled": true,
-                    "name": "var-lib-containers.mount"
-                  }
-                ]
-              }
-            }
-          nodeNetwork:
-            interfaces:
-              - name: eno1
-                macAddress: "AA:BB:CC:DD:EE:11"
+      nodeNetwork:
+        interfaces:
+          - name: eno1
+            macAddress: "AA:BB:CC:DD:EE:11"
+        config:
+          interfaces:
+            - name: eno1
+              type: ethernet
+              state: up
+              ipv4:
+                enabled: false
+              ipv6:
+                enabled: true
+                address:
+                # For SNO sites with static IP addresses, the node-specific,
+                # API and Ingress IPs should all be the same and configured on
+                # the interface
+                - ip: 1111:2222:3333:4444::aaaa:1
+                  prefix-length: 64
+          dns-resolver:
             config:
-              interfaces:
-                - name: eno1
-                  type: ethernet
-                  state: up
-                  ipv4:
-                    enabled: false
-                  ipv6:
-                    enabled: true
-                    address:
-                      # For SNO sites with static IP addresses, the node-specific,
-                      # API and Ingress IPs should all be the same and configured on
-                      # the interface
-                      - ip: 1111:2222:3333:4444::aaaa:1
-                        prefix-length: 64
-              dns-resolver:
-                config:
-                  search:
-                    - example.com
-                  server:
-                    - 1111:2222:3333:4444::2
-              routes:
-                config:
-                  - destination: ::/0
-                    next-hop-interface: eno1
-                    next-hop-address: 1111:2222:3333:4444::1
-                    table-id: 254
+              search:
+              - example.com
+              server:
+              - 1111:2222:3333:4444::2
+          routes:
+            config:
+            - destination: ::/0
+              next-hop-interface: eno1
+              next-hop-address: 1111:2222:3333:4444::1
+              table-id: 254
+      templateRefs:
+        - name: ai-node-templates-v1
+          namespace: open-cluster-management
 ```
 
 
@@ -428,21 +457,19 @@ For more information about BMC addressing, see the "Additional resources" sectio
 
 [NOTE]
 ----
-To override the default BareMetalHost CR for a node, you can reference the override CR in the node-level crTemplates field in the SiteConfig CR. Ensure that you set the argocd.argoproj.io/sync-wave: "3" annotation in your override BareMetalHost CR.
+To override the default BareMetalHost CR for a node, create a custom node template in a ConfigMap and reference it in the node-level spec.nodes.templateRefs field in the ClusterInstance CR. Ensure that you set the argocd.argoproj.io/sync-wave: "3" annotation in your override BareMetalHost CR.
 ----
 3. You can inspect the default set of extra-manifest MachineConfig CRs in out/argocd/extra-manifest. It is automatically applied to the cluster when it is installed.
-4. Optional: To provision additional install-time manifests on the provisioned cluster, create a directory in your Git repository, for example, sno-extra-manifest/, and add your custom manifest CRs to this directory. If your SiteConfig.yaml refers to this directory in the extraManifestPath field, any CRs in this referenced directory are appended to the default set of extra manifests.
-Enabling the crun OCI container runtime
+4. Optional: To provision additional install-time manifests on the provisioned cluster, package your extra manifest CRs in a ConfigMap and reference it in the extraManifestsRefs field of the ClusterInstance CR. For more information, see "Customizing extra installation manifests in the GitOps ZTP pipeline".
 
 [IMPORTANT]
 ----
 For optimal cluster performance, enable crun for master and worker nodes in single-node OpenShift, single-node OpenShift with additional worker nodes, three-node OpenShift, and standard clusters.
 Enable crun in a ContainerRuntimeConfig CR as an additional Day 0 install-time manifest to avoid the cluster having to reboot.
 The enable-crun-master.yaml and enable-crun-worker.yaml CR files are in the out/source-crs/optional-extra-manifest/ folder that you can extract from the ztp-site-generate container.
-For more information, see "Customizing extra installation manifests in the GitOps ZTP pipeline".
 ----
-4. Add the SiteConfig CR to the kustomization.yaml file in the generators section, similar to the example shown in out/argocd/example/siteconfig/kustomization.yaml.
-5. Commit the SiteConfig CR and associated kustomization.yaml changes in your Git repository and push the changes.
+4. Add the ClusterInstance CR to the kustomization.yaml file in the generators section, similar to the example shown in out/argocd/example/clusterinstance/kustomization.yaml.
+5. Commit the ClusterInstance CR and associated kustomization.yaml changes in your Git repository and push the changes.
 
 The ArgoCD pipeline detects the changes and begins the managed cluster deployment.
 
@@ -473,86 +500,9 @@ Labels: beta.kubernetes.io/arch=amd64
 
 The custom label is applied to the node.
 
-* Single-node OpenShift SiteConfig CR installation reference
+* Single-node OpenShift ClusterInstance CR installation reference
 
-## Accelerated provisioning of GitOps ZTP
-
-
-[IMPORTANT]
-----
-{FeatureName} is a Technology Preview feature only. Technology Preview features are not supported with Red Hat production service level agreements (SLAs) and might not be functionally complete. Red Hat does not recommend using them in production. These features provide early access to upcoming product features, enabling customers to test functionality and provide feedback during the development process.
-For more information about the support scope of Red Hat Technology Preview features, see Technology Preview Features Support Scope.
-----
-
-You can reduce the time taken for cluster installation by using accelerated provisioning of GitOps ZTP for single-node OpenShift.
-Accelerated ZTP speeds up installation by applying Day 2 manifests derived from policies at an earlier stage.
-
-
-[IMPORTANT]
-----
-Accelerated provisioning of GitOps ZTP is supported only when installing single-node OpenShift with Assisted Installer. Otherwise this installation method will fail.
-----
-
-### Activating accelerated ZTP
-
-You can activate accelerated ZTP using the spec.clusters.clusterLabels.accelerated-ztp label, as in the following example:
-
-
-```yaml
-apiVersion: ran.openshift.io/v2
-kind: SiteConfig
-metadata:
-  name: "example-sno"
-  namespace: "example-sno"
-spec:
-  baseDomain: "example.com"
-  pullSecretRef:
-    name: "assisted-deployment-pull-secret"
-  clusterImageSetNameRef: "openshift-4.20"
-  sshPublicKey: "ssh-rsa AAAA..."
-  clusters:
-  # ...
-    clusterLabels:
-        common: true
-        group-du-sno: ""
-        sites : "example-sno"
-        accelerated-ztp: full
-```
-
-
-You can use accelerated-ztp: full to fully automate the accelerated process.
-GitOps ZTP updates the AgentClusterInstall resource with a reference to the accelerated GitOps ZTP ConfigMap, and includes resources extracted from policies by TALM, and accelerated ZTP job manifests.
-
-If you use accelerated-ztp: partial, GitOps ZTP does not include the accelerated job manifests, but includes policy-derived objects created during the cluster installation of the following kind types:
-
-* PerformanceProfile.performance.openshift.io
-* Tuned.tuned.openshift.io
-* Namespace
-* CatalogSource.operators.coreos.com
-* ContainerRuntimeConfig.machineconfiguration.openshift.io
-
-This partial acceleration can reduce the number of reboots done by the node when applying resources of the kind Performance Profile, Tuned, and ContainerRuntimeConfig.
-TALM installs the Operator subscriptions derived from policies after RHACM completes the import of the cluster, following the same flow as standard GitOps ZTP.
-
-The benefits of accelerated ZTP increase with the scale of your deployment.
-Using accelerated-ztp: full gives more benefit on a large number of clusters.
-With a smaller number of clusters, the reduction in installation time is less significant.
-Full accelerated ZTP leaves behind a namespace and a completed job on the spoke that need to be manually removed.
-
-One benefit of using accelerated-ztp: partial is that you can override the functionality of the on-spoke job if something goes wrong with the stock implementation or if you require a custom functionality.
-
-### The accelerated ZTP process
-
-Accelerated ZTP uses an additional ConfigMap to create the resources derived from policies on the spoke cluster.
-The standard ConfigMap includes manifests that the GitOps ZTP workflow uses to customize cluster installs.
-
-TALM detects that the accelerated-ztp label is set and then creates a second ConfigMap.
-As part of accelerated ZTP, the SiteConfig generator adds a reference to that second ConfigMap using the naming convention <spoke-cluster-name>-aztp.
-
-After TALM creates that second ConfigMap, it finds all policies bound to the managed cluster and extracts the GitOps ZTP profile information.
-TALM adds the GitOps ZTP profile information to the <spoke-cluster-name>-aztp ConfigMap custom resource (CR) and applies the CR to the hub cluster API.
-
-## Configuring IPsec encryption for single-node OpenShift clusters using GitOps ZTP and SiteConfig resources
+## Configuring IPsec encryption for single-node OpenShift clusters using GitOps ZTP and ClusterInstance resources
 
 You can enable IPsec encryption in managed single-node OpenShift clusters that you install using GitOps ZTP and Red Hat Advanced Cluster Management (RHACM).
 You can encrypt traffic between the managed cluster and IPsec endpoints external to the managed cluster. All network traffic between nodes on the OVN-Kubernetes cluster network is encrypted with IPsec in Transport mode.
@@ -565,6 +515,7 @@ You can also configure IPsec encryption for single-node OpenShift clusters with 
 
 * You have installed the OpenShift CLI (oc).
 * You have logged in to the hub cluster as a user with cluster-admin privileges.
+* You have installed the SiteConfig Operator in the hub cluster.
 * You have configured RHACM and the hub cluster for generating the required installation and policy custom resources (CRs) for managed clusters.
 * You have created a Git repository where you manage your custom site configuration data.
 The repository must be accessible from the hub cluster and be defined as a source repository for the Argo CD application.
@@ -627,53 +578,84 @@ out
 
 The ipsec/build.sh script generates the Butane and endpoint configuration CRs.
 You provide ca.pem and left_server.p12 certificate files that are relevant to your network.
-6. Create a custom-manifest/ folder in the repository where you manage your custom site configuration data.
+6. Create an ipsec-manifests/ folder in the repository where you manage your custom site configuration data.
 Add the enable-ipsec.yaml and 99-ipsec-* YAML files to the directory.
 For example:
 
 ```terminal
-siteconfig
-  ├── site1-sno-du.yaml
-  ├── extra-manifest/
-  └── custom-manifest
-        ├── enable-ipsec.yaml
-        ├── 99-ipsec-worker-endpoint-config.yaml
-        └── 99-ipsec-master-endpoint-config.yaml
+site-configs/
+  ├── hub-1/
+  │   └── clusterinstance-site1-sno-du.yaml
+  ├── ipsec-manifests/
+  │   ├── enable-ipsec.yaml
+  │   ├── 99-ipsec-worker-endpoint-config.yaml
+  │   └── 99-ipsec-master-endpoint-config.yaml
+  └── kustomization.yaml
 ```
 
-7. In your SiteConfig CR, add the custom-manifest/ directory to the extraManifests.searchPaths field.
-For example:
+7. Create a kustomization.yaml file that uses configMapGenerator to package your IPsec manifests into a ConfigMap:
 
 ```yaml
-clusters:
-- clusterName: "site1-sno-du"
-  networkType: "OVNKubernetes"
-  extraManifests:
-    searchPaths:
-      - extra-manifest/
-      - custom-manifest/
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+resources:
+  - hub-1/clusterinstance-site1-sno-du.yaml
+configMapGenerator:
+  - name: ipsec-manifests-cm
+    namespace: site1-sno-du 1
+    files:
+      - ipsec-manifests/enable-ipsec.yaml
+      - ipsec-manifests/99-ipsec-master-endpoint-config.yaml
+      - ipsec-manifests/99-ipsec-worker-endpoint-config.yaml
+generatorOptions:
+  disableNameSuffixHash: true 2
 ```
 
-8. Commit the SiteConfig CR changes and updated files in your Git repository and push the changes to provision the managed cluster and configure IPsec encryption.
+The namespace must match the ClusterInstance namespace.
+Disables the hash suffix so the ConfigMap name is predictable.
+8. In your ClusterInstance CR, reference the ConfigMap in the extraManifestsRefs field:
+
+```yaml
+apiVersion: siteconfig.open-cluster-management.io/v1alpha1
+kind: ClusterInstance
+metadata:
+  name: "site1-sno-du"
+  namespace: "site1-sno-du"
+spec:
+  clusterName: "site1-sno-du"
+  networkType: "OVNKubernetes"
+  extraManifestsRefs:
+    - name: ipsec-manifests-cm 1
+# ...
+```
+
+Reference to the ConfigMap containing the IPsec manifests.
+
+[NOTE]
+----
+If you have other extra manifests, you can either include them in the same ConfigMap or create multiple ConfigMap resources and reference each of those in the extraManifestsRefs field.
+----
+9. Commit the ClusterInstance CR, IPsec manifest files, and kustomization.yaml changes in your Git repository and push the changes to provision the managed cluster and configure IPsec encryption.
 
 The Argo CD pipeline detects the changes and begins the managed cluster deployment.
 
-During cluster provisioning, the GitOps ZTP pipeline appends the CRs in the custom-manifest/ directory to the default set of extra manifests stored in the extra-manifest/ directory.
+During cluster provisioning, the SiteConfig Operator applies the CRs contained in the referenced ConfigMap resources as extra manifests.
 
 For information about verifying the IPsec encryption, see "Verifying the IPsec encryption".
 
 * Verifying the IPsec encryption
 * Configuring IPsec encryption
 * Encryption protocol and IPsec mode
-* Installing managed clusters with RHACM and SiteConfig resources
+* Installing managed clusters with RHACM and ClusterInstance resources
 
-## Configuring IPsec encryption for multi-node clusters using GitOps ZTP and SiteConfig resources
+## Configuring IPsec encryption for multi-node clusters using GitOps ZTP and ClusterInstance resources
 
 You can enable IPsec encryption in managed multi-node clusters that you install using GitOps ZTP and Red Hat Advanced Cluster Management (RHACM).
 You can encrypt traffic between the managed cluster and IPsec endpoints external to the managed cluster. All network traffic between nodes on the OVN-Kubernetes cluster network is encrypted with IPsec in Transport mode.
 
 * You have installed the OpenShift CLI (oc).
 * You have logged in to the hub cluster as a user with cluster-admin privileges.
+* You have installed the SiteConfig Operator in the hub cluster.
 * You have configured RHACM and the hub cluster for generating the required installation and policy custom resources (CRs) for managed clusters.
 * You have created a Git repository where you manage your custom site configuration data.
 The repository must be accessible from the hub cluster and be defined as a source repository for the Argo CD application.
@@ -765,44 +747,75 @@ out
 
 The ipsec/import-certs.sh script generates the Butane and endpoint configuration CRs.
 Add the ca.pem and left_server.p12 certificate files that are relevant to your network.
-6. Create a custom-manifest/ folder in the repository where you manage your custom site configuration data and add the enable-ipsec.yaml and 99-ipsec-* YAML files to the directory.
-Example siteconfig directory
+6. Create an ipsec-manifests/ folder in the repository where you manage your custom site configuration data and add the enable-ipsec.yaml and 99-ipsec-* YAML files to the directory.
+Example site configuration directory
 
 ```terminal
-siteconfig
-  ├── site1-mno-du.yaml
-  ├── extra-manifest/
-  └── custom-manifest
-        ├── enable-ipsec.yaml
-        ├── 99-ipsec-master-import-certs.yaml
-        └── 99-ipsec-worker-import-certs.yaml
+site-configs/
+  ├── hub-1/
+  │   └── clusterinstance-site1-mno-du.yaml
+  ├── ipsec-manifests/
+  │   ├── enable-ipsec.yaml
+  │   ├── 99-ipsec-master-import-certs.yaml
+  │   └── 99-ipsec-worker-import-certs.yaml
+  └── kustomization.yaml
 ```
 
-7. In your SiteConfig CR, add the custom-manifest/ directory to the extraManifests.searchPaths field, as in the following example:
+7. Create a kustomization.yaml file that uses configMapGenerator to package your IPsec manifests into a ConfigMap:
 
 ```yaml
-clusters:
-- clusterName: "site1-mno-du"
-  networkType: "OVNKubernetes"
-  extraManifests:
-    searchPaths:
-      - extra-manifest/
-      - custom-manifest/
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+resources:
+  - hub-1/clusterinstance-site1-mno-du.yaml
+configMapGenerator:
+  - name: ipsec-manifests-cm
+    namespace: site1-mno-du 1
+    files:
+      - ipsec-manifests/enable-ipsec.yaml
+      - ipsec-manifests/99-ipsec-master-import-certs.yaml
+      - ipsec-manifests/99-ipsec-worker-import-certs.yaml
+generatorOptions:
+  disableNameSuffixHash: true 2
 ```
 
-8. Include the ipsec-config-policy.yaml config policy file in the source-crs directory in GitOps and reference the file in one of the PolicyGenerator CRs.
-9. Commit the SiteConfig CR changes and updated files in your Git repository and push the changes to provision the managed cluster and configure IPsec encryption.
+The namespace must match the ClusterInstance namespace.
+Disables the hash suffix so the ConfigMap name is predictable.
+8. In your ClusterInstance CR, reference the ConfigMap in the extraManifestsRefs field:
+
+```yaml
+apiVersion: siteconfig.open-cluster-management.io/v1alpha1
+kind: ClusterInstance
+metadata:
+  name: "site1-mno-du"
+  namespace: "site1-mno-du"
+spec:
+  clusterName: "site1-mno-du"
+  networkType: "OVNKubernetes"
+  extraManifestsRefs:
+    - name: ipsec-manifests-cm 1
+# ...
+```
+
+Reference to the ConfigMap containing the IPsec certificate import manifests.
+
+[NOTE]
+----
+If you have other extra manifests, you can either include them in the same ConfigMap or create multiple ConfigMap resources and reference them all in extraManifestsRefs.
+----
+9. Include the ipsec-config-policy.yaml config policy file in the source-crs directory in GitOps and reference the file in one of the PolicyGenerator CRs.
+10. Commit the ClusterInstance CR, IPsec manifest files, and kustomization.yaml changes in your Git repository and push the changes to provision the managed cluster and configure IPsec encryption.
 
 The Argo CD pipeline detects the changes and begins the managed cluster deployment.
 
-During cluster provisioning, the GitOps ZTP pipeline appends the CRs in the custom-manifest/ directory to the default set of extra manifests stored in the extra-manifest/ directory.
+During cluster provisioning, the SiteConfig Operator applies the CRs contained in the referenced ConfigMap resources as extra manifests. The IPsec configuration policy is applied as a Day 2 operation after the cluster is provisioned.
 
 For information about verifying the IPsec encryption, see "Verifying the IPsec encryption".
 
 * Verifying the IPsec encryption
 * Configuring IPsec encryption
 * Encryption protocol and IPsec mode
-* Installing managed clusters with RHACM and SiteConfig resources
+* Installing managed clusters with RHACM and ClusterInstance resources
 
 ## Verifying the IPsec encryption
 
@@ -886,11 +899,10 @@ PING 172.16.110.8 (172.16.110.8) 56(84) bytes of data.
 ```
 
 
-## Single-node OpenShift SiteConfig CR installation reference
+## ClusterInstance CR installation reference
 
+For a detailed API reference for the ClusterInstance custom resource, see ClusterInstance API in the Red Hat Advanced Cluster Management (RHACM) documentation.
 
-
-* About disk encryption with TPM and PCR protection.
 * Customizing extra installation manifests in the GitOps ZTP pipeline
 * Preparing the GitOps ZTP site configuration repository
 * Configuring the hub cluster with ArgoCD
@@ -908,8 +920,8 @@ Tune hosts with specific hardware profiles in your lab and ensure they are optim
 When you have completed host tuning to your satisfaction, you extract the host profile and save it in your GitOps ZTP repository.
 Then, you use the host profile to configure firmware settings in the managed cluster hosts that you deploy with GitOps ZTP.
 
-You specify the required hardware profiles in SiteConfig custom resources (CRs) that you use to deploy the managed clusters.
-The GitOps ZTP pipeline generates the required HostFirmwareSettings (HFS) and BareMetalHost (BMH) CRs that are applied to the hub cluster.
+You specify the required hardware profiles by creating HostFirmwareSettings CRs, packaging them in ConfigMap resources, and referencing them in the templateRefs field of your ClusterInstance CR.
+The SiteConfig Operator generates the required HostFirmwareSettings and BareMetalHost CRs that are applied to the hub cluster.
 
 Use the following best practices to manage your host firmware profiles.
 
@@ -1062,100 +1074,125 @@ False
 
 ## Deploying user-defined firmware to cluster hosts with GitOps ZTP
 
-You can deploy user-defined firmware settings to cluster hosts by configuring the SiteConfig custom resource (CR) to include a hardware profile that you want to apply during cluster host provisioning.
+You can deploy user-defined firmware settings to cluster hosts by creating custom node templates that include HostFirmwareSettings CRs, and referencing them in the ClusterInstance CR.
 You can configure hardware profiles to apply to hosts in the following scenarios:
 
-* All hosts site-wide
-* Only cluster hosts that meet certain criteria
-* Individual cluster hosts
+* All hosts in the cluster
+* Individual hosts in the cluster
 
 
 [IMPORTANT]
 ----
 You can configure host hardware profiles to be applied in a hierarchy.
-Cluster-level settings override site-wide settings.
-Node level profiles override cluster and site-wide settings.
+Node-level profiles override cluster-wide settings.
 ----
 
 * You have installed the OpenShift CLI (oc).
-* You have installed Red Hat Advanced Cluster Management (RHACM) and logged in to the hub cluster as a user with cluster-admin privileges.
-* You have provisioned a cluster that is managed by RHACM.
+* You have installed Red Hat Advanced Cluster Management (RHACM) version 2.12 or later and logged in to the hub cluster as a user with cluster-admin privileges.
+* You have installed the SiteConfig Operator in the hub cluster.
 * You created a Git repository where you manage your custom site configuration data.
 The repository must be accessible from the hub cluster and be defined as a source repository for the Argo CD application.
 
-1. Create the host firmware profile that contain the firmware settings you want to apply.
+1. Create the HostFirmwareSettings CR that contains the firmware settings you want to apply.
 For example, create the following YAML file:
-host-firmware.profile
+host-firmware-settings.yaml
 
 ```yaml
-BootMode: Uefi
-LogicalProc: Enabled
-ProcVirtualization: Enabled
+apiVersion: metal3.io/v1alpha1
+kind: HostFirmwareSettings
+metadata:
+  name: "site1-sno-du"
+  namespace: "site1-sno-du"
+spec:
+  settings:
+    BootMode: "Uefi"
+    LogicalProc: "Enabled"
+    ProcVirtualization: "Enabled"
 ```
 
-2. Save the hardware profile YAML file relative to the kustomization.yaml file that you use to define how to provision the cluster, for example:
+2. Save the HostFirmwareSettings CR file relative to the kustomization.yaml file that you use to provision the cluster.
+For example:
 
 ```terminal
-example-ztp/install
-    └── site-install
-          ├── siteconfig-example.yaml
-          ├── kustomization.yaml
-          └── host-firmware.profile
+site-configs/
+  └── site1-sno-du/
+        ├── clusterinstance-site1-sno-du.yaml
+        ├── kustomization.yaml
+        └── host-firmware-settings.yaml
 ```
 
-3. Edit the SiteConfig CR to include the firmware profile that you want to apply in the cluster.
+3. Create a ConfigMap to store the HostFirmwareSettings CR.
+You can use a kustomization.yaml file with configMapGenerator to create the ConfigMap.
 For example:
 
 ```yaml
-apiVersion: ran.openshift.io/v1
-kind: SiteConfig
-metadata:
-  name: "site-plan-cluster"
-  namespace: "example-cluster-namespace"
-spec:
-  baseDomain: "example.com"
-  # ...
-  biosConfigRef:
-    filePath: "./host-firmware.profile" 1
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+resources:
+  - clusterinstance-site1-sno-du.yaml
+configMapGenerator:
+  - name: host-firmware-settings-cm
+    namespace: site1-sno-du 1
+    files:
+      - host-firmware-settings.yaml 2
+generatorOptions:
+  disableNameSuffixHash: true
 ```
 
-Applies the hardware profile to all cluster hosts site-wide
+The namespace must match the ClusterInstance namespace.
+The name of the HostFirmwareSettings CR.
+4. To apply a hardware profile to all hosts in the cluster, reference the ConfigMap in the spec.templateRefs field of your ClusterInstance CR.
+For example:
+
+```yaml
+apiVersion: siteconfig.open-cluster-management.io/v1alpha1
+kind: ClusterInstance
+metadata:
+  name: "site1-sno-du"
+  namespace: "site1-sno-du"
+spec:
+  clusterName: "site1-sno-du"
+  # ...
+  templateRefs:
+    - name: host-firmware-settings-cm 1
+      namespace: site1-sno-du
+  nodes:
+    - hostName: "node1.example.com"
+      # ...
+```
+
+Applies the firmware profile to all hosts in the cluster.
+5. Optional: To apply a hardware profile to a specific host in the cluster, reference the ConfigMap in the spec.nodes[].templateRefs field.
+For example:
+
+```yaml
+apiVersion: siteconfig.open-cluster-management.io/v1alpha1
+kind: ClusterInstance
+metadata:
+  name: "site1-sno-du"
+  namespace: "site1-sno-du"
+spec:
+  clusterName: "site1-sno-du"
+  # ...
+  nodes:
+    - hostName: "node1.example.com"
+      # ...
+      templateRefs:
+        - name: host-firmware-node1-cm 1
+          namespace: site1-sno-du
+    - hostName: "node2.example.com"
+      # ...
+```
+
+Applies the firmware profile only to the node1.example.com host.
 
 [NOTE]
 ----
-Where possible, use a single SiteConfig CR per cluster.
+Node-level templateRefs settings override cluster-level templateRefs settings.
 ----
-4. Optional. To apply a hardware profile to hosts in a specific cluster, update clusters.biosConfigRef.filePath with the hardware profile that you want to apply.
-For example:
+6. Commit the ClusterInstance CR, ConfigMap, and associated kustomization.yaml changes in your Git repository and push the changes.
 
-```yaml
-clusters:
-  - clusterName: "cluster-1"
-    # ...
-    biosConfigRef:
-      filePath: "./host-firmware.profile" 1
-```
-
-Applies to all hosts in the cluster-1 cluster
-5. Optional. To apply a hardware profile to a specific host in the cluster, update clusters.nodes.biosConfigRef.filePath with the hardware profile that you want to apply.
-For example:
-
-```yaml
-clusters:
-  - clusterName: "cluster-1"
-    # ...
-    nodes:
-      - hostName: "compute-1.example.com"
-        # ...
-        bootMode: "UEFI"
-        biosConfigRef:
-          filePath: "./host-firmware.profile" 1
-```
-
-Applies the firmware profile to the compute-1.example.com host in the cluster
-6. Commit the SiteConfig CR and associated kustomization.yaml changes in your Git repository and push the changes.
-
-The ArgoCD pipeline detects the changes and begins the managed cluster deployment.
+The Argo CD pipeline detects the changes and begins the managed cluster deployment.
 
 [NOTE]
 ----
@@ -1170,6 +1207,7 @@ For example, run the following command:
 $ oc get hfs -n <managed_cluster_namespace> <managed_cluster_name> -o jsonpath='{.status.conditions[?(@.type=="Valid")].status}'
 ```
 
+* where <managed_cluster_namespace> is the namespace of the managed cluster and <managed_cluster_name> is the name of the managed cluster.
 Example output
 
 ```terminal
@@ -1179,7 +1217,7 @@ True
 
 # Monitoring managed cluster installation progress
 
-The ArgoCD pipeline uses the SiteConfig CR to generate the cluster configuration CRs and syncs it with the hub cluster. You can monitor the progress of the synchronization in the ArgoCD dashboard.
+The Argo CD pipeline syncs the ClusterInstance CR from the Git repository to the hub cluster. The SiteConfig Operator then processes the ClusterInstance CR and generates the required cluster configuration CRs. You can monitor the progress of the cluster installation from the RHACM dashboard or from the command line.
 
 * You have installed the OpenShift CLI (oc).
 * You have logged in to the hub cluster as a user with cluster-admin privileges.
@@ -1208,7 +1246,7 @@ $ curl -sk $(oc get agentclusterinstall -n $CLUSTER $CLUSTER -o jsonpath='{.stat
 
 # Troubleshooting GitOps ZTP by validating the installation CRs
 
-The ArgoCD pipeline uses the SiteConfig and PolicyGenerator or PolicyGentemplate custom resources (CRs) to generate the cluster configuration CRs and Red Hat Advanced Cluster Management (RHACM) policies. Use the following steps to troubleshoot issues that might occur during this process.
+The ArgoCD pipeline uses the ClusterInstance and PolicyGenerator or PolicyGentemplate custom resources (CRs) to generate the cluster configuration CRs and Red Hat Advanced Cluster Management (RHACM) policies. Use the following steps to troubleshoot issues that might occur during this process.
 
 * You have installed the OpenShift CLI (oc).
 * You have logged in to the hub cluster as a user with cluster-admin privileges.
@@ -1220,8 +1258,8 @@ $ oc get AgentClusterInstall -n <cluster_name>
 ```
 
 
-If no object is returned, use the following steps to troubleshoot the ArgoCD pipeline flow from SiteConfig files to the installation CRs.
-2. Verify that the ManagedCluster CR was generated using the SiteConfig CR on the hub cluster:
+If no object is returned, use the following steps to troubleshoot the ArgoCD pipeline flow from ClusterInstance files to the installation CRs.
+2. Verify that the ManagedCluster CR was generated using the ClusterInstance CR on the hub cluster:
 
 ```terminal
 $ oc get managedcluster
@@ -1231,42 +1269,6 @@ $ oc get managedcluster
 
 ```terminal
 $ oc get applications.argoproj.io -n openshift-gitops clusters -o yaml
-```
-
-1. To identify error logs for the managed cluster, inspect the status.operationState.syncResult.resources field. For example, if an invalid value is assigned to the extraManifestPath in the SiteConfig CR, an error similar to the following is generated:
-
-```text
-syncResult:
-  resources:
-  - group: ran.openshift.io
-    kind: SiteConfig
-    message: The Kubernetes API could not find ran.openshift.io/SiteConfig for
-      requested resource spoke-sno/spoke-sno. Make sure the "SiteConfig" CRD is
-      installed on the destination cluster
-```
-
-2. To see a more detailed SiteConfig error, complete the following steps:
-1. In the Argo CD dashboard, click the SiteConfig resource that Argo CD is trying to sync.
-2. Check the DESIRED MANIFEST tab to find the siteConfigError field.
-
-```text
-siteConfigError: >- Error: could not build the entire SiteConfig defined by /tmp/kust-plugin-config-1081291903: stat sno-extra-manifest: no such file or directory
-```
-
-3. Check the Status.Sync field. If there are log errors, the Status.Sync field could indicate an Unknown error:
-
-```text
-Status:
-  Sync:
-    Compared To:
-      Destination:
-        Namespace:  clusters-sub
-        Server:     https://kubernetes.default.svc
-      Source:
-        Path:             sites-config
-        Repo URL:         https://git.com/ran-sites/siteconfigs/.git
-        Target Revision:  master
-    Status:               Unknown
 ```
 
 
@@ -1292,8 +1294,8 @@ You can remove a managed site and the associated installation and configuration 
 * You have installed the OpenShift CLI (oc).
 * You have logged in to the hub cluster as a user with cluster-admin privileges.
 
-1. Remove a site and the associated CRs by removing the associated SiteConfig and PolicyGenerator or PolicyGentemplate files from the kustomization.yaml file.
-2. Add the following syncOptions field to your SiteConfig application.
+1. Remove a site and the associated CRs by removing the associated ClusterInstance and PolicyGenerator or PolicyGentemplate files from the kustomization.yaml file.
+2. Add the following syncOptions field to the ArgoCD application that manages the target site.
 
 ```yaml
 kind: Application
@@ -1305,10 +1307,11 @@ spec:
 
 
 When you run the GitOps ZTP pipeline again, the generated CRs are removed.
-3. Optional: If you want to permanently remove a site, you should also remove the SiteConfig and site-specific PolicyGenerator or PolicyGentemplate files from the Git repository.
-4. Optional: If you want to remove a site temporarily, for example when redeploying a site, you can leave the SiteConfig and site-specific PolicyGenerator or PolicyGentemplate CRs in the Git repository.
+3. Optional: If you want to permanently remove a site, you should also remove the ClusterInstance and site-specific PolicyGenerator or PolicyGentemplate files from the Git repository.
+4. Optional: If you want to remove a site temporarily, for example when redeploying a site, you can leave the ClusterInstance and site-specific PolicyGenerator or PolicyGentemplate CRs in the Git repository.
 
-* For information about removing a cluster, see Removing a cluster from management.
+* Removing a cluster from management.
+* Deprovisioning clusters
 
 # Removing obsolete content from the GitOps ZTP pipeline
 

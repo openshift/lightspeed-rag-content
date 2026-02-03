@@ -1,0 +1,333 @@
+# Postinstallation network configuration
+
+
+By default, OpenShift Virtualization uses a single internal pod network after installation.
+After you install OpenShift Virtualization, you can install networking Operators and configure additional networks.
+
+# Installing networking Operators
+
+You must install the Kubernetes NMState Operator to configure a Linux bridge network for live migration or external access to virtual machines (VMs). For installation instructions, see Installing the Kubernetes NMState Operator by using the web console.
+
+You can install the SR-IOV Operator to manage SR-IOV network devices and network attachments. For installation instructions, see Installing the SR-IOV Network Operator.
+
+You can add the About MetalLB and the MetalLB Operator to manage the lifecycle for an instance of MetalLB on your cluster. For installation instructions, see Installing the MetalLB Operator from the software catalog by using the web console.
+
+# Configuring a Linux bridge network
+
+After you install the Kubernetes NMState Operator, you can configure a Linux bridge network for live migration or external access to virtual machines (VMs).
+
+## Creating a Linux bridge NNCP
+
+You can create a NodeNetworkConfigurationPolicy (NNCP) manifest for a Linux bridge network.
+
+* You have installed the Kubernetes NMState Operator.
+
+* Create the NodeNetworkConfigurationPolicy manifest. This example includes sample values that you must replace with your own information.
+
+```yaml
+apiVersion: nmstate.io/v1
+kind: NodeNetworkConfigurationPolicy
+metadata:
+  name: br1-eth1-policy
+spec:
+  desiredState:
+    interfaces:
+      - name: br1
+        description: Linux bridge with eth1 as a port
+        type: linux-bridge
+        state: up
+        ipv4:
+          enabled: false
+        bridge:
+          options:
+            stp:
+              enabled: false
+          port:
+            - name: eth1
+```
+
+* metadata.name defines the name of the node network configuration policy.
+* spec.desiredState.interfaces.name defines the name of the new Linux bridge.
+* spec.desiredState.interfaces.description is an optional field that can be used to define a human-readable description for the bridge.
+* spec.desiredState.interfaces.type defines the interface type. In this example, the type is a Linux bridge.
+* spec.desiredState.interfaces.state defines the requested state for the interface after creation.
+* spec.desiredState.interfaces.ipv4.enabled defines whether the ipv4 protocol is active. Setting this to false disables IPv4 addressing on this bridge.
+* spec.desiredState.interfaces.bridge.options.stp.enabled defines whether STP is active. Setting this to false disables STP on this bridge.
+* spec.desiredState.interfaces.bridge.port.name defines the node NIC to which the bridge is attached.
+
+[NOTE]
+----
+To create the NNCP manifest for a Linux bridge using OSA with IBM Z(R), you must disable VLAN filtering by the setting the rx-vlan-filter to false in the NodeNetworkConfigurationPolicy manifest.
+Alternatively, if you have SSH access to the node, you can disable VLAN filtering by running the following command:
+
+```terminal
+$ sudo ethtool -K <osa-interface-name> rx-vlan-filter off
+```
+
+----
+
+## Creating a Linux bridge NAD by using the web console
+
+You can create a network attachment definition (NAD) to provide layer-2 networking to pods and virtual machines by using the Red Hat OpenShift Container Platform web console.
+
+
+[WARNING]
+----
+Configuring IP address management (IPAM) in a network attachment definition for virtual machines is not supported.
+----
+
+1. In the web console, click Networking -> NetworkAttachmentDefinitions.
+2. Click Create Network Attachment Definition.
+
+[NOTE]
+----
+The network attachment definition must be in the same namespace as the pod or virtual machine.
+----
+3. Enter a unique Name and optional Description.
+4. Select CNV Linux bridge from the Network Type list.
+5. Enter the name of the bridge in the Bridge Name field.
+6. Optional: If the resource has VLAN IDs configured, enter the ID numbers in the VLAN Tag Number field.
+
+[NOTE]
+----
+OSA interfaces on IBM Z(R) do not support VLAN filtering and VLAN-tagged traffic is dropped. Avoid using VLAN-tagged NADs with OSA interfaces.
+----
+7. Optional: Select MAC Spoof Check to enable MAC spoof filtering. This feature provides security against a MAC spoofing attack by allowing only a single MAC address to exit the pod.
+8. Click Create.
+
+# Next steps
+
+* Attaching a virtual machine (VM) to a Linux bridge network
+
+# Configuring a network for live migration
+
+After you have configured a Linux bridge network, you can configure a dedicated network for live migration. A dedicated network minimizes the effects of network saturation on tenant workloads during live migration.
+
+## Configuring a dedicated secondary network for live migration
+
+To configure a dedicated secondary network for live migration, you must first create a bridge network attachment definition (NAD) by using the CLI. You can then add the name of the NetworkAttachmentDefinition object to the HyperConverged custom resource (CR).
+
+* You installed the OpenShift CLI (`oc`).
+* You logged in to the cluster as a user with the cluster-admin role.
+* Each node has at least two Network Interface Cards (NICs).
+* The NICs for live migration are connected to the same VLAN.
+
+1. Create a NetworkAttachmentDefinition manifest according to the following example:
+
+```yaml
+apiVersion: "k8s.cni.cncf.io/v1"
+kind: NetworkAttachmentDefinition
+metadata:
+  name: my-secondary-network
+  namespace: openshift-cnv
+spec:
+  config: '{
+    "cniVersion": "0.3.1",
+    "name": "migration-bridge",
+    "type": "macvlan",
+    "master": "eth1",
+    "mode": "bridge",
+    "ipam": {
+      "type": "whereabouts",
+      "range": "10.200.5.0/24"
+    }
+  }'
+```
+
+
+where:
+metadata.name:: Specify the name of the NetworkAttachmentDefinition object.
+config.master:: Specify the name of the NIC to be used for live migration.
+config.type:: Specify the name of the CNI plugin that provides the network for the NAD.
+config.range:: Specify an IP address range for the secondary network. This range must not overlap the IP addresses of the main network.
+2. Open the HyperConverged CR in your default editor by running the following command:
+
+```terminal
+$ oc edit hyperconverged kubevirt-hyperconverged -n openshift-cnv
+```
+
+3. Add the name of the NetworkAttachmentDefinition object to the spec.liveMigrationConfig stanza of the HyperConverged CR.
+
+Example HyperConverged manifest:
+
+```yaml
+apiVersion: hco.kubevirt.io/v1beta1
+kind: HyperConverged
+metadata:
+  name: kubevirt-hyperconverged
+  namespace: openshift-cnv
+spec:
+  liveMigrationConfig:
+    completionTimeoutPerGiB: 800
+    network: <network>
+    parallelMigrationsPerCluster: 5
+    parallelOutboundMigrationsPerNode: 2
+    progressTimeout: 150
+# ...
+```
+
+
+where:
+network:: Specify the name of the Multus NetworkAttachmentDefinition object to be used for live migrations.
+4. Save your changes and exit the editor. The virt-handler pods restart and connect to the secondary network.
+
+* When the node that the virtual machine runs on is placed into maintenance mode, the VM automatically migrates to another node in the cluster. You can verify that the migration occurred over the secondary network and not the default pod network by checking the target IP address in the virtual machine instance (VMI) metadata.
+
+```terminal
+$ oc get vmi <vmi_name> -o jsonpath='{.status.migrationState.targetNodeAddress}'
+```
+
+
+## Selecting a dedicated network by using the web console
+
+You can select a dedicated network for live migration by using the Red Hat OpenShift Container Platform web console.
+
+* You configured a Multus network for live migration.
+* You created a network attachment definition for the network.
+
+1. Navigate to Virtualization > Overview in the Red Hat OpenShift Container Platform web console.
+2. Click the Settings tab and then click Live migration.
+3. Select the network from the Live migration network list.
+
+# Configuring an SR-IOV network
+
+After you install the SR-IOV Operator, you can configure an SR-IOV network.
+
+## Configuring SR-IOV network devices
+
+The SR-IOV Network Operator adds the SriovNetworkNodePolicy.sriovnetwork.openshift.io custom resource definition (CRD) to Red Hat OpenShift Container Platform.
+You can configure an SR-IOV network device by creating a SriovNetworkNodePolicy custom resource (CR).
+
+
+[NOTE]
+----
+When applying the configuration specified in a SriovNetworkNodePolicy object, the SR-IOV Operator might drain the nodes, and in some cases, reboot nodes.
+Reboot only happens in the following cases:
+* With Mellanox NICs (mlx5 driver) a node reboot happens every time the number of virtual functions (VFs) increase on a physical function (PF).
+* With Intel NICs, a reboot only happens if the kernel parameters do not include intel_iommu=on and iommu=pt.
+It might take several minutes for a configuration change to apply.
+----
+
+* You installed the OpenShift CLI (`oc`).
+* You have access to the cluster as a user with the cluster-admin role.
+* You have installed the SR-IOV Network Operator.
+* You have enough available nodes in your cluster to handle the evicted workload from drained nodes.
+* You have not selected any control plane nodes for SR-IOV network device configuration.
+
+1. Create an SriovNetworkNodePolicy object, and then save the YAML in the <name>-sriov-node-network.yaml file. Replace <name> with the name for this configuration.
+
+```yaml
+apiVersion: sriovnetwork.openshift.io/v1
+kind: SriovNetworkNodePolicy
+metadata:
+  name: <name>
+  namespace: openshift-sriov-network-operator
+spec:
+  resourceName: <sriov_resource_name>
+  nodeSelector:
+    feature.node.kubernetes.io/network-sriov.capable: "true"
+  priority: <priority>
+  mtu: <mtu>
+  numVfs: <num>
+  nicSelector:
+    vendor: "<vendor_code>"
+    deviceID: "<device_id>"
+    pfNames: ["<pf_name>", ...]
+    rootDevices: ["<pci_bus_id>", "..."]
+  deviceType: vfio-pci
+  isRdma: false
+```
+
+metadata.name:: Specify a name for the SriovNetworkNodePolicy object.
+metadata.namespace:: Specify the namespace where the SR-IOV Network Operator is installed.
+spec.resourceName:: Specify the resource name of the SR-IOV device plugin. You can create multiple SriovNetworkNodePolicy objects for a resource name.
+spec.nodeSelector.feature.node.kubernetes.io/network-sriov.capable:: Specify the node selector to select which nodes are configured. Only SR-IOV network devices on selected nodes are configured. The SR-IOV Container Network Interface (CNI) plugin and device plugin are deployed only on selected nodes.
+spec.priority:: Optional: Specify an integer value between 0 and 99. A smaller number gets higher priority, so a priority of 10 is higher than a priority of 99. The default value is 99.
+spec.mtu:: Optional: Specify a value for the maximum transmission unit (MTU) of the virtual function. The maximum MTU value can vary for different NIC models.
+spec.numVfs:: Specify the number of the virtual functions (VF) to create for the SR-IOV physical network device. For an Intel network interface controller (NIC), the number of VFs cannot be larger than the total VFs supported by the device. For a Mellanox NIC, the number of VFs cannot be larger than 127.
+spec.nicSelector:: The nicSelector mapping selects the Ethernet device for the Operator to configure. You do not need to specify values for all the parameters.
+
+[NOTE]
+----
+It is recommended to identify the Ethernet adapter with enough precision to minimize the possibility of selecting an Ethernet device unintentionally.
+If you specify rootDevices, you must also specify a value for vendor, deviceID, or pfNames.
+----
+
+If you specify both pfNames and rootDevices at the same time, ensure that they point to an identical device.
+spec.nicSelector.vendor:: Optional: Specify the vendor hex code of the SR-IOV network device. The only allowed values are either 8086 or 15b3.
+spec.nicSelector.deviceID:: Optional: Specify the device hex code of SR-IOV network device. The only allowed values are 158b, 1015, 1017.
+spec.nicSelector.pfNames:: Optional: The parameter accepts an array of one or more physical function (PF) names for the Ethernet device.
+spec.nicSelector.rootDevices:: The parameter accepts an array of one or more PCI bus addresses for the physical function of the Ethernet device. Provide the address in the following format: 0000:02:00.1.
+spec.deviceType:: The vfio-pci driver type is required for virtual functions in OpenShift Virtualization.
+spec.isRdma:: Optional: Specify whether to enable remote direct memory access (RDMA) mode. For a Mellanox card, set isRdma to false. The default value is false.
+
+[NOTE]
+----
+If isRDMA flag is set to true, you can continue to use the RDMA enabled VF as a normal network device.
+A device can be used in either mode.
+----
+2. Optional: Label the SR-IOV capable cluster nodes with SriovNetworkNodePolicy.Spec.NodeSelector if they are not already labeled. For more information about labeling nodes, see "Understanding how to update labels on nodes".
+3. Create the SriovNetworkNodePolicy object:
+
+```terminal
+$ oc create -f <name>-sriov-node-network.yaml
+```
+
+
+where <name> specifies the name for this configuration.
+
+After applying the configuration update, all the pods in sriov-network-operator namespace transition to the Running status.
+4. To verify that the SR-IOV network device is configured, enter the following command. Replace <node_name> with the name of a node with the SR-IOV network device that you just configured.
+
+```terminal
+$ oc get sriovnetworknodestates -n openshift-sriov-network-operator <node_name> -o jsonpath='{.status.syncStatus}'
+```
+
+
+# Next steps
+
+* Attaching a virtual machine (VM) to an SR-IOV network
+
+# Enabling load balancer service creation by using the web console
+
+You can enable the creation of load balancer services for a virtual machine (VM) by using the Red Hat OpenShift Container Platform web console.
+
+* You have configured a load balancer for the cluster.
+* You are logged in as a user with the cluster-admin role.
+* You created a network attachment definition for the network.
+
+1. Navigate to Virtualization -> Overview.
+2. On the Settings tab, click Cluster.
+3. Expand General settings and SSH configuration.
+4. Set SSH over LoadBalancer service to on.
+
+# Configuring additional routes to the cdi-uploadproxy service
+
+As a cluster administrator, you can configure additional routes to the cdi-uploadproxy service to allow users to upload virtual machine images from outside the cluster.
+
+* You installed the OpenShift CLI (`oc`).
+* You logged in to the cluster as a user with the cluster-admin role.
+
+1. Configure the route to the external host by running the following command:
+
+```terminal
+$ oc create route reencrypt <route_name> -n openshift-cnv \
+    --insecure-policy=Redirect \
+    --hostname=<host_name_or_address> \
+    --service=cdi-uploadproxy
+```
+
+
+where:
+<route_name>:: Specifies the name to assign to this custom route.
+<host_name_or_address>:: Specifies the fully qualified domain name or IP address of the external host providing image upload access.
+2. Run the following command to annotate the route. This ensures that the correct Containerized Data Importer (CDI) CA certificate is injected when certificates are rotated:
+
+```terminal
+$ oc annotate route <route_name> -n openshift-cnv \
+    operator.cdi.kubevirt.io/injectUploadProxyCert="true"
+```
+
+
+where:
+<route_name>:: The name of the route you created.

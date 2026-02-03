@@ -1,0 +1,295 @@
+# Allocating GPUs to pods by using DRA
+
+
+You can use Attribute-Based GPU Allocation to enable fine-tuned control over graphics processing unit (GPU) resource allocation in Red Hat OpenShift Container Platform, allowing pods to request GPUs based on specific device attributes, including product name, GPU memory capacity, compute capability, vendor name and driver version. Having access to these attributes, which are exposed by a third-party Dynamic Resource Allocation (DRA) driver, allows Red Hat OpenShift Container Platform to schedule a pod on a node that has the specific devices that the workload needs.
+This workflow provides significant improvement in the device allocation workflow when compared to device plugins, which require per-container device requests, do not support device sharing, and do not support expression-based device filtering.
+
+# About GPU attributes
+
+You can use Attribute-Based GPU Allocation to enable pods to be scheduled on nodes that have specific graphics processing units (GPU). These attributes are advertised to the cluster by using a Dynamic Resource Allocation (DRA) driver, a third-party application that runs on each node in your cluster.
+
+The DRA driver manages and exposes specialized resources within your cluster by interacting with the underlying hardware and advertising it to the Red Hat OpenShift Container Platform control plane. You must install a DRA driver in your cluster. Installation of the DRA driver is beyond the scope of this documentation. Some DRA device drivers can also slice GPU memory, making it available to multiple workloads.
+
+The DRA driver advertises several GPU device attributes that Red Hat OpenShift Container Platform can use for precise GPU selection, including the following attributes:
+
+Product Name:: Pods can request an exact GPU model based on performance requirements or compatibility with applications. This ensures that workloads leverage the best-suited hardware for their tasks.
+GPU Memory Capacity:: Pods can request GPUs with a minimum or maximum memory capacity, such as 8 GB, 16 GB, or 40 GB. This is helpful with memory-intensive workloads such as large AI model training or data processing. This attribute enables applications to allocate GPUs that meet memory needs without overcommitting or underutilizing resources.
+Compute Capability:: Pods can request GPUs based on the compute capabilities of the GPU, such as the CUDA versions supported. Pods can target GPUs that are compatible with the application’s framework and leverage optimized processing capabilities.
+Power and Thermal Profiles:: Pods can request GPUs based on power usage or thermal characteristics, enabling power-sensitive or temperature-sensitive applications to operate efficiently. This is particularly useful in high-density environments where energy or cooling constraints are factors.
+Device ID and Vendor ID:: Pods can request GPUs based on the GPU's hardware specifics, which allows applications that require specific vendors or device types to make targeted requests.
+Driver Version:: Pods can request GPUs that run a specific driver version, ensuring compatibility with application dependencies and maximizing GPU feature access.
+
+# About GPU allocation objects and concepts
+
+You can use the following Attribute-Based GPU Allocation objects and concepts to ensure that a workload is scheduled on a node with the graphics processing unit (GPU) specifications it needs. You should be familiar with these objects before proceeding.
+
+Device class:: A device class is a category of devices that pods can claim. Some device drivers contain their own device class. Alternatively, an administrator can create device classes. A device class contains a device selector, which is a common expression language (CEL) expression that must evaluate to true if a device satisfies the request.
+
+The following example DeviceClass object selects any device that is managed by the driver.example.com device driver:
+Example device class object
+
+```yaml
+apiVersion: resource.k8s.io/v1
+kind: DeviceClass
+metadata:
+  name: example-device-class
+spec:
+  selectors:
+  - cel:
+      expression: |-
+        device.driver == "driver.example.com"
+```
+
+where:
+spec.selectors:: Specifies a CEL expression for selecting a device.
+Resource slice:: The DRA driver on each node creates and manages resource slices, which describe what resources are available in that cluster. A resource slice represents one or more GPU resources that are attached to nodes. When a resource claim is created and used in a pod, Red Hat OpenShift Container Platform uses the resource slices to find nodes that have the requested resources. After finding an eligible resource slice for the resource claim, the Red Hat OpenShift Container Platform scheduler updates the resource claim with the allocation details, allocates resources to the resource claim, and schedules the pod onto a node that can access the resources.
+Example resource slice object
+
+```yaml
+apiVersion: v1
+items:
+- apiVersion: resource.k8s.io/v1
+  kind: ResourceSlice
+# ...
+spec:
+    driver: driver.example.com
+    nodeName: dra-example-driver
+    pool:
+      generation: 0
+      name: dra-example-driver
+      resourceSliceCount: 1
+    devices:
+    - attributes:
+        driverVersion:
+          version: 1.0.0
+        index:
+          int: 0
+        model:
+          string: LATEST-GPU-MODEL
+        uuid:
+          string: gpu-18db0e85-99e9-c746-8531-ffeb86328b39
+      capacity:
+        memory:
+          value: 10Gb
+      name: 2g-10gb
+# ...
+```
+
+where:
+spec.driver:: Specifies the name of the DRA driver, which you can specify in a device class.
+spec.devices.attributes:: Specifies a device that you can allocate by using a resource claim or resource claim template.
+Resource claim template:: Cluster administrators and operators can create a resource claim template, which describes the GPU resource that a pod requires. The administrator or operator adds the resource claim to a pod specification. Red Hat OpenShift Container Platform uses the resource claim template to generate the resource claim for the pod. The Red Hat OpenShift Container Platform scheduler then schedules that pod on a node in the cluster that has the requested GPU.
+
+Each resource claim that Red Hat OpenShift Container Platform generates from the template is bound that specific pod. A such, the GPU cannot be used simultaneously by another workload. When the pod terminates, Red Hat OpenShift Container Platform deletes the corresponding resource claim.
+
+You must specify either a request for a specific device that the scheduler must meet, or a provide a prioritized list of devices for the scheduler to choose from.
+
+The following example resource claim template contains two sub-requests. Of these sub-requests, only one is selected by the scheduler. The scheduler tries to satisfy the sub-requests in the order in which they are listed. A CEL expression is used inside the sub-request for selecting a device.
+Example resource claim template object
+
+```yaml
+apiVersion: resource.k8s.io/v1
+kind: ResourceClaimTemplate
+metadata:
+  namespace: gpu-claim
+  name: gpu-devices
+spec:
+  spec:
+    devices:
+      requests:
+      - name: req-0
+        firstAvailable:
+        - name: 2g-10gb
+          deviceClassName: example-device-class
+          selectors:
+          - cel:
+              expression: "device.attributes['driver.example.com'].profile == '2g.10gb'"
+        - name: 3g-20gb
+          deviceClassName: example-device-class
+          selectors:
+          - cel:
+              expression: "device.attributes['driver.example.com'].profile == '3g.20gb'"
+```
+
+where:
+spec.spec.devices.requests:: Specifies a list of one or more requests for devices. The sub-request must include either exactly or firstAvailable.
+* exactly: Specifies a request for one or more identical devices. The devices must match the request exactly for the request to be satisfied. If the requested device is not available, the scheduler cannot create the pod.
+* firstAvailable: Specifies multiple requests for a device, of which only one device needs to be available before the scheduler can create the requesting pod. The scheduler checks the availability of the devices in the order listed and selects the first available device. The scheduler can create the pod if one requested devices is available.
+spec.devices.requests.exactly.deviceClassName or spec.devices.requests.firstAvailable.deviceClassName:: Specifies which device class to use with this request.
+spec.devices.requests.exactly.selectors or spec.devices.requests.firstAvailable.selectors:: Specifies CEL expressions to request specific devices from the specified device class.
+Resource claim:: Admins and operators can create a resource claim, which describes the GPU resource that a pod requires. The administrator or operator adds the resource claim to a pod specification. The Red Hat OpenShift Container Platform scheduler then schedules that pod on a node in the cluster that has the requested GPU.
+
+A resource claim can be used in multiple pod specifications, which allows you to share GPUs with multiple workloads. Resource claims are not deleted when a requesting pod is terminated.
+
+For the device request in a resource claim, you must specify either a list of one or more device requests that the scheduler must meet, or a provide a prioritized list of requests for the scheduler to choose from.
+
+The following example resource claim uses a CEL expression to request one device in the example-device-class device class. Here, the exactly parameter indicates that a node with the specific requested device must be available before the scheduler can create the pod.
+Example resource claim object
+
+```yaml
+apiVersion: resource.k8s.io/v1
+kind: ResourceClaim
+metadata:
+  namespace: gpu-claim
+  name: gpu-devices
+spec:
+  devices:
+    requests:
+    - name: req-0
+      exactly:
+        name: 2g-10gb
+        deviceClassName: example-device-class
+        selectors:
+        - cel:
+            expression: "device.attributes['driver.example.com'].profile == '2g.10gb'"
+```
+
+Admin access:: A cluster administrator can gain privileged access to a device that is in use by other users. This enables administrators to perform tasks such as monitoring the health and status of devices while ensuring that users can continue to use these devices with their workloads.
+
+To gain admin access, an administrator must create a resource claim or resource claim template with the adminAccess: true parameter in a namespace that includes the resource.kubernetes.io/admin-access: "true" label. Non-administrator users cannot access namespaces with this label.
+Example namespace with admin access label
+
+```yaml
+apiVersion: v1
+kind: Namespace
+metadata:
+  labels:
+    resource.kubernetes.io/admin-access: "true"
+# ...
+```
+
+
+In the following example, the administrator is granted access to the 2g-10gb device:
+Example resource claim object with admin access
+
+```yaml
+apiVersion: resource.k8s.io/v1
+kind: ResourceClaimTemplate
+metadata:
+  name: large-black-cat-claim-template
+spec:
+  devices:
+    requests:
+    - name: req-0
+      exactly:
+        allocationMode: All
+        adminAccess: true
+        deviceClassName: example-device-class
+        selectors:
+        - cel:
+            expression: "device.attributes['driver.example.com'].profile == '2g.10gb'"
+```
+
+where:
+spec.devices.requests.exactly.adminAccess.true or spec.devices.requests.firstAvailable.adminAccess.true:: Specifies that the admin access mode is enabled for the specified device.
+
+For information on adding resource claims to pods, see "Adding resource claims to pods".
+
+# Adding resource claims to pods
+
+You can use resource claims and resource claim templates with Attribute-Based GPU Allocation to allow you to request your workloads to be scheduled on nodes with specific graphics processing units (GPU).
+
+Resource claims can be used with multiple pods, but resource claim templates can be used with only one pod. For more information, see "About GPU allocation objects and concepts".
+
+The example in the following procedure creates a resource claim to schedule a pod on a node with the assign a specific GPU to  and a resource claim to share a GPU between container1 and container2.
+
+* A Dynamic Resource Allocation (DRA) driver is installed. For more information on DRA, see "Dynamic Resource Allocation" (Kubernetes documentation).
+* A resource slice has been created.
+* A resource claim and/or resource claim template has been created.
+Example resource claim object
+
+```yaml
+apiVersion: resource.k8s.io/v1
+kind: ResourceClaim
+metadata:
+  namespace: gpu-claim
+  name: gpu-devices
+spec:
+  devices:
+    requests:
+    - name: req-0
+      exactly:
+        name: 2g-10gb
+        deviceClassName: example-device-class
+        selectors:
+        - cel:
+            expression: "device.attributes['driver.example.com'].profile == '2g.10gb'"
+```
+
+Example resource claim template object
+
+```yaml
+apiVersion: resource.k8s.io/v1
+kind: ResourceClaimTemplate
+metadata:
+  namespace: gpu-claim
+  name: gpu-devices
+spec:
+  spec:
+    devices:
+      requests:
+      - name: req-0
+        firstAvailable:
+        - name: 2g-10gb
+          deviceClassName: example-device-class
+          selectors:
+          - cel:
+              expression: "device.attributes['driver.example.com'].profile == '2g.10gb'"
+        - name: 3g-20gb
+          deviceClassName: example-device-class
+          selectors:
+          - cel:
+              expression: "device.attributes['driver.example.com'].profile == '3g.20gb'"
+```
+
+
+1. Create a pod by creating a YAML file similar to the following:
+Example pod that is requesting resources
+
+```yaml
+apiVersion: v1
+kind: Pod
+metadata:
+  namespace: gpu-allocate
+  name: pod1
+  labels:
+    app: pod
+spec:
+  restartPolicy: Never
+  containers:
+  - name: container0
+    image: ubuntu:24.04
+    command: ["sleep", "9999"]
+    resources:
+      claims:
+      - name: gpu-claim-template
+  - name: container1
+    image: ubuntu:24.04
+    command: ["sleep", "9999"]
+    resources:
+      claims:
+      - name: gpu-claim
+  - name: container2
+    image: ubuntu:24.04
+    command: ["sleep", "9999"]
+    resources:
+      claims:
+      - name: gpu-claim
+  resourceClaims:
+  - name: gpu-claim-template
+    resourceClaimTemplateName: gpu-devices-template
+  - name: gpu-claim
+    resourceClaimName: gpu-devices
+```
+
+where:
+spec.container.resource.claims:: Specifies one or more resource claims to use with this container.
+spec.resourceClaims:: Specifies the resource claims that are required for the containers to start. Include an arbitrary name for the resource claim request and a resource claim, resource claim template, or both.
+2. Create the CRD object:
+
+```terminal
+$ oc create -f <file_name>.yaml
+```
+
+
+For more information on configuring pod resource requests, see "Dynamic Resource Allocation" (Kubernetes documentation).
