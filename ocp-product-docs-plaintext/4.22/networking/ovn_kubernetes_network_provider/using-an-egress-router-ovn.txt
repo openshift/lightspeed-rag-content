@@ -1,0 +1,103 @@
+# Considerations for the use of an egress router pod
+
+
+
+# About an egress router pod
+
+The Red Hat OpenShift Container Platform egress router pod redirects traffic to a specified remote server from a private source IP address that is not used for any other purpose. An egress router pod can send network traffic to servers that are set up to allow access only from specific IP addresses.
+
+
+[NOTE]
+----
+The egress router pod is not intended for every outgoing connection. Creating large numbers of egress router pods can exceed the limits of your network hardware. For example, creating an egress router pod for every project or application could exceed the number of local MAC addresses that the network interface can handle before reverting to filtering MAC addresses in software.
+----
+
+
+[IMPORTANT]
+----
+The egress router image is not compatible with Amazon AWS, Azure Cloud, or any other cloud platform that does not support layer 2 manipulations due to their incompatibility with macvlan traffic.
+----
+
+## Egress router modes
+
+In redirect mode, an egress router pod configures iptables rules to redirect traffic from its own IP address to one or more destination IP addresses. Client pods that need to use the reserved source IP address must be configured to access the service for the egress router rather than connecting directly to the destination IP. You can access the destination service and port from the application pod by using the curl command. For example:
+
+
+```terminal
+$ curl <router_service_IP> <port>
+```
+
+
+
+[NOTE]
+----
+The egress router CNI plugin supports redirect mode only. The egress router CNI plugin does not support HTTP proxy mode or DNS proxy mode.
+----
+
+## Egress router pod implementation
+
+The egress router implementation uses the egress router Container Network Interface (CNI) plugin. The plugin adds a secondary network interface to a pod.
+
+An egress router is a pod that has two network interfaces. For example, the pod can have eth0 and net1 network interfaces. The eth0 interface is on the cluster network and the pod continues to use the interface for ordinary cluster-related network traffic. The net1 interface is on a secondary network and has an IP address and gateway for that network. Other pods in the Red Hat OpenShift Container Platform cluster can access the egress router service and the service enables the pods to access external services. The egress router acts as a bridge between pods and an external system.
+
+Traffic that leaves the egress router exits through a node, but the packets
+have the MAC address of the net1 interface from the egress router pod.
+
+When you add an egress router custom resource, the Cluster Network Operator creates the following objects:
+
+* The network attachment definition for the net1 secondary network interface of the pod.
+* A deployment for the egress router.
+
+If you delete an egress router custom resource, the Operator deletes the two objects in the preceding list that are associated with the egress router.
+
+## Deployment considerations
+
+An egress router pod adds an additional IP address and MAC address to the primary network interface of the node. As a result, you might need to configure your hypervisor or cloud provider to allow the additional address.
+
+OpenStack:: If you deploy Red Hat OpenShift Container Platform on OpenStack, you must allow traffic from the IP and MAC addresses of the egress router pod on your OpenStack environment. If you do not allow the traffic, then communication will fail:
+
+```terminal
+$ openstack port set --allowed-address \
+  ip_address=<ip_address>,mac_address=<mac_address> <neutron_port_uuid>
+```
+
+VMware vSphere:: If you are using VMware vSphere, see the VMware documentation for securing vSphere standard switches. View and change VMware vSphere default settings by selecting the host virtual switch from the vSphere Web Client.
+
+Specifically, ensure that the following are enabled:
+
+* MAC Address Changes
+* Forged Transits
+* Promiscuous Mode Operation
+
+## Failover configuration
+
+To avoid downtime, the Cluster Network Operator deploys the egress router pod as a deployment resource. The deployment name is egress-router-cni-deployment. The pod that corresponds to the deployment has a label of app=egress-router-cni.
+
+To create a new service for the deployment, use the oc expose deployment/egress-router-cni-deployment --port <port_number> command or create a file like the following example:
+
+
+```yaml
+apiVersion: v1
+kind: Service
+metadata:
+  name: app-egress
+spec:
+  ports:
+  - name: tcp-8080
+    protocol: TCP
+    port: 8080
+  - name: tcp-8443
+    protocol: TCP
+    port: 8443
+  - name: udp-80
+    protocol: UDP
+    port: 80
+  type: ClusterIP
+  selector:
+    app: egress-router-cni
+```
+
+
+# Additional resources
+
+* Deploying an egress router in redirection mode

@@ -1,0 +1,414 @@
+# Cluster API configuration options for Amazon Web Services
+
+
+You can change the configuration of your Amazon Web Services (AWS) Cluster API machines by updating values in the Cluster API custom resource manifests.
+
+[IMPORTANT]
+----
+Managing machines with the Cluster API is a Technology Preview feature only. Technology Preview features are not supported with Red Hat production service level agreements (SLAs) and might not be functionally complete. Red Hat does not recommend using them in production. These features provide early access to upcoming product features, enabling customers to test functionality and provide feedback during the development process.
+For more information about the support scope of Red Hat Technology Preview features, see Technology Preview Features Support Scope.
+----
+
+# Sample YAML for configuring Amazon Web Services clusters
+
+The following example YAML files show configurations for an Amazon Web Services cluster.
+
+## Sample YAML for a Cluster API machine template resource on Amazon Web Services
+
+The machine template resource is provider-specific and defines the basic properties of the machines that a compute machine set creates.
+The compute machine set references this template when creating machines.
+
+
+```yaml
+apiVersion: infrastructure.cluster.x-k8s.io/v1beta2
+kind: AWSMachineTemplate 1
+metadata:
+  name: <template_name> 2
+  namespace: openshift-cluster-api
+spec:
+  template:
+    spec: 3
+      iamInstanceProfile: # ...
+      instanceType: m5.large
+      ignition:
+        storageType: UnencryptedUserData
+        version: "3.4"
+      ami:
+        id: # ...
+      subnet:
+        filters:
+        - name: tag:Name
+          values:
+          - # ...
+      additionalSecurityGroups:
+      - filters:
+        - name: tag:Name
+          values:
+          - # ...
+```
+
+
+Specify the machine template kind.
+This value must match the value for your platform.
+Specify a name for the machine template.
+Specify the details for your environment.
+The values here are examples.
+
+## Sample YAML for a Cluster API compute machine set resource on Amazon Web Services
+
+The compute machine set resource defines additional properties of the machines that it creates.
+The compute machine set also references the cluster resource and machine template when creating machines.
+
+
+```yaml
+apiVersion: cluster.x-k8s.io/v1beta1
+kind: MachineSet
+metadata:
+  name: <machine_set_name> 1
+  namespace: openshift-cluster-api
+  labels:
+    cluster.x-k8s.io/cluster-name: <cluster_name> 2
+spec:
+  clusterName: <cluster_name> 2
+  replicas: 1
+  selector:
+    matchLabels:
+      test: example
+      cluster.x-k8s.io/cluster-name: <cluster_name>
+      cluster.x-k8s.io/set-name: <machine_set_name>
+  template:
+    metadata:
+      labels:
+        test: example
+        cluster.x-k8s.io/cluster-name: <cluster_name>
+        cluster.x-k8s.io/set-name: <machine_set_name>
+        node-role.kubernetes.io/<role>: ""
+    spec:
+      bootstrap:
+         dataSecretName: worker-user-data
+      clusterName: <cluster_name>
+      infrastructureRef:
+        apiVersion: infrastructure.cluster.x-k8s.io/v1beta1
+        kind: AWSMachineTemplate 3
+        name: <template_name> 4
+```
+
+
+Specify a name for the compute machine set.
+The cluster ID, machine role, and region form a typical pattern for this value in the following format: <cluster_name>-<role>-<region>.
+Specify the cluster ID as the name of the cluster.
+Specify the machine template kind.
+This value must match the value for your platform.
+Specify the machine template name.
+
+# Enabling Amazon Web Services features with the Cluster API
+
+You can enable the following features by updating values in the Cluster API custom resource manifests.
+
+## Elastic Fabric Adapter instances and placement group options
+
+You can deploy compute machines on Elastic Fabric Adapter (EFA) instances within an existing AWS placement group.
+
+EFA instances do not require placement groups, and you can use placement groups for purposes other than configuring an EFA.
+The following example uses an EFA and placement group together to demonstrate a configuration that can improve network performance for machines within the specified placement group.
+
+To deploy compute machines with your configuration, configure the appropriate values in a machine template YAML file.
+Then, configure a machine set YAML file to reference the machine template when it deploys machines.
+
+
+```yaml
+apiVersion: infrastructure.cluster.x-k8s.io/v1beta2
+kind: AWSMachineTemplate
+# ...
+spec:
+  template:
+    spec:
+      instanceType: <supported_instance_type> 1
+      networkInterfaceType: efa 2
+      placementGroupName: <placement_group> 3
+      placementGroupPartition: <placement_group_partition_number> 4
+# ...
+```
+
+
+Specifies an instance type that supports EFAs.
+Specifies the efa network interface type.
+Specifies the name of the existing AWS placement group to deploy machines in.
+Optional: Specifies the partition number of the existing AWS placement group where you want your machines deployed.
+
+
+[NOTE]
+----
+Ensure that the rules and limitations for the type of placement group that you create are compatible with your intended use case.
+----
+
+## Amazon EC2 Instance Metadata Service configuration options
+
+You can restrict the version of the Amazon EC2 Instance Metadata Service (IMDS) that machines on Amazon Web Services (AWS) clusters use.
+Machines can require the use of IMDSv2 (AWS documentation), or allow the use of IMDSv1 in addition to IMDSv2.
+
+To deploy compute machines with your configuration, configure the appropriate values in a machine template YAML file.
+Then, configure a machine set YAML file to reference the machine template when it deploys machines.
+
+
+[IMPORTANT]
+----
+Before creating machines that require IMDSv2, ensure that any workloads that interact with the IMDS support IMDSv2.
+----
+
+
+```yaml
+apiVersion: infrastructure.cluster.x-k8s.io/v1beta2
+kind: AWSMachineTemplate
+# ...
+spec:
+  template:
+    spec:
+      instanceMetadataOptions:
+        httpEndpoint: enabled
+        httpPutResponseHopLimit: 1 1
+        httpTokens: optional 2
+        instanceMetadataTags: disabled
+# ...
+```
+
+
+Specifies the number of network hops allowed for IMDSv2 calls.
+If no value is specified, this parameter is set to 1 by default.
+Specifies whether to require the use of IMDSv2.
+If no value is specified, this parameter is set to optional by default.
+The following values are valid:
+optional:: Allow the use of both IMDSv1 and IMDSv2.
+required:: Require IMDSv2.
+
+
+[NOTE]
+----
+The Machine API does not support the httpEndpoint, httpPutResponseHopLimit, and instanceMetadataTags fields.
+If you migrate a Cluster API machine template that uses this feature to a Machine API compute machine set, any Machine API machines that it creates will not have these fields and the underlying instances will not use these settings.
+Any existing machines that the migrated machine set manages will retain these fields and the underlying instances will continue to use these settings.
+----
+
+Requiring the use of IMDSv2 might cause timeouts.
+For more information, including mitigation strategies, see Instance metadata access considerations (AWS documentation).
+
+## Dedicated Instance configuration options
+
+You can deploy machines that are backed by Dedicated Instances on Amazon Web Services (AWS) clusters.
+
+Dedicated Instances run in a virtual private cloud (VPC) on hardware that is dedicated to a single customer.
+These Amazon EC2 instances are physically isolated at the host hardware level.
+The isolation of Dedicated Instances occurs even if the instances belong to different AWS accounts that are linked to a single payer account.
+However, other instances that are not dedicated can share hardware with Dedicated Instances if they belong to the same AWS account.
+
+Red Hat OpenShift Container Platform supports instances with public or dedicated tenancy.
+
+To deploy compute machines with your configuration, configure the appropriate values in a machine template YAML file.
+Then, configure a machine set YAML file to reference the machine template when it deploys machines.
+
+
+```yaml
+apiVersion: infrastructure.cluster.x-k8s.io/v1beta2
+kind: AWSMachineTemplate
+# ...
+spec:
+  template:
+    spec:
+      tenancy: dedicated 1
+# ...
+```
+
+
+Specifies using instances with dedicated tenancy that run on single-tenant hardware.
+If you do not specify this value, instances with public tenancy that run on shared hardware are used by default.
+
+## Non-guaranteed Spot Instances and hourly cost limits
+
+You can deploy machines as non-guaranteed Spot Instances on Amazon Web Services (AWS).
+Spot Instances use spare AWS EC2 capacity and are less expensive than On-Demand Instances.
+You can use Spot Instances for workloads that can tolerate interruptions, such as batch or stateless, horizontally scalable workloads.
+
+To deploy compute machines with your configuration, configure the appropriate values in a machine template YAML file.
+Then, configure a machine set YAML file to reference the machine template when it deploys machines.
+
+
+[IMPORTANT]
+----
+AWS EC2 can reclaim the capacity for a Spot Instance at any time.
+----
+
+
+```yaml
+apiVersion: infrastructure.cluster.x-k8s.io/v1beta2
+kind: AWSMachineTemplate
+# ...
+spec:
+  template:
+    spec:
+      spotMarketOptions: 1
+        maxPrice: <price_per_hour> 2
+# ...
+```
+
+
+Specifies the use of Spot Instances.
+Optional: Specifies an hourly cost limit in US dollars for the Spot Instance.
+For example, setting the <price_per_hour> value to 2.50 limits the cost of the Spot Instance to USD 2.50 per hour.
+When this value is not set, the maximum price charges up to the On-Demand Instance price.
+
+[WARNING]
+----
+Setting a specific maxPrice: <price_per_hour> value might increase the frequency of interruptions compared to using the default On-Demand Instance price.
+It is strongly recommended to use the default On-Demand Instance price and to not set the maximum price for Spot Instances.
+----
+
+Interruptions can occur when using Spot Instances for the following reasons:
+
+* The instance price exceeds your maximum price
+* The demand for Spot Instances increases
+* The supply of Spot Instances decreases
+
+AWS gives a two-minute warning to the user when an interruption occurs.
+Red Hat OpenShift Container Platform begins to remove the workloads from the affected instances when AWS issues the termination warning.
+
+When AWS terminates an instance, a termination handler running on the Spot Instance node deletes the machine resource.
+To satisfy the compute machine set replicas quantity, the compute machine set creates a machine that requests a Spot Instance.
+
+## Configuring storage throughput for gp3 drives
+
+You can improve performance for high traffic services by increasing the throughput of gp3 storage volumes in an AWS cluster. You can configure the storage throughput for the root volume, non root volumes, or both.
+
+To deploy compute machines with your configuration, configure the appropriate values in a machine template YAML file.
+Then, configure a machine set YAML file to reference the machine template when it deploys machines.
+
+* You use gp3 storage volume(s).
+
+* On the machine template in which you want to configure throughput, add the throughput parameter:
+
+```yaml
+apiVersion: infrastructure.cluster.x-k8s.io/v1beta2
+kind: AWSMachineTemplate
+# ...
+spec:
+  template:
+    spec:
+      nonRootVolumes:
+      - throughput: <throughput_value>
+      rootVolume:
+        throughput: <throughput_value>
+# ...
+```
+
+
+where:
+<throughput_value>:: Specifies a value in MiB/s between 125 and 2,000. This value can only be modified on gp3 volumes. The default value is 125. You can set the throughput value for the root volume and non root volumes separately.
+
+## Capacity Reservation configuration options
+
+Red Hat OpenShift Container Platform version 4.22 and later supports
+Capacity Reservations on Amazon Web Services clusters, including On-Demand Capacity Reservations and Capacity Blocks for ML.
+
+You can deploy machines on any available resources that match the parameters of a capacity request that you define.
+These parameters specify the
+instance type,
+region, and number of instances that you want to reserve.
+If your
+Capacity Reservation
+can accommodate the capacity request, the deployment succeeds.
+
+To deploy compute machines with your configuration, configure the appropriate values in a machine template YAML file.
+Then, configure a machine set YAML file to reference the machine template when it deploys machines.
+
+
+```yaml
+apiVersion: infrastructure.cluster.x-k8s.io/v1beta2
+kind: AWSMachineTemplate
+# ...
+spec:
+  template:
+    spec:
+      capacityReservationId: <capacity_reservation> 1
+      capacityReservationPreference: <reservation_preference> 2
+      marketType: <market_type> 3
+# ...
+```
+
+
+Specify the ID of the
+Capacity Block for ML or On-Demand Capacity Reservation
+that you want to deploy machines on.
+Specify your preferred capacity reservation behavior.
+The following values are valid:
+CapacityReservationsOnly:: Use this option to require a matching capacity reservation.
+If no matching capacity reservation is available, the instance fails to launch.
+Open:: Use this option to allow using an open capacity reservation that matches the availability zone and instance type.
+None:: Use this option to prohibit using a capacity reservation.
+You might use this option to help keep capacity reservations available for workloads that you want to use them.
+Specify the market type to use.
+The following values are valid:
+CapacityBlock:: Use this market type with Capacity Blocks for ML.
+OnDemand:: Use this market type with On-Demand Capacity Reservations.
+Spot:: Use this market type with Spot Instances.
+This option is not compatible with Capacity Reservations.
+
+For more information, including limitations and suggested use cases for this offering, see
+On-Demand Capacity Reservations and Capacity Blocks for ML in the AWS documentation.
+
+## GPU-enabled machine options
+
+You can deploy GPU-enabled compute machines on Amazon Web Services (AWS).
+The following sample configuration uses an AWS G4dn instance type, which includes an NVIDIA Tesla T4 Tensor Core GPU, as an example.
+
+For more information about supported instance types, see the following pages in the NVIDIA documentation:
+
+* NVIDIA GPU Operator Community support matrix
+* NVIDIA AI Enterprise support matrix
+
+To deploy compute machines with your configuration, configure the appropriate values in a machine template YAML file and a machine set YAML file that references the machine template when it deploys machines.
+
+
+```yaml
+apiVersion: infrastructure.cluster.x-k8s.io/v1beta2
+kind: AWSMachineTemplate
+# ...
+spec:
+  template:
+    spec:
+      instanceType: g4dn.xlarge 1
+# ...
+```
+
+
+Specifies a G4dn instance type.
+
+
+```yaml
+apiVersion: cluster.x-k8s.io/v1beta1
+kind: MachineSet
+metadata:
+  name: <cluster_name>-gpu-<region> 1
+  namespace: openshift-cluster-api
+  labels:
+    cluster.x-k8s.io/cluster-name: <cluster_name>
+spec:
+  clusterName: <cluster_name>
+  replicas: 1
+  selector:
+    matchLabels:
+      test: example
+      cluster.x-k8s.io/cluster-name: <cluster_name>
+      cluster.x-k8s.io/set-name: <cluster_name>-gpu-<region> 2
+  template:
+    metadata:
+      labels:
+        test: example
+        cluster.x-k8s.io/cluster-name: <cluster_name>
+        cluster.x-k8s.io/set-name: <cluster_name>-gpu-<region> 3
+        node-role.kubernetes.io/<role>: ""
+# ...
+```
+
+
+Specifies a name that includes the gpu role. The name includes the cluster ID as a prefix and the region as a suffix.
+Specifies a selector label that matches the machine set name.
+Specifies a template label that matches the machine set name.

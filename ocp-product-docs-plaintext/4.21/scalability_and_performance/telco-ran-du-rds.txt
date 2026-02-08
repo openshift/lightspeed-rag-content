@@ -157,6 +157,7 @@ Develop RAN DU applications that are subject to the following requirements and l
 Description and limits:: 
 * Develop cloud-native network functions (CNFs) that conform to the latest version of Red Hat best practices for Kubernetes.
 * Use SR-IOV for high performance networking.
+* For information on the decrease in the default maximum open files soft limit for containers, see the Red Hat OpenShift Container Platform 4.21 release notes.
 * Use exec probes sparingly and only when no other suitable options are available.
 * Do not use exec probes if a CNF uses CPU pinning.
 Use other probe implementations, for example, httpGet or tcpSocket.
@@ -224,8 +225,13 @@ Out-of-tree drivers are not supported.
 
 ## Kubelet Settings
 
+New in this release:: Support for configuring systemReserved settings (cpu and memory).
+
 Some CNF workloads make use of sysctls which are not in the list of system-wide safe sysctls.
-Generally, network sysctls are namespaced and you can enable them using the kubeletconfig.experimental annotation in the PerformanceProfile Custom Resource (CR) as a string of JSON in the following form:
+Generally, network sysctls are namespaced and you can enable them using the kubeletconfig.experimental annotation in the PerformanceProfile Custom Resource (CR).
+
+Additionally, the systemReserved memory can be configured through the same kubeletconfig.experimental annotation to reserve memory for system daemons and kernel processes. An example setting of these parameters as a string of JSON is shown here:
+.Example snippet showing allowedUnsafeSysctls and systemReserved
 
 
 ```yaml
@@ -233,8 +239,14 @@ apiVersion: performance.openshift.io/v2
 kind: PerformanceProfile
 metadata:
   name: {{ .metadata.name }}
-  annotations:kubeletconfig.experimental: |
-      {"allowedUnsafeSysctls":["net.ipv6.conf.all.accept_ra"]}
+  annotations:
+    # allowedUnsafeSysctls: some pods want the kernel stack to ignore IPv6 router Advertisement.
+    # systemReserved: when used, it should be tailored for each environment.
+    kubeletconfig.experimental: |
+      {
+       "allowedUnsafeSysctls":["net.ipv6.conf.all.accept_ra"],
+       "systemReserved":{"memory":"11Gi"}
+      }
 # ...
 ```
 
@@ -253,8 +265,8 @@ For more information, see "Using sysctls in containers".
 ## CPU partitioning and performance tuning
 
 New in this release:: 
-* The PerformanceProfile and TunedPerformancePatch objects have been updated to fully support the aarch64 architecture.
-* If you have previously applied additional patches to the TunedPerformancePatch object, you must convert those patches to a new performance profile that includes the ran-du-performance profile instead. See the "Engineering considerations" section.
+* There is now optional support for acpi_idle CPUIdle driver.
+* Updates to TunedPerformancePatch to enable the triggering a kernel panic for system recovery and diagnostic purposes when x86_64 architecture nodes become unresponsive. The TunedPerformancePatch configures the kernel.panic_on_unrecovered_nmi sysctl parameter to enable triggering a kernel panic through BMC Non-Maskable Interrupt (NMI) on x86_64 architectures.
 Description:: The RAN DU use model includes cluster performance tuning using PerformanceProfile CRs for low-latency performance, and a TunedPerformancePatch CR that adds additional RAN-specific tuning.
 A reference PerformanceProfile is provided for both x86_64 and aarch64 CPU architectures.
 The single TunedPerformancePatch object provided automatically detects the CPU architecture and performs the required additional tuning.
@@ -297,8 +309,10 @@ The variation must still meet the specified limits.
 * Hardware without IRQ affinity support affects isolated CPUs.
 To ensure that pods with guaranteed whole CPU QoS have full use of allocated CPUs, all hardware in the server must support IRQ affinity.
 * To enable workload partitioning, set cpuPartitioningMode to AllNodes during deployment, and then use the PerformanceProfile CR to allocate enough CPUs to support the operating system, interrupts, and Red Hat OpenShift Container Platform pods.
-* Under x86_64, the PerformanceProfile CR includes additional kernel arguments settings for vfio_pci.
-These arguments are included for support of devices such as the FEC accelerator. You can omit them if they are not required for your workload.
+* Tailor systemReserved memory for each cluster based on its size and application workload. The minimum recommended value is 11Gi.
+* Under x86_64, the PerformanceProfile may be customized with the following optional arguments in the additionalKernelargs list:
+* The vcio_pci arguments support devices such as the FEC accelerator. You can omit them if they are not required for your workload.
+* To enable the acpi_idle` CPUIdle driver, for example, for Intel FlexRAN, add intel_idle.max_cstate=0
 * Under aarch64, the PerformanceProfile must be adjusted depending on the needs of the platform:
 * For Grace Hopper systems, the following kernel commandline arguments are required:
 * acpi_power_meter.force_cap_on=y
@@ -343,7 +357,7 @@ Creating an additional tuned profile which includes the top-level tuned profile 
 ## PTP Operator
 
 New in this release:: 
-* No reference design updates in this release
+* Red Hat OpenShift Container Platform 4.20 introduced unassisted holdover for boundary clocks and time synchronous clocks as a Technology Preview feature. This feature is now Generally Available (GA).
 Description:: Configure Precision Time Protocol (PTP) in cluster nodes.
 PTP ensures precise timing and reliability in the RAN environment, compared to other clock synchronization protocols, like NTP.
 Support includes:: 
@@ -367,12 +381,12 @@ Limits and requirements::
 * System clock HA support is optional in active/standby 2-port configuration.
 * Log reduction must be enabled with true or enhanced.
 Engineering considerations:: 
-* * Example RAN DU RDS configurations are provided for:
+* Example RAN DU RDS configurations are provided for:
 * T-GM, T-BC, and T-TSC
 * Variations with and without HA
 * PTP fast event notifications use ConfigMap CRs to persist subscriber details.
 * Hierarchical event subscription as described in the O-RAN specification is not supported for PTP events.
-* The PTP fast events REST API v1 is end of life.
+* Cluster Node(s) must have proper NTP configuration to ensure correct time prior to PTP operator taking ownership of node timing.
 
 ## SR-IOV Operator
 
@@ -528,8 +542,7 @@ All workloads must now be compatible with cgroup v2. For more information, see R
 New in this release:: 
 * No reference design updates in this release
 Limits and requirements:: 
-* The CRI-O wipe disable MachineConfig CR assumes that images on disk are static other than during scheduled maintenance in defined maintenance windows.
-To ensure the images are static, do not set the pod imagePullPolicy field to Always.
+* To ensure images are static, except during scheduled maintenance in defined maintenance windows, do not set the pod imagePullPolicy field to Always.
 * The configuration CRs in this table are required components unless otherwise noted.
 
 
@@ -543,7 +556,7 @@ The following sections describe the various Red Hat OpenShift Container Platform
 ## Red Hat Advanced Cluster Management
 
 New in this release:: 
-* No reference design updates in this release
+* The CRI-O wipe disable MachineConfig CR is no longer needed as cri-o now handles unclean shutdowns by performing a quick check and repair.
 Description:: 
 RHACM provides Multi Cluster Engine (MCE) installation and ongoing lifecycle management functionality for deployed clusters.
 You manage cluster configuration and upgrades declaratively by applying Policy custom resources (CRs) to clusters during maintenance windows.
@@ -623,7 +636,7 @@ GitOps Operator and GitOps ZTP provide a GitOps-based infrastructure for managin
 Cluster definitions and configurations are maintained as a declarative state in Git.
 You can apply ClusterInstance CRs to the hub cluster where the SiteConfig Operator renders them as installation CRs.
 In earlier releases, a GitOps ZTP plugin supported the generation of installation CRs from SiteConfig CRs.
-This plugin is now deprecated.
+This plugin is now removed.
 A separate GitOps ZTP plugin is available to enable automatic wrapping of configuration CRs into policies based on the PolicyGenerator or PolicyGenTemplate CR.
 You can deploy and manage multiple versions of Red Hat OpenShift Container Platform on managed clusters using the baseline reference configuration CRs.
 You can use custom CRs alongside the baseline CRs.
@@ -816,3 +829,6 @@ The list of patched CRs.
 
 The Red Hat telco RAN DU 4.21 solution has been validated using the following Red Hat software products for Red Hat OpenShift Container Platform managed clusters.
 
+
+
+* Telco hub reference configuration software specifications

@@ -1,0 +1,648 @@
+# Migrating from SiteConfig CRs to ClusterInstance CRs
+
+
+You can incrementally migrate single-node OpenShift clusters from SiteConfig custom resources (CRs) to ClusterInstance CRs. During migration, the existing and new pipelines run in parallel, so you can migrate one or more clusters at a time in a controlled and phased manner.
+
+[IMPORTANT]
+----
+* The SiteConfig CR is deprecated from Red Hat OpenShift Container Platform version 4.18 and will be removed in a future version.
+* The ClusterInstance CR is available from Red Hat Advanced Cluster Management (RHACM) version 2.12 or later.
+----
+
+# Overview of migrating from SiteConfig CRs to ClusterInstance CRs
+
+The ClusterInstance CR provides a more unified and generic approach to defining clusters and is the preferred method for managing cluster deployments in the GitOps ZTP workflow.
+The SiteConfig Operator, which manages the ClusterInstance custom resource (CR), is a fully developed controller shipped as an add-on within Red Hat Advanced Cluster Management (RHACM).
+
+
+[IMPORTANT]
+----
+The SiteConfig Operator only reconciles updates for ClusterInstance objects. The controller does not monitor or manage deprecated SiteConfig objects.
+----
+
+The migration from SiteConfig CRs to ClusterInstance CRs provides several improvements, such as enhanced scalability and a clear separation of cluster parameters from the cluster deployment method. For more information about these improvements, and the SiteConfig Operator, see SiteConfig.
+
+The migration process involves the following high-level steps:
+
+1. Set up the parallel pipeline by preparing a new Git folder structure in your repository and creating the corresponding Argo CD project and application.
+2. To migrate the clusters incrementally, first remove the associated SiteConfig CR from the old pipeline. Then, add a corresponding ClusterInstance CR to the new pipeline.
+
+[NOTE]
+----
+By using the prune=false sync policy in the initial Argo CD application, the resources managed by this pipeline remain intact even after you remove the target cluster from this application. This approach ensures that the existing cluster resources remain operational during the migration process.
+----
+1. Optionally, use the siteconfig-converter tool to automatically convert existing SiteConfig CRs to ClusterInstance CRs.
+3. When you complete the cluster migration, delete the original Argo project and application and clean up any related resources.
+
+The following sections describe how to migrate an example cluster, sno1, from using a SiteConfig CR to a ClusterInstance CR.
+
+The following Git repository folder structure is used as a basis for this example migration:
+
+
+```text
+├── site-configs/
+│   ├── kustomization.yaml
+│   ├── hub-1/
+│   │   └── kustomization.yaml
+│   │   ├── sno1.yaml
+│   │   ├── sno2.yaml
+│   │   ├── sno3.yaml
+│   │   ├── extra-manifest/
+│   │   │   ├── enable-crun-master.yaml
+│   │   │   └── enable-crun-worker.yaml
+│   ├── pre-reqs/
+│   │   ├── kustomization.yaml
+│   │   ├── sno1/
+│   │   │   ├── bmc-credentials.yaml
+│   │   │   ├── kustomization.yaml
+│   │   │   └── pull-secret.yaml
+│   │   ├── sno2/
+│   │   │   ├── bmc-credentials.yaml
+│   │   │   ├── kustomization.yaml
+│   │   │   └── pull-secret.yaml
+│   │   └── sno3/
+│   │       ├── bmc-credentials.yaml
+│   │       ├── kustomization.yaml
+│   │       └── pull-secret.yaml
+│   ├── reference-manifest/
+│   │   └── 4.21/
+│   ├──resources/
+│   │   ├── active-ocp-version.yaml
+│   │   └── kustomization.yaml
+
+└── site-policies/ #Policies and configurations implemented for the clusters
+...
+```
+
+
+# Preparing a parallel Argo CD pipeline for ClusterInstance CRs
+
+Create a parallel Argo CD project and application to manage the new ClusterInstance CRs and associated cluster resources.
+
+* You have logged in to the hub cluster as a user with cluster-admin privileges.
+* You have configured your GitOps ZTP environment successfully.
+* You have installed and configured the Assisted Installer service successfully.
+* You have access to the Git repository that contains your single-node OpenShift cluster configurations.
+
+1. Create YAML files for the parallel Argo project and application:
+1. Create a YAML file that defines the AppProject resource:
+Example ztp-app-project-v2.yaml file
+
+```yaml
+apiVersion: argoproj.io/v1alpha1
+kind: AppProject
+metadata:
+  name: ztp-app-project
+  namespace: openshift-gitops
+  annotations:
+    argocd.argoproj.io/sync-wave: "100"
+spec:
+  clusterResourceWhitelist:
+  - group: 'hive.openshift.io'
+    kind: ClusterImageSet
+  - group: 'cluster.open-cluster-management.io'
+    kind: ManagedCluster
+  - group: ''
+    kind: Namespace
+  destinations:
+  - namespace: '*'
+    server: '*'
+  namespaceResourceWhitelist:
+  - group: ''
+    kind: ConfigMap
+  - group: ''
+    kind: Namespace
+  - group: ''
+    kind: Secret
+  - group: 'extensions.hive.openshift.io'
+    kind: ImageClusterInstall
+  - group: 'metal3.io'
+    kind: DataImage
+  - group: 'siteconfig.open-cluster-management.io'
+    kind: ClusterInstance 1
+  sourceRepos:
+  - '*'
+```
+
+The ClusterInstance CR manages the siteconfig.open-cluster-management.io object instead of the SiteConfig CR.
+2. Create a YAML file that defines the Application resource:
+Example clusters-v2.yaml file
+
+```yaml
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: clusters-v2
+  namespace: openshift-gitops
+spec:
+  destination:
+    namespace: clusters-sub
+    server: https://kubernetes.default.svc
+  ignoreDifferences:
+  - group: cluster.open-cluster-management.io
+    kind: ManagedCluster
+    managedFieldsManagers:
+    - controller
+  project: ztp-app-project-v2 1
+  source:
+    path: site-configs-v2 2
+    repoURL: http://infra.5g-deployment.lab:3000/student/ztp-repository.git
+    targetRevision: main
+  syncPolicy:
+    syncOptions:
+    - CreateNamespace=true
+    - PrunePropagationPolicy=background
+    - RespectIgnoreDifferences=true
+```
+
+The project field must match the name of the AppProject resource created in the previous step.
+The path field must match the root folder in your Git repository that will contain the ClusterInstance CRs and associated resources.
+
+[NOTE]
+----
+By default, auto-sync is enabled. However, synchronization only occurs when you push configuration data for the cluster to the new configuration folder, or in this example, the site-configs-v2/ folder.
+----
+2. Create and commit a root folder in your Git repository that will contain the ClusterInstance CRs and associated resources, for example:
+
+```bash
+$ mkdir site-configs-v2
+$ touch site-configs-v2/.gitkeep
+$ git commit -s -m “Creates cluster-instance folder”
+$ git push origin main
+```
+
+* The .gitkeep file is a placeholder to ensure that the empty folder is tracked by Git.
+
+[NOTE]
+----
+You only need to create and commit the root site-configs-v2/ folder during pipeline setup.
+You will mirror the complete site-configs/ folder structure into site-configs-v2/ during the cluster migration procedure.
+----
+3. Apply the AppProject and Application resources to the hub cluster by running the following commands:
+
+```bash
+$ oc apply -f ztp-app-project-v2.yaml
+$ oc apply -f clusters-v2.yaml
+```
+
+
+1. Verify that the original Argo CD project, ztp-app-project, and the new Argo CD project, ztp-app-project-v2 are present on the hub cluster by running the following command:
+
+```bash
+$ oc get appprojects -n openshift-gitops
+```
+
+Example output
+
+```bash
+NAME                 AGE
+default              46h
+policy-app-project   42h
+ztp-app-project      18h
+ztp-app-project-v2    14s
+```
+
+2. Verify that the original Argo CD application, clusters, and the new Argo CD application, clusters-v2 are present on the hub cluster by running the following command:
+
+```bash
+$ oc get application.argo -n openshift-gitops
+```
+
+Example output
+
+```bash
+NAME                       SYNC STATUS   HEALTH STATUS
+clusters                   Synced        Healthy
+clusters-v2                Synced        Healthy
+policies                   Synced        Healthy
+```
+
+
+# Transitioning the active-ocp-version ClusterImageSet
+
+Optionally, the active-ocp-version ClusterImageSet is a GitOps Zero Touch Provisioning (ZTP) convention used in GitOps ZTP deployments.
+It provides a single, central definition of the Red Hat OpenShift Container Platform release image to use when provisioning clusters.
+By default, this resource is synchronized to the hub cluster from the site-config/resources/ folder.
+
+If your deployment uses an active-ocp-version ClusterImageSet CR, you must migrate it to the resources/ folder in the new directroy that contains ClusterInstance CRs.
+This prevents synchronization conflicts because both Argo CD applications cannot manage the same resource.
+
+* You have completed the procedure to create the parallel Argo CD pipeline for ClusterInstance CRs.
+* The Argo CD application points to the folder in your Git repository that will contain the new ClusterInstance CRs and associated cluster resouces. In this example, the site-configs-v2/ Argo CD application points to the site-configs-v2/ folder.
+* Your Git repository contains an active-ocp-version.yaml manifest in the resources/ folder.
+
+1. Copy the resources/ folder from the site-configs/ directory into the new site-configs-v2/ directory:
+
+```bash
+$ cp -r site-configs/resources site-configs-v2/
+```
+
+2. Remove the reference to the resources/ folder from the site-configs/kustomization.yaml file.
+This ensures that the old clusters Argo CD application no longer manages the active-ocp-version resource.
+Example updated site-configs/resources/kustomization.yaml file
+
+```yaml
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+resources:
+   - pre-reqs/
+   #- resources/
+generators:
+   - hub-1/sno1.yaml
+   - hub-1/sno2.yaml
+   - hub-1/sno3.yaml
+```
+
+3. Add the resources/ folder to the site-configs-v2/kustomization.yaml file.
+This step transfers ownership of the ClusterImageSet to the new clusters-v2 application.
+Example updated site-configs-v2/kustomization.yaml file
+
+```yaml
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+resources:
+  - resources/
+```
+
+4. Commit and push the changes to the Git repository.
+
+1. In Argo CD, verify that the clusters-v2 application is Healthy and Synced.
+2. If the active-ocp-version ClusterImageSet resource in the cluster Argo application is out of sync, you can remove the Argo CD application label by running the following command:
+
+```bash
+$ oc label clusterimageset active-ocp-version app.kubernetes.io/instance-
+```
+
+Example output
+
+```bash
+clusterimageset.hive.openshift.io/active-ocp-version unlabeled
+```
+
+
+# Performing the migration from SiteConfig CR to ClusterInstance CR
+
+Migrate a single-node OpenShift cluster from using a SiteConfig CR to a ClusterInstance CR by removing the SiteConfig CR from the old pipeline, and adding a corresponding ClusterInstance CR to the new pipeline.
+
+* You have logged in to the hub cluster as a user with cluster-admin privileges.
+* You have set up the parallel Argo CD pipeline, including the Argo CD project and application, that will manage the cluster using the ClusterInstance CR.
+* The Argo CD application managing the original SiteConfig CR pipeline is configured with the sync policy prune=false. This setting ensures that resources remain intact after you remove the target cluster from this application.
+* You have access to the Git repository that contains your single-node OpenShift cluster configurations.
+* You have Red Hat Advanced Cluster Management (RHACM) version 2.12 or later installed in the hub cluster.
+* The SiteConfig Operator is installed and running in the hub cluster.
+* You have installed Podman and you have access to the registry.redhat.io container image registry.
+
+1. Mirror the site-configs folder structure to the new site-configs-v2 directory that will contain the ClusterInstance CRs, for example:
+
+```text
+site-configs-v2/
+├── hub-1/ 1
+│   └── extra-manifest/
+├── pre-reqs/
+│   └── sno1/ 2
+├── reference-manifest/
+│   └── 4.21/
+└── resources/
+```
+
+The hub-1/ folder will contain the ClusterInstance CR for each cluster.
+Mirror the target cluster, in this example sno1, to include the required pre-requisite resources such as the image registry pull secret, the baseboard management controller credentials, and so on.
+2. Remove the target cluster from the original Argo CD application by commenting out the resources in the related files in Git:
+1. Comment out the target cluster from the site-configs/kustomization.yaml file, for example:
+
+```bash
+$ cat site-configs/kustomization.yaml
+```
+
+Example updated site-configs/kustomization.yaml file
+
+```yaml
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+resources:
+   - pre-reqs/
+   #- resources/
+generators:
+   #- hub-1/sno1.yaml
+   - hub-1/sno2.yaml
+   - hub-1/sno3.yaml
+```
+
+2. Comment out the target cluster from the site-configs/pre-reqs/kustomization.yaml file.
+This removes the site-configs/pre-reqs/sno1 folder, which also requires migration and has resources such as the image registry pull secret, the baseboard management controller credentials, and so on, for example:
+
+```bash
+$ cat site-configs/pre-reqs/kustomization.yaml
+```
+
+Example updated site-configs/pre-reqs/kustomization.yaml file
+
+```yaml
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+resources:
+  #- sno1/
+  - sno2/
+  - sno3/
+```
+
+3. Commit the changes to the Git repository.
+
+[NOTE]
+----
+After you commit the changes, the original Argo CD application reports an OutOfSync sync status because the Argo CD application still attempts to monitor the status of the taget cluster's resources. However, because the sync policy is set to prune=false, the Argo CD application does not delete any resources.
+----
+4. To ensure that the original Argo CD application no longer manages the cluster resources, you can remove the Argo CD application label from the resources by running the following command:
+
+```bash
+$ for cr in bmh,hfs,clusterdeployment,agentclusterinstall,infraenv,nmstateconfig,configmap,klusterletaddonconfig,secrets; do oc label $cr app.kubernetes.io/instance- --all -n sno1; done && oc label ns sno1 app.kubernetes.io/instance- && oc label managedclusters sno1 app.kubernetes.io/instance-
+```
+
+
+The Argo CD application label is removed from all resources in the sno1 namespace and the sync status returns to Synced.
+5. Create the ClusterInstance CR for the target cluster by using the siteconfig-converter tool packaged with the ztp-site-generate container image:
+
+[NOTE]
+----
+The siteconfig-converter tool cannot translate earlier versions of the AgentClusterInstall resource that uses the following deprecated fields in the SiteConfig CR:
+* apiVIP
+* ingressVIP
+* manifestsConfigMapRef
+To solve this issue, you can do one of the following options:
+* Create a custom cluster template that includes these fields. For more information about creating custom templates, see Creating custom templates with the SiteConfig operator
+* Suppress the creation of the AgentClusterInstall resource by adding it to the suppressedManifests list in the ClusterInstance CR, or by using the -s flag in the siteconfig-converter tool. You must remove the resource from the suppressedManifests list when reinstalling the cluster.
+----
+1. Pull the ztp-site-generate container image by running the following command:
+
+```bash
+podman pull registry.redhat.io/openshift4/ztp-site-generate-rhel8:4.22
+```
+
+2. Run the siteconfig-converter tool interactively through the container by running the following command:
+
+```bash
+$ podman run -v "${PWD}":/resources:Z,U -it registry.redhat.io/openshift4/ztp-site-generate-rhel8:{product-version} siteconfig-converter -d /resources/<output_folder> /resources/<path_to_siteconfig_resource>
+```
+
+* Replace <output_folder> with the output directory for the generated files.
+* Replace <path_to_siteconfig_resource> with the path to the target SiteConfig CR file.
+Example output
+
+```bash
+Successfully read SiteConfig: sno1/sno1
+Converted cluster 1 (sno1) to ClusterInstance: /resources/output/sno1.yaml
+WARNING: Added default extraManifest ConfigMap 'extra-manifests-cm' to extraManifestsRefs. This configmap is created automatically.
+Successfully converted 1 cluster(s) to ClusterInstance files in /resources/output: sno1.yaml
+Generating ConfigMap kustomization files...
+Using ConfigMap name: extra-manifests-cm, namespace: sno1, manifests directory: extra-manifests
+Generating ConfigMap kustomization files with name: extra-manifests-cm, namespace: sno1, manifests directory: extra-manifests
+Generating extraManifests for SiteConfig: /resources/sno1.yaml
+Successfully generated extra manifests in /resources/output/extra-manifests
+--- Kustomization.yaml Generator ---
+Scanning directory: /resources/output/extra-manifests
+Found and adding: extra-manifests/enable-crun-master.yaml
+Found and adding: extra-manifests/enable-crun-worker.yaml
+------------------------------------
+kustomization-configMapGenerator-snippet.yaml generated successfully at: /resources/output/kustomization-configMapGenerator-snippet.yaml
+Content:
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+configMapGenerator:
+    - files:
+        - extra-manifests/enable-crun-master.yaml
+        - extra-manifests/enable-crun-worker.yaml
+      name: extra-manifests-cm
+      namespace: sno1
+generatorOptions:
+    disableNameSuffixHash: true
+
+------------------------------------
+```
+
+
+[NOTE]
+----
+The ClusterInstance CR requires the extra manifests to be defined in a ConfigMap resource.
+To meet this requirement, the siteconfig-converter tool generates a kustomization.yaml snippet. The generated snippet uses Kustomize's configMapGenerator to automatically package your manifest files into the required ConfigMap resource. You must merge this snippet into your original kustomization.yaml file to ensure that the ConfigMap resource is created and managed alongside your other cluster resources.
+----
+6. Configure the new Argo CD application to manage the target cluster by referencing it in the new pipelines Kustomization files, for example:
+
+```bash
+$ cat site-configs-v2/kustomization.yaml
+```
+
+Example updated site-configs-v2/kustomization.yaml file
+
+```yaml
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+resources:
+  - resources/
+  - pre-reqs/
+  - hub-1/sno1.yaml
+```
+
+
+```bash
+$ cat  site-configs-v2/pre-reqs/kustomization.yaml
+```
+
+Example updated site-configs-v2/pre-reqs/kustomization.yaml file
+
+```yaml
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+resources:
+  - sno1/
+```
+
+7. Commit the changes to the Git repository.
+
+1. Verify that the ClusterInstance CR is successfully deployed and the provisioning status complete by running the following command:
+
+```bash
+$ oc get clusterinstance -A
+```
+
+Example output
+
+```bash
+NAME                                                         PAUSED   PROVISIONSTATUS   PROVISIONDETAILS         AGE
+clusterinstance.siteconfig.open-cluster-management.io/sno1            Completed         Provisioning completed   27s
+```
+
+
+At this point, the new Argo CD application that uses the ClusterInstance CR is managing the sno1 cluster. You can continue to migrate one or more clusters at a time by repeating these steps until all target clusters are migrated to the new pipeline.
+2. Verify the folder structure and files in the site-configs-v2/ directory contain the migrated resources for the sno1 cluster, for example:
+
+```text
+site-configs-v2/
+├── hub-1/
+│   ├── sno1.yaml 1
+├── extra-manifest/
+│   ├── enable-crun-worker.yaml 2
+│   └── enable-crun-master.yaml
+├── kustomization.yaml 3
+├── pre-reqs/
+│   └── sno1/
+│       ├── bmc-credentials.yaml
+│       ├── namespace.yaml
+│       └── pull-secret.yaml
+├── kustomization.yaml
+├── reference-manifest/
+│   └── 4.21/
+└── resources/
+    ├── active-ocp-version.yaml
+    └── kustomization.yaml
+```
+
+This ClusterInstance CR for the sno1 cluster.
+The tool automatically generates the extra manifests referenced by the ClusterInstance CR.
+The tool generates a kuztomization.yaml file snippet to create the ConfigMap resources that specifies the extra manifests. You can merge the generated kustomization snippet with your original kuztomization.yaml file.
+
+* Enabling the SiteConfig operator
+
+## Reference flags for the siteconfig-converter tool
+
+The following matrix describes the flags for the siteconfig-converter tool.
+
+
+
+# Deleting the Argo CD pipeline post-migration
+
+After you migrate all single-node OpenShift clusters from using SiteConfig CRs to ClusterInstance CRs, you can delete the original Argo CD application and related resources that managed the SiteConfig CRs.
+
+
+[NOTE]
+----
+Only delete the Argo CD application and related resources after you have confirmed that all clusters are successfully managed by the new Argo CD application that uses ClusterInstance CRs. Additionally, if the Argo CD project was only used for the migrated cluster's Argo application, you can also delete this project.
+----
+
+* You have logged in to the hub cluster as a user with cluster-admin privileges.
+* All single-node OpenShift clusters have been successfully migrated to use ClusterInstance CRs and are managed by another Argo CD application.
+
+1. Delete the original Argo CD application that managed the SiteConfig CRs:
+
+```bash
+$ oc delete application.argo clusters -n openshift-gitops
+```
+
+* Replace clusters with the name of your original Argo CD application.
+2. Delete the original Argo CD project by running the following command:
+
+```bash
+$ oc delete appproject ztp-app-project -n openshift-gitops
+```
+
+* Replace ztp-app-project with the name of your original Argo CD project.
+
+1. Confirm that the original Argo CD application is deleted by running the following command:
+
+```bash
+$ oc get appproject -n openshift-gitops
+```
+
+Example output
+
+```bash
+NAME                 AGE
+default              6d20h
+policy-app-project   2d22h
+ztpv2-app-project    44h
+```
+
+* The original Argo CD project in this example, ztp-app-project is not present in the output.
+2. Confirm that the original Argo CD project is deleted by running the following command:
+
+```bash
+oc get applications.argo -n openshift-gitops
+```
+
+Example output
+
+```bash
+NAME                       SYNC STATUS   HEALTH STATUS
+clusters-v2                Synced        Healthy
+policies                   Synced        Healthy
+```
+
+* The original Argo CD application in this example, clusters is not present in the output.
+
+# Troubleshooting the migration to ClusterInstance CRs
+
+Consider the following troubleshooting steps if you encounter issues during the migration from SiteConfig CRs to ClusterInstance CRs.
+
+* Verify that the SiteConfig Operator rendered all the required deployment resources by running the following command:
+
+```bash
+$ oc -n <target_cluster> get clusterinstances <target_cluster> -ojson | jq .status.manifestsRendered
+```
+
+Example output
+
+```json
+[
+  {
+    "apiGroup": "extensions.hive.openshift.io/v1beta1",
+    "kind": "AgentClusterInstall",
+    "lastAppliedTime": "2025-01-13T11:10:52Z",
+    "name": "sno1",
+    "namespace": "sno1",
+    "status": "rendered",
+    "syncWave": 1
+  },
+  {
+    "apiGroup": "metal3.io/v1alpha1",
+    "kind": "BareMetalHost",
+    "lastAppliedTime": "2025-01-13T11:10:53Z",
+    "name": "sno1.example.com",
+    "namespace": "sno1",
+    "status": "rendered",
+    "syncWave": 1
+  },
+  {
+    "apiGroup": "hive.openshift.io/v1",
+    "kind": "ClusterDeployment",
+    "lastAppliedTime": "2025-01-13T11:10:53Z",
+    "name": "sno1",
+    "namespace": "sno1",
+    "status": "rendered",
+    "syncWave": 1
+  },
+  {
+    "apiGroup": "agent-install.openshift.io/v1beta1",
+    "kind": "InfraEnv",
+    "lastAppliedTime": "2025-01-13T11:10:53Z",
+    "name": "sno1",
+    "namespace": "sno1",
+    "status": "rendered",
+    "syncWave": 1
+  },
+  {
+    "apiGroup": "agent-install.openshift.io/v1beta1",
+    "kind": "NMStateConfig",
+    "lastAppliedTime": "2025-01-13T11:10:53Z",
+    "name": "sno1.example.com",
+    "namespace": "sno1",
+    "status": "rendered",
+    "syncWave": 1
+  },
+  {
+    "apiGroup": "agent.open-cluster-management.io/v1",
+    "kind": "KlusterletAddonConfig",
+    "lastAppliedTime": "2025-01-13T11:10:53Z",
+    "name": "sno1",
+    "namespace": "sno1",
+    "status": "rendered",
+    "syncWave": 2
+  },
+  {
+    "apiGroup": "cluster.open-cluster-management.io/v1",
+    "kind": "ManagedCluster",
+    "lastAppliedTime": "2025-01-13T11:10:53Z",
+    "name": "sno1",
+    "status": "rendered",
+    "syncWave": 2
+  }
+]
+```

@@ -1,0 +1,222 @@
+# Adding bare-metal compute machines to a vSphere cluster
+
+
+To support workloads requiring direct hardware access, extend your existing VMware vSphere cluster by adding bare-metal compute machines. This creates a hybrid architecture that combines a virtualized control plane with the performance of physical hardware.
+This procedure supports clusters installed using installer-provisioned infrastructure, user-provisioned infrastructure, or the Assisted Installer.
+
+[IMPORTANT]
+----
+Bare-metal nodes on vSphere clusters is a Technology Preview feature only. Technology Preview features are not supported with Red Hat production service level agreements (SLAs) and might not be functionally complete. Red Hat does not recommend using them in production. These features provide early access to upcoming product features, enabling customers to test functionality and provide feedback during the development process.
+For more information about the support scope of Red Hat Technology Preview features, see Technology Preview Features Support Scope.
+----
+
+[IMPORTANT]
+----
+Bare-metal compute machines added to a vSphere cluster are unmanaged by the Machine API. You cannot use compute machine sets or the cluster autoscaler to manage these compute machines. Lifecycle tasks such as provisioning and replacement must be performed manually.
+----
+
+# Prerequisites
+
+* You have an existing Red Hat OpenShift Container Platform cluster installed on vSphere.
+* You have bare-metal hardware with network connectivity to the existing cluster's machine network.
+* You have configured the network for the new bare-metal compute machines, including:
+* DHCP: Persistent IP addresses and hostname reservations.
+* DNS: Forward and reverse DNS resolution for the new hostnames.
+* You have obtained the Red Hat Enterprise Linux CoreOS (RHCOS) ISO image that matches your cluster version. You can download this from the Cluster Details page on the Red Hat Hybrid Cloud Console or extract it from the cluster payload.
+
+
+[WARNING]
+----
+To use this feature, you must explicitly disable the native vSphere Container Storage Interface (CSI) driver for the entire cluster. This means existing vSphere virtual machines will lose the ability to provision or attach vSphere volumes. You must ensure that all workloads (virtual and physical) are migrated to an alternative storage solution before proceeding.
+----
+
+* Migrating virtual machine storage
+* Disabling and enabling storage on vSphere
+
+# Creating RHCOS machines using an ISO image
+
+To add bare-metal compute machines to your VMware vSphere cluster, you must manually provision them using an RHCOS ISO image and the coreos-installer utility.
+
+
+[IMPORTANT]
+----
+{FeatureName} is a Technology Preview feature only. Technology Preview features are not supported with Red Hat production service level agreements (SLAs) and might not be functionally complete. Red Hat does not recommend using them in production. These features provide early access to upcoming product features, enabling customers to test functionality and provide feedback during the development process.
+For more information about the support scope of Red Hat Technology Preview features, see Technology Preview Features Support Scope.
+----
+
+* You have access to the RHCOS ISO image that matches your cluster version.
+* You have an HTTP server accessible to the bare-metal machine to host the Ignition config file.
+* You have disabled the vSphere CSI driver.
+* The OpenShift CLI (oc) is installed.
+
+1. Extract the Ignition config file for the worker node type from the cluster by running the following command:
+
+```terminal
+$ oc extract -n openshift-machine-api secret/worker-user-data-managed --keys=userData --to=- > worker.ign
+```
+
+2. Upload the worker.ign Ignition config file to your HTTP server. Record the URL of this file.
+3. Validate that the Ignition file is accessible from the network. The following example uses curl to verify the file presence:
+
+```terminal
+$ curl -I http://<http_server>/worker.ign
+```
+
+4. Boot the bare-metal machine using the RHCOS ISO image.
+5. From the installation console, run the coreos-installer command:
+
+```terminal
+$ sudo coreos-installer install /dev/sda \
+    --ignition-url=http://<http_server>/worker.ign \
+    --insecure-ignition \
+    --platform=none
+```
+
+
+where:
+/dev/sda:: Specifies the target install device for your hardware.
+<http_server>:: Specifies the address of your web server.
+6. Reboot the machine:
+
+```terminal
+$ reboot
+```
+
+7. Monitor the boot process. After the machine reboots, it attempts to join the cluster and generates certificate signing requests (CSRs).
+
+* Verify that the new compute machine has joined the cluster and is in the Ready state:
+
+```terminal
+$ oc get nodes
+```
+
+
+# Approving the certificate signing requests for your machines
+
+To add machines to a cluster, verify the status of the certificate signing requests (CSRs) generated for each machine. If manual approval is required, approve the client requests first, followed by the server requests.
+
+* You added machines to your cluster.
+
+1. Confirm that the cluster recognizes the machines:
+
+```terminal
+$ oc get nodes
+```
+
+Example output
+
+```terminal
+NAME      STATUS    ROLES   AGE  VERSION
+master-0  Ready     master  63m  v1.34.2
+master-1  Ready     master  63m  v1.34.2
+master-2  Ready     master  64m  v1.34.2
+```
+
+
+The output lists all of the machines that you created.
+
+[NOTE]
+----
+The preceding output might not include the compute nodes, also known as worker nodes, until some CSRs are approved.
+----
+2. Review the pending CSRs and ensure that you see the client requests with the Pending or Approved status for each machine that you added to the cluster:
+
+```terminal
+$ oc get csr
+```
+
+Example output
+
+```terminal
+NAME        AGE     REQUESTOR                                                                   CONDITION
+csr-8b2br   15m     system:serviceaccount:openshift-machine-config-operator:node-bootstrapper   Pending
+csr-8vnps   15m     system:serviceaccount:openshift-machine-config-operator:node-bootstrapper   Pending
+...
+```
+
+
+In this example, two machines are joining the cluster. You might see more approved CSRs in the list.
+3. If the CSRs were not approved, after all of the pending CSRs for the machines you added are in Pending status, approve the CSRs for your cluster machines:
+
+[NOTE]
+----
+Because the CSRs rotate automatically, approve your CSRs within an hour of adding the machines to the cluster. If you do not approve them within an hour, the certificates will rotate, and more than two certificates will be present for each node. You must approve all of these certificates. After the client CSR is approved, the Kubelet creates a secondary CSR for the serving certificate, which requires manual approval. Then, subsequent serving certificate renewal requests are automatically approved by the machine-approver if the Kubelet requests a new certificate with identical parameters.
+----
+
+[NOTE]
+----
+For clusters running on platforms that are not machine API enabled, such as bare metal and other user-provisioned infrastructure, you must implement a method of automatically approving the kubelet serving certificate requests (CSRs). If a request is not approved, then the oc exec, oc rsh, and oc logs commands cannot succeed, because a serving certificate is required when the API server connects to the kubelet. Any operation that contacts the Kubelet endpoint requires this certificate approval to be in place. The method must watch for new CSRs, confirm that the CSR was submitted by the node-bootstrapper service account in the system:node or system:admin groups, and confirm the identity of the node.
+----
+* To approve them individually, run the following command for each valid CSR:
+
+```terminal
+$ oc adm certificate approve <csr_name>
+```
+
+
+where:
+<csr_name>:: Specifies the name of a CSR from the list of current CSRs.
+* To approve all pending CSRs, run the following command:
+
+```terminal
+$ oc get csr -o go-template='{{range .items}}{{if not .status}}{{.metadata.name}}{{"\n"}}{{end}}{{end}}' | xargs --no-run-if-empty oc adm certificate approve
+```
+
+
+[NOTE]
+----
+Some Operators might not become available until some CSRs are approved.
+----
+4. Now that your client requests are approved, you must review the server requests for each machine that you added to the cluster:
+
+```terminal
+$ oc get csr
+```
+
+Example output
+
+```terminal
+NAME        AGE     REQUESTOR                                                                   CONDITION
+csr-bfd72   5m26s   system:node:ip-10-0-50-126.us-east-2.compute.internal                       Pending
+csr-c57lv   5m26s   system:node:ip-10-0-95-157.us-east-2.compute.internal                       Pending
+...
+```
+
+5. If the remaining CSRs are not approved, and are in the Pending status, approve the CSRs for your cluster machines:
+* To approve them individually, run the following command for each valid CSR:
+
+```terminal
+$ oc adm certificate approve <csr_name>
+```
+
+
+where:
+<csr_name>:: Specifies the name of a CSR from the list of current CSRs.
+* To approve all pending CSRs, run the following command:
+
+```terminal
+$ oc get csr -o go-template='{{range .items}}{{if not .status}}{{.metadata.name}}{{"\n"}}{{end}}{{end}}' | xargs oc adm certificate approve
+```
+
+6. After all client and server CSRs have been approved, the machines have the Ready status. Verify this by running the following command:
+
+```terminal
+$ oc get nodes
+```
+
+Example output
+
+```terminal
+NAME      STATUS    ROLES   AGE  VERSION
+master-0  Ready     master  73m  v1.34.2
+master-1  Ready     master  73m  v1.34.2
+master-2  Ready     master  74m  v1.34.2
+worker-0  Ready     worker  11m  v1.34.2
+worker-1  Ready     worker  11m  v1.34.2
+```
+
+
+[NOTE]
+----
+It can take a few minutes after approval of the server CSRs for the machines to transition to the Ready status.
+----

@@ -1,0 +1,271 @@
+# Persistent storage using Azure
+
+
+Red Hat OpenShift Container Platform supports Microsoft Azure Disk volumes. You can
+provision your Red Hat OpenShift Container Platform cluster with persistent storage using Azure.
+Some familiarity with Kubernetes and Azure is assumed.
+The Kubernetes persistent volume framework allows administrators to provision a
+cluster with persistent storage and gives users a way to request those
+resources without having any knowledge of the underlying infrastructure.
+Azure Disk volumes can be provisioned dynamically.
+Persistent volumes are not bound to a single project or namespace; they can be
+shared across the Red Hat OpenShift Container Platform cluster.
+Persistent volume claims are specific to a project or namespace and can be
+requested by users.
+
+[IMPORTANT]
+----
+Red Hat OpenShift Container Platform 4.11 and later provides automatic migration for the Azure Disk in-tree volume plugin to its equivalent CSI driver.
+CSI automatic migration should be seamless. Migration does not change how you use all existing API objects, such as persistent volumes, persistent volume claims, and storage classes. For more information about migration, see CSI automatic migration.
+----
+
+[IMPORTANT]
+----
+High availability of storage in the infrastructure is left to the underlying
+storage provider.
+----
+* Microsoft Azure Disk
+
+# Creating the Azure storage class
+
+Storage classes are used to differentiate and delineate storage levels and
+usages. By defining a storage class, users can obtain dynamically provisioned
+persistent volumes.
+
+1. In the Red Hat OpenShift Container Platform web console, click Storage -> Storage Classes.
+2. In the storage class overview, click Create Storage Class.
+3. Define the desired options on the page that appears.
+1. Enter a name to reference the storage class.
+2. Enter an optional description.
+3. Select the reclaim policy.
+4. Select kubernetes.io/azure-disk from the drop down list.
+1. Enter the storage account type. This corresponds to your Azure
+storage account SKU tier. Valid options are Premium_LRS, PremiumV2_LRS, Standard_LRS,
+StandardSSD_LRS, and UltraSSD_LRS.
+
+[IMPORTANT]
+----
+The skuname PremiumV2_LRS is not supported in all regions, and in some supported regions, not all of the availability zones are supported. For more information, see Azure doc.
+----
+2. Enter the kind of account. Valid options are shared, dedicated,
+and managed.
+
+[IMPORTANT]
+----
+Red Hat only supports the use of kind: Managed in the storage class.
+With Shared and Dedicated, Azure creates unmanaged disks, while Red Hat OpenShift Container Platform creates a managed disk for machine OS (root) disks. But because Azure Disk does not allow the use of both managed and unmanaged disks on a node, unmanaged disks created with Shared or Dedicated cannot be attached to Red Hat OpenShift Container Platform nodes.
+----
+5. Enter additional parameters for the storage class as desired.
+4. Click Create to create the storage class.
+
+* Azure Disk Storage Class
+
+# Creating the persistent volume claim
+
+Storage must exist in the underlying infrastructure before it can be mounted as
+a volume in Red Hat OpenShift Container Platform.
+
+1. In the Red Hat OpenShift Container Platform web console, click Storage -> Persistent Volume Claims.
+2. In the persistent volume claims overview, click Create Persistent Volume Claim.
+3. Define the desired options on the page that appears.
+1. Select the previously-created storage class from the drop-down menu.
+2. Enter a unique name for the storage claim.
+3. Select the access mode. This selection determines the read and write access for the storage claim.
+4. Define the size of the storage claim.
+4. Click Create to create the persistent volume claim and generate a persistent
+volume.
+
+# Volume format
+
+Before Red Hat OpenShift Container Platform mounts the volume and passes it to a container, it checks
+that it contains a file system as specified by the fsType parameter in the
+persistent volume definition. If the device is not formatted with the file
+system, all data from the device is erased and the device is automatically
+formatted with the given file system.
+
+This allows using unformatted Azure volumes as persistent volumes, because
+Red Hat OpenShift Container Platform formats them before the first use.
+
+# Machine sets that deploy machines with ultra disks using PVCs
+
+You can create a machine set running on Azure that deploys machines with ultra disks. Ultra disks are high-performance storage that are intended for use with the most demanding data workloads.
+
+Both the in-tree plugin and CSI driver support using PVCs to enable ultra disks. You can also deploy machines with ultra disks as data disks without creating a PVC.
+
+* Microsoft Azure ultra disks documentation
+* Machine sets that deploy machines on ultra disks using CSI PVCs
+* Machine sets that deploy machines on ultra disks as data disks
+
+## Creating machines with ultra disks by using machine sets
+
+You can deploy machines with ultra disks on Azure by editing your machine set YAML file.
+
+* Have an existing Microsoft Azure cluster.
+
+1. Copy an existing Azure MachineSet custom resource (CR) and edit it by running the following command:
+
+```terminal
+$ oc edit machineset <machine_set_name>
+```
+
+
+where <machine_set_name> is the machine set that you want to provision machines with ultra disks.
+2. Add the following lines in the positions indicated:
+
+```yaml
+apiVersion: machine.openshift.io/v1beta1
+kind: MachineSet
+spec:
+  template:
+    spec:
+      metadata:
+        labels:
+          disk: ultrassd 1
+      providerSpec:
+        value:
+          ultraSSDCapability: Enabled 2
+```
+
+Specify a label to use to select a node that is created by this machine set. This procedure uses disk.ultrassd for this value.
+These lines enable the use of ultra disks.
+3. Create a machine set using the updated configuration by running the following command:
+
+```terminal
+$ oc create -f <machine_set_name>.yaml
+```
+
+4. Create a storage class that contains the following YAML definition:
+
+```yaml
+apiVersion: storage.k8s.io/v1
+kind: StorageClass
+metadata:
+  name: ultra-disk-sc 1
+parameters:
+  cachingMode: None
+  diskIopsReadWrite: "2000" 2
+  diskMbpsReadWrite: "320" 3
+  kind: managed
+  skuname: UltraSSD_LRS
+provisioner: disk.csi.azure.com 4
+reclaimPolicy: Delete
+volumeBindingMode: WaitForFirstConsumer 5
+```
+
+Specify the name of the storage class. This procedure uses ultra-disk-sc for this value.
+Specify the number of IOPS for the storage class.
+Specify the throughput in MBps for the storage class.
+For Azure Kubernetes Service (AKS) version 1.21 or later, use disk.csi.azure.com. For earlier versions of AKS, use kubernetes.io/azure-disk.
+Optional: Specify this parameter to wait for the creation of the pod that will use the disk.
+5. Create a persistent volume claim (PVC) to reference the ultra-disk-sc storage class that contains the following YAML definition:
+
+```yaml
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: ultra-disk 1
+spec:
+  accessModes:
+  - ReadWriteOnce
+  storageClassName: ultra-disk-sc 2
+  resources:
+    requests:
+      storage: 4Gi 3
+```
+
+Specify the name of the PVC. This procedure uses ultra-disk for this value.
+This PVC references the ultra-disk-sc storage class.
+Specify the size for the storage class. The minimum value is 4Gi.
+6. Create a pod that contains the following YAML definition:
+
+```yaml
+apiVersion: v1
+kind: Pod
+metadata:
+  name: nginx-ultra
+spec:
+  nodeSelector:
+    disk: ultrassd 1
+  containers:
+  - name: nginx-ultra
+    image: alpine:latest
+    command:
+      - "sleep"
+      - "infinity"
+    volumeMounts:
+    - mountPath: "/mnt/azure"
+      name: volume
+  volumes:
+    - name: volume
+      persistentVolumeClaim:
+        claimName: ultra-disk 2
+```
+
+Specify the label of the machine set that enables the use of ultra disks. This procedure uses disk.ultrassd for this value.
+This pod references the ultra-disk PVC.
+
+1. Validate that the machines are created by running the following command:
+
+```terminal
+$ oc get machines
+```
+
+
+The machines should be in the Running state.
+2. For a machine that is running and has a node attached, validate the partition by running the following command:
+
+```terminal
+$ oc debug node/<node_name> -- chroot /host lsblk
+```
+
+
+In this command, oc debug node/<node_name> starts a debugging shell on the node <node_name> and passes a command with --. The passed command chroot /host provides access to the underlying host OS binaries, and lsblk shows the block devices that are attached to the host OS machine.
+
+* To use an ultra disk from within a pod, create a workload that uses the mount point. Create a YAML file similar to the following example:
+
+```yaml
+apiVersion: v1
+kind: Pod
+metadata:
+  name: ssd-benchmark1
+spec:
+  containers:
+  - name: ssd-benchmark1
+    image: nginx
+    ports:
+      - containerPort: 80
+        name: "http-server"
+    volumeMounts:
+    - name: lun0p1
+      mountPath: "/tmp"
+  volumes:
+    - name: lun0p1
+      hostPath:
+        path: /var/lib/lun0p1
+        type: DirectoryOrCreate
+  nodeSelector:
+    disktype: ultrassd
+```
+
+
+## Troubleshooting resources for machine sets that enable ultra disks
+
+Use the information in this section to understand and recover from issues you might encounter.
+
+### Unable to mount a persistent volume claim backed by an ultra disk
+
+If there is an issue mounting a persistent volume claim backed by an ultra disk, the pod becomes stuck in the ContainerCreating state and an alert is triggered.
+
+For example, if the additionalCapabilities.ultraSSDEnabled parameter is not set on the machine that backs the node that hosts the pod, the following error message appears:
+
+
+```terminal
+StorageAccountType UltraSSD_LRS can be used only when additionalCapabilities.ultraSSDEnabled is set.
+```
+
+
+* To resolve this issue, describe the pod by running the following command:
+
+```terminal
+$ oc -n <stuck_pod_namespace> describe pod <stuck_pod_name>
+```

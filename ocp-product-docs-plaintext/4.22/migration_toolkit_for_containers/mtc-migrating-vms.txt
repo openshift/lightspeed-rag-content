@@ -1,0 +1,293 @@
+# Migrating virtual machine storage
+
+
+You can migrate virtual machine (VM) storage offline, when you have the VM turned off, or online, when the VM is running.
+For KubeVirt VMs, the primary use case for VM storage migration is if you want to migrate from one storage class to another. You might migrate VM storage for one of the following reasons:
+* You are rebalancing between different storage providers.
+* New storage is available that is better suited to the workload running inside the VM.
+
+# About the virtual machine storage migration process
+
+During the migration, a MigMigration resource is created indicating what type of migration is happening.
+
+The types of migration are as follows:
+
+* Stage: Stage migration copies data from the source cluster to the target cluster without stopping the application. You can run a stage migration multiple times to reduce the duration of the cutover migration.
+* Rollback:  Rolls back a completed migration.
+* Cutover: Cutover migration stops the transactions on the source cluster and moves the resources to the target cluster.
+
+The status of the MigMigration resource contains progress information about any live storage migrations.
+
+Any offline migrations contain the DirectVolumeMigrationProgress status that shows the progress of the offline migration.
+
+Each MigMigration creates a DirectVolumeMigration if the migration plan is a direct volume migration plan.
+
+To perform a storage live migration, a direct volume migration is required.
+
+# Supported persistent volume actions
+
+
+
+# Prerequisites
+
+Before migrating virtual machine storage, you must install OpenShift Virtualization Operator.
+
+To support storage live migration, you need to deploy OpenShift Virtualization version 4.17 or later. Earlier versions of OpenShift Virtualization do not support live storage migration.
+
+You also need to configure KubeVirt to enable storage live migration according to the Configuring live migration.
+
+In OpenShift Virtualization 4.17.0, not all the required feature gates are enabled. However, to use the storage live migration feature, you must enable the feature gate.
+
+Enable the feature gate by running the following command:
+
+
+```terminal
+$ oc annotate --overwrite -n openshift-cnv hco kubevirt-hyperconverged kubevirt.kubevirt.io/jsonpatch='[ {"op": "add", "path": "/spec/configuration/developerConfiguration/featureGates/-", "value": "VolumesUpdateStrategy"}, {"op": "add", "path": "/spec/configuration/developerConfiguration/featureGates/-", "value": "VolumeMigration"} ]'
+```
+
+
+
+[WARNING]
+----
+Red Hat does not support clusters with the annotation enabling this feature gate.
+Do not add this annotation in a production cluster, if you add that annotation you receive a cluster wide alert indicating that your cluster is no longer supported.
+----
+
+For more information about the deployments and custom resource definitions (CRDs) that the migration controller uses to manipulate the VMs, see Migration controller options.
+
+
+[NOTE]
+----
+If the mig-controller pod starts before you install OpenShift Virtualization, the migration controller does not automatically see that you have the OpenShift Virtualization Custom Resource Definition (CRD) installed.
+Restart the mig-controller pod in the openshift-migration namespace after installing OpenShift Virtualization.
+----
+
+The following table explains that to use storage live migrations, you need to have OpenShift Virtualization installed. Moreover, you must use MTC CRDs and at least two storage classes. 
+
+
+
+# Deploying a virtual machine
+
+After installing and activating OpenShift Virtualization and Containerized Data Importer (CDI), create a namespace and deploy a virtual machine (VM).
+
+* Deploy the YAML, which creates both a VM definition and a data volume containing the Fedora operating system.
+
+In the following example, the namespace mig-vm is used and the following YAML is used to create a Fedora VM,  create and a datavolume containing the Fedora operating system:
+
+```yaml
+apiVersion: kubevirt.io/v1
+kind: VirtualMachine
+metadata:
+  name: rhel9-lime-damselfly-72
+  namespace: mig-vm 1
+  labels:
+    app: rhel9-lime-damselfly-72
+    kubevirt.io/dynamic-credentials-support: 'true'
+    vm.kubevirt.io/template: rhel9-server-small
+    vm.kubevirt.io/template.namespace: openshift
+    vm.kubevirt.io/template.revision: '1'
+    vm.kubevirt.io/template.version: v0.31.1
+spec:
+  dataVolumeTemplates:
+    - apiVersion: cdi.kubevirt.io/v1beta1
+      kind: DataVolume
+      metadata:
+        name: rhel9-lime-damselfly-72
+      spec:
+        sourceRef:
+          kind: DataSource
+          name: rhel9
+          namespace: openshift-virtualization-os-images
+        storage:
+          resources:
+            requests:
+              storage: 30Gi
+  running: true 2
+  template:
+    metadata:
+      annotations:
+        vm.kubevirt.io/flavor: small
+        vm.kubevirt.io/os: rhel9
+        vm.kubevirt.io/workload: server
+      creationTimestamp: null
+      labels:
+        kubevirt.io/domain: rhel9-lime-damselfly-72 3
+        kubevirt.io/size: small
+        network.kubevirt.io/headlessService: headless
+    spec:
+      architecture: amd64
+      domain:
+        cpu:
+          cores: 1
+          sockets: 1
+          threads: 1
+        devices:
+          disks:
+            - disk:
+                bus: virtio
+              name: rootdisk
+            - disk:
+                bus: virtio
+              name: cloudinitdisk
+          interfaces:
+            - masquerade: {}
+              model: virtio
+              name: default
+          rng: {}
+        features:
+          acpi: {}
+          smm:
+            enabled: true
+        firmware:
+          bootloader:
+            efi: {}
+        machine:
+          type: pc-q35-rhel9.4.0
+        memory:
+          guest: 2Gi
+        resources: {}
+      networks:
+        - name: default
+          pod: {}
+      terminationGracePeriodSeconds: 180
+      volumes:
+        - dataVolume:
+            name: rhel9-lime-damselfly-72
+          name: rootdisk
+        - cloudInitNoCloud:
+            userData: |-
+              #cloud-config
+              user: cloud-user
+              password: password
+              chpasswd: { expire: False }
+          name: cloudinitdisk
+```
+
+
+In this example, the namespace mig-vm is used.
+Use running: true to indicate that the VM should be started after creation.
+The data volume creates a persistent volume claim (PVC) called rhel9-lime-damselfly-72, which is the same name as the data volume.
+
+The persistent volume (PV) is populated with the operating system, and the VM is started.
+
+# Creating a migration plan in the MTC web console
+
+You can create a migration plan in the Migration Toolkit for Containers (MTC) web console.
+
+* You must be logged in as a user with cluster-admin privileges on all clusters.
+* You must ensure that the same MTC version is installed on all clusters.
+* You must add the clusters and the replication repository to the MTC web console.
+* If you want to use the move data copy method to migrate a persistent volume (PV), the source and target clusters must have uninterrupted network access to the remote volume.
+* If you want to use direct image migration, you must specify the exposed route to the image registry of the source cluster. This can be done by using the MTC web console or by updating the MigCluster custom resource manifest.
+
+1. In the MTC web console, click Migration plans.
+2. Click Add migration plan.
+3. Enter the Plan name.
+
+The migration plan name must not exceed 253 lower-case alphanumeric characters (a-z, 0-9) and must not contain spaces or underscores (_).
+4. Select a Source cluster, a Target cluster, and a Repository.
+5. Click Next.
+6. Select the projects for migration.
+7. Optional: Click the edit icon beside a project to change the target namespace.
+
+[WARNING]
+----
+Migration Toolkit for Containers 1.8.6 and later versions do not support multiple migration plans for a single namespace.
+----
+8. Click Next.
+9. Select a Migration type for each PV:
+* The Copy option copies the data from the PV of a source cluster to the replication repository and then restores the data on a newly created PV, with similar characteristics, in the target cluster.
+* The Move option unmounts a remote volume, for example, NFS, from the source cluster, creates a PV resource on the target cluster pointing to the remote volume, and then mounts the remote volume on the target cluster. Applications running on the target cluster use the same remote volume that the source cluster was using.
+10. Click Next.
+11. Select a Copy method for each PV:
+* Snapshot copy backs up and restores data using the cloud provider's snapshot functionality. It is significantly faster than Filesystem copy.
+* Filesystem copy backs up the files on the source cluster and restores them on the target cluster.
+
+The file system copy method is required for direct volume migration.
+12. You can select Verify copy to verify data migrated with Filesystem copy. Data is verified by generating a checksum for each source file and checking the checksum after restoration. Data verification significantly reduces performance.
+13. Select a Target storage class.
+
+If you selected Filesystem copy, you can change the target storage class.
+14. Click Next.
+15. On the Migration options page, the Direct image migration option is selected if you specified an exposed image registry route for the source cluster. The Direct PV migration option is selected if you are migrating data with Filesystem copy.
+
+The direct migration options copy images and files directly from the source cluster to the target cluster. This option is much faster than copying images and files from the source cluster to the replication repository and then from the replication repository to the target cluster.
+16. Click Next.
+17. Optional: Click Add Hook to add a hook to the migration plan.
+
+A hook runs custom code. You can add up to four hooks to a single migration plan. Each hook runs during a different migration step.
+1. Enter the name of the hook to display in the web console.
+2. If the hook is an Ansible playbook, select Ansible playbook and click Browse to upload the playbook or paste the contents of the playbook in the field.
+3. Optional: Specify an Ansible runtime image if you are not using the default hook image.
+4. If the hook is not an Ansible playbook, select Custom container image and specify the image name and path.
+
+A custom container image can include Ansible playbooks.
+5. Select Source cluster or Target cluster.
+6. Enter the Service account name and the Service account namespace.
+7. Select the migration step for the hook:
+* preBackup: Before the application workload is backed up on the source cluster
+* postBackup: After the application workload is backed up on the source cluster
+* preRestore: Before the application workload is restored on the target cluster
+* postRestore: After the application workload is restored on the target cluster
+8. Click Add.
+18. Click Finish.
+
+The migration plan is displayed in the Migration plans list.
+
+## Creating the migration plan using YAML manifests
+
+You can create a migration plan using YAML. However, it is recommended to create a migration plan in the Migration Toolkit for Containers (MTC) web console.
+
+1. To migrate the mig-vm namespace, ensure that the namespaces field of the migration plan includes mig-vm.
+2. Modify the contents of the migration plan by adding mig-vm to the namespaces.
+Example migration plan YAML
+
+```yaml
+apiVersion: migration.openshift.io/v1alpha1
+kind: MigPlan
+metadata:
+  name: live-migrate-plan
+  namespace: openshift-migration
+spec:
+  namespaces:
+  - mig-vm 1
+...
+```
+
+Add mig-vm to the namespaces.
+* To attempt a live storage migration, the liveMigrate field in the migration plan specification must be set to true, and KubeVirt must be configured, and be enabled to perform live storage migration.
+
+```yaml
+apiVersion: migration.openshift.io/v1alpha1
+kind: MigPlan
+metadata:
+  name: live-migrate-plan
+  namespace: openshift-migration
+spec:
+  liveMigrate: true 2
+  namespaces:
+...
+```
+
+Live migration only happens during the cutover of a migration plan.
+
+Staging the migration plan skips any running virtual machines and does not sync the data. Any stopped virtual machine disks are synced.
+
+# Known issues
+
+The following known issues apply when migrating virtual machine (VM) storage:
+
+* You can only migrate VM storage in the same namespace.
+
+## Online migration limitations
+
+The following limitations apply to the online migration:
+
+* The VM must be running.
+* The volume housing the disk must not have any of the following limitations:
+* Shared disks cannot be migrated live.
+* The virtio-fs filesystem volume cannot be migrated live.
+* LUN-to-Disk and Disk-to-LUN migrations are not supported in libvirt.
+* LUNs must have persistent reservations.
+* Target PV size must match the source PV size.
+* The VM must be migrated to a different node.
