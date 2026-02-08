@@ -1,3 +1,18 @@
+# Copyright 2025 Red Hat, Inc.
+# All Rights Reserved.
+#
+#    Licensed under the Apache License, Version 2.0 (the "License"); you may
+#    not use this file except in compliance with the License. You may obtain
+#    a copy of the License at
+#
+#         http://www.apache.org/licenses/LICENSE-2.0
+#
+#    Unless required by applicable law or agreed to in writing, software
+#    distributed under the License is distributed on an "AS IS" BASIS, WITHOUT
+#    WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. See the
+#    License for the specific language governing permissions and limitations
+#    under the License.
+
 import os
 import sys, logging
 
@@ -18,21 +33,21 @@ from lightspeed_rag_content import utils
 
 class OCPMetadataProcessor(MetadataProcessor):
 
-    def __init__(self, docs_root_url: str, docs_version: str, plaintext_root_dir: str):
+    def __init__(self, docs_root_url: str, docs_version: str, plaintext_root_dir: str, hermetic_build: bool):
+        super().__init__(hermetic_build)
         self.root_url = docs_root_url + "/" + docs_version
         self.docs_version = docs_version
-        self.plaintext_root_dir = plaintext_root_dir + "/" + docs_version + "/"
+        self.plaintext_root_dir = os.path.abspath(plaintext_root_dir)
 
 
     def url_function(self, file_path: str) -> str:
-        return self.root_url
-        + file_path.removeprefix(self.plaintext_root_dir).removesuffix("txt")
-        + "html"
+        return self.root_url + file_path.removeprefix(self.plaintext_root_dir).removesuffix("txt") + "html"
 
 
 class RunbooksMetadataProcessor(MetadataProcessor):
 
-    def __init__(self, runbooks_root_url: str, plaintext_root_dir: str):
+    def __init__(self, runbooks_root_url: str, plaintext_root_dir: str, hermetic_build: bool):
+        super().__init__(hermetic_build)
         self.root_url = runbooks_root_url
         self.plaintext_root_dir = os.path.abspath(plaintext_root_dir)
         if self.plaintext_root_dir.endswith("/"):
@@ -59,6 +74,9 @@ if __name__ == "__main__":
     parser.add_argument(
         "-rbp", "--runbooks-plaintext-dir", help="Directory with runbooks plaintext"
     )
+    parser.add_argument(
+        "-hb", "--hermetic-build", type=bool, default=False, help="Hermetic build"
+    )
     args = parser.parse_args()
 
     # Instantiate Document Processor
@@ -75,7 +93,8 @@ if __name__ == "__main__":
     ocp_metadata_processor = OCPMetadataProcessor(
         args.root_url,
         args.ocp_version,
-        args.folder
+        args.folder,
+        args.hermetic_build
     )
 
     # Load and embed the documents, this method can be called multiple times
@@ -84,9 +103,12 @@ if __name__ == "__main__":
 
     runbooks_metadata_processor = RunbooksMetadataProcessor(
         args.runbooks_root_url,
-        args.runbooks_plaintext_dir
+        args.runbooks_plaintext_dir,
+        args.hermetic_build
     )
     document_processor.process(args.runbooks_plaintext_dir, metadata=runbooks_metadata_processor)
 
     # Save the new vector database to the output directory
     document_processor.save(args.index, args.output)
+
+    os._exit(0)
