@@ -1,0 +1,229 @@
+# Configuring live migration
+
+
+You can configure live migration settings to ensure that the migration processes do not overwhelm the cluster.
+You can configure live migration policies to apply different migration configurations to groups of virtual machines (VMs).
+
+# Configuring live migration limits and timeouts
+
+Configure live migration limits and timeouts for the cluster by updating the HyperConverged custom resource (CR), which is located in the
+openshift-cnv namespace.
+
+* You have installed the OpenShift CLI (`oc`).
+
+* Edit the HyperConverged CR and add the necessary live migration parameters:
+
+```terminal
+$ oc edit hyperconverged kubevirt-hyperconverged -n openshift-cnv
+```
+
+
+Example configuration file:
+
+```yaml
+apiVersion: hco.kubevirt.io/v1beta1
+kind: HyperConverged
+metadata:
+  name: kubevirt-hyperconverged
+  namespace: openshift-cnv
+spec:
+  liveMigrationConfig:
+    bandwidthPerMigration: 64Mi 1
+    completionTimeoutPerGiB: 800 2
+    parallelMigrationsPerCluster: 5 3
+    parallelOutboundMigrationsPerNode: 2 4
+    progressTimeout: 150 5
+    allowPostCopy: false 6
+```
+
+Bandwidth limit of each migration, where the value is the quantity of bytes per second. For example, a value of 2048Mi means 2048 MiB/s. Default: 0, which is unlimited.
+The migration is canceled if it has not completed in this time, in seconds per GiB of memory. For example, a VM with 6GiB memory times out if it has not completed migration in 4800 seconds. If the Migration Method is BlockMigration, the size of the migrating disks is included in the calculation.
+Number of migrations running in parallel in the cluster. Default: 5.
+Maximum number of outbound migrations per node. Default: 2.
+The migration is canceled if memory copy fails to make progress in this time, in seconds. Default: 150.
+If a VM is running a heavy workload and the memory dirty rate is too high, this can prevent the migration from one node to another from converging. To prevent this, you can enable post copy mode. By default, allowPostCopy is set to false.
+
+[NOTE]
+----
+You can restore the default value for any spec.liveMigrationConfig field by deleting that key/value pair and saving the file. For example, delete progressTimeout: <value> to restore the default progressTimeout: 150.
+----
+
+# Configure live migration for heavy workloads
+
+When migrating a VM running a heavy workload (for example, database processing) with higher memory dirty rates, you need a higher bandwidth to complete the migration.
+
+If the dirty rate is too high, the migration from one node to another does not converge. To prevent this, enable post copy mode.
+
+Post copy mode triggers if the initial pre-copy phase does not complete within the defined timeout. During post copy, the VM CPUs pause on the source host while transferring the minimum required memory pages. Then the VM CPUs activate on the destination host, and the remaining memory pages transfer into the destination node at runtime.
+
+Configure live migration for heavy workloads by updating the HyperConverged custom resource (CR), which is located in the openshift-cnv namespace.
+
+* You have installed the OpenShift CLI (`oc`).
+
+1. Edit the HyperConverged CR and add the necessary parameters for migrating heavy workloads:
+
+```terminal
+$ oc edit hyperconverged kubevirt-hyperconverged -n openshift-cnv
+```
+
+
+Example configuration file:
+
+```yaml
+apiVersion: hco.kubevirt.io/v1beta1
+kind: HyperConverged
+metadata:
+  name: kubevirt-hyperconverged
+  namespace: openshift-cnv
+spec:
+  liveMigrationConfig:
+    bandwidthPerMigration: 0Mi 1
+    completionTimeoutPerGiB: 150 2
+    parallelMigrationsPerCluster: 5 3
+    parallelOutboundMigrationsPerNode: 1 4
+    progressTimeout: 150 5
+    allowPostCopy: true 6
+```
+
+Bandwidth limit of each migration, where the value is the quantity of bytes per second. The default is 0, which is unlimited.
+The migration is canceled if it is not completed in this time, and triggers post copy mode, when post copy is enabled. This value is measured in seconds per GiB of memory. You can lower completionTimeoutPerGiB to trigger post copy mode earlier in the migration process, or raise the  completionTimeoutPerGiB to trigger post copy mode later in the migration process.
+Number of migrations running in parallel in the cluster. The default is 5. Keeping the parallelMigrationsPerCluster setting low is better when migrating heavy workloads.
+Maximum number of outbound migrations per node. Configure a single VM per node for heavy workloads.
+The migration is canceled if memory copy fails to make progress in this time. This value is measured in seconds. Increase this parameter for large memory sizes running heavy workloads.
+Use post copy mode when memory dirty rates are high to ensure the migration converges. Set allowPostCopy to true to enable post copy mode.
+2. Optional: If your main network is too busy for the migration, configure a secondary, dedicated migration network.
+
+[NOTE]
+----
+Post copy mode can impact performance during the transfer, and should not be used for critical data, or with unstable networks.
+----
+
+# Additional resources
+
+* Configuring a dedicated network for live migration
+
+# Live migration policies
+
+You can create live migration policies to apply different migration configurations to groups of VMs that are defined by VM or project labels.
+
+
+[TIP]
+----
+You can create live migration policies by using the Red Hat OpenShift Container Platform web console.
+----
+
+## Creating a live migration policy by using the CLI
+
+You can create a live migration policy by using the command line.
+
+KubeVirt applies the live migration policy to selected virtual machines (VMs) by using any combination of labels:
+
+* VM labels such as size, os, or gpu
+* Project labels such as priority, bandwidth, or hpc-workload
+
+For the policy to apply to a specific group of VMs, all labels on the group of VMs must match the labels of the policy.
+
+
+[NOTE]
+----
+If multiple live migration policies apply to a VM, the policy with the greatest number of matching labels takes precedence.
+If multiple policies meet this criteria, the policies are sorted by alphabetical order of the matching label keys, and the first one in that order takes precedence.
+----
+
+* You have installed the OpenShift CLI (`oc`).
+
+1. Edit the VM object to which you want to apply a live migration policy, and add the corresponding VM labels.
+1. Open the YAML configuration of the resource:
+
+```terminal
+$ oc edit vm <vm_name>
+```
+
+2. Adjust the required label values in the .spec.template.metadata.labels section of the configuration. For example, to mark the VM as a production VM for the purposes of migration policies, add the kubevirt.io/environment: production line:
+
+```yaml
+apiVersion: migrations.kubevirt.io/v1alpha1
+kind: VirtualMachine
+metadata:
+  name: <vm_name>
+  namespace: default
+  labels:
+    app: my-app
+    environment: production
+spec:
+  template:
+    metadata:
+      labels:
+        kubevirt.io/domain: <vm_name>
+        kubevirt.io/size: large
+        kubevirt.io/environment: production
+# ...
+```
+
+3. Save and exit the configuration.
+2. Configure a MigrationPolicy object with the corresponding labels. The following example configures a policy that applies to all VMs that are labeled as production:
+
+```yaml
+apiVersion: migrations.kubevirt.io/v1alpha1
+kind: MigrationPolicy
+metadata:
+  name: <migration_policy>
+spec:
+  selectors:
+    namespaceSelector: 1
+      hpc-workloads: "True"
+      xyz-workloads-type: ""
+    virtualMachineInstanceSelector: 2
+      kubevirt.io/environment: "production"
+```
+
+Specify project labels.
+Specify VM labels.
+3. Create the migration policy by running the following command:
+
+```terminal
+$ oc create -f <migration_policy>.yaml
+```
+
+
+# Migrating a VM to a specific node
+
+You can migrate a running virtual machine (VM) to a specific subset of nodes by using the addedNodeSelector field on the VirtualMachineInstanceMigration object.
+
+The addedNodeSelector field lets you apply additional node selection rules for a one-time migration attempt, without affecting the VM configuration or future migrations.
+
+* You have access to the cluster as a user with the cluster-admin role.
+* The VM you want to migrate is running.
+* You have identified the labels of the target nodes. Multiple labels can be specified and are combined with logical AND.
+* The oc CLI tool is installed.
+
+1. Create a migration manifest YAML file. For example:
+
+```yaml
+apiVersion: kubevirt.io/v1
+kind: VirtualMachineInstanceMigration
+metadata:
+  name: migration-job
+spec:
+  vmiName: vmi-fedora
+  addedNodeSelector:
+    accelerator: gpu-enabled23
+    kubernetes.io/hostname: "ip-172-28-114-199.example"
+```
+
+
+where:
+vmiName:: Specifies the name of the running VM (for example, vmi-fedora).
+addedNodeSelector:: Specifies additional constraints for selecting the target node.
+2. Apply the manifest to the cluster by running the following command:
+
+```terminal
+$ oc apply -f <file_name>.yaml
+```
+
+
+If no nodes satisfy the constraints, the migration is declared a failure after a timeout. The VM remains unaffected.
+
+# Additional resources
+
+* Configuring a dedicated Multus network for live migration

@@ -1,6 +1,7 @@
 import os
+from pathlib import Path
 
-versions = ["4.16", "4.17", "4.18", "4.19"]
+versions = [p.name for p in Path("ocp-product-docs-plaintext").iterdir() if p.is_dir()]
 
 if __name__ == "__main__":
     for version in versions:

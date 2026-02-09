@@ -1,0 +1,1114 @@
+# Zero Trust Workload Identity Manager SPIRE federation
+
+
+Configure SPIRE federation to enable workloads in different trust domains to securely authenticate each other across clusters, cloud providers, and organizational boundaries. By establishing trust relationships between separate SPIRE deployments, you can build a zero-trust architecture that spans multiple environments without compromising security or sharing secrets.
+Federation works by securely sharing trust bundles between SPIRE servers through dedicated federation endpoints. Each SPIRE deployment maintains its own trust domain and cryptographic identity, while being able to verify identities from federated trust domains. This approach enables cross-cluster communication, multi-cloud deployments, and secure integration with external partners.
+Setting up SPIRE federation involves the following high-level steps:
+1. Choose an authentication profile: Select either https_spiffe or https_web.
+2. Configure the bundle endpoints: Each cluster exposes its trust bundle through a federation endpoint secured by the chosen authentication profile.
+3. Bootstrap the initial trust: Manually fetch and configure the initial trust bundle from each remote cluster.
+4. Establish federation relationships: Create ClusterFederatedTrustDomain resources to define which clusters trust each other.
+5. Configure automatic synchronization: The SPIRE Controller Manager automatically keeps trust bundles synchronized after initial setup.
+
+# Understanding bundle endpoint profiles
+
+The bundle endpoint profile determines how your cluster exposes its trust bundle to other SPIRE deployments and how it authenticates remote clusters accessing the bundle. Choose the profile that best matches your security requirements and infrastructure.
+
+The Zero Trust Workload Identity Manager supports two authentication profiles for federation:
+
+https_spiffe:: Uses SPIFFE-based TLS authentication. The SPIRE server presents its own SVID (SPIFFE Verifiable Identity Document) to authenticate itself to remote SPIRE servers. This profile provides strong cryptographic identity verification and is ideal for federation between SPIRE deployments.
+https_web:: Uses standard Web PKI (X.509 certificates from public or private certificate Authorities). This profile supports both automatic certificate management via ACME (Let's Encrypt) and manual certificate management using tools like cert-manager.
+
+The following table summarizes the key differences between the two profiles:
+
+
+
+
+[IMPORTANT]
+----
+After enablement, federation cannot be disabled. The bundle endpoint profile is immutable once configured. Changing the profile or disabling federation requires reinstallation of the system. However, peer configurations (federatesWith) remain dynamic and can be added or removed at any time. Plan your profile selection carefully based on your long-term federation requirements.
+----
+
+# Federation configuration examples
+
+The following examples demonstrate different SPIRE federation configurations. Use these as templates when setting up federation between your clusters.
+
+Example 1: Using ACME for automatic certificate management:: The following example shows how to configure federation using Let's Encrypt for automatic certificate provisioning and renewal:
+
+```yaml
+apiVersion: operator.openshift.io/v1alpha1
+kind: SpireServer
+metadata:
+  name: cluster
+spec:
+  trustDomain: cluster1.example.com
+  federation:
+    bundleEndpoint:
+      profile: https_web
+      refreshHint: 300
+      httpsWeb:
+        acme:
+          directoryUrl: https://acme-v02.api.letsencrypt.org/directory
+          domainName: federation.apps.cluster1.example.com
+          email: admin@example.com
+          tosAccepted: "true"
+    federatesWith:
+      - trustDomain: cluster2.example.com
+        bundleEndpointUrl: https://federation.apps.cluster2.example.com
+        bundleEndpointProfile: https_web
+      - trustDomain: cluster3.example.com
+        bundleEndpointUrl: https://federation.apps.cluster3.example.com
+        bundleEndpointProfile: https_web
+    managedRoute: "true"
+```
+
+* The profile field uses https_web profile for Web PKI certificate-based authentication.
+* The directoryURL field is used for the production directory. For testing, use staging URL https://acme-staging-v02.api.letsencrypt.org/directory
+Example 2: Using manual certificate management with cert-manager:: The following example shows how to configure federation using externally managed certificates:
+
+```yaml
+apiVersion: operator.openshift.io/v1alpha1
+kind: SpireServer
+metadata:
+  name: cluster
+spec:
+  trustDomain: cluster1.example.com
+  federation:
+    bundleEndpoint:
+      profile: https_web
+      refreshHint: 300
+      httpsWeb:
+        servingCert:
+          fileSyncInterval: 86400
+          externalSecretRef: spire-server-federation-tls
+    federatesWith:
+      - trustDomain: cluster2.example.com
+        bundleEndpointUrl: https://federation.apps.cluster2.example.com
+        bundleEndpointProfile: https_web
+      - trustDomain: cluster3.example.com
+        bundleEndpointUrl: https://federation.apps.cluster3.example.com
+        bundleEndpointProfile: https_web
+    managedRoute: "true"
+```
+
+* The fileSyncInterval field checks for certificate updates every 24 hours.
+* The externalSecretRef field is the name of the Kubernetes Secret containing tls.crt and tls.key
+Example 3: Using https_spiffe profile for SPIRE-to-SPIRE federation:: The following example shows how to configure federation using SPIFFE-based TLS authentication:
+
+```yaml
+apiVersion: operator.openshift.io/v1alpha1
+kind: SpireServer
+metadata:
+  name: cluster
+spec:
+  trustDomain: cluster1.example.com
+  federation:
+    bundleEndpoint:
+      profile: https_spiffe
+      refreshHint: 300
+    federatesWith:
+      - trustDomain: cluster2.example.com
+        bundleEndpointUrl: https://federation.apps.cluster2.example.com
+        bundleEndpointProfile: https_spiffe
+        endpointSpiffeId: spiffe://cluster2.example.com/spire/server
+      - trustDomain: cluster3.example.com
+        bundleEndpointUrl: https://federation.apps.cluster3.example.com
+        bundleEndpointProfile: https_spiffe
+        endpointSpiffeId: spiffe://cluster3.example.com/spire/server
+    managedRoute: "true"
+```
+
+* The profile field uses https_spiffe profile for SPIFFE-based TLS authentication.
+* The endpointSiffeId field contains the SPIFFE ID of the remote SPIRE server, required for identity validation.
+Example 4: Mixed federation with multiple authentication profiles:: The following example shows a cluster federating with multiple remote clusters using different authentication profiles:
+
+```yaml
+apiVersion: operator.openshift.io/v1alpha1
+kind: SpireServer
+metadata:
+  name: cluster
+spec:
+  trustDomain: internal-cluster.example.com
+  federation:
+    bundleEndpoint:
+      profile: https_spiffe
+      refreshHint: 300
+    federatesWith:
+      # Internal cluster using SPIFFE TLS
+      - trustDomain: dev-cluster.example.com
+        bundleEndpointUrl: https://federation.apps.dev-cluster.example.com
+        bundleEndpointProfile: https_spiffe
+        endpointSpiffeId: spiffe://dev-cluster.example.com/spire/server
+      # External partner using Web PKI
+      - trustDomain: partner.example.com
+        bundleEndpointUrl: https://federation.partner.example.com
+        bundleEndpointProfile: https_web
+      # Another external partner using Web PKI
+      - trustDomain: vendor.example.com
+        bundleEndpointUrl: https://spire-federation.vendor.example.com
+        bundleEndpointProfile: https_web
+    managedRoute: "true"
+```
+
+* The profile field cluster exposes its bundle using https_spiffe profile.
+* The bundleEndpointProfile field cluster exposes its bundle using https_spiffe profile.
+
+# Configuring SPIRE federation with the https_spiffe profile
+
+The Zero Trust Workload Identity Manager includes SPIRE Federation support, allowing multiple independent SPIRE deployments to establish trust relationships. This procedure demonstrates how to configure federation using the https_spiffe profile, which uses SPIFFE-based TLS authentication between SPIRE servers.
+
+* You have installed the OpenShift CLI (oc).
+* You have installed the Zero Trust Workload Identity Manager on all clusters that will participate in the federation.
+* You have cluster-admin privileges on all participating clusters.
+* You have network connectivity between the clusters you intend to federate.
+
+1. Configure the SpireServer custom resource on each cluster to enable federation with the https_spiffe profile. The https_spiffe profile uses SPIFFE-based TLS authentication, where SPIRE servers authenticate to each other using their own SVIDs (SPIFFE Verifiable Identity Documents).
+
+```yaml
+apiVersion: operator.openshift.io/v1alpha1
+kind: SpireServer
+metadata:
+  name: cluster
+spec:
+  trustDomain: cluster1.example.com
+  federation:
+    bundleEndpoint:
+      profile: https_spiffe
+      refreshHint: 300
+    managedRoute: "true"
+```
+
+* The trustDomain field sets a unique trust domain for each cluster.
+* The profile field uses the https_spiffe profile for SPIFFE-based TLS authentication.
+* The refreshHint field suggests intervals (in seconds) for remote servers to refresh the trust bundle. Range: 60-3600 seconds.
+* The managedRoute field enables automatic route creation by the Operator.
+2. Apply the configuration changes by running the following command:
+
+```terminal
+$ oc apply -f spire-server.yaml
+```
+
+3. Check the status of the SPIRE Server by entering the following command. Wait for the Ready status to be returned.
+
+```terminal
+$ oc get spireserver cluster -w
+```
+
+4. Verify that the federation route has been created:
+
+```terminal
+$ oc get route -n zero-trust-workload-identity-manager | grep federation
+```
+
+Example output
+
+```terminal
+NAME                      HOST/PORT                                    PATH   SERVICES        PORT    TERMINATION
+spire-server-federation   federation.apps.cluster1.example.com               spire-server     8443    passthrough
+```
+
+5. Fetch the trust bundle from each remote cluster's federation endpoint:
+
+```terminal
+$  curl -k https://federation.apps.cluster2.example.com > cluster2-bundle.json
+```
+
+
+[NOTE]
+----
+For https_spiffe profile, you might need to use -k flag if the certificate is not trusted by your system's CA bundle:
+----
+
+The response contains the trust bundle in JSON Web Key Set (JWKS) format:
+Example trust bundle
+
+```json
+{
+  "keys": [
+    {
+      "use": "x509-svid",
+      "kty": "RSA",
+      "n": "...",
+      "e": "AQAB",
+      "x5c": ["..."]
+    }
+  ],
+  "spiffe_sequence": 1,
+  "refresh_hint": 300
+}
+```
+
+6. Create ClusterFederatedTrustDomain resources for each remote trust domain.
+1. On Cluster 1, create a resource to federate with Cluster 2:
+
+```yaml
+apiVersion: spire.spiffe.io/v1alpha1
+kind: ClusterFederatedTrustDomain
+metadata:
+  name: cluster2-federation
+spec:
+  trustDomain: cluster2.example.com
+  bundleEndpointURL: https://federation.apps.cluster2.example.com
+  bundleEndpointProfile:
+    type: https_spiffe
+    endpointSPIFFEID: spiffe://cluster2.example.com/spire/server
+  trustDomainBundle: |
+    {
+      "keys": [
+        {
+          "use": "x509-svid",
+          "kty": "RSA",
+          "n": "...",
+          "e": "AQAB",
+          "x5c": ["..."]
+        }
+      ],
+      "spiffe_sequence": 1
+    }
+```
+
+* The endpointSPIFFEID field contains the SPIFFE ID of the remote SPIRE server. Required for https_spiffe profile to validate the remote server's identity.
+* The trustDomainBundle contains the complete trust bundle JSON that you fetched in the previous step.
+7. Apply the ClusterFederatedTrustDomain resource by running the following command:
+
+```terminal
+$ oc apply -f clusterfederatedtrustdomain.yaml
+```
+
+8. Repeat steps 5-7 on each cluster for every remote cluster it should federate with. For bidirectional federation, each cluster needs a ClusterFederatedTrustDomain resource for every other cluster.
+9. Update the SpireServer resource on each cluster to add the federatesWith configuration:
+
+```yaml
+apiVersion: operator.openshift.io/v1alpha1
+kind: SpireServer
+metadata:
+  name: cluster
+spec:
+  trustDomain: cluster1.example.com
+  federation:
+    bundleEndpoint:
+      profile: https_spiffe
+      refreshHint: 300
+    federatesWith:
+      - trustDomain: cluster2.example.com
+        bundleEndpointUrl: https://federation.apps.cluster2.example.com
+        bundleEndpointProfile: https_spiffe
+        endpointSpiffeId: spiffe://cluster2.example.com/spire/server
+      - trustDomain: cluster3.example.com
+        bundleEndpointUrl: https://federation.apps.cluster3.example.com
+        bundleEndpointProfile: https_spiffe
+        endpointSpiffeId: spiffe://cluster3.example.com/spire/server
+    managedRoute: "true"
+```
+
+* The federatesWith field lists all remote trust domains this cluster should federate with.
+10. Apply the updated configuration by running the following command:
+
+```terminal
+$ oc apply -f spireserver.yaml
+```
+
+
+1. Verify that the ClusterFederatedTrustDomain resources have been created by running the following command:
+
+```terminal
+$ oc get clusterfederatedtrustdomains
+```
+
+Example output
+
+```terminal
+NAME                  TRUST DOMAIN           ENDPOINT URL                                      AGE
+cluster2-federation   cluster2.example.com   https://federation.apps.cluster2.example.com     5m
+cluster3-federation   cluster3.example.com   https://federation.apps.cluster3.example.com     5m
+```
+
+2. Check the status of a ClusterFederatedTrustDomain to ensure bundle synchronization is working by running the following command:
+
+```terminal
+$ oc describe clusterfederatedtrustdomain cluster2-federation
+```
+
+
+Look for successful status conditions indicating that the trust bundle has been synchronized.
+3. Verify that the federation endpoint is accessible by running the following command:
+
+```terminal
+$ curl https://federation.apps.cluster1.example.com
+```
+
+
+You should receive a JSON response containing the trust bundle.
+4. Check the SPIRE Server logs to confirm federation is active by running the following command:
+
+```terminal
+$ oc logs -n zero-trust-workload-identity-manager \
+    deployment/spire-server -c spire-server --tail=50
+```
+
+
+Look for log messages indicating successful bundle synchronization with federated trust domains.
+
+# Using SPIRE federation with Automatic Certificate Management Environment protocol
+
+Using SPIRE federation with Automatic Certificate Management Environment (ACME) protocol provides automatic certificate provisioning from Let&#8217;s Encrypt. ACME also enables automatic certificate renewal before expiration, eliminating manual certificate management overhead.
+
+* You have installed the Zero Trust Workload Identity Manager on all clusters that will participate in the federation.
+* You have installed the OpenShift CLI (oc).
+* You have cluster-admin privileges on all participating clusters.
+* Your federation endpoints must be publicly accessible for Let's Encrypt HTTP-01 challenge validation.
+* You have network connectivity between all federated clusters.
+
+1. Configure the SpireServer custom resource on each cluster to enable federation with ACME certificate management.
+
+Create or update your SpireServer resource with the federation configuration:
+
+```yaml
+apiVersion: operator.openshift.io/v1alpha1
+kind: SpireServer
+metadata:
+  name: cluster
+spec:
+  trustDomain: cluster1.example.com
+  federation:
+    bundleEndpoint:
+      profile: https_web
+      refreshHint: 300
+      httpsWeb:
+        acme:
+          directoryUrl: https://acme-v02.api.letsencrypt.org/directory
+          domainName: federation.apps.cluster1.example.com
+          email: admin@example.com
+          tosAccepted: "true"
+    managedRoute: "true"
+```
+
+* The trustDomain field sets a unique trust domain for each cluster (for example, cluster1.example.com, cluster2.example.com).
+* The profile field uses the https_web profile for ACME-based certificate management.
+* The directoryUrl field contains the Let's Encrypt production directory URL. For testing, use: https://acme-staging-v02.api.letsencrypt.org/directory.
+* The domainName field is the domain name where your federation endpoint is accessible. This automatically sets to federation.<cluster-apps-domain> if managedRoute is set to "true".
+* The email field is your email address for ACME account registration and certificate expiration notifications.
+* The tosAccepted field accepts the Let's Encrypt Terms of Service.
+* The managedRoute field enables an automatic route creation by the operator for the federation bundle endpoint.
+2. Apply the configuration to each cluster by running the following command:
+
+```terminal
+$ oc apply -f spireserver.yaml
+```
+
+3. Check the status of the SPIRE Server by entering the following command. Wait for the Ready status to be returned before proceeding to the next step.
+
+```terminal
+$ oc get spireserver cluster -w
+```
+
+Example output
+
+```terminal
+NAME      STATUS   AGE
+cluster   Ready    5m
+```
+
+4. Verify that the federation route has been created by running the following command:
+
+```terminal
+$ oc get route -n zero-trust-workload-identity-manager | grep federation
+```
+
+Example output
+
+```terminal
+NAME                      HOST/PORT                                          PATH   SERVICES        PORT   TERMINATION
+spire-server-federation   federation.apps.cluster1.example.com                     spire-server     8443    passthrough
+```
+
+5. On each cluster, fetch the trust bundle from the federation endpoint by running the following command:
+
+```terminal
+$ curl https://federation.apps.cluster1.example.com > cluster1-bundle.json
+```
+
+
+The response contains the trust bundle in JSON Web Key Set (JWKS) format:
+Example trust bundle
+
+```json
+{
+  "keys": [
+    {
+      "use": "x509-svid",
+      "kty": "RSA",
+      "n": "...",
+      "e": "AQAB",
+      "x5c": ["..."]
+    }
+  ],
+  "spiffe_sequence": 1,
+  "refresh_hint": 300
+}
+```
+
+6. Create ClusterFederatedTrustDomain resources to establish federation relationships.
+1. On Cluster 1, create resources to federate with Cluster 2 and Cluster 3:
+
+```yaml
+apiVersion: spire.spiffe.io/v1alpha1
+kind: ClusterFederatedTrustDomain
+metadata:
+  name: cluster2-federation
+spec:
+  trustDomain: cluster2.example.com
+  bundleEndpointURL: https://federation.apps.cluster2.example.com
+  bundleEndpointProfile:
+    type: https_web
+  trustDomainBundle: |
+    {
+      "keys": [...],
+      "spiffe_sequence": 1
+    }
+---
+apiVersion: spire.spiffe.io/v1alpha1
+kind: ClusterFederatedTrustDomain
+metadata:
+  name: cluster3-federation
+spec:
+  trustDomain: cluster3.example.com
+  bundleEndpointURL: https://federation.apps.cluster3.example.com
+  bundleEndpointProfile:
+    type: https_web
+  trustDomainBundle: |
+    {
+      "keys": [...],
+      "spiffe_sequence": 1
+    }
+```
+
+* The trustDomainBundle field contains the complete trust bundle JSON that you fetched using curl in step 5.
+7. Apply the ClusterFederatedTrustDomain resources by running the following command:
+
+```terminal
+$ oc apply -f cluster-federated-trust-domains.yaml
+```
+
+8. Repeat steps 6 and 7 on each cluster to establish bidirectional federation. Each cluster needs ClusterFederatedTrustDomain resources for every other cluster it federates with.
+9. Update the SpireServer resource on each cluster to add the federatesWith configuration:
+
+```yaml
+apiVersion: operator.openshift.io/v1alpha1
+kind: SpireServer
+metadata:
+  name: cluster
+spec:
+  # ... existing configuration ...
+  federation:
+    bundleEndpoint:
+      # ... existing bundleEndpoint configuration ...
+    federatesWith:
+      - trustDomain: cluster2.example.com
+        bundleEndpointUrl: https://federation.apps.cluster2.example.com
+        bundleEndpointProfile: https_web
+      - trustDomain: cluster3.example.com
+        bundleEndpointUrl: https://federation.apps.cluster3.example.com
+        bundleEndpointProfile: https_web
+    managedRoute: "true"
+```
+
+* The federatesWith field lists all remote trust domains this cluster should federate with.
+10. Apply the updated configuration by running the following command:
+
+```terminal
+$ oc apply -f spireserver.yaml
+```
+
+
+1. Verify that the ClusterFederatedTrustDomain resources have been created by running the following command:
+
+```terminal
+$ oc get clusterfederatedtrustdomains
+```
+
+Example output
+
+```terminal
+NAME                  TRUST DOMAIN          ENDPOINT URL                                   AGE
+cluster2-federation   cluster2.example.com  https://federation.apps.cluster2.example.com   5m
+cluster3-federation   cluster3.example.com  https://federation.apps.cluster3.example.com   5m
+```
+
+2. Check the status of a ClusterFederatedTrustDomain to ensure bundle synchronization is working by running the following command:
+
+```terminal
+$ oc describe clusterfederatedtrustdomain cluster2-federation
+```
+
+
+Look for Successful status conditions indicating that the trust bundle has been synchronized.
+3. Verify that the federation endpoint is accessible and serving the trust bundle by running the following command:
+
+```terminal
+$ curl https://federation.apps.cluster1.example.com
+```
+
+
+You should receive a JSON response containing the trust bundle.
+4. Check the SPIRE Server logs to confirm federation is active by running the following command:
+
+```terminal
+$ oc logs -n zero-trust-workload-identity-manager deployment/spire-server -c spire-server --tail=50
+```
+
+
+Look for log messages indicating successful bundle synchronization with federated trust domains.
+5. Verify that all SPIRE components are running by running the following command:
+
+```terminal
+$ oc get pods -n zero-trust-workload-identity-manager
+```
+
+Example output
+
+```terminal
+NAME                    READY   STATUS    RESTARTS   AGE
+spire-agent-abcde       1/1     Running   0          10m
+spire-server-0          2/2     Running   0          10m
+```
+
+6. Optional: Test cross-cluster workload authentication by deploying workloads with SPIFFE identities on different clusters and verifying they can authenticate to each other using the federated trust.
+
+# Using SPIRE federation with manual certificate management
+
+You can use SPIRE federation with custom certificate management using cert-manager or other certificate providers. This approach provides flexibility for organizations that require control over certificate issuance, support for internal certificate authorities (CAs), or integration with existing certificate management infrastructure.
+
+* You have installed the Zero Trust Workload Identity Manager on all clusters that will participate in the federation.
+* You have installed the OpenShift CLI (oc).
+* You have cluster-admin privileges on all participating clusters.
+* You have installed the cert-manager Operator for Red Hat OpenShift. For more information, see cert-manager Operator for Red Hat OpenShift.
+* Your federation endpoints must be publicly accessible for certificate validation.
+* You have network connectivity between all federated clusters.
+
+1. Install the cert-manager Operator on the cluster where you want to use externally managed certificates.
+
+Create a namespace and install the operator:
+
+```yaml
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: cert-manager-operator
+---
+apiVersion: operators.coreos.com/v1
+kind: OperatorGroup
+metadata:
+  name: openshift-cert-manager-operator
+  namespace: cert-manager-operator
+spec:
+  upgradeStrategy: Default
+---
+apiVersion: operators.coreos.com/stable-v1
+kind: Subscription
+metadata:
+  name: openshift-cert-manager-operator
+  namespace: cert-manager-operator
+spec:
+  source: redhat-operators
+  sourceNamespace: openshift-marketplace
+  name: openshift-cert-manager-operator
+  channel: stable-v1
+```
+
+2. Apply the cert-manager installation by running the following command:
+
+```terminal
+$ oc apply -f cert-manager-install.yaml
+```
+
+3. Check the status of the cert-manager Operator by entering the following command:
+
+```terminal
+$ oc get pods -n cert-manager
+```
+
+
+All cert-manager pods should be in Running status.
+4. Create an Issuer for certificate provisioning.
+
+For Let&#8217;s Encrypt with HTTP-01 challenge:
+
+```yaml
+apiVersion: cert-manager.io/v1
+kind: Issuer
+metadata:
+  name: letsencrypt-http01
+  namespace: zero-trust-workload-identity-manager
+spec:
+  acme:
+    server: https://acme-v02.api.letsencrypt.org/directory
+    privateKeySecretRef:
+      name: letsencrypt-account-key
+    solvers:
+      - http01:
+          ingress:
+            ingressClassName: openshift-default
+```
+
+
+Alternatively, for an internal CA:
+
+```yaml
+apiVersion: cert-manager.io/v1
+kind: Issuer
+metadata:
+  name: internal-ca
+  namespace: zero-trust-workload-identity-manager
+spec:
+  ca:
+    secretName: internal-ca-key-pair
+```
+
+5. Apply the Issuer by running the following command:
+
+```terminal
+$ oc apply -f issuer.yaml
+```
+
+6. Determine the federation endpoint domain name.
+
+The federation route follows a predictable naming pattern if managedRoute is set to true. Get your cluster&#8217;s application domain by running the following command:
+
+```terminal
+$ CLUSTER_DOMAIN=$(oc get ingresses.config/cluster -o jsonpath='{.spec.domain}')
+$ FEDERATION_DOMAIN="federation.${CLUSTER_DOMAIN}"
+$ echo "Federation domain will be: $FEDERATION_DOMAIN"
+```
+
+Example output
+
+```terminal
+Federation domain will be: federation.apps.cluster1.example.com
+```
+
+
+[NOTE]
+----
+The federation route is created automatically if managedRoute is set to true when you apply the SpireServer configuration in a later step. The route name is spire-server-federation and the hostname is federation.<cluster-apps-domain>.
+----
+7. Create a Certificate resource to request a TLS certificate.
+
+Use the federation domain determined in the previous step:
+
+```yaml
+apiVersion: cert-manager.io/v1
+kind: Certificate
+metadata:
+  name: spire-server-federation-tls
+  namespace: zero-trust-workload-identity-manager
+spec:
+  secretName: spire-server-federation-tls
+  duration: 2160h
+  renewBefore: 360h
+  commonName: federation.apps.cluster1.example.com
+  dnsNames:
+    - federation.apps.cluster1.example.com
+  usages:
+    - server auth
+    - digital signature
+    - key encipherment
+  issuerRef:
+    kind: Issuer
+    name: letsencrypt-http01
+```
+
+* The secretName field must match the externalSecretRef value in SpireServer.
+* The duration field shows how long a certificate is valid. Certificates are valid for 90 days.
+* The renewBefore field shows how many days a certificate must be renewed before it expires. Renew a certificate 15 days before expiration.
+* The commonName field must be replaced with your actual federation domain from the previous step.
+* The dnsNames field must match the commonName and the actual route hostname that was created.
+* The name field must reference the Issuer that was created earlier.
+8. Apply the Certificate resource by running the following command:
+
+```terminal
+$ oc apply -f certificate.yaml
+```
+
+9. Monitor the certificate issuance by running the following command:
+
+```terminal
+$ oc get certificate spire-server-federation-tls \
+    -n zero-trust-workload-identity-manager -w
+```
+
+Example output when ready
+
+```terminal
+NAME                            READY   SECRET                          AGE
+spire-server-federation-tls     True    spire-server-federation-tls     2m
+```
+
+10. Create RBAC permissions for the OpenShift Ingress Router to access the certificate secret.
+
+Create a Role by running the following command:
+
+```terminal
+$ oc create role secret-reader \
+    --verb=get,list,watch \
+    --resource=secrets \
+    --resource-name=spire-server-federation-tls \
+    -n zero-trust-workload-identity-manager
+```
+
+
+Create a RoleBinding by running the following command:
+
+```terminal
+$ oc create rolebinding secret-reader-binding \
+    --role=secret-reader \
+    --serviceaccount=openshift-ingress:router \
+    -n zero-trust-workload-identity-manager
+```
+
+11. Configure the SpireServer custom resource to use manual certificate management.
+
+Now that the certificate is ready, configure the SpireServer to reference it:
+
+```yaml
+apiVersion: operator.openshift.io/v1alpha1
+kind: SpireServer
+metadata:
+  name: cluster
+spec:
+  trustDomain: cluster1.example.com
+  federation:
+    bundleEndpoint:
+      profile: https_web
+      refreshHint: 300
+      httpsWeb:
+        servingCert:
+          fileSyncInterval: 86400
+          externalSecretRef: spire-server-federation-tls
+    managedRoute: "true"
+```
+
+* The profile field must use https_web profile for certificate-based authentication.
+* The fileSyncInterval field checks for certificate updates every 24 hours (86400 seconds). Range: 3600-7776000 seconds.
+* The externalSecretRef field is the name of the secret containing the TLS certificate and private key. Must match the certificate secret created in the previous steps.
+12. Apply the configuration by running the following command:
+
+```terminal
+$ oc apply -f spireserver.yaml
+```
+
+13. Wait for the SPIRE Server to be ready:
+
+```terminal
+$ oc get spireserver cluster -n zero-trust-workload-identity-manager -w
+```
+
+
+Wait until the status shows Ready.
+14. Verify that the federation route was created by running the following command:
+
+```terminal
+$ oc get route spire-server-federation -n zero-trust-workload-identity-manager
+```
+
+Example output
+
+```terminal
+NAME                      HOST/PORT                                  PATH   SERVICES        PORT    TERMINATION
+spire-server-federation   federation.apps.cluster1.example.com              spire-server    8443    reencrypt
+```
+
+
+Verify that the route hostname matches the domain name used in your certificate.
+15. Verify that the federation endpoint is accessible by running the following command:
+
+```terminal
+$ curl https://$(oc get route spire-server-federation \
+    -n zero-trust-workload-identity-manager \
+    -o jsonpath='{.spec.host}')
+```
+
+
+You should receive a JSON response containing the trust bundle.
+16. Fetch the trust bundle from each federation endpoint that you want to federate with.
+
+For each remote cluster, fetch its trust bundle by running the following commands:
+
+```terminal
+$ curl https://federation.apps.cluster1.example.com > cluster1-bundle.json
+$ curl https://federation.apps.cluster2.example.com > cluster2-bundle.json
+```
+
+
+The trust bundle is in JSON Web Key Set (JWKS) format:
+Example trust bundle
+
+```json
+{
+  "keys": [
+    {
+      "use": "x509-svid",
+      "kty": "RSA",
+      "n": "xGOzB...",
+      "e": "AQAB",
+      "x5c": ["MIIC..."]
+    }
+  ],
+  "spiffe_sequence": 1,
+  "refresh_hint": 300
+}
+```
+
+17. Create ClusterFederatedTrustDomain resources for each remote trust domain you want to federate with:
+
+```yaml
+apiVersion: spire.spiffe.io/v1alpha1
+kind: ClusterFederatedTrustDomain
+metadata:
+  name: cluster1-federation
+spec:
+  trustDomain: cluster1.example.com
+  bundleEndpointURL: https://federation.apps.cluster1.example.com
+  bundleEndpointProfile:
+    type: https_web
+  trustDomainBundle: |
+    {
+      "keys": [
+        {
+          "use": "x509-svid",
+          "kty": "RSA",
+          "n": "xGOzB...",
+          "e": "AQAB",
+          "x5c": ["MIIC..."]
+        }
+      ],
+      "spiffe_sequence": 1
+    }
+---
+apiVersion: spire.spiffe.io/v1alpha1
+kind: ClusterFederatedTrustDomain
+metadata:
+  name: cluster2-federation
+spec:
+  trustDomain: cluster2.example.com
+  bundleEndpointURL: https://federation.apps.cluster2.example.com
+  bundleEndpointProfile:
+    type: https_web
+  trustDomainBundle: |
+    {
+      "keys": [...],
+      "spiffe_sequence": 1
+    }
+```
+
+* The trustDomainBundle field contains the complete trust bundle JSON that you fetched in the previous step.
+18. Apply the ClusterFederatedTrustDomain resources by running the following command:
+
+```terminal
+$ oc apply -f clusterfederatedtrustdomains.yaml
+```
+
+19. Update the SpireServer resource to add the federatesWith configuration:
+
+```yaml
+apiVersion: operator.openshift.io/v1alpha1
+kind: SpireServer
+metadata:
+  name: cluster
+spec:
+  trustDomain: cluster3.example.com
+  federation:
+    bundleEndpoint:
+      profile: https_web
+      refreshHint: 300
+      httpsWeb:
+        servingCert:
+          fileSyncInterval: 86400
+          externalSecretRef: spire-server-federation-tls
+    federatesWith:
+      - trustDomain: cluster1.example.com
+        bundleEndpointUrl: https://federation.apps.cluster1.example.com
+        bundleEndpointProfile: https_web
+
+      - trustDomain: cluster2.example.com
+        bundleEndpointUrl: https://federation.apps.cluster2.example.com
+        bundleEndpointProfile: https_web
+    managedRoute: "true"
+```
+
+* The federatesWith field lists all remote trust domains this cluster should federate with.
+20. Apply the updated configuration by running the following command:
+
+```terminal
+$ oc apply -f spireserver.yaml
+```
+
+21. Repeat steps 1-15 on each cluster that participates in the federation, ensuring that:
+* Each cluster has cert-manager installed and configured
+* Each cluster has its own certificate created and ready before applying the SpireServer configuration
+* Each cluster has the RBAC for the ingress router configured
+* Each cluster has ClusterFederatedTrustDomain resources for every other cluster it federates with
+* Each cluster's SpireServer has the complete federatesWith list
+
+1. Verify that the certificate has been issued successfully by running the following command:
+
+```terminal
+$ oc get certificate spire-server-federation-tls \
+    -n zero-trust-workload-identity-manager
+```
+
+Example output
+
+```terminal
+NAME                            READY   SECRET                          AGE
+spire-server-federation-tls     True    spire-server-federation-tls     5m
+```
+
+2. Check the certificate details and expiration by running the following command:
+
+```terminal
+$ oc get secret spire-server-federation-tls \
+    -n zero-trust-workload-identity-manager \
+    -o jsonpath='{.data.tls\.crt}' | base64 -d | openssl x509 -noout -dates
+```
+
+Example output
+
+```terminal
+notBefore=Dec 16 10:00:00 2025 GMT
+notAfter=Mar 16 10:00:00 2026 GMT
+```
+
+3. Verify that the RBAC permissions are configured correctly by running the following command:
+
+```terminal
+$ oc get role,rolebinding -n zero-trust-workload-identity-manager \
+    | grep secret-reader
+```
+
+Example output
+
+```terminal
+role.rbac.authorization.k8s.io/secret-reader
+rolebinding.rbac.authorization.k8s.io/secret-reader-binding
+```
+
+
+Verify the RoleBinding references the correct ServiceAccount by running the following command:
+
+```terminal
+$ oc describe rolebinding secret-reader-binding \
+    -n zero-trust-workload-identity-manager
+```
+
+Example output
+
+```terminal
+Name:         secret-reader-binding
+Namespace:    zero-trust-workload-identity-manager
+Role:
+  Kind:  Role
+  Name:  secret-reader
+Subjects:
+  Kind            Name    Namespace
+  ----            ----    ---------
+  ServiceAccount  router  openshift-ingress
+```
+
+4. Verify that the ClusterFederatedTrustDomain resources have been created by running the following command:
+
+```terminal
+$ oc get clusterfederatedtrustdomains
+```
+
+Example output
+
+```terminal
+NAME                  TRUST DOMAIN           ENDPOINT URL                                      AGE
+cluster1-federation   cluster1.example.com   https://federation.apps.cluster1.example.com     5m
+cluster2-federation   cluster2.example.com   https://federation.apps.cluster2.example.com     5m
+```
+
+5. Check the status of a ClusterFederatedTrustDomain to ensure bundle synchronization is working by running the following command:
+
+```terminal
+$ oc describe clusterfederatedtrustdomain cluster1-federation
+```
+
+
+Look for successful status conditions indicating that the trust bundle has been synchronized.
+6. Verify that the federation endpoint is accessible and using the correct certificate by running the following command:
+
+```terminal
+$ curl -v https://$(oc get route spire-server-federation \
+    -n zero-trust-workload-identity-manager \
+    -o jsonpath='{.spec.host}')
+```
+
+
+In the output, verify that the certificate presented is issued by your configured CA (Let&#8217;s Encrypt or internal CA).
+7. Check the SPIRE Server logs to confirm that by running the following command:
+* Federation is active with remote trust domains
+* Trust bundles are being synchronized
+* The bundle endpoint is serving correctly
+
+```terminal
+$ oc logs -n zero-trust-workload-identity-manager \
+    statefulset/spire-server -c spire-server --tail=100
+```
+
+
+Look for log messages indicating successful federation bundle synchronization.
+8. Verify that all SPIRE components are running by running the following command:
+
+```terminal
+$ oc get pods -n zero-trust-workload-identity-manager
+```
+
+Example output
+
+```terminal
+NAME                                    READY   STATUS    RESTARTS   AGE
+spire-agent-abc123                      1/1     Running   0          10m
+spire-server-0                          2/2     Running   0          10m
+```
+
+9. Optional: Test cross-cluster workload authentication by deploying workloads with SPIFFE identities on different clusters and verifying they can authenticate to each other using the federated trust.
+
+# Federation configuration field reference
+
+This reference provides detailed information about all configuration fields available for SPIRE federation in the SpireServer custom resource. Use this reference when customizing your federation setup.
+
+Top-level federation fields:: 
+
+
+
+bundleEndpoint configuration fields:: 
+
+
+
+httpsWeb configuration fields:: 
+
+
+
+ACME configuration fields:: 
+
+
+
+servingCert configuration fields:: 
+
+
+
+federatesWith configuration fields:: 
+
+
+
+Field validation rules:: The following validation rules are enforced by the operator:
+* Profile immutability: The bundleEndpoint.profile field cannot be changed after initial configuration. Changing it requires deleting and recreating the SpireServer resource (re-installation of the system).
+* Mutual exclusivity: Within httpsWeb, only one of acme or servingCert can be specified.
+* Conditional requirements: When profile is https_web, the httpsWeb object must be present with either acme or servingCert configured.
+* SPIFFE ID requirement: When bundleEndpointProfile is https_spiffe in the federatesWith list, the endpointSpiffeId field is required.
+* Array limits: The federatesWith array supports a maximum of 50 entries.
+* Numeric ranges:
+* refreshHint: 60-3600 seconds
+* fileSyncInterval: 3600-7776000 seconds
