@@ -1,0 +1,218 @@
+# Network observability per-tenant model
+
+
+Use the FlowCollectorSlice resource to delegate network traffic analysis management to project administrators while maintaining global cluster governance.
+
+# Per-tenant hierarchical governance and tenant autonomy
+
+Cluster administrators can maintain global governance while allowing project administrators to manage network traffic observability within their specific namespaces.
+
+The Network Observability Operator uses a hierarchical configuration model to support multitenancy. This architecture is beneficial for large-scale deployments and hosted control planes environments where individual teams require self-service visibility without cluster administrator intervention.
+
+The hierarchical model consists of the following components:
+
+Global governance:: The cluster administrator manages the global FlowCollector resource. This resource defines the observability infrastructure and determines if per-tenant configuration is permitted.
+Tenant autonomy:: The project administrator manages the FlowCollectorSlice resource. This namespace-scoped custom resource (CR) allows teams to define specific observability settings for their workloads.
+
+# FlowCollectorSlice resource for granular flow collection
+
+The FlowCollectorSlice is a custom resource definition (CRD) that enables granular, multi-tenant network flow collection. By defining logical slices based on namespaces or subnets, you can selectively collect traffic and apply custom sampling to specific workloads rather than the entire cluster.
+
+It complements the existing FlowCollector custom resource by enabling granular, selective, and multi-tenant-aware flow collection, instead of a single global configuration that applies uniformly to all traffic.
+
+When slice-based collection is enabled, only traffic that matches at least one FlowCollectorSlice is collected, allowing administrators to precisely control which network flows are observed.
+
+## Benefits of FlowCollectorSlice
+
+By default, network flow collection applies uniformly to all traffic in the cluster. This can result in excessive data volume and limited flexibility.
+
+Using FlowCollectorSlice provides the following benefits:
+
+* Enables selective flow collection for specific namespaces or workloads.
+* Supports multi-tenant and environment-based observability.
+* Reduces storage and processing costs by filtering irrelevant traffic.
+* Preserves backward compatibility through opt-in configuration.
+
+## Relationship between FlowCollector and FlowCollectorSlice
+
+While the FlowCollector resource defines global flow collection behavior for the cluster, the FlowCollectorSlice resource defines which traffic is eligible for collection when slice-based filtering is enabled.
+
+The FlowCollector.spec.slicesConfig field controls how slice definitions are applied.
+
+## Collection modes
+
+Slice behavior is governed by the FlowCollector.spec.slicesConfig.collectionMode field. Set the field to one of the following collection modes:
+
+AlwaysCollect:: 
+* Collects network flows from all cluster namespaces.
+* Applies the subnet and sampling configurations defined in FlowCollectorSlice resources.
+* Ignores the namespace selection logic in FlowCollectorSlice resources.
+* Maintains the default collection behavior for backward compatibility.
+AllowList:: 
+* Collects only traffic that matches at least one FlowCollectorSlice resource.
+* An optional namespace allow list includes selected namespaces in the collection.
+
+## FlowCollectorSlice status
+
+Each FlowCollectorSlice resource exposes a status subresource that reports:
+
+* Validation results.
+* Reconciliation state.
+* Whether the slice is successfully applied.
+
+This status allows administrators to verify that slice definitions are active and functioning as expected.
+
+# Enable the Network Observability Operator FlowCollectorSlice
+
+Enabling the FlowCollectorSlice feature in the FlowCollector resource allows cluster administrators to delegate flow collection and data enrichment management to specific namespaces.
+
+Before project administrators can manage their own settings, a cluster administrator must enable the FlowCollector custom resource to watch for the FlowCollectorSlice custom resource.
+
+* The Network Observability Operator is installed.
+* A FlowCollector custom resource exists in the cluster.
+* You have cluster-admin privileges.
+
+1. Edit the FlowCollector custom resource by running the following command:
+
+```terminal
+$ oc edit flowcollector cluster
+```
+
+2. Configure the spec.processor.slicesConfig field to define which namespaces are permitted to use slices:
+
+```yaml
+apiVersion: flows.netobserv.io/v1beta2
+kind: FlowCollector
+metadata:
+  name: cluster
+spec:
+  processor:
+    slicesConfig:
+      enable: true
+      collectionMode: AllowList
+      namespacesAllowList:
+       - /openshift-.*|netobserv.*/
+```
+
+
+where:
+spec.processor.sliceConfig.enable:: Specifies if the FlowCollectorSlice feature is enabled. If not, all resources of kind FlowCollectorSlice are ignored.
+spec.processor.sliceConfig.collectionMode:: Specifies how the FlowCollectorSlice custom resources impacts the flow collection process. When set to AlwaysCollect, all flows are collected regardless of the presence of FlowCollectorSlice. When set to AllowList, only the flows related to namespaces where a FlowCollectorSlice resource is present, or configured via the global namespacesAllowList, are collected.
+spec.processor.sliceConfig.namespacesAllowList:: Specifies a list of namespaces for which flows are always collected, regardless of the presence of FlowCollectorSlice in those namespaces.
+
+[NOTE]
+----
+The namespacesAllowList field supports regular expressions, such as /openshift-.*/ to capture multiple namespaces, or strict equality, such as netobserv, to match a specific namespace.
+----
+3. Save the changes and exit the editor.
+
+* Verify that only network flows from the netobserv namespace and namespaces starting with openshift- are displayed in the Network Traffic page of the web console.
+
+## Disable the Network Observability Operator FlowCollectorSlice
+
+Disable slice-based filtering in the Network Observability Operator to resume global flow collection while preserving existing FlowCollectorSlice resources.
+
+1. Edit the FlowCollector resource by running the following command:
+
+```terminal
+$ oc edit flowcollector cluster
+```
+
+2. Set the spec.processor.slicesConfig.collectionMode field to AlwaysCollect:
+
+```yaml
+apiVersion: flows.netobserv.io/v1beta2
+kind: FlowCollector
+metadata:
+  name: cluster
+spec:
+  processor:
+    slicesConfig:
+      enable: true
+      collectionMode: AlwaysCollect
+      ...
+```
+
+3. Save the changes.
+
+Flow collection resumes for all traffic, and existing FlowCollectorSlice resources remain available for future use.
+
+# Configure the FlowCollectorSlice as a project administrator
+
+Project administrators can manage flow collection and data enrichment within their own namespaces by configuring a FlowCollectorSlice custom resource for decentralized network traffic analysis.
+
+* The Network Observability Operator is installed.
+* You have project-admin permissions for the namespace.
+
+1. Create a YAML file named flowCollectorSlice.yaml:
+
+```yaml
+apiVersion: flows.netobserv.io/v1alpha1
+kind: FlowCollectorSlice
+metadata:
+  name: flowcollectorslice-sample
+  namespace: my-app
+spec:
+  sampling: 1
+  subnetLabels:
+    - name: EXT:Database
+      cidrs:
+        - 192.168.50.0/24
+```
+
+2. Apply the configuration by running the following command:
+
+```terminal
+$ oc apply -f flowCollectorSlice.yaml
+```
+
+
+1. In the Red Hat OpenShift Container Platform console, navigate to Observe -> Network Traffic.
+2. Ensure flows to 192.168.50.0/24 subnet are observed with the EXT:Database label.
+
+# FlowCollectorSlice [flows.netobserv.io/v1alpha1]
+
+Description:: 
+FlowCollectorSlice is the API allowing to decentralize some of the FlowCollector configuration per namespace tenant.
+Type:: object
+
+
+
+## .metadata
+
+Description:: 
+Standard object's metadata. More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#metadata
+Type:: object
+
+## .spec
+
+Description:: 
+FlowCollectorSliceSpec defines the desired state of FlowCollectorSlice
+Type:: object
+
+
+
+## .spec.subnetLabels
+
+Description:: 
+subnetLabels allows you to customize subnets and IPs labeling, such as to identify cluster external workloads or web services.
+External subnets must be labeled with the prefix EXT:, or not labeled at all, in order to work with default quick filters and some metrics examples provided.
+Beware that the subnet labels configured in FlowCollectorSlice are not limited to the flows of the related namespace: any flow
+in the whole cluster can be labeled using this configuration. However, subnet labels defined in the cluster-scoped FlowCollector take
+precedence in case of conflicting rules.
+Type:: array
+
+## .spec.subnetLabels[]
+
+Description:: 
+SubnetLabel allows to label subnets and IPs, such as to identify cluster-external workloads or web services.
+Type:: object
+Required:: 
+* cidrs
+* name
+
+
+
+# Additional resources
+
+* FlowCollector API reference

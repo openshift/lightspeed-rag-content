@@ -1,13 +1,11 @@
 # Configuring virtual GPUs
 
 
-If you have graphics processing unit (GPU) cards, OpenShift Virtualization can automatically create virtual GPUs (vGPUs) that you can assign to virtual machines (VMs).
+Use the NVIDIA GPU operator to create virtual GPUs (vGPUs) and assign them to virtual machines (VMs) in OpenShift Virtualization.
 
 # About using virtual GPUs with OpenShift Virtualization
 
-Some graphics processing unit (GPU) cards support the creation of virtual GPUs (vGPUs). OpenShift Virtualization can automatically create vGPUs and other mediated devices if an administrator provides configuration details in the HyperConverged custom resource (CR).
-
-This automation is especially useful for large clusters.
+You can create vGPUs for your VMs using supported GPU cards. You can use the NVIDIA GPU Operator to manage the lifecycle and creation of these vGPUs on the cluster nodes. You must add these devices to the HyperConverged custom resource (CR) so that OpenShift Virtualization can discover and make them available to virtual machines.
 
 
 [NOTE]
@@ -48,11 +46,9 @@ spec:
 # ...
 ```
 
-
-where:
-<apiversion>:: Applies the new kernel argument only to worker nodes.
-<name>:: Indicates the ranking of this kernel argument (100) among the machine configs and its purpose. If you have an AMD CPU, specify the kernel argument as amd_iommu=on.
-<intel_iommu=o>:: Identifies the kernel argument as intel_iommu for an Intel CPU.
+* metadata.labels.machineconfiguration.openshift.io/role specifies that the new kernel argument is applied only to worker nodes.
+* metadata.name specifies the ranking of this kernel argument (100) among the machine configs and its purpose. If you have an AMD CPU, specify the kernel argument as amd_iommu=on.
+* spec.kernelArguments specifies the kernel argument as intel_iommu for an Intel CPU.
 2. Create the new MachineConfig object:
 
 ```terminal
@@ -109,140 +105,101 @@ You can use the NVIDIA GPU Operator to provision worker nodes for running GPU-ac
 The NVIDIA GPU Operator is supported only by NVIDIA. For more information, see Obtaining Support from NVIDIA in the Red Hat Knowledgebase.
 ----
 
-## About using the NVIDIA GPU Operator
+## Using the NVIDIA GPU Operator
 
-You can use the NVIDIA GPU Operator with OpenShift Virtualization to rapidly provision worker nodes for running GPU-enabled virtual machines (VMs). The NVIDIA GPU Operator manages NVIDIA GPU resources in an Red Hat OpenShift Container Platform cluster and automates tasks that are required when preparing nodes for GPU workloads.
+You can use the NVIDIA GPU Operator with OpenShift Virtualization to accelerate the deployment of worker nodes for running GPU-enabled virtual machines (VMs). The NVIDIA GPU Operator manages NVIDIA GPU resources in an Red Hat OpenShift Container Platform cluster and automates tasks when preparing nodes for GPU workloads.
 
-Before you can deploy application workloads to a GPU resource, you must install components such as the NVIDIA drivers that enable the compute unified device architecture (CUDA), Kubernetes device plugin, container runtime, and other features, such as automatic node labeling and monitoring. By automating these tasks, you can quickly scale the GPU capacity of your infrastructure. The NVIDIA GPU Operator can especially facilitate provisioning complex artificial intelligence and machine learning (AI/ML) workloads.
+The NVIDIA GPU Operator can also facilitate provisioning complex artificial intelligence and machine learning (AI/ML) workloads.
 
-## Options for configuring mediated devices
-
-There are two available methods for configuring mediated devices when using the NVIDIA GPU Operator. The method that Red Hat tests uses OpenShift Virtualization features to schedule mediated devices, while the NVIDIA method only uses the GPU Operator.
-
-Using the NVIDIA GPU Operator to configure mediated devices:: This method exclusively uses the NVIDIA GPU Operator to configure mediated devices. To use this method, refer to NVIDIA GPU Operator with OpenShift Virtualization in the NVIDIA documentation.
-Using OpenShift Virtualization to configure mediated devices:: This method, which is tested by Red Hat, uses OpenShift Virtualization's capabilities to configure mediated devices. In this case, the NVIDIA GPU Operator is only used for installing drivers with the NVIDIA vGPU Manager. The GPU Operator does not configure mediated devices.
-
-When using the OpenShift Virtualization method, you still configure the GPU Operator by following the NVIDIA documentation. However, this method differs from the NVIDIA documentation in the following ways:
-* You must not overwrite the default disableMDEVConfiguration: false setting in the HyperConverged custom resource (CR).
-
-[IMPORTANT]
-----
-Setting this feature gate as described in the NVIDIA documentation prevents OpenShift Virtualization from configuring mediated devices.
-----
-* You must configure your ClusterPolicy manifest so that it matches the following example:
+1. Configure your ClusterPolicy manifest. Your ClusterPolicy manifest must match the provided example:
 
 ```yaml
-kind: ClusterPolicy
 apiVersion: nvidia.com/v1
+kind: ClusterPolicy
 metadata:
   name: gpu-cluster-policy
 spec:
-  operator:
-    defaultRuntime: crio
-    use_ocp_driver_toolkit: true
-    initContainer: {}
-  sandboxWorkloads:
-    enabled: true
-    defaultWorkload: vm-vgpu
-  driver:
-    enabled: false
-  dcgmExporter: {}
+  daemonsets:
+    updateStrategy: RollingUpdate
   dcgm:
     enabled: true
-  daemonsets: {}
+  dcgmExporter: {}
   devicePlugin: {}
+  driver:
+    enabled: false
+    kernelModuleType: auto
   gfd: {}
+  mig:
+    strategy: single
   migManager:
     enabled: true
   nodeStatusExporter:
     enabled: true
-  mig:
-    strategy: single
+  operator:
+    defaultRuntime: crio
+    initContainer: {}
+    runtimeClass: nvidia
+    use_ocp_driver_toolkit: true
+  sandboxDevicePlugin:
+    enabled: true
+  sandboxWorkloads:
+    defaultWorkload: vm-vgpu
+    enabled: true
   toolkit:
     enabled: true
+    installDir: /usr/local/nvidia
   validator:
     plugin:
       env:
-        - name: WITH_WORKLOAD
-          value: "true"
+      - name: WITH_WORKLOAD
+        value: "true"
+  vfioManager:
+    enabled: true
+  vgpuDeviceManager:
+    config:
+      default: default
+      name: vgpu-devices-config
+    enabled: true
   vgpuManager:
     enabled: true
-    repository: <vgpu_container_registry>
     image: <vgpu_image_name>
+    repository: <vgpu_container_registry>
     version: <nvidia_vgpu_manager_version>
-  vgpuDeviceManager:
-    enabled: false
-  sandboxDevicePlugin:
-    enabled: false
-  vfioManager:
-    enabled: false
 ```
 
-* spec.drive.enabled is set to false. This is not required for VMs.
-* spec.vgpuManager.enabled is set to true. This is required if you want to use vGPUs with VMs.
-* spec.vgpuManager.repository is set to your registry value.
-* spec.vgpuManager.version is set to the version of the vGPU driver you have downloaded from the NVIDIA website and used to build the image.
-* spec.vgpuDeviceManager.enabled is set to false to allow OpenShift Virtualization to configure mediated devices instead of the NVIDIA GPU Operator.
-* spec.sandboxDevicePlugin.enabled is set to false to prevent discovery and advertising of the vGPU devices to the kubelet.
-* spec.vfioManager.enabled is set to false to prevent loading the vfio-pci driver. Instead, follow the OpenShift Virtualization documentation to configure PCI passthrough.
+
+where:
+<vgpu_image_name>:: Specifies the vGPU image name.
+<vgpu_container_registry>:: Specifies the vGPU container registry value.
+<nvidia_vgpu_manager_version>:: Specifies the version of the vGPU driver you have downloaded from the NVIDIA website and used to build the image.
+2. Use the NVIDIA GPU Operator to configure mediated devices. For more information see NVIDIA GPU Operator with OpenShift Virtualization.
+
+## Labeling nodes with a MIG-backed vGPU profile
+
+If you have GPUs that support NVIDIA Multi-Instance GPU (MIG), you can select a MIG-backed vGPU instance instead of time-sliced vGPU instances. When you use MIG, you give a partition of dedicated hardware to selected VMs.
+
+* You have configured vGPU support. For more information see MIG Support in Red Hat OpenShift Container Platform.
+* You have the NVIDIA GPU Operator version 25.10 or higher.
+* You are using the NVIDIA AI Enterprise (AIE) vGPU Manager image.
+
+* Label the node with the name of the MIG-backed vGPU profile:
+
+```terminal
+$ oc label node <node> --overwrite nvidia.com/vgpu.config=<profile>
+```
+
+* Replace <node> with the fully qualified domain name (FQDN) of your compute node.
+* Replace <profile> with a supported MIG profile.
+
+
+```terminal
+$ oc label node worker_1 --overwrite nvidia.com/vgpu.config=A30-1-6C
+```
+
+
+For more information about MIG profiles, see the MIG User Guide.
 
 * Configuring PCI passthrough
-
-# How vGPUs are assigned to nodes
-
-For each physical device, OpenShift Virtualization configures the following values:
-
-* A single mdev type.
-* The maximum number of instances of the selected mdev type.
-
-The cluster architecture affects how devices are created and assigned to nodes.
-
-Large cluster with multiple cards per node:: On nodes with multiple cards that can support similar vGPU types, the relevant device types are created in a round-robin manner.
-For example:
-
-```yaml
-# ...
-mediatedDevicesConfiguration:
-  mediatedDeviceTypes:
-  - nvidia-222
-  - nvidia-228
-  - nvidia-105
-  - nvidia-108
-# ...
-```
-
-
-In this scenario, each node has two cards, both of which support the following vGPU types:
-
-```yaml
-nvidia-105
-# ...
-nvidia-108
-nvidia-217
-nvidia-299
-# ...
-```
-
-
-On each node, OpenShift Virtualization creates the following vGPUs:
-* 16 vGPUs of type nvidia-105 on the first card.
-* 2 vGPUs of type nvidia-108 on the second card.
-One node has a single card that supports more than one requested vGPU type:: OpenShift Virtualization uses the supported type that comes first on the mediatedDeviceTypes list.
-
-For example, the card on a node card supports nvidia-223 and nvidia-224. The following mediatedDeviceTypes list is configured:
-
-```yaml
-# ...
-mediatedDevicesConfiguration:
-  mediatedDeviceTypes:
-  - nvidia-22
-  - nvidia-223
-  - nvidia-224
-# ...
-```
-
-
-In this example, OpenShift Virtualization uses the nvidia-223 type.
 
 # Managing mediated devices
 
@@ -317,8 +274,7 @@ $ oc edit hyperconverged kubevirt-hyperconverged -n openshift-cnv
 ```
 
 3. Create and expose the mediated devices by updating the configuration:
-1. Create mediated devices by adding them to the spec.mediatedDevicesConfiguration stanza.
-2. Expose the mediated devices to the cluster by adding the mdevNameSelector and resourceName values to the spec.permittedHostDevices.mediatedDevices stanza. The resourceName value is based on the mdevNameSelector value, but you use underscores instead of spaces.
+1. Expose the mediated devices to the cluster by adding the mdevNameSelector and resourceName values to the spec.permittedHostDevices.mediatedDevices stanza. The resourceName value is based on the mdevNameSelector value, but you use underscores instead of spaces.
 
 Example HyperConverged CR:
 
@@ -329,31 +285,22 @@ metadata:
   name: kubevirt-hyperconverged
   namespace: openshift-cnv
 spec:
-  mediatedDevicesConfiguration:
-    mediatedDeviceTypes:
-    - nvidia-745
-    nodeMediatedDeviceTypes:
-    - mediatedDeviceTypes:
-      - nvidia-746
-      nodeSelector:
-        kubernetes.io/hostname: node-11.redhat.com
   permittedHostDevices:
     mediatedDevices:
     - mdevNameSelector: NVIDIA A2-2Q
       resourceName: nvidia.com/NVIDIA_A2-2Q
+      externalResourceProvider: true
     - mdevNameSelector: NVIDIA A2-4Q
       resourceName: nvidia.com/NVIDIA_A2-4Q
+      externalResourceProvider: true
 # ...
 ```
 
 
 where:
-mediatedDeviceTypes:: Specifies global settings for the cluster and is required.
-nodeMediatedDeviceTypes:: Specifies global configuration overrides for a specific node or group of nodes and is optional. Must be used with the global mediatedDeviceTypes configuration.
-mediatedDeviceTypes:: Specifies an override to the global mediatedDeviceTypes configuration for the specified nodes. Required if you use nodeMediatedDeviceTypes.
-nodeSelector:: Specifies the node selector and must include a key:value pair. Required if you use nodeMediatedDeviceTypes.
 mdevNameSelector:: Specifies the mediated devices that map to this value on the host.
 resourceName:: Specifies the matching resource name that is allocated on the node.
+externalResourceProvider:: Specifies that the device is handled by an external provider, such as the NVIDIA GPU Operator.
 4. Save your changes and exit the editor.
 
 * Confirm that the virtual GPU is attached to the node by running the following command:
@@ -366,24 +313,9 @@ $ oc get node <node_name> -o json \
 ```
 
 
-## About changing and removing mediated devices
-
-As an administrator, you can change or remove mediated devices by editing the HyperConverged custom resource (CR).
-
-You can reconfigure or remove mediated devices in several ways:
-
-* Edit the HyperConverged CR and change the contents of the mediatedDeviceTypes stanza.
-* Change the node labels that match the nodeMediatedDeviceTypes node selector.
-* Remove the device information from the spec.mediatedDevicesConfiguration and spec.permittedHostDevices stanzas of the HyperConverged CR.
-
-[NOTE]
-----
-If you remove the device information from the spec.permittedHostDevices stanza without also removing it from the spec.mediatedDevicesConfiguration stanza, you cannot create a new mediated device type on the same node. To properly remove mediated devices, remove the device information from both stanzas.
-----
-
 ## Removing mediated devices from the cluster
 
-To remove a mediated device from the cluster, delete the information for that device from the HyperConverged custom resource (CR).
+As a cluster administrator you can remove mediated devices from the cluster so that you can reallocate GPU hardware. To remove a mediated device from the cluster, delete the information for that device from the HyperConverged CR.
 
 * You have installed the OpenShift CLI (`oc`).
 
@@ -393,7 +325,7 @@ To remove a mediated device from the cluster, delete the information for that de
 $ oc edit hyperconverged kubevirt-hyperconverged -n openshift-cnv
 ```
 
-2. Remove the device information from the spec.mediatedDevicesConfiguration and spec.permittedHostDevices stanzas of the HyperConverged CR. Removing both entries ensures that you can later create a new mediated device type on the same node. For example:
+2. Remove the device information from the spec.permittedHostDevices stanza of the HyperConverged CR. For example:
 
 ```yaml
 apiVersion: hco.kubevirt.io/v1
@@ -402,16 +334,13 @@ metadata:
   name: kubevirt-hyperconverged
   namespace: openshift-cnv
 spec:
-  mediatedDevicesConfiguration:
-    mediatedDeviceTypes:
-      - nvidia-231
   permittedHostDevices:
     mediatedDevices:
     - mdevNameSelector: GRID T4-2Q
       resourceName: nvidia.com/GRID_T4-2Q
+      externalResourceProvider: true
 ```
 
-* To remove the nvidia-231 device type, delete it from the mediatedDeviceTypes array.
 * To remove the GRID T4-2Q device, delete the mdevNameSelector field and its corresponding resourceName field.
 3. Save your changes and exit the editor.
 
@@ -424,9 +353,9 @@ You can assign mediated devices to one or more virtual machines.
 Assign mediated devices such as virtual GPUs (vGPUs) to virtual machines (VMs).
 
 * The mediated device is configured in the HyperConverged custom resource.
-* The VM is stopped.
+* The virtual machine (VM) is stopped.
 
-* Assign the mediated device to a virtual machine (VM) by editing the spec.domain.devices.gpus stanza of the VirtualMachine manifest.
+* Assign the mediated device to a VM by editing the spec.domain.devices.gpus stanza of the VirtualMachine manifest.
 
 Example virtual machine manifest:
 
@@ -437,14 +366,14 @@ spec:
   domain:
     devices:
       gpus:
-      - deviceName: nvidia.com/TU104GL_Tesla_T4 1
-        name: gpu1 2
+      - deviceName: nvidia.com/TU104GL_Tesla_T4
+        name: gpu1
       - deviceName: nvidia.com/GRID_T4-2Q
         name: gpu2
 ```
 
-The resource name associated with the mediated device.
-A name to identify the device on the VM.
+* spec.template.spec.domain.devices.gpus.deviceName specifies the resource name associated with the mediated device.
+* spec.template.spec.domain.devices.gpus.name specifies a name to identify the device on the VM.
 
 * To verify that the device is available from the virtual machine, run the following command, substituting <device_name> with the deviceName value from the VirtualMachine manifest:
 
