@@ -1,0 +1,151 @@
+# Customize the web console
+
+
+As a cluster administrator, you can customize the Red Hat OpenShift Container Platform web console by integrating dynamic plugins. Virtual machine (VM) owners can then use the actions provided by these plugins from different tabs on the Virtualization page.
+
+# Enable bulk operations for virtual machines
+
+You can enable virtual machine (VM) owners to perform large-scale management tasks, such as backups and storage migrations, across multiple virtual machines simultaneously, by creating a dynamic plugin that enables bulk actions in the web console.
+
+This integration reduces manual overhead for multi-VM environments and ensures that custom actions are available as native, selectable bulk actions from within the Virtualization page.
+
+* You have created a dynamic plugin.
+* You have cluster administrator permissions.
+* You have access to an Red Hat OpenShift Container Platform cluster where OpenShift Virtualization is installed.
+
+1. In the configuration file of your plugin, add a console.action/provider extension.
+
+To enable bulk actions, you must use a contextId field that targets an array of VirtualMachine resources.
+
+Example console-extensions.json file excerpt:
+
+```json
+{
+   type: 'console.action/provider',
+   properties: {
+     contextId: 'kubevirt.io~v1~VirtualMachine[]',
+     provider: {
+       $codeRef: 'useSimpleBulkActions',
+     },
+   },
+ }
+```
+
+* properties.contextId specifies a string for which the KubeVirt plugin declares support.
+* properties.provider specifies the React hook or function in your source code that generates the action items.
+2. In the source file referenced by the extension, implement a hook that handles the array of selected resources.
+
+Example plugin:
+
+```ts
+import {
+  type ExtensionHook,
+  AccessReviewResourceAttributes,
+  Action,
+} from '@openshift-console/dynamic-plugin-sdk';
+import { V1VirtualMachine } from '@kubevirt-ui-ext/kubevirt-api/kubevirt';
+import { VirtualMachineModel } from '@kubevirt-ui-ext/kubevirt-api/console';
+import { useMemo } from 'react';
+
+const useSimpleBulkActions: ExtensionHook<Action[], (V1VirtualMachine & { cluster?: string })[]> = (
+  vms,
+) => {
+  const areAllRunning = vms.every((vm) => vm.status?.printableStatus === 'Running');
+  const isCrossCluster = new Set(vms.map((vm) => vm.cluster)).size > 1;
+  const firstVm = vms[0];
+
+  const accessReview: AccessReviewResourceAttributes = useMemo(
+    () => ({
+      cluster: firstVm?.cluster,
+      group: VirtualMachineModel.apiGroup,
+      name: firstVm?.metadata?.name,
+      namespace: firstVm?.metadata?.namespace,
+      resource: VirtualMachineModel.plural,
+      verb: 'delete',
+    }),
+    [firstVm?.cluster, firstVm?.metadata?.name, firstVm?.metadata?.namespace],
+  );
+
+  const checkAllRunningAction: Action = useMemo(
+    () => ({
+      id: 'check-all-running',
+      cta: () => console.log('All selected VMs are running?', areAllRunning),
+      label: 'Check VMs are running',
+      disabled: isCrossCluster,
+      disabledTooltip: isCrossCluster ? 'VMs from different clusters detected' : '',
+      accessReview,
+    }),
+    [areAllRunning, isCrossCluster, accessReview],
+  );
+
+  const actions = useMemo(() => [checkAllRunningAction], [checkAllRunningAction]);
+  return [actions, true, null];
+};
+
+export default useSimpleBulkActions;
+```
+
+
+The plugin shown in the previous example checks if all selected VMs are running and prints a log message to the console.
+3. Deploy the plugin to the cluster.
+
+1. Log in to the Red Hat OpenShift Container Platform web console.
+2. Verify that you can apply bulk actions to VMs.
+1. Go to Virtualization -> VirtualMachines.
+2. Select the checkboxes for two or more existing VMs.
+3. Click the Actions drop-down menu. Confirm that you can run the custom action you created.
+
+# Create custom tabs in the web console
+
+As a cluster administrator, you can customize the Red Hat OpenShift Container Platform web console by adding customized tabs to the Virtualization page.
+
+* You have created a dynamic plugin.
+* You have cluster administrator permissions.
+* You have access to an Red Hat OpenShift Container Platform cluster where OpenShift Virtualization is installed.
+
+* Add the kubevirt.tab/horizontalNav extension to the plugin-extensions.ts file of the KubeVirt plugin:
+
+```typescript
+{
+    type: 'kubevirt.tab/horizontalNav',
+    properties: {
+      model: {
+        version: 'v1',
+        group: 'kubevirt.io',
+        kind: 'VirtualMachine',
+      },
+      page: {
+        name: 'Kubevirt Test',
+        href: 'kubevirt-test',
+      },
+      isVisible: { $codeRef: 'isKubevirtTabVisible' },
+      component: { $codeRef: 'KubevirtTestTab' },
+    },
+  }
+```
+
+* The component flag that references KubevirtTestTab refers to the actual tab content that you want to include.
+* The isVisible flag refers to the following example code reference:
+
+```typescript
+import { K8sResourceCommon } from '@openshift-console/dynamic-plugin-sdk';
+
+const isKubevirtTabVisible = ({
+  created,
+}: {
+  created: boolean;
+  obj: K8sResourceCommon & { cluster?: string };
+}) => created;
+export default isKubevirtTabVisible;
+```
+
+
+This parameter is provided by the KubeVirt plugin, and is true if the referenced object has been already created. This flag ensures that the plugin author can prevent the custom tab from being displayed on certain pages, such as the Create Virtual Machine page.
+
+1. Log in to the Red Hat OpenShift Container Platform web console.
+2. Go to the Virtualization page and verify that the custom tab you have created is visible.
+3. Go to the Create Virtual Machine page and verify that your custom backup actions or tabs do not appear.
+
+# Additional resources
+
+* Getting started with dynamic plugins
