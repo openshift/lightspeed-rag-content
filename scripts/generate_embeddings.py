@@ -99,6 +99,18 @@ def got_whitespace(text: str) -> bool:
     return False
 
 
+def str2bool(value: str | bool) -> bool:
+    """Parse CLI boolean; argparse's type=bool is wrong (bool('False') is True)."""
+    if isinstance(value, bool):
+        return value
+    s = str(value).strip().lower()
+    if s in ("", "0", "n", "no", "f", "false", "off"):
+        return False
+    if s in ("1", "y", "yes", "t", "true", "on"):
+        return True
+    raise argparse.ArgumentTypeError(f"expected a boolean string, got {value!r}")
+
+
 if __name__ == "__main__":
 
     start_time = time.time()
@@ -134,7 +146,11 @@ if __name__ == "__main__":
     parser.add_argument("-i", "--index", help="Product index")
     parser.add_argument("-v", "--ocp-version", help="OCP version")
     parser.add_argument(
-        "-hb", "--hermetic-build", type=bool, default=False, help="Hermetic build"
+        "-hb",
+        "--hermetic-build",
+        type=str2bool,
+        default=False,
+        help="Hermetic build (true/false, yes/no, 1/0)",
     )
     args = parser.parse_args()
     print(f"Arguments used: {args}")

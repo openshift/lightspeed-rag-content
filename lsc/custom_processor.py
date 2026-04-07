@@ -13,6 +13,7 @@
 #    License for the specific language governing permissions and limitations
 #    under the License.
 
+import argparse
 import os
 import sys, logging
 
@@ -59,6 +60,18 @@ class RunbooksMetadataProcessor(MetadataProcessor):
         return self.root_url + file_path.removeprefix(self.plaintext_root_dir)
 
 
+def str2bool(value: str | bool) -> bool:
+    """Parse CLI boolean; argparse's type=bool is wrong (bool('False') is True)."""
+    if isinstance(value, bool):
+        return value
+    s = str(value).strip().lower()
+    if s in ("", "0", "n", "no", "f", "false", "off"):
+        return False
+    if s in ("1", "y", "yes", "t", "true", "on"):
+        return True
+    raise argparse.ArgumentTypeError(f"expected a boolean string, got {value!r}")
+
+
 if __name__ == "__main__":
 
     parser = utils.get_common_arg_parser()
@@ -75,7 +88,11 @@ if __name__ == "__main__":
         "-rbp", "--runbooks-plaintext-dir", help="Directory with runbooks plaintext"
     )
     parser.add_argument(
-        "-hb", "--hermetic-build", type=bool, default=False, help="Hermetic build"
+        "-hb",
+        "--hermetic-build",
+        type=str2bool,
+        default=False,
+        help="Hermetic build (true/false, yes/no, 1/0)",
     )
     args = parser.parse_args()
 
