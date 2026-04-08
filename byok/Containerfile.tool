@@ -8,13 +8,14 @@ ARG VECTOR_DB_INDEX=vector_db_index
 ARG BYOK_TOOL_IMAGE
 ARG UBI_BASE_IMAGE
 ARG HERMETIC
-RUN dnf install -y buildah python3.11 python3.11-pip && dnf clean all
+ARG LLAMA_STACK
+RUN dnf install -y buildah python3.12 python3.12-pip && dnf clean all
 
 USER 0
 WORKDIR /workdir
 
-COPY requirements.cpu.txt .
-RUN pip3.11 install --no-cache-dir --no-deps -r requirements.cpu.txt
+COPY byok/requirements.txt .
+RUN pip3.12 install --upgrade pip && pip3.12 install --no-cache-dir --no-deps -r requirements.txt
 
 COPY embeddings_model ./embeddings_model
 ENV HERMETIC=$HERMETIC
@@ -26,7 +27,7 @@ RUN cd embeddings_model; \
             curl -L -O https://huggingface.co/sentence-transformers/all-mpnet-base-v2/resolve/9a3225965996d404b775526de6dbfe85d3368642/model.safetensors; \
         fi \
     fi
-COPY byok/generate_embeddings_tool.py byok/Containerfile.output ./
+COPY byok/generate_embeddings_tool.py byok/__init__.py byok/document_processor.py byok/metadata_processor.py byok/Containerfile.output ./
 
 # this directory is checked by ecosystem-cert-preflight-checks task in Konflux
 RUN mkdir /licenses
@@ -38,7 +39,7 @@ LABEL cpe="cpe:/a:redhat:openshift_lightspeed:1::el9"
 LABEL description="Red Hat OpenShift Lightspeed BYO Knowledge Tools"
 LABEL distribution-scope=private
 LABEL io.k8s.description="Red Hat OpenShift Lightspeed BYO Knowledge Tools"
-LABEL io.k8s.display-name="Openshift Lightspeed BYO Knowledge Tools"
+LABEL io.k8s.display-name="OpenShift Lightspeed BYO Knowledge Tools"
 LABEL io.openshift.tags="openshift,lightspeed,ai,assistant,rag"
 LABEL name="openshift-lightspeed-tech-preview/lightspeed-rag-tool-rhel9"
 LABEL release=0.0.1
@@ -55,8 +56,10 @@ ENV BYOK_TOOL_IMAGE=$BYOK_TOOL_IMAGE
 ENV UBI_BASE_IMAGE=$UBI_BASE_IMAGE
 ENV LOG_LEVEL=$LOG_LEVEL
 ENV VECTOR_DB_INDEX=$VECTOR_DB_INDEX
+ENV LLAMA_STACK=$LLAMA_STACK
 CMD buildah --log-level $LOG_LEVEL build --build-arg BYOK_TOOL_IMAGE=$BYOK_TOOL_IMAGE \
     --build-arg UBI_BASE_IMAGE=$UBI_BASE_IMAGE --env VECTOR_DB_INDEX=$VECTOR_DB_INDEX \
+    --env LLAMA_STACK=$LLAMA_STACK \
     -t $OUT_IMAGE_TAG -f Containerfile.output \
     -v /markdown:/markdown:Z . && rm -f /output/$OUT_IMAGE_TAG.tar && \
     buildah push $OUT_IMAGE_TAG docker-archive:/output/$OUT_IMAGE_TAG.tar
