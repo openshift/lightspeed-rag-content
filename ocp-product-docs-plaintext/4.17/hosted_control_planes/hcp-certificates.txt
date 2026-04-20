@@ -1,7 +1,7 @@
 # Configuring certificates for hosted control planes
 
 
-With hosted control planes, the steps to configure certificates differ from those of standalone Red Hat OpenShift Container Platform.
+To establish secure and encrypted communication between your clients and the hosted control plane, you must configure a server certificate for your hosted cluster. With hosted control planes, the steps to configure certificates differ from those of standalone Red Hat OpenShift Container Platform.
 
 # Configuring a custom API server certificate in a hosted cluster
 
@@ -119,6 +119,182 @@ $ kubectl get secret <hosted_cluster_name>-custom-admin-kubeconfig \
 ----
 You cannot consume the new kubeconfig secret by using the show login command option in the console.
 ----
+
+# OAuth server certificates for hosted control planes
+
+In hosted control planes, the OAuth server shares its serving certificate configuration with the Kubernetes API server. To configure a custom serving certificate for the OAuth server, you modify the spec.configuration.apiServer section in the HostedCluster resource.
+
+
+[IMPORTANT]
+----
+This configuration method deviates from the standard Red Hat OpenShift Container Platform behavior. In Red Hat OpenShift Container Platform, OAuth certificates are configured separately through the componentRoute properties of the Ingress Operator. In hosted control planes, the namedCertificates configuration in the API server settings applies to both the Kubernetes API server and the OAuth server.
+----
+
+In hosted control planes, the Control Plane Operator reads serving certificates through the shared GetNamedCertificates() function. Certificates are not configured in an OAuth-specific section of the HostedCluster resource. In addition, OAuth server certificates are not provided through an OAuth custom resource definition (CRD) configuration. Instead, hosted control planes automatically injects the selected certificates into the OAuth server deployment.
+
+
+
+# Configuring OAuth server certificates for a hosted cluster
+
+If you want to use certificates from a trusted certificate authority (CA) to access a hosted cluster, you can configure OAuth server certificates.
+
+* You have a running hosted cluster.
+* You have cluster-admin access to the management cluster.
+* You have access to modify the HostedCluster resource.
+* You have a TLS secret that contains your signed certificate and private key in the hosted cluster namespace with the following keys:
+* tls.crt
+* tls.key
+
+1. Identify your hosted cluster namespace:
+1. Export the namespace where your hosted cluster is running by entering the following command:
+
+```terminal
+$ export HC_NAMESPACE=<hosted_cluster_namespace>
+```
+
+2. Export the hosted cluster name by entering the following command:
+
+```terminal
+$ export CLUSTER_NAME=<hosted_cluster_name>
+```
+
+2. Generate a quick test certificate by entering the following command:
+
+```terminal
+$ openssl req -x509 -nodes -days 365 -newkey rsa:2048 \
+  -keyout tls.key \
+  -out tls.crt \
+  -subj "/CN=openshift-oauth" \
+  -addext "subjectAltName=DNS:oauth-${HC_NAMESPACE}-${CLUSTER_NAME}.api-custom-cert-sample-hosted.sample-hosted.example.com"
+```
+
+
+The api-custom-cert-sample-hosted.sample-hosted.example.com value is used in the command and throughout the rest of this procedure as an example.
+
+[NOTE]
+----
+This example uses a placeholder hostname. After you discover your OAuth route later in this procedure, you must regenerate this certificate with the correct hostname before you edit the HostedCluster resource.
+----
+3. Confirm that the file exists by entering the following command:
+
+```terminal
+$ ls tls.crt tls.key
+```
+
+4. If you have not already created the TLS secret in the hosted cluster namespace, create the secret by entering the following command:
+
+```terminal
+$ oc create secret tls my-oauth-cert-secret \
+  --cert=path/to/tls.crt \
+  --key=path/to/tls.key \
+  -n $HC_NAMESPACE
+```
+
+Example output
+
+```terminal
+secret/my-oauth-cert-secret created
+```
+
+
+[NOTE]
+----
+Although the OAuth server runs in the hosted control plane namespace, the serving certificate must exist in the hosted cluster namespace. Secrets that are created in the hosted control plane namespace are not picked up.
+----
+5. Discover the correct OAuth route:
+1. Use the management cluster kubconfig file to enter the following command:
+
+```terminal
+$ oc get routes -n ${HC_NAMESPACE}-${CLUSTER_NAME}
+```
+
+2. If the route name is oauth, confirm it by entering the following command:
+
+```terminal
+$ oc get route oauth -n ${HC_NAMESPACE}-${CLUSTER_NAME} -o yaml
+```
+
+3. Prepare to extract the OAuth route host by entering the following command:
+
+```terminal
+OAUTH_HOST=$(oc get route oauth \
+  -n ${HC_NAMESPACE}-${CLUSTER_NAME} \
+  -o jsonpath='{.spec.host}')
+```
+
+4. Extract the OAuth route host by entering the following command:
+
+```terminal
+$ echo "${OAUTH_HOST}"
+```
+
+Example output
+
+```terminal
+oauth-${HC_NAMESPACE}-${CLUSTER_NAME}.api-custom-cert-sample-hosted.sample-hosted.example.com
+```
+
+6. Edit the HostedCluster resource:
+1. Open the HostedCluster resource for editing by entering the following command:
+
+```terminal
+$ oc edit hostedcluster $CLUSTER_NAME -n $HC_NAMESPACE
+```
+
+2. In the resource, configure the named certificates by adding the servingCerts.namedCertificates stanza to the spec.configuration.apiServer section:
+
+```yaml
+apiVersion: hypershift.openshift.io/v1beta1
+kind: HostedCluster
+metadata:
+  name: <hosted_cluster_name>
+  namespace: <hosted_cluster_namespace>
+spec:
+  configuration:
+    apiServer:
+      audit:
+        profile: Default
+      servingCerts:
+        namedCertificates:
+        - names:
+          - api-custom-cert-sample-hosted.sample-hosted.example.com
+          servingCertificate:
+            name: my-oauth-cert-secret
+# ...
+```
+
+
+where:
+spec.configuration.apiServer.servingCerts.namedCertificates.names:: Specifies the actual host name of your OAuth route.
+spec.configuration.apiServer.servingCerts.servingCertificate.name:: Specifies the name of your TLS secret. This secret must exist in the hosted cluster namespace.
+3. Save and apply the changes. The Control Plane Operator reconciles the changes, the configuration propagates to the control plane, and the OAuth server begins serving the new certificate.
+
+[IMPORTANT]
+----
+No separate OAuth certificate configuration field exists for a hosted cluster.
+----
+
+* Verify the certificate being served by the route by entering the following command:
+
+```terminal
+$ echo | openssl s_client \
+  -connect "${OAUTH_HOST}:443" \
+  -servername "${OAUTH_HOST}" \
+  2>/dev/null \
+  | openssl x509 -noout -subject -issuer -ext subjectAltName
+```
+
+Example output
+
+```terminal
+subject=CN=openshift-oauth
+issuer=CN=openshift-oauth
+X509v3 Subject Alternative Name:
+    DNS:oauth-${HC_NAMESPACE}-${CLUSTER_NAME}.api-custom-cert-sample-hosted.sample-hosted.example.com
+```
+
+
+The output shows that the OAuth route is serving the custom certificate and the certificate comes from the my-oauth-cert-secret secret.
 
 # Troubleshooting accessing a hosted cluster by using a custom DNS
 
