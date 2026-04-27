@@ -2,14 +2,15 @@ ARG EMBEDDING_MODEL=sentence-transformers/all-mpnet-base-v2
 ARG FLAVOR=cpu
 ARG HERMETIC=false
 
-FROM registry.access.redhat.com/ubi9/python-311 as cpu-base
+FROM registry.access.redhat.com/ubi9/python-312 as cpu-base
 ARG EMBEDDING_MODEL
 ARG FLAVOR
 
-FROM nvcr.io/nvidia/cuda:12.9.1-devel-ubi9 as gpu-base
+FROM registry.redhat.io/rhai/base-image-cuda-12.9-rhel9:3.3 as gpu-base
 ARG EMBEDDING_MODEL
 ARG FLAVOR
-RUN dnf install -y python3.11 python3.11-pip libcudnn9 libnccl libcusparselt0
+USER 0
+RUN dnf install -y python3.12 python3.12-pip libcudnn9 libnccl libcusparselt0
 
 FROM ${FLAVOR}-base as lightspeed-rag-builder
 ARG EMBEDDING_MODEL
@@ -20,7 +21,7 @@ USER 0
 WORKDIR /workdir
 
 COPY requirements.gpu.txt .
-RUN pip3.11 install --no-cache-dir -r requirements.gpu.txt && ln -s /usr/local/lib/python3.11/site-packages/llama_index/core/_static/nltk_cache /root/nltk_data
+RUN pip3.12 install --no-cache-dir -r requirements.gpu.txt && ln -s /usr/local/lib/python3.12/site-packages/llama_index/core/_static/nltk_cache /root/nltk_data
 
 COPY ocp-product-docs-plaintext ./ocp-product-docs-plaintext
 COPY runbooks ./runbooks
@@ -33,14 +34,12 @@ RUN cd embeddings_model; if [ "$HERMETIC" == "true" ]; then \
     fi
 
 RUN if [ "$FLAVOR" == "gpu" ]; then \
-        export LD_LIBRARY_PATH=/usr/local/cuda-12/compat:$LD_LIBRARY_PATH; \
-        python3.11 -c "import torch; print(torch.version.cuda); print(torch.cuda.is_available());"; \
+        python3.12 -c "import torch; print(torch.version.cuda); print(torch.cuda.is_available());"; \
     fi
 
 COPY scripts/generate_embeddings.py .
-RUN export LD_LIBRARY_PATH=/usr/local/cuda-12/compat:$LD_LIBRARY_PATH; \
-    set -e && for OCP_VERSION in $(ls -1 ocp-product-docs-plaintext); do \
-        python3.11 generate_embeddings.py -f ocp-product-docs-plaintext/${OCP_VERSION} -r runbooks/alerts -md embeddings_model \
+RUN set -e && for OCP_VERSION in $(ls -1 ocp-product-docs-plaintext); do \
+        python3.12 generate_embeddings.py -f ocp-product-docs-plaintext/${OCP_VERSION} -r runbooks/alerts -md embeddings_model \
             -mn ${EMBEDDING_MODEL} -o vector_db/ocp_product_docs/${OCP_VERSION} \
             -i ocp-product-docs-$(echo $OCP_VERSION | sed 's/\./_/g') -v ${OCP_VERSION} -hb $HERMETIC; \
     done
