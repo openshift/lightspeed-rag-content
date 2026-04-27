@@ -4,14 +4,30 @@ ARG HERMETIC=false
 FROM nvcr.io/nvidia/cuda:12.9.1-devel-ubi9 as lightspeed-rag-builder
 ARG EMBEDDING_MODEL
 ARG HERMETIC
+# Suppress GPU device requests during image build: the CUDA base image sets
+# NVIDIA_VISIBLE_DEVICES=all which causes CDI setup to fail on non-GPU build hosts.
+# "void" tells the NVIDIA container toolkit to skip device setup entirely.
+ENV NVIDIA_VISIBLE_DEVICES=void
 
-RUN dnf install -y python3.12 python3.12-pip libcudnn9 libnccl libcusparselt0
+RUN dnf install -y python3.12 python3.12-pip libcudnn9 libnccl libcusparselt0 && dnf clean all
 
 USER 0
 WORKDIR /workdir
 
-COPY lsc/requirements.txt .
-RUN pip3.12 install --upgrade pip && pip3.12 install --no-cache-dir -r requirements.txt && ln -s /usr/local/lib/python3.12/site-packages/llama_index/core/_static/nltk_cache /root/nltk_data
+COPY lsc/requirements.hashes.wheel.txt lsc/requirements.hashes.source.txt requirements.hermetic.txt ./
+# Source cachi2 environment for hermetic builds if available, otherwise use normal installation.
+# cachi2.env sets PIP_FIND_LINKS and PIP_NO_INDEX so pip resolves from prefetched deps.
+RUN /usr/bin/python3.12 -m pip install --upgrade pip && \
+    if [ -f /cachi2/cachi2.env ]; then \
+        . /cachi2/cachi2.env && \
+        /usr/bin/python3.12 -m pip install --no-cache-dir --no-deps --ignore-installed \
+            --no-index --find-links "${PIP_FIND_LINKS}" \
+            -r requirements.hashes.wheel.txt -r requirements.hashes.source.txt; \
+    else \
+        /usr/bin/python3.12 -m pip install --no-cache-dir --no-deps \
+            -r requirements.hashes.wheel.txt -r requirements.hashes.source.txt; \
+    fi && \
+    ln -s /usr/local/lib/python3.12/site-packages/llama_index/core/_static/nltk_cache /root/nltk_data
 
 COPY ocp-product-docs-plaintext ./ocp-product-docs-plaintext
 COPY runbooks ./runbooks

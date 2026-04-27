@@ -10,34 +10,45 @@ else
 $(error Unsupported FLAVOR $(FLAVOR), must be 'cpu' or 'gpu')
 endif
 
-install-tools: ## Install required utilities/tools
-	@command -v pdm > /dev/null || { echo >&2 "pdm is not installed. Installing..."; pip3.11 install --no-cache-dir --upgrade pip pdm; }
+install-tools: ## Install uv (Python 3.12) for local development
+	@command -v uv > /dev/null || { echo >&2 "uv is not installed. Install: https://docs.astral.sh/uv/"; exit 1; }
+	@command -v python3.12 > /dev/null || { echo >&2 "Python 3.12 is required."; exit 1; }
 
-pdm-lock-check: ## Check that the pdm.lock file is in a good shape
-	pdm lock --check --group cpu --lockfile pdm.lock.cpu
-	pdm lock --check --group gpu --lockfile pdm.lock.gpu
+.venv:
+	uv venv -p 3.12
 
-install-deps: install-tools pdm-lock-check ## Install all required dependencies, according to pdm.lock
-	pdm sync --group $(TORCH_GROUP) --lockfile pdm.lock.$(TORCH_GROUP)
+install-deps: install-tools .venv ## Install app dependencies (matches pyproject extra)
+	uv pip install --python .venv/bin/python -e ".[$(TORCH_GROUP)]"
 
-install-deps-test: install-tools pdm-lock-check ## Install all required dev dependencies, according to pdm.lock
-	pdm sync --dev --group $(TORCH_GROUP) --lockfile pdm.lock.$(TORCH_GROUP)
+install-deps-test: install-tools .venv ## Install with dev tools (Ruff, mypy, etc.)
+	uv pip install --python .venv/bin/python -e ".[$(TORCH_GROUP)]" black mypy ruff "types-requests"
 
-update-deps: ## Check pyproject.toml for changes, update the lock file if needed, then sync.
-	pdm update --update-all --group $(TORCH_GROUP) --lockfile pdm.lock.$(TORCH_GROUP)
-	pdm update --update-all --dev --group $(TORCH_GROUP) --lockfile pdm.lock.$(TORCH_GROUP)
-	pdm export --group $(TORCH_GROUP) --lockfile pdm.lock.$(TORCH_GROUP) -o requirements.$(TORCH_GROUP).txt
+# Regenerate Cachi2/Konflux lockfiles; commit outputs + update .tekton `binary.packages` if the wheel set changes
+update-konflux-deps: install-tools
+	./scripts/konflux_requirements.sh cpu
+	./scripts/konflux_requirements.sh gpu
+	@echo "If pip.binary packages changed, update the prefetch block in the matching .tekton/* files"
+	@echo "Note: gpu flavor reuses requirements-build.cpu.txt; cpu must run before gpu in this target."
 
-check-types: ## Checks type hints in sources
-	mypy --explicit-package-bases --disallow-untyped-calls --disallow-untyped-defs --disallow-incomplete-defs scripts
+update-konflux-deps-lsc: install-tools ## Regenerate RHOAI-sourced hermetic requirements for the LSC component
+	./scripts/konflux_requirements.sh lsc
 
-format: ## Format the code into unified format
-	black scripts
-	ruff check scripts --fix --per-file-ignores=scripts/*:S101
+# Regenerate rpms.lock.yaml (subscription + rpm-lockfile-prototype / Konflux tooling; not scripted in-repo).
+update-rpm-lock:
+	@echo "From repo root, with Red Hat repo auth configured, run your org's rpm-lock workflow, e.g.:"
+	@echo "  rpm-lockfile-prototype rpms.in.yaml --outfile rpms.lock.yaml"
+	@echo "Adjust paths if you maintain a separate lockfile (e.g. lsc/rpms.in.yaml)."
 
-verify: ## Verify the code using various linters
-	black --check scripts
-	ruff check scripts --per-file-ignores=scripts/*:S101
+check-types: install-tools .venv ## Checks type hints in sources
+	.venv/bin/mypy --explicit-package-bases --disallow-untyped-calls --disallow-untyped-defs --disallow-incomplete-defs scripts
+
+format: install-tools .venv
+	.venv/bin/black scripts
+	.venv/bin/ruff check scripts --fix --per-file-ignores=scripts/*:S101
+
+verify: install-tools .venv
+	.venv/bin/black --check scripts
+	.venv/bin/ruff check scripts --per-file-ignores=scripts/*:S101
 
 update-docs: ## Update the plaintext OCP docs in ocp-product-docs-plaintext/
 	@set -e && for OCP_VERSION in $$(ls -1 ocp-product-docs-plaintext); do \
@@ -45,11 +56,11 @@ update-docs: ## Update the plaintext OCP docs in ocp-product-docs-plaintext/
 	done
 	scripts/get_runbooks.sh
 
-update-model: ## Update the local copy of the embedding model
+update-model: install-tools .venv ## Update the local copy of the embedding model
 	@rm -rf ./embeddings_model
-	@python scripts/download_embeddings_model.py -l ./embeddings_model -r sentence-transformers/all-mpnet-base-v2
+	@.venv/bin/python scripts/download_embeddings_model.py -l ./embeddings_model -r sentence-transformers/all-mpnet-base-v2
 
-build-image: ## Build a rag-content container image.
+build-image: ## Build a rag-content container image
 	podman build -t rag-content .
 
 help: ## Show this help screen
@@ -60,7 +71,7 @@ help: ## Show this help screen
 	@grep -E '^[ a-zA-Z0-9_-]+:.*?## .*$$' $(MAKEFILE_LIST) | \
 		awk 'BEGIN {FS = ":.*?## "}; {printf "\033[36m%-25s\033[0m %s\n", $$1, $$2}'
 	@echo ''
-
+	
 model-safetensors: ## Download model.safetensors to embeddings_model
 	@if [ ! -f embeddings_model/model.safetensors ]; then \
 		echo "Downloading model.safetensors..."; \
