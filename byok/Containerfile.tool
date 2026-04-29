@@ -1,5 +1,5 @@
 ARG BYOK_TOOL_IMAGE=registry.redhat.io/openshift-lightspeed-tech-preview/lightspeed-rag-tool-rhel9:latest
-ARG UBI_BASE_IMAGE=registry.redhat.io/rhai/base-image-cpu-rhel9:3.3
+ARG UBI_BASE_IMAGE=registry.redhat.io/rhai/base-image-cpu-rhel9:3.3.1-1775076046
 ARG HERMETIC=false
 FROM ${UBI_BASE_IMAGE}
 ARG LOG_LEVEL=info
