@@ -11,7 +11,7 @@ $(error Unsupported FLAVOR $(FLAVOR), must be 'cpu' or 'gpu')
 endif
 
 install-tools: ## Install required utilities/tools
-	@command -v pdm > /dev/null || { echo >&2 "pdm is not installed. Installing..."; pip3.11 install --no-cache-dir --upgrade pip pdm; }
+	@command -v pdm > /dev/null || { echo >&2 "pdm is not installed. Installing..."; pip3.12 install --no-cache-dir --upgrade pip pdm; }
 
 pdm-lock-check: ## Check that the pdm.lock file is in a good shape
 	pdm lock --check --group cpu --lockfile pdm.lock.cpu

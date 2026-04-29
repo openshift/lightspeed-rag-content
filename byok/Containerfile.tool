@@ -1,5 +1,5 @@
 ARG BYOK_TOOL_IMAGE=registry.redhat.io/openshift-lightspeed-tech-preview/lightspeed-rag-tool-rhel9:latest
-ARG UBI_BASE_IMAGE=registry.access.redhat.com/ubi9/ubi:latest
+ARG UBI_BASE_IMAGE=registry.redhat.io/rhai/base-image-cpu-rhel9:3.3
 ARG HERMETIC=false
 FROM ${UBI_BASE_IMAGE}
 ARG LOG_LEVEL=info
@@ -8,13 +8,13 @@ ARG VECTOR_DB_INDEX=vector_db_index
 ARG BYOK_TOOL_IMAGE
 ARG UBI_BASE_IMAGE
 ARG HERMETIC
-RUN dnf install -y buildah python3.11 python3.11-pip && dnf clean all
-
 USER 0
+RUN dnf install -y buildah python3.12 python3.12-pip && dnf clean all
+
 WORKDIR /workdir
 
 COPY requirements.cpu.txt .
-RUN pip3.11 install --no-cache-dir --no-deps -r requirements.cpu.txt
+RUN pip3.12 install --no-cache-dir --no-deps -r requirements.cpu.txt
 
 COPY embeddings_model ./embeddings_model
 ENV HERMETIC=$HERMETIC
