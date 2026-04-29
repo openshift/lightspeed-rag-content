@@ -6,7 +6,7 @@ FROM registry.access.redhat.com/ubi9/python-312 as cpu-base
 ARG EMBEDDING_MODEL
 ARG FLAVOR
 
-FROM registry.redhat.io/rhai/base-image-cuda-12.9-rhel9:3.3 as gpu-base
+FROM registry.redhat.io/rhai/base-image-cuda-12.9-rhel9:3.3.1-1775076038 as gpu-base
 ARG EMBEDDING_MODEL
 ARG FLAVOR
 USER 0
