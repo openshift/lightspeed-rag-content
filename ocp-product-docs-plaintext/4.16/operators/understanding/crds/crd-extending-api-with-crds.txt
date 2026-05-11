@@ -1,0 +1,266 @@
+# Extending the Kubernetes API with custom resource definitions
+
+
+Operators use the Kubernetes extension mechanism, custom resource definitions (CRDs), so that custom objects managed by the Operator look and act just like the built-in, native Kubernetes objects. This guide describes how cluster administrators can extend their Red Hat OpenShift Container Platform cluster by creating and managing CRDs.
+
+# Custom resource definitions
+
+In the Kubernetes API, a resource is an endpoint that stores a collection of API objects of a certain kind. For example, the built-in Pods resource contains a collection of Pod objects.
+
+A custom resource definition (CRD) object defines a new, unique object type, called a kind, in the cluster and lets the Kubernetes API server handle its entire lifecycle.
+
+Custom resource (CR) objects are created from CRDs that have been added to the cluster by a cluster administrator, allowing all cluster users to add the new resource type into projects.
+
+When a cluster administrator adds a new CRD to the cluster, the Kubernetes API server reacts by creating a new RESTful resource path that can be accessed by the entire cluster or a single project (namespace) and begins serving the specified CR.
+
+Cluster administrators that want to grant access to the CRD to other users can use cluster role aggregation to grant access to users with the admin, edit, or view default cluster roles. Cluster role aggregation allows the insertion of custom policy rules into these cluster roles. This behavior integrates the new resource into the RBAC policy of the cluster as if it was a built-in resource.
+
+Operators in particular make use of CRDs by packaging them with any required RBAC policy and other software-specific logic.
+
+# Creating a custom resource definition
+
+To create custom resource (CR) objects, cluster administrators must first create a custom resource definition (CRD).
+
+* Access to an Red Hat OpenShift Container Platform cluster with cluster-admin user privileges.
+
+To create a CRD:
+
+1. Create a YAML file that contains the following field types:
+Example YAML file for a CRD
+
+```yaml
+apiVersion: apiextensions.k8s.io/v1 1
+kind: CustomResourceDefinition
+metadata:
+  name: crontabs.stable.example.com 2
+spec:
+  group: stable.example.com 3
+  versions:
+    - name: v1 4
+      served: true
+      storage: true
+      schema:
+        openAPIV3Schema:
+          type: object
+          properties:
+            spec:
+              type: object
+              properties:
+                cronSpec:
+                  type: string
+                image:
+                  type: string
+                replicas:
+                  type: integer
+  scope: Namespaced 5
+  names:
+    plural: crontabs 6
+    singular: crontab 7
+    kind: CronTab 8
+    shortNames:
+    - ct 9
+```
+
+Use the apiextensions.k8s.io/v1 API.
+Specify a name for the definition. This must be in the <plural-name>.<group> format using the values from the group and plural fields.
+Specify a group name for the API. An API group is a collection of objects that are logically related. For example, all batch objects like Job or ScheduledJob could be in the batch API group (such as batch.api.example.com). A good practice is to use a fully-qualified-domain name (FQDN) of your organization.
+Specify a version name to be used in the URL. Each API group can exist in multiple versions, for example v1alpha, v1beta, v1.
+Specify whether the custom objects are available to a project (Namespaced) or all projects in the cluster (Cluster).
+Specify the plural name to use in the URL. The plural field is the same as a resource in an API URL.
+Specify a singular name to use as an alias on the CLI and for display.
+Specify the kind of objects that can be created. The type can be in CamelCase.
+Specify a shorter string to match your resource on the CLI.
+
+[NOTE]
+----
+By default, a CRD is cluster-scoped and available to all projects.
+----
+2. Create the CRD object:
+
+```terminal
+$ oc create -f <file_name>.yaml
+```
+
+
+A new RESTful API endpoint is created at:
+
+```terminal
+/apis/<spec:group>/<spec:version>/<scope>/*/<names-plural>/...
+```
+
+
+For example, using the example file, the following endpoint is created:
+
+```terminal
+/apis/stable.example.com/v1/namespaces/*/crontabs/...
+```
+
+
+You can now use this endpoint URL to create and manage CRs. The object kind is based on the spec.kind field of the CRD object you created.
+
+# Creating cluster roles for custom resource definitions
+
+Cluster administrators can grant permissions to existing cluster-scoped custom resource definitions (CRDs). If you use the admin, edit, and view default cluster roles, you can take advantage of cluster role aggregation for their rules.
+
+
+[IMPORTANT]
+----
+You must explicitly assign permissions to each of these roles. The roles with more permissions do not inherit rules from roles with fewer permissions. If you assign a rule to a role, you must also assign that verb to roles that have more permissions. For example, if you grant the get crontabs permission to the view role, you must also grant it to the edit and admin roles. The admin or edit role is usually assigned to the user that created a project through the project template.
+----
+
+1. Create a cluster role definition file for the CRD. The cluster role definition is a YAML file that contains the rules that apply to each cluster role. An Red Hat OpenShift Container Platform controller adds the rules that you specify to the default cluster roles.
+Example YAML file for a cluster role definition
+
+```yaml
+kind: ClusterRole
+apiVersion: rbac.authorization.k8s.io/v1 1
+metadata:
+  name: aggregate-cron-tabs-admin-edit 2
+  labels:
+    rbac.authorization.k8s.io/aggregate-to-admin: "true" 3
+    rbac.authorization.k8s.io/aggregate-to-edit: "true" 4
+rules:
+- apiGroups: ["stable.example.com"] 5
+  resources: ["crontabs"] 6
+  verbs: ["get", "list", "watch", "create", "update", "patch", "delete", "deletecollection"] 7
+---
+kind: ClusterRole
+apiVersion: rbac.authorization.k8s.io/v1
+metadata:
+  name: aggregate-cron-tabs-view 2
+  labels:
+    # Add these permissions to the "view" default role.
+    rbac.authorization.k8s.io/aggregate-to-view: "true" 8
+    rbac.authorization.k8s.io/aggregate-to-cluster-reader: "true" 9
+rules:
+- apiGroups: ["stable.example.com"] 5
+  resources: ["crontabs"] 6
+  verbs: ["get", "list", "watch"] 7
+```
+
+Use the rbac.authorization.k8s.io/v1 API.
+Specify a name for the definition.
+Specify this label to grant permissions to the admin default role.
+Specify this label to grant permissions to the edit default role.
+Specify the group name of the CRD.
+Specify the plural name of the CRD that these rules apply to.
+Specify the verbs that represent the permissions that are granted to the role. For example, apply read and write permissions to the admin and edit roles and only read permission to the view role.
+Specify this label to grant permissions to the view default role.
+Specify this label to grant permissions to the cluster-reader default role.
+2. Create the cluster role:
+
+```terminal
+$ oc create -f <file_name>.yaml
+```
+
+
+# Creating custom resources from a file
+
+After a custom resource definition (CRD) has been added to the cluster, custom resources (CRs) can be created with the CLI from a file using the CR specification.
+
+1. Create a YAML file for the CR. In the following example definition, the cronSpec and image custom fields are set in a CR of Kind: CronTab. The Kind comes from the spec.kind field of the CRD object:
+Example YAML file for a CR
+
+```yaml
+apiVersion: "stable.example.com/v1" 1
+kind: CronTab 2
+metadata:
+  name: my-new-cron-object 3
+  finalizers: 4
+  - finalizer.stable.example.com
+spec: 5
+  cronSpec: "* * * * /5"
+  image: my-awesome-cron-image
+```
+
+Specify the group name and API version (name/version) from the CRD.
+Specify the type in the CRD.
+Specify a name for the object.
+Specify the finalizers for the object, if any. Finalizers allow controllers to implement conditions that must be completed before the object can be deleted.
+Specify conditions specific to the type of object.
+2. After you create the file, create the object:
+
+```terminal
+$ oc create -f <file_name>.yaml
+```
+
+
+# Inspecting custom resources
+
+You can inspect custom resource (CR) objects that exist in your cluster using the CLI.
+
+* A CR object exists in a namespace to which you have access.
+
+1. To get information on a specific kind of a CR, run:
+
+```terminal
+$ oc get <kind>
+```
+
+
+For example:
+
+```terminal
+$ oc get crontab
+```
+
+Example output
+
+```terminal
+NAME                 KIND
+my-new-cron-object   CronTab.v1.stable.example.com
+```
+
+
+Resource names are not case-sensitive, and you can use either the singular or plural forms defined in the CRD, as well as any short name. For example:
+
+```terminal
+$ oc get crontabs
+```
+
+
+```terminal
+$ oc get crontab
+```
+
+
+```terminal
+$ oc get ct
+```
+
+2. You can also view the raw YAML data for a CR:
+
+```terminal
+$ oc get <kind> -o yaml
+```
+
+
+For example:
+
+```terminal
+$ oc get ct -o yaml
+```
+
+Example output
+
+```terminal
+apiVersion: v1
+items:
+- apiVersion: stable.example.com/v1
+  kind: CronTab
+  metadata:
+    clusterName: ""
+    creationTimestamp: 2017-05-31T12:56:35Z
+    deletionGracePeriodSeconds: null
+    deletionTimestamp: null
+    name: my-new-cron-object
+    namespace: default
+    resourceVersion: "285"
+    selfLink: /apis/stable.example.com/v1/namespaces/default/crontabs/my-new-cron-object
+    uid: 9423255b-4600-11e7-af6a-28d2447dc82b
+  spec:
+    cronSpec: '* * * * /5' 1
+    image: my-awesome-cron-image 1
+```
+
+Custom data from the YAML that you used to create the object displays.

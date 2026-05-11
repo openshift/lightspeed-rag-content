@@ -1,0 +1,290 @@
+# Network observability health rules
+
+
+The Network Observability Operator provides alerts by using built-in metrics and the Red Hat OpenShift Container Platform monitoring stack to report cluster network health.
+
+[IMPORTANT]
+----
+Network observability health alerts require Red Hat OpenShift Container Platform 4.16 or later.
+----
+
+# Network observability rules for health and performance
+
+Network observability includes a system for managing Prometheus-based rules. Use these rules to monitor the health and performance of Red Hat OpenShift Container Platform applications and infrastructure.
+
+The Network Observability Operator converts these rules into a PrometheusRule resource. The Network Observability Operator supports the following rule types:
+
+* Alerting rules: Specifies rules managed by the Prometheus AlertManager to provide notification of network anomalies or infrastructure failures.
+* Recording rules: Specifies pre-compute complex Prometheus Query Language (PromQL) expressions into new time series to improve dashboard performance and visualization.
+
+View the PrometheusRule resource in the netobserv namespace by running the following command:
+
+
+```terminal
+$ oc get prometheusrules -n netobserv -o yaml
+```
+
+
+## Network health monitoring and alerting rules
+
+The Network Observability Operator includes a rule-based system to detect network anomalies and infrastructure failures. By converting configurations into alerting rules, the Operator enables automated monitoring and troubleshooting through the Red Hat OpenShift Container Platform web console.
+
+### Monitoring outcomes
+
+The Network Observability Operator surfaces network status in the following areas:
+
+Alerting UI:: Specific alerts appear in Observe → Alerting, where notifications are managed through the Prometheus AlertManager.
+Network Health dashboard:: A specialized dashboard in Observe → Network Health provides a high-level summary of cluster network status.
+
+The Network Health dashboard categorizes violations into tabs to isolate the scope of an issue:
+
+* Global: Aggregate health of the entire cluster.
+* Nodes: Violations specific to infrastructure nodes.
+* Namespaces: Violations specific to individual namespaces.
+* Workloads: Violations specific to resources, such as Deployments or DaemonSets.
+
+### Predefined health rules
+
+The Network Observability Operator provides default rules for common networking scenarios. These rules are active only if the corresponding feature is enabled in the FlowCollector custom resource (CR).
+
+The following list contains a subset of available default rules:
+
+PacketDropsByDevice:: Triggers on a high percentage of packet drops from network devices. It is based on standard node-exporter metrics and does not require the PacketDrop agent feature.
+PacketDropsByKernel:: Triggers on a high percentage of packet drops by the kernel. Requires the PacketDrop agent feature.
+IPsecErrors:: Triggers when IPsec encryption errors are detected. Requires the IPSec agent feature.
+NetpolDenied:: Triggers when traffic denied by network policies is detected. Requires the NetworkEvents agent feature.
+LatencyHighTrend:: Triggers when a significant increase in TCP latency is detected. Requires the FlowRTT agent feature.
+DNSErrors:: Triggers when DNS errors are detected. Requires the DNSTracking agent feature.
+
+Operational alerts for the Network Observability Operator:
+
+NetObservNoFlows:: Triggers when the pipeline is active but no flows are observed.
+NetObservLokiError:: Triggers when flows are dropped because of Loki errors.
+
+For a complete list of rules and runbooks, see the Network Observability Operator runbooks.
+
+### Rule dependencies and feature requirements
+
+The Network Observability Operator creates rules based on the features enabled in the FlowCollector custom resource (CR).
+
+For example, packet drop-related rules are created only if the PacketDrop agent feature is enabled. Rules are built on metrics; if the required metrics are missing, configuration warnings might appear. Configure metrics in the spec.processor.metrics.includeList object of the FlowCollector resource.
+
+# Performance optimization with recording rules
+
+For large-scale clusters, recording rules optimize how Prometheus handles network data. Recording rules improve dashboard responsiveness and reduce the computational overhead of complex queries.
+
+## Optimization benefits
+
+Recording rules pre-compute complex Prometheus Query Language (PromQL) expressions and save the results as new time series. Unlike alerting rules, recording rules do not monitor thresholds.
+
+Using recording rules provides the following advantages:
+
+Improved performance:: Pre-computing Prometheus queries allows dashboards to load faster by avoiding on-demand calculations for long-term trends.
+Resource efficiency:: Calculating data at fixed intervals reduces CPU load on the Prometheus server compared to recalculating data on every dashboard refresh.
+Simplified queries:: Using short metric names, such as cluster:network_traffic:rate_5m, simplifies complex aggregate calculations in custom dashboards.
+
+## Comparison of rule modes
+
+The following table compares rule modes based on the expected outcome:
+
+
+
+# Network observability health rule structure and customization
+
+Health rules in the Network Observability Operator are defined using rule templates and variants in the spec.processor.metrics.healthRules object of the FlowCollector custom resource (CR). You can customize the default templates and variants for flexible, fine-grained alerting.
+
+For each template, you can define a list of variants, each with their own thresholds and grouping configurations. For more information, see "List of default alert templates".
+
+The following example shows an alert:
+
+
+```yaml
+apiVersion: flows.netobserv.io/v1beta1
+kind: FlowCollector
+metadata:
+  name: flow-collector
+spec:
+  processor:
+    metrics:
+      healthRules:
+      - template: PacketDropsByKernel
+        mode: Alert # or Recording
+        variants:
+        # triggered when the whole cluster traffic (no grouping) reaches 10% of drops
+        - thresholds:
+            critical: "10"
+        # triggered when per-node traffic reaches 5% of drops, with gradual severity
+        - thresholds:
+            critical: "15"
+            warning: "10"
+            info: "5"
+          groupBy: Node
+```
+
+
+where:
+
+spec.processor.metrics.healthRules.template:: Specifies the name of the predefined rule template.
+spec.processor.metrics.healthRules.mode:: Specifies whether the rule functions as an Alert or a Recording rule. This setting can either be defined per variant, or for the whole template.
+spec.processor.metrics.healthRules.variants.thresholds:: Specifies the numerical values that trigger the rule. You can define multiple severity levels, such as critical, warning, or info, within a single variant.
+cluster-wide variant:: Specifies a variant defined without a groupBy setting. In the provided example, this variant triggers when the total cluster traffic reaches 10% drops.
+spec.processor.metrics.healthRules.variants.groupBy:: Specifies the dimension used to aggregate the metric. In the provided example, the alert is evaluated independently for each *Node8.
+
+
+[NOTE]
+----
+Customizing a rule replaces the default configuration for that template. If you want to keep the default configurations, you must manually replicate them.
+----
+
+## PromQL expressions and metadata for health rules
+
+Learn about the base query for Prometheus Query Language (PromQL), and how to customize it so you can configure network observability alerts for your specific needs.
+
+The health rule API in the network observability FlowCollector custom resource (CR) is mapped to the Prometheus Operator API, generating a PrometheusRule. You can see the PrometheusRule in the default netobserv namespace by running the following command:
+
+
+```terminal
+$ oc get prometheusrules -n netobserv -oyaml
+```
+
+
+### An example query for an alert in a surge of incoming traffic
+
+This example provides the base PromQL query pattern for an alert about a surge in incoming traffic:
+
+
+```promql
+sum(rate(netobserv_workload_ingress_bytes_total{SrcK8S_Namespace="openshift-ingress"}[30m])) by (DstK8S_Namespace)
+```
+
+
+This query calculates the byte rate coming from the openshift-ingress namespace to any of your workloads' namespaces over the past 30 minutes.
+
+You can customize the query, including retaining only some rates, running the query for specific time periods, and setting a final threshold.
+
+Filtering noise:: Appending > 1000 to this query retains only the rates observed that are greater than 1 KB/s, which eliminates noise from low-bandwidth consumers.
+
+(sum(rate(netobserv_workload_ingress_bytes_total{SrcK8S_Namespace="openshift-ingress"}[30m])) by (DstK8S_Namespace) > 1000)
+
+The byte rate is relative to the sampling interval defined in the FlowCollector custom resource (CR) configuration. If the sampling interval is 1:100, the actual traffic might be approximately 100 times higher than the reported metrics.
+Time comparison:: You can run the same query for a particular period of time using the offset modifier. For example, a query for one day earlier can be run using offset 1d, and a query for five hours ago can be run using offset 5h.
+
+sum(rate(netobserv_workload_ingress_bytes_total{SrcK8S_Namespace="openshift-ingress"}[30m] offset 1d)) by (DstK8S_Namespace))
+
+You can use the formula 100 * (<query now> - <query from the previous day>) / <query from the previous day> to calculate the percentage of increase compared to the previous day. This value can be negative if the byte rate today is lower than the previous day.
+Final threshold:: You can apply a final threshold to filter increases that are lower than the desired percentage. For example, > 100 eliminates increases that are lower than 100%.
+
+Together, the complete expression for the PrometheusRule looks like the following:
+
+
+```promql
+...
+      expr: |-
+        (100 *
+          (
+            (sum(rate(netobserv_workload_ingress_bytes_total{SrcK8S_Namespace="openshift-ingress"}[30m])) by (DstK8S_Namespace) > 1000)
+            - sum(rate(netobserv_workload_ingress_bytes_total{SrcK8S_Namespace="openshift-ingress"}[30m] offset 1d)) by (DstK8S_Namespace)
+          )
+          / sum(rate(netobserv_workload_ingress_bytes_total{SrcK8S_Namespace="openshift-ingress"}[30m] offset 1d)) by (DstK8S_Namespace))
+        > 100
+```
+
+
+### Alert metadata fields
+
+The Network Observability Operator uses components from other Red Hat OpenShift Container Platform features, such as the monitoring stack, to enhance visibility into network traffic. For more information, see: "Monitoring stack architecture".
+
+Some metadata must be configured for the rule definitions. This metadata is used by Prometheus and the Alertmanager service from the monitoring stack, or by the Network Health dashboard.
+
+The following example shows an AlertingRule resource with the configured metadata:
+
+
+```yaml
+apiVersion: monitoring.openshift.io/v1
+kind: AlertingRule
+metadata:
+  name: netobserv-alerts
+  namespace: openshift-monitoring
+spec:
+  groups:
+  - name: NetObservAlerts
+    rules:
+    - alert: NetObservIncomingBandwidth
+      annotations:
+        netobserv_io_network_health: '{"namespaceLabels":["DstK8S_Namespace"],"threshold":"100","unit":"%","upperBound":"500"}'
+        message: |-
+          NetObserv is detecting a surge of incoming traffic: current traffic to {{ $labels.DstK8S_Namespace }} has increased by more than 100% since yesterday.
+        summary: "Surge in incoming traffic"
+      expr: |-
+        (100 *
+          (
+            (sum(rate(netobserv_workload_ingress_bytes_total{SrcK8S_Namespace="openshift-ingress"}[30m])) by (DstK8S_Namespace) > 1000)
+            - sum(rate(netobserv_workload_ingress_bytes_total{SrcK8S_Namespace="openshift-ingress"}[30m] offset 1d)) by (DstK8S_Namespace)
+          )
+          / sum(rate(netobserv_workload_ingress_bytes_total{SrcK8S_Namespace="openshift-ingress"}[30m] offset 1d)) by (DstK8S_Namespace))
+        > 100
+      for: 1m
+      labels:
+        app: netobserv
+        netobserv: "true"
+        severity: warning
+```
+
+
+where:
+
+spec.groups.rules.alert.labels.netobserv:: Specifies the alert for the Network Health dashboard to detect when set to true.
+spec.groups.rules.alert.labels.severity:: Specifies the severity of the alert. The following values are valid: critical, warning, or info.
+
+You can leverage the output labels from the defined PromQL expression in the message annotation. In the example, since results are grouped per DstK8S_Namespace, the expression {{ $labels.DstK8S_Namespace }} is used in the message text.
+
+The netobserv_io_network_health annotation is optional, and controls how the alert is rendered on the Network Health page.
+
+The netobserv_io_network_health annotation is a JSON string consisting of the following fields:
+
+
+
+The namespaceLabels and nodeLabels are mutually exclusive. If neither is provided, the alert appears under the Global tab.
+
+
+
+## Custom health rule configuration
+
+Use the Prometheus Query Language (PromQL) to define a custom AlertingRule resource to trigger alerts based on specific network metrics (e.g., traffic surges).
+
+* Familiarity with PromQL.
+* You have installed Red Hat OpenShift Container Platform 4.16 or later.
+* You have access to the cluster as a user with the cluster-admin role.
+* You have installed the Network Observability Operator.
+
+1. Create a YAML file named custom-alert.yaml that contains your AlertingRule resource.
+2. Apply the custom alert rule by running the following command:
+
+```terminal
+$ oc apply -f custom-alert.yaml
+```
+
+
+1. Verify that the PrometheusRule resource was created in the netobserv namespace by running the following command:
+
+```terminal
+$ oc get prometheusrules -n netobserv -oyaml
+```
+
+
+The output should include the netobserv-alerts rule you just created, confirming that the resource was generated correctly.
+2. Confirm the rule is active by checking the Network Health dashboard in the Red Hat OpenShift Container Platform web console → Observe.
+
+# Disable predefined rules
+
+Rule templates can be disabled in the spec.processor.metrics.disableAlerts field of the FlowCollector custom resource (CR). This setting accepts a list of rule template names. For a list of alert template names, see "List of default rules".
+
+If a template is disabled and overridden in the spec.processor.metrics.healthRules field, the disable setting takes precedence and the alert rule is not created.
+
+# Additional resources
+
+* List of default rules
+* Viewing network observability metrics dashboards
+* Creating alerts
+* Monitoring stack architecture
+* Network Observability Operator runbooks

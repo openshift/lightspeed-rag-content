@@ -1,0 +1,153 @@
+# Controlling pod placement by using pod topology spread constraints
+
+
+You can use pod topology spread constraints to provide fine-grained control over the placement of your pods across nodes, zones, regions, or other user-defined topology domains. Distributing pods across failure domains can help to achieve high availability and more efficient resource utilization.
+
+# Example use cases
+
+* As an administrator, I want my workload to automatically scale between two to fifteen pods. I want to ensure that when there are only two pods, they are not placed on the same node, to avoid a single point of failure.
+* As an administrator, I want to distribute my pods evenly across multiple infrastructure zones to reduce latency and network costs. I want to ensure that my cluster can self-heal if issues arise.
+
+# Important considerations
+
+* Pods in an Red Hat OpenShift Container Platform cluster are managed by workload controllers such as deployments, stateful sets, or daemon sets. These controllers define the desired state for a group of pods, including how they are distributed and scaled across the nodes in the cluster. You should set the same pod topology spread constraints on all pods in a group to avoid confusion. When using a workload controller, such as a deployment, the pod template typically handles this for you.
+* Mixing different pod topology spread constraints can make Red Hat OpenShift Container Platform behavior confusing and troubleshooting more difficult. You can avoid this by ensuring that all nodes in a topology domain are consistently labeled. Red Hat OpenShift Container Platform automatically populates well-known labels, such as kubernetes.io/hostname. This helps avoid the need for manual labeling of nodes. These labels provide essential topology information, ensuring consistent node labeling across the cluster.
+* Only pods within the same namespace are matched and grouped together when spreading due to a constraint.
+* You can specify multiple pod topology spread constraints, but you must ensure that they do not conflict with each other. All pod topology spread constraints must be satisfied for a pod to be placed.
+
+# Understanding skew and maxSkew
+
+Skew refers to the difference in the number of pods that match a specified label selector across different topology domains, such as zones or nodes.
+
+The skew is calculated for each domain by taking the absolute difference between the number of pods in that domain and the number of pods in the domain with the lowest amount of pods scheduled. Setting a maxSkew value guides the scheduler to maintain a balanced pod distribution.
+
+## Example skew calculation
+
+You have three zones (A, B, and C), and you want to distribute your pods evenly across these zones. If zone A has 5 pods, zone B has 3 pods, and zone C has 2 pods, to find the skew, you can subtract the number of pods in the domain with the lowest amount of pods scheduled from the number of pods currently in each zone. This means that the skew for zone A is 3, the skew for zone B is 1, and the skew for zone C is 0.
+
+## The maxSkew parameter
+
+The maxSkew parameter defines the maximum allowable difference, or skew, in the number of pods between any two topology domains. If maxSkew is set to 1, the number of pods in any topology domain should not differ by more than 1 from any other domain. If the skew exceeds maxSkew, the scheduler attempts to place new pods in a way that reduces the skew, adhering to the constraints.
+
+Using the previous example skew calculation, the skew values exceed the default maxSkew value of 1. The scheduler places new pods in zone B and zone C to reduce the skew and achieve a more balanced distribution, ensuring that no topology domain exceeds the skew of 1.
+
+# Example configurations for pod topology spread constraints
+
+You can specify which pods to group together, which topology domains they are spread among, and the acceptable skew.
+
+The following examples demonstrate pod topology spread constraint configurations.
+
+
+```yaml
+apiVersion: v1
+kind: Pod
+metadata:
+  name: my-pod
+  labels:
+    region: us-east
+spec:
+  securityContext:
+    runAsNonRoot: true
+    seccompProfile:
+      type: RuntimeDefault
+  topologySpreadConstraints:
+  - maxSkew: 1 1
+    topologyKey: topology.kubernetes.io/zone 2
+    whenUnsatisfiable: DoNotSchedule 3
+    labelSelector: 4
+      matchLabels:
+        region: us-east 5
+    matchLabelKeys:
+      - my-pod-label 6
+  containers:
+  - image: "docker.io/ocpqe/hello-pod"
+    name: hello-pod
+    securityContext:
+      allowPrivilegeEscalation: false
+      capabilities:
+        drop: [ALL]
+```
+
+
+The maximum difference in number of pods between any two topology domains. The default is 1, and you cannot specify a value of 0.
+The key of a node label. Nodes with this key and identical value are considered to be in the same topology.
+How to handle a pod if it does not satisfy the spread constraint. The default is DoNotSchedule, which tells the scheduler not to schedule the pod. Set to ScheduleAnyway to still schedule the pod, but the scheduler prioritizes honoring the skew to not make the cluster more imbalanced.
+Pods that match this label selector are counted and recognized as a group when spreading to satisfy the constraint. Be sure to specify a label selector, otherwise no pods can be matched.
+Be sure that this Pod spec also sets its labels to match this label selector if you want it to be counted properly in the future.
+A list of pod label keys to select which pods to calculate spreading over.
+
+
+```yaml
+kind: Pod
+apiVersion: v1
+metadata:
+  name: my-pod
+  labels:
+    region: us-east
+spec:
+  securityContext:
+    runAsNonRoot: true
+    seccompProfile:
+      type: RuntimeDefault
+  topologySpreadConstraints:
+  - maxSkew: 1
+    topologyKey: topology.kubernetes.io/zone
+    whenUnsatisfiable: DoNotSchedule
+    labelSelector:
+      matchLabels:
+        region: us-east
+  containers:
+  - image: "docker.io/ocpqe/hello-pod"
+    name: hello-pod
+    securityContext:
+      allowPrivilegeEscalation: false
+      capabilities:
+        drop: [ALL]
+```
+
+
+The previous example defines a Pod spec with a one pod topology spread constraint. It matches on pods labeled region: us-east, distributes among zones, specifies a skew of 1, and does not schedule the pod if it does not meet these requirements.
+
+
+```yaml
+kind: Pod
+apiVersion: v1
+metadata:
+  name: my-pod-2
+  labels:
+    region: us-east
+spec:
+  securityContext:
+    runAsNonRoot: true
+    seccompProfile:
+      type: RuntimeDefault
+  topologySpreadConstraints:
+  - maxSkew: 1
+    topologyKey: node
+    whenUnsatisfiable: DoNotSchedule
+    labelSelector:
+      matchLabels:
+        region: us-east
+  - maxSkew: 1
+    topologyKey: rack
+    whenUnsatisfiable: DoNotSchedule
+    labelSelector:
+      matchLabels:
+        region: us-east
+  containers:
+  - image: "docker.io/ocpqe/hello-pod"
+    name: hello-pod
+    securityContext:
+      allowPrivilegeEscalation: false
+      capabilities:
+        drop: [ALL]
+```
+
+
+The previous example defines a Pod spec with two pod topology spread constraints. Both match on pods labeled region: us-east, specify a skew of 1, and do not schedule the pod if it does not meet these requirements.
+
+The first constraint distributes pods based on a user-defined label node, and the second constraint distributes pods based on a user-defined label rack. Both constraints must be met for the pod to be scheduled.
+
+# Additional resources
+
+* Understanding how to update labels on nodes

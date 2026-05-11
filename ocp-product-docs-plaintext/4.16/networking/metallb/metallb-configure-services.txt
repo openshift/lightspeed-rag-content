@@ -1,0 +1,213 @@
+# Configuring services to use MetalLB
+
+
+As a cluster administrator, when you add a service of type LoadBalancer, you can control how MetalLB assigns an IP address.
+
+# Request a specific IP address
+
+Like some other load-balancer implementations, MetalLB accepts the spec.loadBalancerIP field in the service specification.
+
+If the requested IP address is within a range from any address pool, MetalLB assigns the requested IP address.
+If the requested IP address is not within any range, MetalLB reports a warning.
+
+
+```yaml
+apiVersion: v1
+kind: Service
+metadata:
+  name: <service_name>
+  annotations:
+    metallb.universe.tf/address-pool: <address_pool_name>
+spec:
+  selector:
+    <label_key>: <label_value>
+  ports:
+    - port: 8080
+      targetPort: 8080
+      protocol: TCP
+  type: LoadBalancer
+  loadBalancerIP: <ip_address>
+```
+
+
+If MetalLB cannot assign the requested IP address, the EXTERNAL-IP for the service reports <pending> and running oc describe service <service_name> includes an event like the following example.
+
+
+```terminal
+  ...
+Events:
+  Type     Reason            Age    From                Message
+  ----     ------            ----   ----                -------
+  Warning  AllocationFailed  3m16s  metallb-controller  Failed to allocate IP for "default/invalid-request": "4.3.2.1" is not allowed in config
+```
+
+
+# Request an IP address from a specific pool
+
+To assign an IP address from a specific range, but you are not concerned with the specific IP address, then you can use the metallb.universe.tf/address-pool annotation to request an IP address from the specified address pool.
+
+
+```yaml
+apiVersion: v1
+kind: Service
+metadata:
+  name: <service_name>
+  annotations:
+    metallb.universe.tf/address-pool: <address_pool_name>
+spec:
+  selector:
+    <label_key>: <label_value>
+  ports:
+    - port: 8080
+      targetPort: 8080
+      protocol: TCP
+  type: LoadBalancer
+```
+
+
+If the address pool that you specify for <address_pool_name> does not exist, MetalLB attempts to assign an IP address from any pool that permits automatic assignment.
+
+# Accept any IP address
+
+By default, address pools are configured to permit automatic assignment.
+MetalLB assigns an IP address from these address pools.
+
+To accept any IP address from any pool that is configured for automatic assignment, no special annotation or configuration is required.
+
+
+```yaml
+apiVersion: v1
+kind: Service
+metadata:
+  name: <service_name>
+spec:
+  selector:
+    <label_key>: <label_value>
+  ports:
+    - port: 8080
+      targetPort: 8080
+      protocol: TCP
+  type: LoadBalancer
+```
+
+
+# Share a specific IP address
+
+By default, services do not share IP addresses.
+However, if you need to colocate services on a single IP address, you can enable selective IP sharing by adding the metallb.universe.tf/allow-shared-ip annotation to the services.
+
+
+```yaml
+apiVersion: v1
+kind: Service
+metadata:
+  name: service-http
+  annotations:
+    metallb.universe.tf/address-pool: doc-example
+    metallb.universe.tf/allow-shared-ip: "web-server-svc"  1
+spec:
+  ports:
+    - name: http
+      port: 80  2
+      protocol: TCP
+      targetPort: 8080
+  selector:
+    <label_key>: <label_value>  3
+  type: LoadBalancer
+  loadBalancerIP: 172.31.249.7  4
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: service-https
+  annotations:
+    metallb.universe.tf/address-pool: doc-example
+    metallb.universe.tf/allow-shared-ip: "web-server-svc"
+spec:
+  ports:
+    - name: https
+      port: 443
+      protocol: TCP
+      targetPort: 8080
+  selector:
+    <label_key>: <label_value>
+  type: LoadBalancer
+  loadBalancerIP: 172.31.249.7
+```
+
+
+Specify the same value for the metallb.universe.tf/allow-shared-ip annotation. This value is referred to as the sharing key.
+Specify different port numbers for the services.
+Specify identical pod selectors if you must specify externalTrafficPolicy: local so the services send traffic to the same set of pods. If you use the cluster external traffic policy, then the pod selectors do not need to be identical.
+Optional: If you specify the three preceding items, MetalLB might colocate the services on the same IP address. To ensure that services share an IP address, specify the IP address to share.
+
+By default, Kubernetes does not allow multiprotocol load balancer services.
+This limitation would normally make it impossible to run a service like DNS that needs to listen on both TCP and UDP.
+To work around this limitation of Kubernetes with MetalLB, create two services:
+
+* For one service, specify TCP and for the second service, specify UDP.
+* In both services, specify the same pod selector.
+* Specify the same sharing key and spec.loadBalancerIP value to colocate the TCP and UDP services on the same IP address.
+
+# Configuring a service with MetalLB
+
+You can configure a load-balancing service to use an external IP address from an address pool.
+
+* Install the OpenShift CLI (oc).
+* Install the MetalLB Operator and start MetalLB.
+* Configure at least one address pool.
+* Configure your network to route traffic from the clients to the host network for the cluster.
+
+1. Create a <service_name>.yaml file. In the file, ensure that the spec.type field is set to LoadBalancer.
+
+Refer to the examples for information about how to request the external IP address that MetalLB assigns to the service.
+2. Create the service:
+
+```terminal
+$ oc apply -f <service_name>.yaml
+```
+
+Example output
+
+```terminal
+service/<service_name> created
+```
+
+
+* Describe the service:
+
+```terminal
+$ oc describe service <service_name>
+```
+
+Example output
+
+```
+Name:                     <service_name>
+Namespace:                default
+Labels:                   <none>
+Annotations:              metallb.universe.tf/address-pool: doc-example  1
+Selector:                 app=service_name
+Type:                     LoadBalancer  2
+IP Family Policy:         SingleStack
+IP Families:              IPv4
+IP:                       10.105.237.254
+IPs:                      10.105.237.254
+LoadBalancer Ingress:     192.168.100.5  3
+Port:                     <unset>  80/TCP
+TargetPort:               8080/TCP
+NodePort:                 <unset>  30550/TCP
+Endpoints:                10.244.0.50:8080
+Session Affinity:         None
+External Traffic Policy:  Cluster
+Events:  4
+  Type    Reason        Age                From             Message
+  ----    ------        ----               ----             -------
+  Normal  nodeAssigned  32m (x2 over 32m)  metallb-speaker  announcing from node "<node_name>"
+```
+
+The annotation is present if you request an IP address from a specific pool.
+The service type must indicate LoadBalancer.
+The load-balancer ingress field indicates the external IP address if the service is assigned correctly.
+The events field indicates the node name that is assigned to announce the external IP address.
+If you experience an error, the events field indicates the reason for the error.
