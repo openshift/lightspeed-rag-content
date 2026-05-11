@@ -1,0 +1,175 @@
+# Route gRPC requests to services
+
+
+When you expose your gRPC APIs through a gateway, you must configure a GRPCRoute resource to accurately direct incoming gRPC requests from a Gateway listener to an API object. A GRPCRoute specifies the exact routing behavior for these requests by evaluating a set of defined rules.
+Within each GRPCRoute rule, you can establish the following routing behaviors:
+* matches: Define the conditions a gRPC request must meet based on specific gRPC methods and headers.
+* filters: Apply processing directions to the request, such as header modifications, before the traffic reaches the backend.
+* backendRefs: Designate the backend services where matching and filtered requests are delivered, including traffic weight distribution.
+While standard GRPCRoute configurations share many similarities with HTTPRoute resources, the Red Hat OpenShift Container Platform implementation of GRPCRoute adheres to the standard-channel Gateway API specification, which excludes upstream experimental fields and features.
+To successfully configure your gRPC routing behavior, complete the following tasks:
+* Configure gRPC request matching conditions
+* Apply processing filters to gRPC requests
+* Configure routing destinations and traffic weights for gRPC
+* Understand GRPCRoute implementation details
+
+# Configure gRPC request matching conditions
+
+When multiple gRPC services share a gateway, you can define request matching conditions based on gRPC methods and headers. This ensures that traffic is successfully routed to the correct backend application.
+
+Matches define the specific conditions used for matching a rule against incoming gRPC requests. You can select gRPC requests via a method match, which can be an exact match or a regular expression, along with optional headers matches.
+
+Each rule can specify a maximum of 64 matches. However, the total number of matches across all rules in a single GRPCRoute resource cannot exceed 128. If your routing requirements exceed this limit, you must distribute your complex matching combinations across multiple routes.
+
+* You have access to the cluster as a user with the cluster-admin role.
+* You have installed the OpenShift CLI (`oc`).
+* You have installed Red Hat OpenShift Service Mesh.
+
+1. Create or edit a GRPCRoute YAML file to include your desired match conditions under the spec.rules.matches field.
+The following example demonstrates a complete GRPCRoute resource configured with matching conditions for a specific gRPC service, method, and header:
+
+```yaml
+apiVersion: gateway.networking.k8s.io/v1
+kind: GRPCRoute
+metadata:
+  name: grpc-match-example
+  namespace: my-application
+spec:
+  parentRefs:
+  - name: my-gateway
+    namespace: openshift-ingress
+  hostnames:
+  - "example.com"
+  rules:
+  - matches:
+    - method:
+        service: helloworld.Greeter
+        method: SayHello
+      headers:
+      - name: x-version
+        value: v1
+    backendRefs:
+    - name: greeter-service
+      port: 50051
+      weight: 1
+```
+
+* parentRefs attaches the route to the my-gateway Gateway.
+* method specifies that the incoming request must be targeting the helloworld.Greeter service and specifically calling the SayHello method.
+* headers requires that the request must also include an x-version header with a value of v1. Both the method and header conditions must be met for this rule to apply.
+* backendRefs routes the matching traffic to the greeter-service backend.
+2. Apply the GRPCRoute resource by running the following command:
+
+```terminal
+$ oc apply -f <filename>.yaml
+```
+
+
+# Apply processing filters to gRPC requests
+
+When a gRPC request hits your route, you can apply processing filters to modify the request or response before the traffic reaches your backend.
+
+You can define optional filters within your routing rules to apply processing directives, such as request and response header modifiers or traffic mirroring. You can also specify rule-scoped filters directly within your backend references.
+
+Because the data-plane behavior is provided by Red Hat OpenShift Service Mesh, you must validate specific feature support, such as filter capabilities and header matching, against your installed Service Mesh release.
+
+* You have access to the cluster as a user with the cluster-admin role.
+* You have installed the OpenShift CLI (`oc`).
+* You have installed Red Hat OpenShift Service Mesh.
+
+1. Create or edit a GRPCRoute YAML file to include your desired processing directives under the spec.rules.filters field.
+The following example demonstrates a complete GRPCRoute resource configured with a filter that adds a custom request header before routing to the backend service:
+
+```yaml
+apiVersion: gateway.networking.k8s.io/v1
+kind: GRPCRoute
+metadata:
+  name: grpc-filter-example
+  namespace: my-application
+spec:
+  parentRefs:
+  - name: my-gateway
+    namespace: openshift-ingress
+  hostnames:
+  - "example.com"
+  rules:
+  - filters:
+    - type: RequestHeaderModifier
+      requestHeaderModifier:
+        add:
+        - name: custom-grpc-header
+          value: my-custom-value
+    backendRefs:
+    - name: greeter-service
+      port: 50051
+```
+
+* parentRefs attaches the route to a specific Gateway.
+* hostnames limits the route to requests intended for "example.com".
+* filters specifies the processing logic. In this example, the RequestHeaderModifier adds a custom header to the gRPC request before it reaches the backend.
+* backendRefs directs the modified traffic to the greeter-service backend on port 50051.
+2. Apply the GRPCRoute resource by running the following command:
+
+```terminal
+$ oc apply -f <filename>.yaml
+```
+
+
+# Configure routing destinations and traffic weights for gRPC
+
+When you route gRPC traffic, you must define backend service destinations and traffic weights to distribute requests across your APIs. BackendRefs designate the backend services where matching and filtered gRPC requests are delivered.
+
+You can configure optional backend references for each routing rule. By defining multiple backend references and assigning a weight to each, you can control the proportion of gRPC traffic that is forwarded to specific versions of your service. The proportion of traffic sent to a specific backend is calculated by dividing its assigned weight by the sum of all weights across all backends configured in the rule.
+
+Because Red Hat OpenShift Service Mesh handles the data-plane behavior, you must ensure that your GRPCRoute references an Istio ingress gateway in its parentRefs configuration.
+
+* You have access to the cluster as a user with the cluster-admin role.
+* You have installed the OpenShift CLI (`oc`).
+* You have installed Red Hat OpenShift Service Mesh.
+
+1. Create or edit a GRPCRoute YAML file to include your desired service destinations and traffic weights under the spec.rules.backendRefs field.
+The following example demonstrates a complete GRPCRoute resource that routes gRPC traffic between two versions of a backend service using proportional traffic weights:
+
+```yaml
+apiVersion: gateway.networking.k8s.io/v1
+kind: GRPCRoute
+metadata:
+  name: grpc-weight-example
+  namespace: my-application
+spec:
+  parentRefs:
+  - name: my-gateway
+    namespace: openshift-ingress
+  hostnames:
+  - "example.com"
+  rules:
+  - backendRefs:
+    - name: greeter-service-v1
+      port: 50051
+      weight: 90
+    - name: greeter-service-v2
+      port: 50051
+      weight: 10
+```
+
+* parentRefs attaches the route to the my-gateway Gateway.
+* backendRefs defines the destination services for the traffic.
+* weight dictates the traffic split. In this configuration, the total sum of the weights is 100. The route forwards 90% of the traffic to greeter-service-v1 and 10% to greeter-service-v2.
+2. Apply the GRPCRoute resource by running the following command:
+
+```terminal
+$ oc apply -f <filename>.yaml
+```
+
+
+# GRPCRoute implementation details
+
+The Red Hat OpenShift Container Platform Cluster Ingress Operator vendors the standard-channel Gateway API v1.4.1 custom resource definition (CRD). When you migrate upstream GRPCRoute configurations to your cluster, you must ensure your manifests rely on standard-channel features to avoid validation errors.
+
+Additionally, the cluster-ingress-operator only installs the GRPCRoute CRD and delegates all runtime semantics to Red Hat OpenShift Service Mesh. Because the operator does not reconcile GRPCRoute instances, the data-plane behavior depends entirely on your Service Mesh implementation.
+
+The following list outlines the specific implementation details and channel limitations that apply to GRPCRoute resources on Red Hat OpenShift Container Platform.
+
+Experimental fields:: Because Red Hat OpenShift Container Platform uses the standard-channel CRD, upstream experimental features are not available. For example, the sessionPersistence block is excluded. The CRD will reject configurations that attempt to use any experimental fields.
+Rule names:: The spec.rules[].name field is currently an experimental feature in the upstream Gateway API. Because Red Hat OpenShift Container Platform relies on the standard channel, this field is not available. You cannot annotate or deduplicate rule identities, and conformance suites expecting this field might fail.
+Match limits:: The Red Hat OpenShift Container Platform schema fully aligns with upstream standard limits. A single GRPCRoute supports up to 16 rules, and each rule supports up to 64 matches. However, the total number of matches across all rules in a single route cannot exceed 128.
