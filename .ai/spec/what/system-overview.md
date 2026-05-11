@@ -12,10 +12,10 @@ OpenShift LightSpeed RAG Content is a build-time artifact producer for the OpenS
    - **Main RAG content image**: Contains all OCP version vector indexes, the `latest` symlink, and the embedding model. Consumed by lightspeed-service as a volume mount.
    - **BYOK tool image**: Contains buildah, the embedding toolchain, and the embedding model. Used by customers to build custom RAG images from their own Markdown content.
 
-4. Three pipeline implementations exist for generating vector indexes, each producing FAISS-compatible output:
-   - **Plaintext pipeline** (`scripts/generate_embeddings.py`): The production pipeline used by the main Containerfile. Processes pre-converted plaintext OCP docs and Markdown runbooks.
-   - **HTML pipeline** (`scripts/html_embeddings/`): Downloads HTML documentation from the Red Hat portal, strips non-content markup, performs semantic HTML chunking, and generates embeddings.
-   - **lsc library** (`lsc/src/lightspeed_rag_content/`): An installable Python library supporting multiple vector store backends (FAISS, PostgreSQL, llama-stack faiss, llama-stack sqlite-vec).
+4. Three pipeline implementations exist for generating vector indexes:
+   - **lsc library pipeline** (`lsc/Containerfile.konflux` + `lsc/custom_processor.py`): The primary Konflux CI pipeline. Uses the lsc library (`lsc/src/lightspeed_rag_content/`) and produces `llamastack-faiss` indexes. Used by the `lightspeed-ocp-rag-push` and `lightspeed-ocp-rag-pull-request` Tekton pipelines.
+   - **Plaintext pipeline** (`scripts/generate_embeddings.py` + root `Containerfile`): An alternative build variant. Processes pre-converted plaintext OCP docs and Markdown runbooks using plain LlamaIndex FAISS. Used by the `own-app-lightspeed-rag-content` Tekton pipelines.
+   - **HTML pipeline** (`scripts/html_embeddings/`): Downloads HTML documentation from the Red Hat portal, strips non-content markup, performs semantic HTML chunking, and generates embeddings. Not used by any CI pipeline.
 
 5. The embedding model must be redistributable under an Apache 2.0 compatible license.
 
@@ -43,13 +43,11 @@ The OpenShift LightSpeed operator configures RAG content references via the CRD.
 
 ## Constraints
 
-1. Python 3.11 is required (`requires-python = "==3.11.*"`).
+1. Both CPU and GPU compute flavors must be supported. The Containerfile selects the base image via the `FLAVOR` build arg.
 
-2. Both CPU and GPU compute flavors must be supported. The Containerfile selects the base image via the `FLAVOR` build arg.
+2. Hermetic builds (no network access during build) must be supported for Konflux/Cachi2 CI. All dependencies -- Python packages, RPMs, and the embedding model binary -- must be prefetchable.
 
-3. Hermetic builds (no network access during build) must be supported for Konflux/Cachi2 CI. All dependencies -- Python packages, RPMs, and the embedding model binary -- must be prefetchable.
-
-4. The project uses PDM for dependency management with separate lockfiles per compute flavor (`pdm.lock.cpu`, `pdm.lock.gpu`).
+3. The project uses PDM for dependency management with separate lockfiles per compute flavor (`pdm.lock.cpu`, `pdm.lock.gpu`).
 
 ## Planned Changes
 

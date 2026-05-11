@@ -16,6 +16,14 @@ OpenShift LightSpeed RAG Content is organized into four areas: `lsc/` (installab
 | `asciidoc/ruby_asciidoc/` | Ruby converter extensions for asciidoctor. `asciidoc_text_converter.rb` implements the custom text output format. |
 | `asciidoc/__main__.py` | CLI entry point for AsciiDoc conversion. |
 
+`lsc/` also contains build and orchestration files at its root:
+
+| Path | Purpose |
+|---|---|
+| `lsc/Containerfile.konflux` | **Primary Konflux CI Containerfile**. Multi-stage build using Python 3.12, the lsc library, and `custom_processor.py`. Produces `llamastack-faiss` indexes. Used by `lightspeed-ocp-rag-push/pull-request` pipelines. |
+| `lsc/custom_processor.py` | Orchestrator script for the lsc pipeline. Defines `OCPMetadataProcessor` and `RunbooksMetadataProcessor` subclasses, instantiates `DocumentProcessor` with `llamastack-faiss`, and processes OCP docs + runbooks. |
+| `lsc/requirements.txt` | Python dependencies for the lsc pipeline (separate from root `requirements.*.txt`). |
+
 ### `scripts/` -- Standalone pipeline scripts
 
 | Path | Purpose |
@@ -109,7 +117,7 @@ Contains the `sentence-transformers/all-mpnet-base-v2` model files (`config.json
 
 2. **HTML pipeline is standalone** -- it does not share code with the plaintext pipeline or the lsc library. It has its own download, strip, chunk, and embed steps.
 
-3. **Content acquisition scripts exist in both `scripts/` and `lsc/scripts/`**. The `lsc/` copies are the maintained versions; the `scripts/` copies are the originals used by the Containerfile and Makefile.
+3. **Content acquisition scripts exist in both `scripts/` and `lsc/scripts/`**. Both locations are actively used: `scripts/` versions are used by the root Containerfile and Makefile, `lsc/` versions are used by the lsc library pipeline.
 
 4. **The lsc library is an installable package** (`lsc/` contains its own `pyproject.toml` structure via the `src/` layout), but it is not published to PyPI. It is imported directly by downstream projects.
 

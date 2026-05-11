@@ -6,7 +6,8 @@ This spec documents the Containerfiles, Makefile targets, and Konflux/Tekton pip
 
 | Path | Purpose |
 |---|---|
-| `Containerfile` | Main RAG content image -- multi-stage build (builder → minimal) |
+| `lsc/Containerfile.konflux` | **Primary** RAG content image -- lsc library pipeline, llamastack-faiss, Python 3.12 |
+| `Containerfile` | **Alternative** RAG content image -- plaintext pipeline, LlamaIndex FAISS, Python 3.11 |
 | `byok/Containerfile.tool` | BYOK tool image -- buildah + Python + model + script |
 | `byok/Containerfile.output` | BYOK output image template -- vectors only, built inside tool container |
 | `Makefile` | Developer-facing build automation |
@@ -24,7 +25,52 @@ This spec documents the Containerfiles, Makefile targets, and Konflux/Tekton pip
 | `artifacts.lock.yaml` | Pinned model.safetensors URL + SHA256 |
 | `renovate.json` | Dependency update automation config |
 
-## Main Containerfile -- Build Stages
+## lsc/Containerfile.konflux -- Primary Build (llamastack-faiss)
+
+This is the Containerfile used by the primary Konflux pipelines (`lightspeed-ocp-rag-push`, `lightspeed-ocp-rag-pull-request`).
+
+### Build Stages
+
+```
+Stage 1: lightspeed-rag-builder (FROM nvcr.io/nvidia/cuda:12.9.1-devel-ubi9)
+  ├── dnf install python3.12 python3.12-pip libcudnn9 libnccl libcusparselt0
+  ├── pip3.12 install lsc/requirements.txt
+  ├── Symlink NLTK data
+  ├── COPY ocp-product-docs-plaintext, runbooks, embeddings_model
+  ├── Acquire model.safetensors (same HERMETIC logic)
+  ├── Validate torch+CUDA
+  ├── COPY lsc/scripts, lsc/src, lsc/custom_processor.py
+  └── For each OCP_VERSION:
+        python3.12 custom_processor.py \
+          -o vector_db/ocp_product_docs/${VERSION} \
+          -f ocp-product-docs-plaintext/${VERSION} \
+          -md embeddings_model -mn ${EMBEDDING_MODEL} \
+          -i ocp-product-docs-${VERSION//./_} \
+          -v ${VERSION} \
+          -r https://docs.openshift.com/container-platform \
+          --vector-store-type=llamastack-faiss \
+          -rbu https://github.com/openshift/runbooks/blob/master \
+          -rbp ./runbooks -w 8 -hb true
+
+Stage 2: Final (ubi9/ubi-minimal, pinned by digest)
+  ├── COPY vector_db → /rag/vector_db/ocp_product_docs
+  ├── COPY embeddings_model → /rag/embeddings_model
+  ├── Enterprise contract labels
+  └── USER 65532:65532
+```
+
+### Key differences from root Containerfile
+
+- Uses Python 3.12 (not 3.11).
+- Uses `lsc/custom_processor.py` which invokes the lsc library's `DocumentProcessor` with `--vector-store-type=llamastack-faiss`.
+- GPU-only (no CPU/GPU FLAVOR selection -- always uses CUDA base).
+- Uses `lsc/requirements.txt` (separate from root `requirements.*.txt`).
+- Passes `-w 8` for parallel document loading.
+- Does not create a `latest` symlink (the root Containerfile does).
+
+## Root Containerfile -- Alternative Build (LlamaIndex FAISS)
+
+This is the Containerfile used by the alternative `own-app-lightspeed-rag-content` Konflux pipelines.
 
 ### Stage 1: Base image selection
 
@@ -165,11 +211,12 @@ Uses `buildah` task with:
 
 ### Integration test
 
-`lightspeed-rag-content-image-verification.yaml` is a Tekton Task that:
-1. Mounts the built image.
-2. Checks for `/rag/vector_db/{version}/index_store.json` for at least one OCP version.
-3. Checks for `/rag/embeddings_model/config.json`.
-4. Fails if either path is missing.
+`lightspeed-rag-content-image-verification.yaml` is a Tekton Pipeline that:
+1. Extracts the built image reference from the Konflux snapshot.
+2. Runs the image with `python3.11 scripts/verify_rag_image_test.py`.
+3. `verify_rag_image_test.py` iterates over all version directories in `ocp-product-docs-plaintext/` and asserts `/rag/vector_db/ocp_product_docs/{version}/index_store.json` exists for every version.
+4. Also asserts `/rag/embeddings_model/config.json` exists.
+5. Fails if any version's index or the model config is missing.
 
 ## Dependency Management Flow
 

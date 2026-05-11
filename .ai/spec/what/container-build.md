@@ -4,18 +4,18 @@ This spec defines the rules for building container images, hermetic build suppor
 
 ## Behavioral Rules -- Main RAG Content Image
 
-1. The build is a multi-stage process: a builder stage generates all vector indexes, then a minimal final stage copies only the output artifacts.
+1. Two Containerfiles exist for building the main RAG content image:
+   - **`lsc/Containerfile.konflux`** (primary): Uses the lsc library pipeline with `custom_processor.py`, produces `llamastack-faiss` indexes. Used by the `lightspeed-ocp-rag-push/pull-request` Konflux pipelines.
+   - **Root `Containerfile`** (alternative): Uses the plaintext pipeline with `scripts/generate_embeddings.py`, produces LlamaIndex FAISS indexes. Used by the `own-app-lightspeed-rag-content` Konflux pipelines.
 
-2. The builder stage supports two base images selected by the `FLAVOR` build arg:
-   - `cpu`: UBI9 Python 3.11 (`registry.access.redhat.com/ubi9/python-311`).
-   - `gpu`: NVIDIA CUDA 12.9.1 devel on UBI9 (`nvcr.io/nvidia/cuda:12.9.1-devel-ubi9`), with additional system packages installed via dnf.
+2. Both Containerfiles follow a multi-stage build: a builder stage generates all vector indexes, then a minimal final stage copies only the output artifacts.
 
-3. The builder stage iterates over all version directories in `ocp-product-docs-plaintext/` and generates one FAISS index per version using the plaintext pipeline script. Each version's index includes both OCP docs and runbooks.
+3. Both builder stages iterate over all version directories in `ocp-product-docs-plaintext/` and generate one index per version. Each version's index includes both OCP docs and runbooks.
 
-4. After all indexes are generated, a `latest` symlink is created pointing to the highest version directory (determined by version-aware sorting).
+4. The root Containerfile creates a `latest` symlink pointing to the highest version directory (determined by version-aware sorting). The lsc Containerfile does not create this symlink.
 
 5. The final image uses `ubi9/ubi-minimal` (pinned by digest) as base and contains only:
-   - `/rag/vector_db/ocp_product_docs/` -- all version index directories plus the `latest` symlink.
+   - `/rag/vector_db/ocp_product_docs/` -- all version index directories.
    - `/rag/embeddings_model/` -- the sentence-transformer model.
    - `/licenses/LICENSE` -- Apache 2.0 license for enterprise contract compliance.
 
@@ -26,6 +26,8 @@ This spec defines the rules for building container images, hermetic build suppor
    - `HERMETIC=true`: Copied from the Cachi2 prefetch cache at `/cachi2/output/deps/generic/model.safetensors`.
 
 8. Container labels must satisfy Red Hat enterprise contract requirements: `com.redhat.component`, `cpe`, `description`, `distribution-scope`, `io.k8s.description`, `io.k8s.display-name`, `io.openshift.tags`, `name`, `release`, `url`, `vendor`, `version`, `summary`.
+
+9. The root Containerfile supports two base images selected by `FLAVOR` build arg (`cpu` or `gpu`). The lsc Containerfile is GPU-only (always uses the CUDA base image).
 
 ## Behavioral Rules -- BYOK Tool Image
 
@@ -48,17 +50,17 @@ This spec defines the rules for building container images, hermetic build suppor
 ## Behavioral Rules -- CI/CD (Konflux/Tekton)
 
 16. Six pipelines exist as Tekton PipelineRun definitions:
-    - Push and pull-request variants for the main RAG content image.
-    - Push and pull-request variants for the BYOK tool image.
-    - Push and pull-request variants for an alternative build variant.
+    - `lightspeed-ocp-rag-push/pull-request` -- primary RAG content image using `lsc/Containerfile.konflux`.
+    - `own-app-lightspeed-rag-content-push/pull-request` -- alternative RAG content image using root `Containerfile`.
+    - `lightspeed-rag-tool-push/pull-request` -- BYOK tool image using `byok/Containerfile.tool`.
 
 17. Push pipelines trigger on merge to `main`. Pull-request pipelines trigger on PRs.
 
 18. All pipelines use hermetic builds with Cachi2 prefetch for pip packages, RPMs, and generic artifacts.
 
-19. The main RAG image builds with `FLAVOR=gpu` in CI.
+19. The primary RAG image (`lsc/Containerfile.konflux`) always builds with GPU. The alternative RAG image (root `Containerfile`) builds with `FLAVOR=gpu` in CI.
 
-20. An integration test verifies the built image contains the expected paths: a `index_store.json` file under `/rag/vector_db/` for at least one OCP version, and `config.json` under `/rag/embeddings_model/`.
+20. An integration test verifies the built image contains the expected paths: an `index_store.json` file under `/rag/vector_db/ocp_product_docs/{version}/` for every OCP version present in `ocp-product-docs-plaintext/`, and `config.json` under `/rag/embeddings_model/`.
 
 ## Configuration Surface
 
