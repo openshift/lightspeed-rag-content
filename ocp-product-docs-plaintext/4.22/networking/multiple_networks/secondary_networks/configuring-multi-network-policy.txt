@@ -15,6 +15,13 @@ As a cluster administrator, you can configure a multi-network policy for any of 
 Support for configuring multi-network policies for SR-IOV secondary networks is only supported with kernel network interface controllers (NICs). SR-IOV is not supported for Data Plane Development Kit (DPDK) applications.
 ----
 
+[IMPORTANT]
+----
+In Red Hat OpenShift Container Platform 4.22 and later, the multi-network policy backend uses nftables.
+The iptables backend has been removed and there is no option to revert to it.
+The MultiNetworkPolicy API and user-facing configuration are unchanged.
+----
+
 # Differences between multi-network policy and network policy
 
 Although the MultiNetworkPolicy API implements the NetworkPolicy API, ensure that you understand the following key differences between the two policies:
@@ -72,11 +79,11 @@ $ oc patch network.operator.openshift.io cluster --type=merge --patch-file=multi
 
 # Supporting multi-network policies in IPv6 networks
 
-The ICMPv6 Neighbor Discovery Protocol (NDP) is a set of messages and processes that enable devices to discover and maintain information about neighboring nodes. NDP plays a crucial role in IPv6 networks, facilitating the interaction between devices on the same link.
+The ICMPv6 Neighbor Discovery Protocol (NDP) is a set of messages and processes that enable devices to discover and maintain information about neighboring nodes. NDP is essential in IPv6 networks, facilitating the interaction between devices on the same link.
 
-The Cluster Network Operator (CNO) deploys the iptables implementation of multi-network policy when the useMultiNetworkPolicy parameter is set to true.
+The Cluster Network Operator (CNO) deploys the nftables implementation of multi-network policy when the useMultiNetworkPolicy parameter is set to true.
 
-To support multi-network policies in IPv6 networks the Cluster Network Operator deploys the following set of custom rules in every pod affected by a multi-network policy:
+To support multi-network policies in IPv6 networks, the Cluster Network Operator deploys the following predefined nftables rules in every pod affected by a multi-network policy. The CNO automatically creates and manages the following ConfigMap. You do not need to create this resource.
 
 
 ```yaml
@@ -86,23 +93,22 @@ metadata:
   name: multi-networkpolicy-custom-rules
   namespace: openshift-multus
 data:
-
   custom-v6-rules.txt: |
     # accept NDP
-    -p icmpv6 --icmpv6-type neighbor-solicitation -j ACCEPT
-    -p icmpv6 --icmpv6-type neighbor-advertisement -j ACCEPT
+    icmpv6 type nd-neighbor-solicit accept
+    icmpv6 type nd-neighbor-advert accept
     # accept RA/RS
-    -p icmpv6 --icmpv6-type router-solicitation -j ACCEPT
-    -p icmpv6 --icmpv6-type router-advertisement -j ACCEPT
+    icmpv6 type nd-router-advert accept
+    icmpv6 type nd-router-solicit accept
 ```
 
 
 where:
 
-icmpv6-type neighbor-solicitation:: This rule allows incoming ICMPv6 neighbor solicitation messages, which are part of the neighbor discovery protocol (NDP). These messages help determine the link-layer addresses of neighboring nodes.
-icmpv6-type neighbor-advertisement:: This rule allows incoming ICMPv6 neighbor advertisement messages, which are part of NDP and provide information about the link-layer address of the sender.
-icmpv6-type router-solicitation:: This rule permits incoming ICMPv6 router solicitation messages. Hosts use these messages to request router configuration information.
-icmpv6-type router-advertisement:: This rule allows incoming ICMPv6 router advertisement messages, which give configuration information to hosts.
+icmpv6 type nd-neighbor-solicit:: This rule allows incoming ICMPv6 neighbor solicitation messages, which are part of the Neighbor Discovery Protocol (NDP). These messages help determine the link-layer addresses of neighboring nodes. In a multi-network setup, this allows other pods or the secondary interface gateway to resolve the pod's MAC address. Without this, the pod becomes 'invisible' to its neighbors on the secondary network.
+icmpv6 type nd-neighbor-advert:: This rule allows incoming ICMPv6 neighbor advertisement messages, which are part of NDP and provide information about the link-layer address of the sender. This ensures the pod can receive MAC address updates from other nodes.
+icmpv6 type nd-router-advert:: This rule allows incoming ICMPv6 router advertisement messages, which provide configuration information to hosts. This allows the pod to receive its default gateway and routing prefix dynamically from the network infrastructure.
+icmpv6 type nd-router-solicit:: This rule allows incoming ICMPv6 router solicitation messages. Hosts use these messages to request router configuration information. This ensures that when a pod's interface comes online, it can immediately request network parameters rather than waiting for the next scheduled broadcast, reducing container startup latency.
 
 
 [NOTE]
@@ -367,7 +373,9 @@ where:
 
 ## Creating a default deny all multi-network policy
 
-The default deny all {name} policy blocks all cross-pod networking other than network traffic allowed by the configuration of other deployed network policies and traffic between host-networked pods. This procedure enforces a strong deny policy by applying a deny-by-default policy in the my-project namespace.
+The default deny all {name} policy blocks all cross-pod networking other than network traffic allowed by the configuration of other deployed network policies and traffic between host-networked pods.
+
+The steps in the procedure enforces a strong deny policy by applying a deny-by-default policy in the my-project namespace.
 
 
 [WARNING]
@@ -559,7 +567,9 @@ Commercial support is available at
 
 ## Creating a multi-network policy allowing traffic to an application from a namespace
 
-You can configure a policy that allows traffic to a pod with the label app=web from a particular namespace. This configuration is useful in the following use cases:
+You can configure a policy that allows traffic to a pod with the label app=web from a particular namespace.
+
+This configuration is useful in the following use cases:
 
 * Restrict traffic to a production database only to namespaces that have production workloads deployed.
 * Enable monitoring tools deployed to a particular namespace to scrape metrics from the current namespace.

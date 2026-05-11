@@ -1,7 +1,8 @@
 # Configuring your firewall
 
 
-If you use a firewall, you must configure it so that Red Hat OpenShift Container Platform can access the sites that it requires to function. You must always grant access to some sites, and you grant access to more if you use Red Hat Lightspeed, the Telemetry service, a cloud to host your cluster, and certain build strategies.
+If you use a firewall, you must configure your firewall's allowlist to ensure Red Hat OpenShift Container Platform has access to the URLs it requires to pull container images and access Red Hat services.
+Additional URLs are required for features such as Telemetry, Red Hat Lightspeed, cloud provider integrations, or certain build strategies.
 
 # Configuring your firewall for Red Hat OpenShift Container Platform
 
@@ -122,18 +123,15 @@ In addition to the base network flows, the following matrix describes the ingres
 
 
 
-# Ingress network flow analysis with the commatrix plugin
+# Ingress network flow management with the commatrix plugin
 
-The commatrix plugin for the oc command generates ingress network flow data from your cluster. You can also use the plugin to identify any differences between open ports on the host and expected ingress flows for your environment.
+Use the commatrix plugin for the oc command to analyze ingress network traffic and generate firewall rules for live clusters.
 
-The plugin generates ingress flows to Red Hat OpenShift Container Platform services for the following environments:
+For ingress network analysis, the plugin reads the services deployed in a target cluster and generates a communication matrix of expected ingress flows. You can export the data in formats such as CSV, JSON, or YAML for audits, documentation, or configuring external firewalls.
 
-* Red Hat OpenShift Container Platform on bare metal
-* Single-node OpenShift with other platforms
-* Red Hat OpenShift Container Platform on Amazon Web Services (AWS)
-* Single-node OpenShift on AWS
+For firewall configuration, the plugin generates nftables rules in Butane format that restrict ingress traffic to only the flows required by your cluster. The plugin also generates a NodeDisruptionPolicy patch to apply updates without triggering node reboots.
 
-The plugin outputs the network flow data in various formats, such as CSV or JSON.
+The plugin relies on EndpointSlice resources for port discovery. However, some ports on your cluster nodes might be open without a corresponding service or EndpointSlice, such as host-level services, monitoring agents, or third-party software. Use the --host-open-ports flag to discover actual listening ports on your nodes and merge them into the generated firewall rules. This ensures the rules capture all known open ports, not just those defined in EndpointSlice resources.
 
 # Installing the commatrix plugin
 
@@ -157,7 +155,7 @@ $ podman login registry.redhat.io
 2. Extract the commatrix binary from the plugin image by running the following commands:
 
 ```bash
-$ podman create --name oc-commatrix registry.redhat.io/openshift-kni/commatrix:v4.21
+$ podman create --name oc-commatrix registry.redhat.io/openshift-kni/commatrix:v4.22
 $ podman cp oc-commatrix:/oc-commatrix .
 $ podman rm oc-commatrix
 ```
@@ -200,9 +198,16 @@ Use "commatrix [command] --help" for more information about a command.
 
 * CLI Manager Operator overview
 
-# Generating ingress network flow data using the commatrix plugin
+# Generate ingress network flow data using the commatrix plugin
 
 Use the commatrix plugin for the oc command to generate ingress network flow data from your cluster and identify any differences between open ports on the host and expected ingress flows for your environment.
+
+The plugin generates ingress flows to Red Hat OpenShift Container Platform services for the following environments:
+
+* Red Hat OpenShift Container Platform on bare metal
+* Single-node OpenShift with other platforms
+* Red Hat OpenShift Container Platform on Amazon Web Services (AWS)
+* Single-node OpenShift on AWS
 
 * You installed the OpenShift CLI (oc).
 * You logged in as a user with cluster-admin privileges.
@@ -238,7 +243,283 @@ Ingress,TCP,9103,openshift-ovn-kubernetes,ovn-kubernetes-node,ovnkube-node,kube-
 ```
 
 
+# Ingress traffic configuration with the commatrix plugin
+
+You can use the commatrix plugin to generate nftables rules that configure the firewall on cluster nodes to permit only the ingress traffic defined in the communication matrix.
+
+nftables is the packet filtering framework in the Linux kernel that replaces iptables.
+Red Hat OpenShift Container Platform cluster nodes running Red Hat Enterprise Linux CoreOS (RHCOS) use nftables for packet filtering.
+The commatrix plugin generates nftables rules and packages them as MachineConfig resources that the Machine Config Operator applies to your nodes.
+
+When you generate firewall rules with the commatrix plugin in Butane format, the plugin also generates a NodeDisruptionPolicy patch.
+This patch enables the Machine Config Operator to apply nftables rule updates without triggering a full node reboot, minimizing disruption to running workloads.
+
+
+[IMPORTANT]
+----
+When operators or components are installed, enabled, uninstalled, or disabled, you must regenerate the firewall rules to reflect the new configuration. Failure to regenerate and apply firewall rules in this scenario might have the following consequences:
+* Unnecessary ports might remain open, which increases the attack surface of your cluster.
+* Services might fail to function correctly if required ports remain blocked by outdated firewall rules.
+----
+
+* Minimizing node disruption with MachineConfig changes
+* Custom nftables firewall rules in OpenShift
+
+# Generate nftables firewall rules in Butane format
+
+You can generate nftables firewall rules in Butane format by using the commatrix plugin.
+The generated Butane configs contain nftables rules that allow the ingress flows defined in the communication matrix and block all other ingress flows.
+
+
+[WARNING]
+----
+Errors in nftables rules can block legitimate traffic and isolate nodes from the cluster.
+Review all generated rules before applying them.
+----
+
+* You installed the OpenShift CLI (oc).
+* You logged in as a user with cluster-admin privileges.
+* You installed Podman.
+* You installed the commatrix plugin.
+* You installed the butane CLI.
+* For custom node groups, you need an existing machine config pool that you can target using node label selectors.
+
+1. Generate firewall rules in Butane format by running the following command:
+
+```terminal
+$ oc commatrix generate --format butane
+```
+
+
+By default, the plugin writes the output files to the communication-matrix directory in your current working directory.
+
+The plugin generates one Butane config file per node pool, named butane-<pool_name>.yaml, and a node-disruption-policy.yaml patch file, for example:
+
+```terminal
+communication-matrix/
+├── butane-master.yaml
+├── butane-worker.yaml
+└── node-disruption-policy.yaml
+```
+
+2. Review the generated Butane config files by running the following command:
+
+```terminal
+$ cat communication-matrix/butane-<pool_name>.yaml
+```
+
+
+See the following example of the butane-master.yaml file.
+
+[NOTE]
+----
+You can adjust the generated firewall rules in your YAML file to suit your network environment.
+----
+
+```yaml
+variant: openshift
+version: 4.22.0
+metadata:
+  name: 98-nftables-commatrix-master
+  labels:
+    machineconfiguration.openshift.io/role: master
+systemd:
+  units:
+    - name: "nftables.service"
+      enabled: true
+      contents: |
+        # ... systemd unit configuration ...
+storage:
+  files:
+    - path: /etc/sysconfig/nftables.conf
+      mode: 0600
+      overwrite: true
+      contents:
+        inline: |
+          table inet openshift_filter {
+              chain OPENSHIFT {
+                  type filter hook input priority 1; policy accept;
+
+                  # Allow loopback traffic
+                  iif lo accept
+
+                  # Allow established and related traffic
+                  ct state established,related accept
+
+                  # Allow ICMP on ipv4
+                  ip protocol icmp accept
+                  ip6 nexthdr ipv6-icmp accept
+
+                  # Allow specific TCP and UDP ports
+                  tcp dport { 22, 6443, 9100, 10250, 30000-60999 } accept
+                  udp dport { 6081, 30000-60999 } accept
+
+                  # Drop broadcast traffic with rate-limited logging
+                  ip daddr 255.255.255.255 jump { limit rate 1/minute log prefix "firewall "; drop; }
+
+                  # Rate-limited logging and default drop
+                  jump { limit rate 1/minute log prefix "firewall "; drop; }
+              }
+          }
+```
+
+3. Review the generated NodeDisruptionPolicy patch by running the following command:
+
+```terminal
+$ cat communication-matrix/node-disruption-policy.yaml
+```
+
+4. Check whether your cluster already defines NodeDisruptionPolicy entries by running the following command:
+
+```terminal
+$ oc get -o yaml machineconfiguration cluster
+```
+
+5. Apply the NodeDisruptionPolicy patch:
+1. If the MachineConfiguration resource does not define any nodeDisruptionPolicy entries, run the following command:
+
+```terminal
+$ oc patch machineconfiguration cluster --type=merge --patch-file=communication-matrix/node-disruption-policy.yaml
+```
+
+2. If the MachineConfiguration resource already contains nodeDisruptionPolicy entries, manually add the entries from node-disruption-policy.yaml to the existing .spec.nodeDisruptionPolicy.units and .spec.nodeDisruptionPolicy.files lists by running the following command:
+
+```terminal
+$ oc edit machineconfiguration cluster
+```
+
+6. Convert each Butane config to a MachineConfig resource by running the following command:
+
+```terminal
+$ butane --strict -o mc-<pool_name>.yaml communication-matrix/butane-<pool_name>.yaml
+```
+
+* <pool_name> is the name of the target node pool.
+7. Apply the MachineConfig resources by running the following command for each node pool:
+
+[IMPORTANT]
+----
+You must apply the NodeDisruptionPolicy patch before applying MachineConfig resources.
+If you apply MachineConfig resources without the NodeDisruptionPolicy in place, the Machine Config Operator triggers a full node reboot.
+----
+
+```terminal
+$ oc apply -f mc-<pool_name>.yaml
+```
+
+
+The plugin generates MachineConfig resources with the naming pattern 98-nftables-commatrix-<pool_name>.
+
+1. Open a debug shell on a target node by running the following commands:
+
+```terminal
+$ oc debug node/<node_name>
+sh-5.1# chroot /host
+```
+
+* <node_name> is the name of a cluster node.
+* chroot /host accesses the host filesystem.
+2. Verify that the nftables rules are active on a node by running the following command:
+
+```terminal
+sh-5.1# nft list ruleset
+```
+
+
+```terminal
+...
+table inet openshift_filter {
+	chain OPENSHIFT {
+		type filter hook input priority filter + 1; policy accept;
+		iif "lo" accept
+		ct state established,related accept
+		ip protocol icmp accept
+		ip6 nexthdr ipv6-icmp accept
+		tcp dport { 22, 111, 2379-2380, 6080, 6443, 9001, 9099-9100, 9103-9105, 9107-9108, 9192, 9258, 9443, 9637, 9978-9980, 10250, 10256-10259, 17697, 22623-22624, 30000-60999 } accept
+		udp dport { 111, 6081, 30000-60999 } accept
+		ip daddr 255.255.255.255 jump {
+			limit rate 1/minute burst 5 packets log prefix "firewall "
+			drop
+		}
+		jump {
+			limit rate 1/minute burst 5 packets log prefix "firewall "
+			drop
+		}
+	}
+}
+...
+```
+
+3. Verify that denied traffic is logged with rate limiting by checking the node journal:
+
+```terminal
+$ oc debug node/<node_name> -- chroot /host journalctl -k --grep firewall
+```
+
+
+Denied packets are logged, but log entries are rate-limited to one per minute with an initial burst of five entries.
+
+* Installing Butane
+
+# Revert nftables firewall rules generated by the commatrix plugin
+
+If you need to remove the nftables firewall rules from your cluster nodes, delete the MachineConfig resources, and then clean up the NodeDisruptionPolicy entries.
+
+* You installed the OpenShift CLI (oc).
+* You logged in as a user with cluster-admin privileges.
+* You applied nftables firewall rules generated by the commatrix plugin.
+
+1. Identify the MachineConfig resources created by the commatrix plugin by running the following command:
+
+```terminal
+$ oc get machineconfig | grep nftables
+```
+
+2. Delete the MachineConfig resource for each node pool by running the following command:
+
+```terminal
+$ oc delete machineconfig 98-nftables-commatrix-<pool_name>
+```
+
+3. Wait for all MachineConfigPool resources to return to the UPDATED state:
+
+```terminal
+$ oc get mcp
+```
+
+Example output showing pools in UPDATED state
+
+```terminal
+NAME     CONFIG                                             UPDATED   UPDATING   DEGRADED   MACHINECOUNT   READYMACHINECOUNT   UPDATEDMACHINECOUNT   DEGRADEDMACHINECOUNT   AGE
+master   rendered-master-a1b2c3d4e5f6g7h8i9j0k1l2m3n4o5p6   True      False      False      1              1                   1                     0                      160d
+worker   rendered-worker-a1b2c3d4e5f6g7h8i9j0k1l2m3n4o5p6   True      False      False      0              0                   0                     0                      160d
+```
+
+4. Open a debug shell on a target node by running the following commands:
+
+```terminal
+$ oc debug node/<node_name>
+sh-5.1# chroot /host
+```
+
+* <node_name> is the name of a cluster node.
+* chroot /host accesses the host filesystem.
+5. Verify that the custom nftables rules were removed by running the following command:
+
+```terminal
+sh-5.1# nft list ruleset 2>&1 | grep -q openshift_filter || echo "Custom rules removed"
+```
+
+6. Remove the related nftables rules from the NodeDisruptionPolicy entries by editing the MachineConfiguration resource:
+
+```terminal
+$ oc edit machineconfiguration cluster
+```
+
+
+Remove the nftables.service entry from .spec.nodeDisruptionPolicy.units and the /etc/sysconfig/nftables.conf entry from .spec.nodeDisruptionPolicy.files.
+
 # Reference flags for the commatrix plugin
 
-The following matrix describes the flags for the commatrix plugin.
+The following table describes the flags for the commatrix plugin.
 
