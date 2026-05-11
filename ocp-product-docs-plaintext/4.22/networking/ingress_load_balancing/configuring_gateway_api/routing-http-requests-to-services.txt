@@ -1,0 +1,439 @@
+# Routing HTTP requests to services
+
+
+When you expose your applications through a gateway, you must configure an HTTPRoute custom resource (CR) to accurately direct incoming HTTP requests from your network listener to the appropriate backend services. A Gateway API HTTPRoute CR specifies the exact routing behavior for these requests by evaluating a set of rules.
+The core configuration element of an HTTPRoute CR is a rule. You can configure up to 16 rules for a single route. Within each rule, you can establish the following routing behaviors:
+* Matches: Define the conditions an HTTP request must meet based on paths, headers, query parameters, or methods. 
+* Filters: Apply processing directions to the request, such as header modifications, mirrors, or redirects.
+* BackendRefs: Designate the backend services where matching and filtered requests are delivered, including traffic weight distribution.
+* Timeouts: Establish strict time limits for the entire request or the backend hop.
+To successfully configure your HTTP routing behavior, complete the following tasks:
+* Configure HTTP request matching conditions
+* Apply processing filters to HTTP requests
+* Configure routing destinations and traffic weights
+* Set timeouts for HTTP requests
+* Compare Red Hat OpenShift Container Platform routes and HTTPRoute CRs
+
+# Configure HTTP request matching conditions
+
+To ensure traffic is routed to the correct application when multiple services share a gateway, you can define request matching conditions within your HTTPRoute custom resource (CR). You can match HTTP requests based on paths, headers, query parameters, or methods.
+
+* You have access to the cluster as a user with the cluster-admin role.
+* You have installed the OpenShift CLI (`oc`).
+
+1. Create or edit an HTTPRoute YAML file to include your desired match conditions under the spec.rules.matches field. 
+The following example demonstrates a complete HTTPRoute custom resource (CR) configured with path-based matching to route requests for /<example_app> to a backend service. For details on configuring other match types, see .
+
+```yaml
+apiVersion: gateway.networking.k8s.io/v1
+kind: HTTPRoute
+metadata:
+  name: <path_match_example>
+  namespace: <example_application>
+spec:
+  parentRefs:
+  - name: <example_gateway>
+    namespace: openshift-ingress
+  hostnames:
+  - "<example.com>"
+  rules:
+  - matches:
+    - path:
+        type: Exact
+        value: /<example_app>
+    backendRefs:
+    - name: <example_backend>
+      port: 8080
+```
+2. Apply the HTTPRoute CR by running the following command:
+
+```terminal
+$ oc apply -f <filename>.yaml
+```
+
+
+## Supported HTTPRoute match types
+
+Matches define conditions used for matching the rule against incoming HTTP requests. If no match is specified, then all HTTP requests are matched, depending on the hostname. Each match is independent, i.e. this rule will be matched if any single match of the type is satisfied. A rule may have up to 64 matches, but most rules don’t need to be this complex. You may combine multiple match types (path and headers, for example), all of which must be true in order for the HTTP request to match.
+
+You can configure the following match types:
+
+path:: Consists of type and value. Path match type indicates how to match the value and may be either “Exact” or “PathPrefix” (default). The default path value, if omitted, is “/”. On Red Hat OpenShift Service Mesh, “RegularExpression” may also be used as a type.
+headers:: Each consists of type, name, and value. Header match type indicates how to match the value and may be “Exact” (default) or on Red Hat OpenShift Service Mesh, “RegularExpression”. Name is the HTTP header name, which must be case-insensitive. Value is the value of the HTTP header to be matched.
+queryParameters:: Each consists of type, name, and value. QueryParameters match type indicates how to match the value and may be “Exact” (default) or on Red Hat OpenShift Service Mesh, “RegularExpression”. Name is the HTTP query parameter name and must match exactly. Value is the value of the HTTP query parameter to be matched.
+method:: A value in upper case that should match on the HTTP request method. Must be one of: GET, HEAD, POST, PUT, DELETE, CONNECT, OPTIONS, TRACE, or PATCH.
+
+
+[NOTE]
+----
+According to Gateway API conventions, the RegularExpression match type is classified as an implementation-specific feature (Support: Implementation-specific). While Red Hat OpenShift Service Mesh fully supports regular expression matching, this feature might not be available or behave identically across other Gateway API implementations.
+----
+
+### Example: path match
+
+The following example demonstrates a complete HTTPRoute custom resource (CR) configured with path-based matching to route requests for /<example_app> to a backend service:
+
+
+```yaml
+apiVersion: gateway.networking.k8s.io/v1
+kind: HTTPRoute
+metadata:
+  name: <path_match_example>
+  namespace: <example_application>
+spec:
+  parentRefs:
+  - name: <example_gateway>
+    namespace: openshift-ingress
+  hostnames:
+  - "<example.com>"
+  rules:
+  - matches:
+    - path:
+        type: Exact
+        value: /<example_app>
+    backendRefs:
+    - name: <example_backend>
+      port: 8080
+```
+
+
+* path specifies that the request must match a specific URL path.
+* type: Exact ensures the route only matches the exact string /<example_app>.
+* backendRefs defines the service where matching traffic is sent.
+
+### Example: headers match (AND condition)
+
+The following snippet demonstrates how to combine multiple header matches so that a request must contain both myheader: newheader AND color: orange to successfully match:
+
+
+```yaml
+spec:
+  rules:
+  - matches:
+    - headers:
+      - name: <my_header>
+        value: <new_header_value>
+      - name: <color_header>
+        value: <orange_value>
+    backendRefs:
+    - name: <example_service>
+      port: 8080
+```
+
+
+# Apply processing filters to HTTP requests
+
+To modify how HTTP requests are processed before they reach your backend services, you can pre-configure filters within the rules of your HTTPRoute custom resource (CR). Configuring these filters allows you to automatically redirect traffic, modify headers, or mirror requests to achieve your desired routing behavior.
+
+* You have access to the cluster as a user with the cluster-admin role.
+* You have installed the OpenShift CLI (`oc`).
+
+1. Create or edit an HTTPRoute YAML file to include your desired processing directives under the spec.rules.filters field. 
+The following example demonstrates a complete HTTPRoute custom resource (CR) with a requestRedirect filter that issues a permanent redirect (301) from HTTP to HTTPS. For details on configuring other filter types, see .
+
+```yaml
+apiVersion: gateway.networking.k8s.io/v1
+kind: HTTPRoute
+metadata:
+  name: <http_filter_example>
+  namespace: <example_application>
+spec:
+  parentRefs:
+  - name: <example_gateway>
+    namespace: openshift-ingress
+  hostnames:
+  - "<example.com>"
+  rules:
+  - filters:
+    - type: RequestRedirect
+      requestRedirect:
+        scheme: https
+        statusCode: 301
+```
+2. Apply the HTTPRoute CR by running the following command:
+
+```terminal
+$ oc apply -f <filename>.yaml
+```
+
+
+## Supported HTTPRoute filters
+
+Filters apply processing directions to the HTTP request, such as header modification or redirect to another URL. You can specify up to 16 filters in a rule. Filters may usually be combined for advanced filtering results, except for the urlRewrite and requestRedirect filters, which may not be combined.
+
+You can apply the following filter types to a rule:
+
+requestRedirect:: Responds to an HTTP request with an HTTP 3xx code, instructing the client to retrieve another URL. Optional fields include scheme (http | https), hostname, path (type: replaceFullPath | replacePrefixMatch, string values for replaceFullPath or replacePrefixMatch), port, and statusCode (301 | 302 | 303 | 307 | 308).
+requestHeaderModifier:: Modifies an HTTP request’s headers. Only one modifier per header may be specified. Multiple values for a header must be comma-separated. Up to 16 header filters may be listed. Fields are one of Set, Add, Remove. Set, Add, and Remove may modify, add, and remove up to 16 header values that match a given name.
+responseHeaderModifier:: Available on Red Hat OpenShift Service Mesh, this extended filter modifies an HTTP response’s headers with the same constraints as requestHeaderModifier.
+requestMirror:: Available on Red Hat OpenShift Service Mesh, this extended filter mirrors (i.e. sends a duplicate) requests to specified destinations (backendRef). Fields include: backendRef, and the optional percent or fraction to specify the portion of requests that should be mirrored. If neither percent nor fraction are specified, then 100% of requests are mirrored.
+urlRewrite:: Available on Red Hat OpenShift Service Mesh, this extended filter modifies an HTTP request’s hostname, path, or both. It may not be used in combination with the requestRedirect filter. However, the path semantics for requestRedirect can also be used for urlRewrite, i.e. (type: replaceFullPath | replacePrefixMatch, string values for replaceFullPath or replacePrefixMatch).
+
+### Example: requestRedirect filter
+
+The following example demonstrates a complete HTTPRoute custom resource (CR) with a requestRedirect filter that issues a permanent redirect (301) from HTTP to HTTPS:
+
+
+```yaml
+apiVersion: gateway.networking.k8s.io/v1
+kind: HTTPRoute
+metadata:
+  name: <http_filter_example>
+  namespace: <example_application>
+spec:
+  parentRefs:
+  - name: <example_gateway>
+    namespace: openshift-ingress
+  hostnames:
+  - "<example.com>"
+  rules:
+  - filters:
+    - type: RequestRedirect
+      requestRedirect:
+        scheme: https
+        statusCode: 301
+```
+
+
+* hostnames defines the domain, such as "<example.com>", that this route applies to.
+* filters specifies the processing logic. In this example, the RequestRedirect type is used.
+* scheme: https instructs the gateway to redirect the client to the secure version of the URL.
+* statusCode: 301 indicates a permanent redirect.
+
+### Example: requestHeaderModifier filter
+
+The following snippet demonstrates how to configure a requestHeaderModifier filter that adds a new header, modifies an existing header, and removes a specific header:
+
+
+```yaml
+spec:
+  rules:
+  - filters:
+    - type: RequestHeaderModifier
+      requestHeaderModifier:
+        add:
+        - name: <my_header_name>
+          value: <my_header_value>
+    - type: RequestHeaderModifier
+      requestHeaderModifier:
+        set:
+        - name: <old_header>
+          value: <new_header_value>
+    - type: RequestHeaderModifier
+      requestHeaderModifier:
+        remove: ["x-request-id"]
+```
+
+
+# Configure routing destinations and traffic weights
+
+To route traffic to your backends, you must define service destinations and traffic weights within your HTTPRoute custom resource (CR) to distribute requests across your applications.
+
+* You have access to the cluster as a user with the cluster-admin role.
+* You have installed the OpenShift CLI (`oc`).
+
+1. Create or edit an HTTPRoute YAML file to include your desired service destinations under the spec.rules.backendRefs field.
+The following example demonstrates a complete HTTPRoute custom resource (CR) with a single backend destination that routes traffic to a service named <service_v1>. For details on configuring weights and routing to multiple destinations, see .
+
+```yaml
+apiVersion: gateway.networking.k8s.io/v1
+kind: HTTPRoute
+metadata:
+  name: <backend_route_example>
+  namespace: <example_application>
+spec:
+  parentRefs:
+  - name: <example_gateway>
+    namespace: openshift-ingress
+  rules:
+  - backendRefs:
+    - name: <service_v1>
+      port: 8080
+```
+2. Apply the HTTPRoute CR by running the following command:
+
+```terminal
+$ oc apply -f <filename>.yaml
+```
+
+
+## HTTPRoute backendRef configuration
+
+BackendRefs are the service destinations of requests that meet your matches rules, and are composed of group, kind, name, namespace, port, and weight. Name and port are the only required fields and refer to the service name and the service port number Weight is relevant when there is more than one backendRef, and specifies the proportion of requests forwarded to that specific backendRef. Without a backendRef, the rule doesn’t do any request forwarding and may return an error.
+
+### Example: Single backend destination
+
+This example shows a BackendRef where there is a single backend destination, a service named <service_v1>:
+
+
+```yaml
+apiVersion: gateway.networking.k8s.io/v1
+kind: HTTPRoute
+metadata:
+  name: <backend_route_example>
+  namespace: <example_application>
+spec:
+  parentRefs:
+  - name: <example_gateway>
+    namespace: openshift-ingress
+  rules:
+  - backendRefs:
+    - name: <service_v1>
+      port: 8080
+```
+
+
+* backendRefs defines the destination services for the traffic.
+* name specifies the name of the Kubernetes service.
+* port specifies the port on which the service is listening.
+
+### Example: Weighted backend delivery
+
+This example shows two backendRefs where there is weighted delivery of 15 and 25 for the backends. This means <service_v1> gets 15/40 (3/8ths) of the traffic, and <service_v2> gets 25/40 (5/8ths) of the traffic. Though not required, it is recommended to have the weights add up to 100 whenever possible for clarity.
+
+
+```yaml
+spec:
+  rules:
+  - backendRefs:
+    - name: <service_v1>
+      port: 8080
+      weight: 15
+    - name: <service_v2>
+      port: 8080
+      weight: 25
+```
+
+
+# Set timeouts for HTTP requests
+
+To prevent hanging connections and ensure your application remains responsive, you can set strict timeouts for the entire request and the backend hop within your HTTPRoute custom resource (CR).
+
+* You have access to the cluster as a user with the cluster-admin role.
+* You have installed the OpenShift CLI (`oc`).
+
+1. Create or edit an HTTPRoute YAML file to include your desired timeout configurations under the spec.rules.timeouts field.
+The following example demonstrates a complete HTTPRoute custom resource (CR) where the entire request must complete within 30 seconds. For details on timeout formatting rules and backend request timeouts, see .
+
+```yaml
+apiVersion: gateway.networking.k8s.io/v1
+kind: HTTPRoute
+metadata:
+  name: <timeout_example>
+  namespace: <example_application>
+spec:
+  parentRefs:
+  - name: <example_gateway>
+    namespace: openshift-ingress
+  rules:
+  - matches:
+    - path:
+        type: PathPrefix
+        value: /<timeout_path>
+    timeouts:
+      request: 30s
+    backendRefs:
+    - name: <example_service>
+      port: 8080
+```
+2. Apply the HTTPRoute CR by running the following command:
+
+```terminal
+$ oc apply -f <filename>.yaml
+```
+
+
+## HTTPRoute timeout configuration
+
+There are two types of timeouts you can configure for an HTTPRoute custom resource (CR): request and backendRequest.
+
+The request timeout covers the total time to send a request and then get a response back to the client. It represents the duration of the entire request-response transaction. 
+
+The backendRequest timeout covers the time for a request to travel from the gateway to the backend, and for a response to be received. Extending the timeout for a backendRequest can be helpful if the gateway needs to retry connections to a backend.
+
+
+[NOTE]
+----
+The backendRequest timeout is classified as an extended feature (Support: Extended) according to Gateway API conventions.
+----
+
+When configuring timeouts, you must adhere to the following formatting rules and constraints:
+
+* The value of a backendRequest timeout cannot be greater than the value of the request timeout.
+* If specified, a timeout value must be 0 or greater than or equal to 1ms. 
+* A zero-valued timeout (0) means there is no timeout.
+* Timeouts use a string format that starts with a number and expresses hours (h), minutes (m), seconds (s), or milliseconds (ms).
+* The number can be up to five digits, such as 10000s. 
+* You can use multipart durations to express fractions, such as 1m30s, but you cannot use decimal dots.
+
+### Example: Request timeout
+
+The following example demonstrates a complete HTTPRoute custom resource (CR) where the entire request must complete within 30 seconds:
+
+
+```yaml
+apiVersion: gateway.networking.k8s.io/v1
+kind: HTTPRoute
+metadata:
+  name: <timeout_example>
+  namespace: <example_application>
+spec:
+  parentRefs:
+  - name: <example_gateway>
+    namespace: openshift-ingress
+  rules:
+  - matches:
+    - path:
+        type: PathPrefix
+        value: /<timeout_path>
+    timeouts:
+      request: 30s
+    backendRefs:
+    - name: <example_service>
+      port: 8080
+```
+
+
+* request specifies the timeout for the full request-response cycle.
+* PathPrefix ensures the timeout applies to all requests starting with /<timeout_path>.
+
+### Example: Request and backendRequest timeouts
+
+The following snippet demonstrates a configuration where the request must succeed within 5 seconds, and the gateway-to-backend hop must complete within 1 second:
+
+
+```yaml
+spec:
+  rules:
+  - timeouts:
+      request: 5s
+      backendRequest: 1s
+    backendRefs:
+    - name: <example_service>
+      port: 8080
+```
+
+
+# Red Hat OpenShift Container Platform routes and HTTPRoutes Comparison
+
+When you migrate from standard networking to the Gateway API, you can compare Red Hat OpenShift Container Platform routes with HTTPRoute custom resources (CRs) to understand which features are supported and how your configuration must change. While both resources handle ingress traffic, they have distinct feature sets and implementation differences.
+
+The following features are exclusive to HTTPRoute CRs:
+
+* Multiple hostnames
+* Matching based on HTTP headers
+* Matching based on query parameters
+* Request header modification
+* Request redirection
+* Request mirroring
+
+The following features are exclusive to Red Hat OpenShift Container Platform routes:
+
+* IP allow lists
+* Rate limiting (connection-based)
+* Subdomain indication
+* Re-encrypt TLS termination
+* Passthrough TLS termination
+
+The following table outlines the features that are shared between both resources and how their specific implementations differ:
+
