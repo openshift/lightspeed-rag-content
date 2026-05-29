@@ -12,8 +12,8 @@ OpenShift LightSpeed RAG Content is organized into four areas: `lsc/` (installab
 | `metadata_processor.py` | `MetadataProcessor` abstract base -- defines the `populate()` callback for LlamaIndex's `file_metadata` parameter. Subclasses implement `url_function()` to derive URLs from file paths. 100 lines. |
 | `okp.py` | `OKPMetadataProcessor` -- parses TOML frontmatter from OKP/errata files. Helpers: `parse_metadata()`, `yield_files_related_to_projects()`, `is_file_related_to_projects()`, `metadata_has_url_and_title()`. 153 lines. |
 | `utils.py` | `get_common_arg_parser()` -- shared CLI argument definitions (folder, model-dir, chunk, overlap, output, index, workers, vector-store-type, auto-chunking). 72 lines. |
-| `asciidoc/asciidoctor_converter.py` | `AsciidoctorConverter` -- wraps the `asciidoctor` CLI for AsciiDoc format conversion. Supports custom Ruby converter extensions and per-version YAML attribute files. 160 lines. |
-| `asciidoc/ruby_asciidoc/` | Ruby converter extensions for asciidoctor. `asciidoc_text_converter.rb` implements the custom text output format. |
+| `asciidoc/asciidoctor_converter.py` | `AsciidoctorConverter` -- wraps the `asciidoctor` CLI for AsciiDoc format conversion. Supports custom Ruby converter extensions and per-version YAML attribute files. 188 lines. |
+| `asciidoc/ruby_asciidoc/` | Ruby converter extensions for asciidoctor. `asciidoc_text_converter.rb` implements the custom text output format. `asciidoc_structure_dumper.rb` dumps document structure for debugging. |
 | `asciidoc/__main__.py` | CLI entry point for AsciiDoc conversion. |
 
 `lsc/` also contains build and orchestration files at its root:
@@ -23,6 +23,7 @@ OpenShift LightSpeed RAG Content is organized into four areas: `lsc/` (installab
 | `lsc/Containerfile.konflux` | **Primary Konflux CI Containerfile**. Multi-stage build using Python 3.12, the lsc library, and `custom_processor.py`. Produces `llamastack-faiss` indexes. Used by `lightspeed-ocp-rag-push/pull-request` pipelines. |
 | `lsc/custom_processor.py` | Orchestrator script for the lsc pipeline. Defines `OCPMetadataProcessor` and `RunbooksMetadataProcessor` subclasses, instantiates `DocumentProcessor` with `llamastack-faiss`, and processes OCP docs + runbooks. |
 | `lsc/requirements.txt` | Python dependencies for the lsc pipeline (separate from root `requirements.*.txt`). |
+| `lsc/scripts/remove_pytorch_cpu_pyproject.py` | Removes pytorch-cpu dependency from pyproject.toml for GPU image builds. |
 
 ### `scripts/` -- Standalone pipeline scripts
 
@@ -33,6 +34,8 @@ OpenShift LightSpeed RAG Content is organized into four areas: `lsc/` (installab
 | `html_chunking/tokenizer.py` | `count_html_tokens()` -- token counting for HTML content with optional tag token counting. |
 | `html_chunking/parser.py` | HTML parsing utilities for the chunking library. |
 | `html_chunking/test_chunker.py` | Unit tests for HTML chunking logic. |
+| `html_chunking/example.py` | Example usage of the HTML chunking library. |
+| `html_chunking/html-stripper.py` | Standalone HTML stripping utility. |
 | `html_embeddings/generate_embeddings.py` | **HTML pipeline** orchestrator -- 5-step pipeline: download, strip, chunk, runbooks, embed. Supports batch processing via config file. 659 lines. |
 | `html_embeddings/download_docs.py` | `download_documentation()` -- fetches HTML docs from Red Hat documentation portal. |
 | `html_embeddings/strip_html.py` | `strip_html_content()` -- removes non-content HTML (navigation, headers, footers, scripts, styles). |
@@ -40,6 +43,8 @@ OpenShift LightSpeed RAG Content is organized into four areas: `lsc/` (installab
 | `html_embeddings/process_runbooks.py` | `process_runbooks()` -- converts Markdown runbooks to JSON chunk files for the HTML pipeline. |
 | `html_embeddings/utils.py` | `setup_logging()`, `create_directory_structure()`, `validate_dependencies()`, `sanitize_directory_path()`. 264 lines. |
 | `html_embeddings/test_html_embeddings.py` | Unit tests for the HTML embeddings pipeline. |
+| `html_embeddings/setup.py` | Package setup for the HTML embeddings pipeline. |
+| `doc_downloader/downloader.py` | Red Hat documentation HTML downloader -- fetches pages from a starting URL, preserving directory structure. |
 | `asciidoctor-text/convert-it-all.py` | Bulk AsciiDoc-to-plaintext conversion using topic maps. Reads `_topic_map.yml`, filters by distribution, and converts each referenced `.adoc` file. |
 | `asciidoctor-text/text-converter.rb` | Ruby text format converter extension for asciidoctor. |
 | `get_ocp_plaintext_docs.sh` | Clones openshift-docs for a given version, runs AsciiDoc conversion, applies exclusions from `config/exclude.conf`. |

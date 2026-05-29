@@ -31,7 +31,7 @@ This spec defines the rules for building container images, hermetic build suppor
 
 ## Behavioral Rules -- BYOK Tool Image
 
-9. The BYOK tool image is built from `byok/Containerfile.tool`. It contains: `buildah`, Python 3.11, CPU Python dependencies, the embedding model, the BYOK embedding script (`generate_embeddings_tool.py`), and the output Containerfile template (`Containerfile.output`).
+9. The BYOK tool image is built from `byok/Containerfile.tool`. It contains: `buildah`, Python 3.12, CPU Python dependencies, the embedding model, the BYOK embedding script (`generate_embeddings_tool.py`), and the output Containerfile template (`Containerfile.output`).
 
 10. The tool image's CMD runs `buildah build` to produce the customer's RAG image from Markdown content mounted at `/markdown`, then pushes the result as a tar archive to `/output/`.
 

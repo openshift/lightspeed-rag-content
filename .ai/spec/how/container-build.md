@@ -7,7 +7,7 @@ This spec documents the Containerfiles, Makefile targets, and Konflux/Tekton pip
 | Path | Purpose |
 |---|---|
 | `lsc/Containerfile.konflux` | **Primary** RAG content image -- lsc library pipeline, llamastack-faiss, Python 3.12 |
-| `Containerfile` | **Alternative** RAG content image -- plaintext pipeline, LlamaIndex FAISS, Python 3.11 |
+| `Containerfile` | **Alternative** RAG content image -- plaintext pipeline, LlamaIndex FAISS, Python 3.12 |
 | `byok/Containerfile.tool` | BYOK tool image -- buildah + Python + model + script |
 | `byok/Containerfile.output` | BYOK output image template -- vectors only, built inside tool container |
 | `Makefile` | Developer-facing build automation |
@@ -32,7 +32,7 @@ This is the Containerfile used by the primary Konflux pipelines (`lightspeed-ocp
 ### Build Stages
 
 ```
-Stage 1: lightspeed-rag-builder (FROM nvcr.io/nvidia/cuda:12.9.1-devel-ubi9)
+Stage 1: lightspeed-rag-builder (FROM nvcr.io/nvidia/cuda:12.9.2-devel-ubi9)
   ├── dnf install python3.12 python3.12-pip libcudnn9 libnccl libcusparselt0
   ├── pip3.12 install lsc/requirements.txt
   ├── Symlink NLTK data
@@ -77,12 +77,12 @@ This is the Containerfile used by the alternative `own-app-lightspeed-rag-conten
 Two named stages define the base images. The `FLAVOR` build arg (default: `cpu`) selects which one is used:
 
 ```dockerfile
-FROM registry.access.redhat.com/ubi9/python-311 as cpu-base
-FROM nvcr.io/nvidia/cuda:12.9.1-devel-ubi9 as gpu-base
+FROM registry.access.redhat.com/ubi9/python-312 as cpu-base
+FROM registry.redhat.io/rhai/base-image-cuda-12.9-rhel9:3.3 as gpu-base
 FROM ${FLAVOR}-base as lightspeed-rag-builder
 ```
 
-The GPU base installs additional system packages: `python3.11`, `python3.11-pip`, `libcudnn9`, `libnccl`, `libcusparselt0`.
+The GPU base installs additional system packages: `python3.12`, `python3.12-pip`, `libcudnn9`, `libnccl`, `libcusparselt0`.
 
 ### Stage 2: Builder (`lightspeed-rag-builder`)
 
@@ -97,11 +97,11 @@ USER 0, WORKDIR /workdir
      HERMETIC=true  → cp /cachi2/output/deps/generic/model.safetensors
      HERMETIC=false → curl from HuggingFace (pinned commit SHA)
 5. GPU validation (FLAVOR=gpu only):
-     python3.11 -c "import torch; print(torch.version.cuda); print(torch.cuda.is_available())"
+     python3.12 -c "import torch; print(torch.version.cuda); print(torch.cuda.is_available())"
      (requires LD_LIBRARY_PATH=/usr/local/cuda-12/compat)
 6. COPY scripts/generate_embeddings.py
 7. For each OCP_VERSION in $(ls -1 ocp-product-docs-plaintext):
-     python3.11 generate_embeddings.py \
+     python3.12 generate_embeddings.py \
        -f ocp-product-docs-plaintext/${VERSION} \
        -r runbooks/alerts \
        -md embeddings_model \
@@ -133,7 +133,7 @@ The `ubi-minimal` image is pinned by SHA256 digest. Digest updates are managed b
 
 ```
 FROM ubi9/ubi:latest
-  ├── dnf install buildah python3.11 python3.11-pip
+  ├── dnf install buildah python3.12 python3.12-pip
   ├── pip install requirements.cpu.txt (--no-deps)
   ├── COPY embeddings_model
   ├── Acquire model.safetensors (same HERMETIC logic as main Containerfile)
@@ -157,7 +157,7 @@ FROM ubi9/ubi:latest
 ```
 FROM ${BYOK_TOOL_IMAGE} as tool
   USER 0, WORKDIR /workdir
-  RUN python3.11 generate_embeddings_tool.py \
+  RUN python3.12 generate_embeddings_tool.py \
       -i /markdown -emd embeddings_model \
       -emn sentence-transformers/all-mpnet-base-v2 \
       -o vector_db -id $VECTOR_DB_INDEX

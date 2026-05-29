@@ -2,8 +2,36 @@
 
 These specs define the requirements, behaviors, and architecture for the lightspeed-rag-content project. They are organized into two layers:
 
-- **[`what/`](what/README.md)** -- Behavioral rules: WHAT the system must do and WHY. Technology-neutral, testable assertions. Use these to understand requirements, fix bugs, or rebuild components.
-- **[`how/`](how/README.md)** -- Architecture specs: HOW the current implementation is structured. Module boundaries, data flow, design patterns. Use these to navigate, modify, and extend the codebase.
+## Structure
+
+| Layer | Path | Purpose |
+|---|---|---|
+| **what/** | `.ai/spec/what/` | Behavioral rules. What the system must do. Implementation-agnostic. |
+| **how/** | `.ai/spec/how/` | Codebase navigation. How the code is organized. Implementation-specific. |
+
+### what/ -- Behavioral Specifications
+
+These specs define WHAT the RAG content pipeline must do -- testable behavioral rules, configuration surface, constraints, and planned changes. They are technology-neutral where possible and survive a complete rewrite in a different framework.
+
+| Spec | Description |
+|------|-------------|
+| [system-overview.md](what/system-overview.md) | Project purpose, boundaries, integration contract with lightspeed-service |
+| [content-sources.md](what/content-sources.md) | OCP docs, runbooks, OKP content -- acquisition, versioning, metadata, exclusions |
+| [embedding-pipeline.md](what/embedding-pipeline.md) | Shared behavioral rules for all pipeline variants: chunking, embedding, vector store output, index organization |
+| [byok.md](what/byok.md) | Bring Your Own Knowledge -- customer content import via tool container |
+| [container-build.md](what/container-build.md) | Container images, hermetic builds, CI/CD pipelines, dependency management |
+
+### how/ -- Architecture Specifications
+
+These specs describe HOW the RAG content pipeline is structured -- module boundaries, data flow, design patterns, key abstractions, and implementation decisions. They are grounded in the current Python codebase and should be updated when the code changes.
+
+| Spec | Description |
+|------|-------------|
+| [project-structure.md](how/project-structure.md) | Directory layout, module map, dependency management, key relationships |
+| [plaintext-pipeline.md](how/plaintext-pipeline.md) | `scripts/generate_embeddings.py` -- the production pipeline used by the Containerfile |
+| [html-pipeline.md](how/html-pipeline.md) | `scripts/html_embeddings/` + `scripts/html_chunking/` -- HTML-based pipeline with semantic chunking |
+| [lsc-library.md](how/lsc-library.md) | `lsc/src/lightspeed_rag_content/` -- installable library with multi-backend support |
+| [container-build.md](how/container-build.md) | Containerfiles, Makefile targets, Konflux/Tekton pipelines, dependency management |
 
 ## Scope
 
@@ -29,10 +57,25 @@ AI agents (Claude). Specs optimize for precision, unambiguous rules, and machine
 | Modify the container build or CI | `how/container-build.md` |
 | See what's planned | Look for `[PLANNED: OLS-XXXX]` in `what/` specs |
 
+## Cross-Reference
+
+When what/ and how/ file names don't match 1:1, this table maps behavioral specs to their implementation guides:
+
+| what/ | how/ |
+|---|---|
+| `what/system-overview.md` | `how/project-structure.md` |
+| `what/content-sources.md` | `how/plaintext-pipeline.md`, `how/html-pipeline.md`, `how/lsc-library.md` |
+| `what/embedding-pipeline.md` | `how/plaintext-pipeline.md`, `how/html-pipeline.md`, `how/lsc-library.md` |
+| `what/byok.md` | `how/container-build.md` (BYOK Containerfile sections) |
+| `what/container-build.md` | `how/container-build.md` |
+
 ## Conventions
 
-- `[PLANNED: OLS-XXXX]` markers in `what/` specs indicate existing rules about to change due to open Jira work.
-- "Planned Changes" sections list new capabilities not yet in code.
+- **Rule numbering:** behavioral rules are numbered sequentially within each what/ file.
+- **Planned changes:** unimplemented behavior is marked with `[PLANNED]` or `[PLANNED: OLS-XXXX]` inline next to the rule it affects. "Planned Changes" sections list new capabilities not yet in code.
+- **Constraints:** component-specific and cross-cutting constraints go in the relevant what/ file's Constraints section, co-located with behavioral rules. Development conventions go in CLAUDE.md.
+- **Authority:** what/ specs are authoritative for behavior. how/ specs are authoritative for implementation. When they conflict, what/ wins.
+- **When to create a new file vs. extend an existing one:** if the new concern has its own lifecycle, configuration surface, and can be understood independently, it gets its own file. If it's a capability added to an existing component, it goes in that component's file.
 - User-configurable values are referenced by CLI argument name or environment variable name.
 - Internal constants are stated as behavioral rules without numeric values; `how/` specs may include specific values.
 
