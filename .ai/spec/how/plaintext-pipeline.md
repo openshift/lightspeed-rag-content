@@ -107,7 +107,7 @@ CLI args parsed
 - The Containerfile invokes this script once per OCP version in a shell loop:
   ```
   for OCP_VERSION in $(ls -1 ocp-product-docs-plaintext); do
-      python3.11 generate_embeddings.py \
+      python3.12 generate_embeddings.py \
           -f ocp-product-docs-plaintext/${OCP_VERSION} \
           -r runbooks/alerts \
           -md embeddings_model \

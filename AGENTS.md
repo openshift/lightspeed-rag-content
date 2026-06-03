@@ -1,5 +1,9 @@
 # OpenShift LightSpeed RAG Content - Development Guide for AI
 
+## Specs
+
+All specifications live in `.ai/spec/`. Start with `.ai/spec/README.md` for project overview, reading order, and structure guide.
+
 ## Git and PR Workflow
 
 ### Commit Messages
