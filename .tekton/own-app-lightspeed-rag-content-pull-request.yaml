@@ -9,6 +9,7 @@ metadata:
     pipelinesascode.tekton.dev/cancel-in-progress: "true"
     pipelinesascode.tekton.dev/max-keep-runs: "3"
     pipelinesascode.tekton.dev/on-cel-expression: event == "pull_request" && target_branch == "main"
+    pipelinesascode.tekton.dev/task: "[.tekton/embed-rag.yaml]"
   creationTimestamp:
   labels:
     appstudio.openshift.io/application: lightspeed-rag-content
@@ -27,7 +28,7 @@ spec:
   - name: image-expires-after
     value: 5d
   - name: dockerfile
-    value: Containerfile
+    value: Containerfile.pack
   - name: path-context
     value: .
   - name: build-source-image
@@ -37,11 +38,9 @@ spec:
   - name: hermetic
     value: "true"
   - name: build-args
-    value:
-    - FLAVOR=gpu
-    - HERMETIC=true
+    value: []
   - name: build-image-index
-    value: "false"
+    value: "true"
   pipelineSpec:
     description: |
       This pipeline is ideal for building container images from a Containerfile while maintaining trust after pipeline customization.
@@ -202,37 +201,96 @@ spec:
         workspace: git-auth
       - name: netrc
         workspace: netrc
+    - name: embed-rag
+      params:
+      - name: SOURCE_ARTIFACT
+        value: $(tasks.prefetch-dependencies.results.SOURCE_ARTIFACT)
+      - name: CACHI2_ARTIFACT
+        value: $(tasks.prefetch-dependencies.results.CACHI2_ARTIFACT)
+      - name: PLATFORM
+        value: linux-g64xlarge/amd64
+      - name: HERMETIC
+        value: $(params.hermetic)
+      - name: HTTP_PROXY
+        value: $(tasks.init.results.http-proxy)
+      - name: NO_PROXY
+        value: $(tasks.init.results.no-proxy)
+      - name: ociStorage
+        value: $(params.output-image).rag-export
+      - name: ociArtifactExpiresAfter
+        value: $(params.image-expires-after)
+      runAfter:
+      - prefetch-dependencies
+      taskRef:
+        kind: Task
+        name: embed-rag
     - name: build-container
       params:
       - name: PLATFORM
-        value: linux-g64xlarge/amd64
+        value: linux/amd64
       - name: IMAGE
         value: $(params.output-image)
       - name: DOCKERFILE
-        value: $(params.dockerfile)
+        value: Containerfile.pack
       - name: CONTEXT
-        value: $(params.path-context)
+        value: .
       - name: HERMETIC
-        value: $(params.hermetic)
+        value: "false"
       - name: PREFETCH_INPUT
-        value: $(params.prefetch-input)
+        value: ""
       - name: IMAGE_EXPIRES_AFTER
         value: $(params.image-expires-after)
       - name: COMMIT_SHA
         value: $(tasks.clone-repository.results.commit)
       - name: BUILD_ARGS
-        value:
-        - $(params.build-args[*])
+        value: []
       - name: BUILD_ARGS_FILE
         value: $(params.build-args-file)
       - name: SOURCE_ARTIFACT
-        value: $(tasks.prefetch-dependencies.results.SOURCE_ARTIFACT)
-      - name: CACHI2_ARTIFACT
-        value: $(tasks.prefetch-dependencies.results.CACHI2_ARTIFACT)
+        value: $(tasks.embed-rag.results.SOURCE_ARTIFACT)
+      - name: HTTP_PROXY
+        value: $(tasks.init.results.http-proxy)
+      - name: NO_PROXY
+        value: $(tasks.init.results.no-proxy)
       - name: BUILDAH_FORMAT
         value: $(params.buildah-format)
       runAfter:
-      - prefetch-dependencies
+      - embed-rag
+      taskRef:
+        params:
+        - name: name
+          value: buildah-remote-oci-ta
+        - name: bundle
+          value: quay.io/konflux-ci/tekton-catalog/task-buildah-remote-oci-ta:0.9@sha256:77007259cc87f32d63d2c201226aadaab98313cfd4e02b46abc243c4d2cc27bd
+        - name: kind
+          value: task
+        resolver: bundles
+    - name: build-container-arm64
+      params:
+      - name: PLATFORM
+        value: linux/arm64
+      - name: IMAGE
+        value: $(params.output-image)
+      - name: DOCKERFILE
+        value: Containerfile.arm64
+      - name: CONTEXT
+        value: .
+      - name: HERMETIC
+        value: "false"
+      - name: PREFETCH_INPUT
+        value: ""
+      - name: IMAGE_EXPIRES_AFTER
+        value: $(params.image-expires-after)
+      - name: COMMIT_SHA
+        value: $(tasks.clone-repository.results.commit)
+      - name: SOURCE_ARTIFACT
+        value: $(tasks.embed-rag.results.SOURCE_ARTIFACT)
+      - name: IMAGE_APPEND_PLATFORM
+        value: "true"
+      - name: BUILDAH_FORMAT
+        value: $(params.buildah-format)
+      runAfter:
+      - embed-rag
       taskRef:
         params:
         - name: name
@@ -251,11 +309,13 @@ spec:
       - name: IMAGES
         value:
         - $(tasks.build-container.results.IMAGE_URL)@$(tasks.build-container.results.IMAGE_DIGEST)
+        - $(tasks.build-container-arm64.results.IMAGE_URL)@$(tasks.build-container-arm64.results.IMAGE_DIGEST)
       - name: BUILDAH_FORMAT
         value: $(params.buildah-format)
       retries: 5
       runAfter:
       - build-container
+      - build-container-arm64
       taskRef:
         params:
         - name: name
@@ -609,6 +669,10 @@ spec:
     - name: netrc
       optional: true
   taskRunSpecs:
+  - pipelineTaskName: build-container
+    computeResources:
+      limits:
+        memory: 8Gi
   - pipelineTaskName: build-source-image
     computeResources:
       limits:

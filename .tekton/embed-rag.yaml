@@ -1,0 +1,198 @@
+apiVersion: tekton.dev/v1
+kind: Task
+metadata:
+  name: embed-rag
+  annotations:
+    tekton.dev/pipelines.minVersion: "0.12.1"
+    build.appstudio.redhat.com/expires-on: "2026-08-22T00:00:00Z"
+  labels:
+    build.appstudio.redhat.com/build_type: docker
+spec:
+  description: >-
+    Run GPU embedding on a remote amd64 VM and publish rag/ as a trusted artifact
+    for amd64 and arm64 packaging builds.
+  params:
+    - name: SOURCE_ARTIFACT
+      type: string
+    - name: CACHI2_ARTIFACT
+      type: string
+      default: ""
+    - name: ociStorage
+      type: string
+    - name: ociArtifactExpiresAfter
+      type: string
+      default: ""
+    - name: PLATFORM
+      type: string
+      default: linux-g64xlarge/amd64
+    - name: HERMETIC
+      type: string
+      default: "true"
+    - name: HTTP_PROXY
+      type: string
+      default: ""
+    - name: NO_PROXY
+      type: string
+      default: ""
+    - name: EMBEDDING_MODEL
+      type: string
+      default: sentence-transformers/all-mpnet-base-v2
+    - name: BUILDER_IMAGE
+      type: string
+      default: registry.redhat.io/rhai/base-image-cuda-12.9-rhel9:3.3
+    - name: caTrustConfigMapName
+      type: string
+      default: trusted-ca
+    - name: caTrustConfigMapKey
+      type: string
+      default: ca-bundle.crt
+  results:
+    - name: SOURCE_ARTIFACT
+      description: Trusted artifact with rag/, LICENSE, Containerfile.arm64
+  volumes:
+    - name: workdir
+      emptyDir: {}
+    - name: ssh
+      secret:
+        optional: false
+        secretName: multi-platform-ssh-$(context.taskRun.name)
+    - name: trusted-ca
+      configMap:
+        items:
+          - key: $(params.caTrustConfigMapKey)
+            path: ca-bundle.crt
+        name: $(params.caTrustConfigMapName)
+        optional: true
+  stepTemplate:
+    volumeMounts:
+      - mountPath: /var/workdir
+        name: workdir
+  steps:
+    - name: use-source
+      image: quay.io/konflux-ci/build-trusted-artifacts:latest@sha256:adf22f3ec90bfa3f7e2c832a7d52febd1ea31aa9fff6db21324c965d7d622327
+      args:
+        - use
+        - $(params.SOURCE_ARTIFACT)=/var/workdir/source
+        - $(params.CACHI2_ARTIFACT)=/var/workdir/cachi2
+      volumeMounts:
+        - mountPath: /etc/pki/tls/certs/ca-custom-bundle.crt
+          name: trusted-ca
+          readOnly: true
+          subPath: ca-bundle.crt
+    - name: embed-remote
+      image: quay.io/konflux-ci/buildah-task:latest@sha256:4c470b5a153c4acd14bf4f8731b5e36c61d7faafe09c2bf376bb81ce84aa5709
+      workingDir: /var/workdir
+      env:
+        - name: HOME
+          value: /root
+        - name: HERMETIC
+          value: $(params.HERMETIC)
+        - name: EMBEDDING_MODEL
+          value: $(params.EMBEDDING_MODEL)
+        - name: PLATFORM
+          value: $(params.PLATFORM)
+        - name: BUILDER_IMAGE
+          value: "registry.redhat.io/rhai/base-image-cuda-12.9-rhel9:3.3"
+        - name: BUILDAH_HTTP_PROXY
+          value: $(params.HTTP_PROXY)
+        - name: BUILDAH_NO_PROXY
+          value: $(params.NO_PROXY)
+      script: |
+        #!/bin/bash
+        set -e
+        set -o verbose
+
+        echo "[$(date --utc -Ins)] Prepare connection"
+
+        mkdir -p ~/.ssh
+        if [ -e "/ssh/error" ]; then
+          cat /ssh/error
+          exit 1
+        fi
+        export SSH_HOST
+        SSH_HOST=$(cat /ssh/host)
+
+        if [ "$SSH_HOST" = "localhost" ]; then
+          echo "Localhost MPC host: running embed in-cluster (requires GPU)" >&2
+          exit 1
+        elif [ -e "/ssh/otp" ]; then
+          if ! curl --fail --cacert /ssh/otp-ca -XPOST -d @/ssh/otp "$(cat /ssh/otp-server)" >~/.ssh/id_rsa; then
+            echo "Failed to retrieve SSH key from the OTP server. This can happen when the PipelineRun retry option re-runs a task whose one-time credential was already consumed. Please, start a new build, and if problem persists, please report it as an MPC bug." >&2
+            exit 1
+          fi
+          echo "" >>~/.ssh/id_rsa
+        else
+          cp /ssh/id_rsa ~/.ssh
+        fi
+
+        if [[ "${BUILDAH_HTTP_PROXY}" =~ .+\.cluster\.local ]]; then
+          echo "[$(date --utc -Ins)] Ignoring cluster local proxy for remote build"
+          unset BUILDAH_HTTP_PROXY BUILDAH_NO_PROXY
+        fi
+
+        chmod 0400 ~/.ssh/id_rsa
+        test -s ~/.ssh/id_rsa
+
+        export BUILD_DIR
+        BUILD_DIR=$(cat /ssh/user-dir)
+        export SSH_ARGS="-o StrictHostKeyChecking=no -o ServerAliveInterval=60 -o ServerAliveCountMax=10"
+
+        echo "[$(date --utc -Ins)] Setup VM"
+        # shellcheck disable=SC2086
+        ssh $SSH_ARGS "$SSH_HOST" mkdir -p "${BUILD_DIR@Q}/volumes/workdir" "${BUILD_DIR@Q}/volumes/trusted-ca" "${BUILD_DIR@Q}/.docker"
+
+        echo "[$(date --utc -Ins)] Rsync data"
+        rsync -razW /var/workdir/ "$SSH_HOST:$BUILD_DIR/volumes/workdir/"
+        rsync -razW /mnt/trusted-ca/ "$SSH_HOST:$BUILD_DIR/volumes/trusted-ca/"
+        rsync -razW "$HOME/.docker/" "$SSH_HOST:$BUILD_DIR/.docker/" 2>/dev/null || true
+
+        echo "[$(date --utc -Ins)] Verify remote context"
+        # shellcheck disable=SC2086
+        ssh $SSH_ARGS "$SSH_HOST" test -f "${BUILD_DIR@Q}/volumes/workdir/source/scripts/embed-rag-content.sh"
+
+        echo "[$(date --utc -Ins)] Run GPU embed"
+        : "${BUILDER_IMAGE:?BUILDER_IMAGE is empty}"
+        echo "Builder image: ${BUILDER_IMAGE}"
+        # shellcheck disable=SC2086
+        ssh $SSH_ARGS "$SSH_HOST" podman run --rm \
+          --device nvidia.com/gpu=all \
+          --security-opt label=disable \
+          -e "HERMETIC=${HERMETIC@Q}" \
+          -e "EMBEDDING_MODEL=${EMBEDDING_MODEL@Q}" \
+          -e "FLAVOR=gpu" \
+          -e "CACHI2_ROOT=/var/workdir/cachi2" \
+          -v "${BUILD_DIR@Q}/volumes/workdir:/var/workdir:Z" \
+          -v "${BUILD_DIR@Q}/volumes/trusted-ca:/mnt/trusted-ca:Z" \
+          -v "${BUILD_DIR@Q}/.docker:/root/.docker:Z" \
+          --user=0 \
+          --entrypoint='' \
+          "${BUILDER_IMAGE@Q}" \
+          /bin/bash /var/workdir/source/scripts/embed-remote-setup.sh
+
+        echo "[$(date --utc -Ins)] Rsync results"
+        rsync -razW "$SSH_HOST:$BUILD_DIR/volumes/workdir/source/" /var/workdir/source/
+
+        test -d /var/workdir/source/rag-export/rag/vector_db/ocp_product_docs
+        test -f /var/workdir/source/rag-export/Containerfile.arm64
+      volumeMounts:
+        - mountPath: /ssh
+          name: ssh
+          readOnly: true
+        - mountPath: /mnt/trusted-ca
+          name: trusted-ca
+          readOnly: true
+    - name: create-trusted-artifact
+      image: quay.io/konflux-ci/build-trusted-artifacts:latest@sha256:adf22f3ec90bfa3f7e2c832a7d52febd1ea31aa9fff6db21324c965d7d622327
+      args:
+        - create
+        - --store
+        - $(params.ociStorage)
+        - $(results.SOURCE_ARTIFACT.path)=/var/workdir/source/rag-export
+      env:
+        - name: IMAGE_EXPIRES_AFTER
+          value: $(params.ociArtifactExpiresAfter)
+      volumeMounts:
+        - mountPath: /etc/pki/tls/certs/ca-custom-bundle.crt
+          name: trusted-ca
+          readOnly: true
+          subPath: ca-bundle.crt

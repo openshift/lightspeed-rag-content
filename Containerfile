@@ -2,6 +2,8 @@ ARG EMBEDDING_MODEL=sentence-transformers/all-mpnet-base-v2
 ARG FLAVOR=cpu
 ARG HERMETIC=false
 
+# Full GPU/CPU build for local development. Konflux CI uses embed-rag + Containerfile.pack/arm64.
+
 FROM registry.access.redhat.com/ubi9/python-312 as cpu-base
 ARG EMBEDDING_MODEL
 ARG FLAVOR
