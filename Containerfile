@@ -22,6 +22,10 @@ ARG REQUIREMENTS_FILE
 USER 0
 WORKDIR /workdir
 
+COPY --from=gpu-base /usr/lib64/openmpi/lib/ /usr/lib64/openmpi/lib/
+ENV LD_LIBRARY_PATH=/usr/lib64/openmpi/lib
+RUN ldconfig
+
 COPY ${REQUIREMENTS_FILE} ./requirements.txt
 RUN pip3.12 install --no-cache-dir -r requirements.txt && ln -s /usr/local/lib/python3.12/site-packages/llama_index/core/_static/nltk_cache /root/nltk_data
 
