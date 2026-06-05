@@ -1,6 +1,7 @@
 ARG EMBEDDING_MODEL=sentence-transformers/all-mpnet-base-v2
 ARG FLAVOR=cpu
 ARG HERMETIC=false
+ARG REQUIREMENTS_FILE=requirements.gpu.txt
 
 FROM registry.access.redhat.com/ubi9/python-312 as cpu-base
 ARG EMBEDDING_MODEL
@@ -16,12 +17,13 @@ FROM ${FLAVOR}-base as lightspeed-rag-builder
 ARG EMBEDDING_MODEL
 ARG FLAVOR
 ARG HERMETIC
+ARG REQUIREMENTS_FILE
 
 USER 0
 WORKDIR /workdir
 
-COPY requirements.gpu.txt .
-RUN pip3.12 install --no-cache-dir -r requirements.gpu.txt && ln -s /usr/local/lib/python3.12/site-packages/llama_index/core/_static/nltk_cache /root/nltk_data
+COPY ${REQUIREMENTS_FILE} ./requirements.txt
+RUN pip3.12 install --no-cache-dir -r requirements.txt && ln -s /usr/local/lib/python3.12/site-packages/llama_index/core/_static/nltk_cache /root/nltk_data
 
 COPY ocp-product-docs-plaintext ./ocp-product-docs-plaintext
 COPY runbooks ./runbooks
