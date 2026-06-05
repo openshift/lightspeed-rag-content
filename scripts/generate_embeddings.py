@@ -220,6 +220,7 @@ if __name__ == "__main__":
     index = VectorStoreIndex(
         good_nodes,
         storage_context=storage_context,
+        show_progress=True,
     )
     index.set_index_id(args.index)
     index.storage_context.persist(persist_dir=PERSIST_FOLDER)
