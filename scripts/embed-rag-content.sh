@@ -11,9 +11,17 @@ FLAVOR="${FLAVOR:-gpu}"
 RAG_EXPORT_DIR="${RAG_EXPORT_DIR:-/var/workdir/source/rag-export}"
 CACHI2_ROOT="${CACHI2_ROOT:-/cachi2}"
 
-if [ "${HERMETIC}" = "true" ] && [ -f "${CACHI2_ROOT}/cachi2.env" ]; then
+if [ -f "${CACHI2_ROOT}/prefetch.env" ]; then
+  # shellcheck disable=SC1091
+  source "${CACHI2_ROOT}/prefetch.env"
+elif [ -f "${CACHI2_ROOT}/cachi2.env" ]; then
   # shellcheck disable=SC1091
   source "${CACHI2_ROOT}/cachi2.env"
+fi
+
+if [ "${HERMETIC}" = "true" ] && [ ! -f "${CACHI2_ROOT}/prefetch.env" ] && [ ! -f "${CACHI2_ROOT}/cachi2.env" ]; then
+  echo "Hermetic embed requires cachi2 prefetch at ${CACHI2_ROOT}" >&2
+  exit 1
 fi
 
 if [ "${FLAVOR}" != "gpu" ]; then
@@ -21,8 +29,39 @@ if [ "${FLAVOR}" != "gpu" ]; then
   exit 1
 fi
 
-pip3.12 install --no-cache-dir -r requirements.gpu.txt
+pip_install_args=(--no-cache-dir)
+req_file="requirements.gpu.txt"
+if [ "${PIP_NO_REQUIRE_HASHES:-false}" = "true" ]; then
+  req_file=$(mktemp)
+  awk '!/^[[:space:]]*#/ && !/^[[:space:]]*--hash=/ {
+    sub(/[[:space:]]*\\[[:space:]]*$/, "");
+    gsub(/^[[:space:]]+/, "");
+    if ($0) print
+  }' requirements.gpu.txt >"${req_file}"
+  trap 'rm -f "${req_file}"' EXIT
+fi
+pip3.12 install "${pip_install_args[@]}" -r "${req_file}"
 ln -sf /usr/local/lib/python3.12/site-packages/llama_index/core/_static/nltk_cache /root/nltk_data
+
+# Pip wheels ship CUDA libs under site-packages/nvidia/*/lib; on devel images they must
+# precede /usr/local/cuda-12/compat so import torch finds libnvshmem_host.so, etc.
+pip_nvidia_libdirs=$(
+  python3.12 -c "import glob, os, site; print(':'.join(sorted({p for r in site.getsitepackages() if os.path.isdir(r) for p in glob.glob(os.path.join(r, 'nvidia', '*', 'lib')) if os.path.isdir(p)})))"
+)
+ld_paths=()
+if [ -n "${pip_nvidia_libdirs}" ]; then
+  ld_paths+=("${pip_nvidia_libdirs}")
+fi
+if [ -d /usr/local/cuda-12/compat ]; then
+  ld_paths+=("/usr/local/cuda-12/compat")
+fi
+if [ -n "${LD_LIBRARY_PATH:-}" ]; then
+  ld_paths+=("${LD_LIBRARY_PATH}")
+fi
+if [ "${#ld_paths[@]}" -gt 0 ]; then
+  LD_LIBRARY_PATH=$(IFS=:; echo "${ld_paths[*]}")
+  export LD_LIBRARY_PATH
+fi
 
 cd embeddings_model
 if [ "${HERMETIC}" = "true" ]; then
@@ -54,9 +93,11 @@ mkdir -p "${RAG_EXPORT_DIR}/rag"
 cp -a vector_db "${RAG_EXPORT_DIR}/rag/"
 cp -a embeddings_model "${RAG_EXPORT_DIR}/rag/"
 cp LICENSE "${RAG_EXPORT_DIR}/"
+cp Containerfile.pack "${RAG_EXPORT_DIR}/"
 cp Containerfile.arm64 "${RAG_EXPORT_DIR}/"
 
 test -d "${RAG_EXPORT_DIR}/rag/vector_db/ocp_product_docs"
 test -d "${RAG_EXPORT_DIR}/rag/embeddings_model"
 test -f "${RAG_EXPORT_DIR}/LICENSE"
+test -f "${RAG_EXPORT_DIR}/Containerfile.pack"
 test -f "${RAG_EXPORT_DIR}/Containerfile.arm64"
