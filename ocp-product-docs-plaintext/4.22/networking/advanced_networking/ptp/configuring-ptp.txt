@@ -7,7 +7,7 @@ Network interface controller (NIC) hardware with built-in PTP capabilities somet
 
 [IMPORTANT]
 ----
-In Red Hat OpenShift Container Platform 4.22, the Intel E810 NIC is supported with a PtpConfig plugin.
+In Red Hat OpenShift Container Platform 4.22, supported PtpConfig plugins include Intel E810 hardware configuration, Intel Granite Rapids-D plugin configurations (e830 and e825), and optional ntpfailover behavior.
 ----
 
 # Installing the PTP Operator using the CLI
@@ -102,22 +102,24 @@ As a cluster administrator, you can install the PTP Operator by using the web co
 
 [NOTE]
 ----
-You have to create the namespace and Operator group as mentioned
-in the previous section.
+If you are installing by using the CLI, you must create the namespace and Operator group before installing the Operator.
+If you are installing by using the web console, the Operator Lifecycle Manager (OLM) automatically creates the namespace.
 ----
 
 1. Install the PTP Operator using the Red Hat OpenShift Container Platform web console:
 1. In the Red Hat OpenShift Container Platform web console, click Ecosystem -> Software Catalog.
-2. Choose  PTP Operator from the list of available Operators, and then click Install.
-3. On the Install Operator page, under A specific namespace on the cluster select openshift-ptp. Then, click Install.
+2. Type ptp in the Filter by keyword box to find the PTP Operator.
+3. Click the PTP Operator tile, and then click Install.
+4. On the Install Operator page, ensure that A specific namespace on the cluster is selected and the Operator recommended Namespace openshift-ptp is shown. Click Install.
+5. Wait for the installation to complete and then click View installed Operators.
 2. Optional: Verify that the PTP Operator installed successfully:
-1. Switch to the Ecosystem -> Installed Operators page.
-2. Ensure that PTP Operator is listed in the openshift-ptp project with a Status of InstallSucceeded.
+1. Navigate to Ecosystem -> Installed Operators.
+2. Ensure that PTP Operator is listed in the openshift-ptp project with a Status of Succeeded.
 
 [NOTE]
 ----
 During installation an Operator might display a Failed status.
-If the installation later succeeds with an InstallSucceeded message, you can ignore the Failed message.
+If the installation later succeeds with an Succeeded message, you can ignore the Failed message.
 ----
 
 If the Operator does not appear as installed, to troubleshoot further:
@@ -1133,7 +1135,378 @@ adding tstamp <timestamp> to clock /dev/ptp<N>:: Indicates ts2phc is actively sy
 /dev/ptp<N> offset 0 s2 freq +0:: Displays the estimated offset between the PTP device and the reference; an offset of 0 and state s2 signifies full synchronization.
 T-GM-STATUS s2:: Confirms the Telecom Grandmaster (T-GM) is in a locked state (s2), providing a stable time reference for the network.
 
+## Telecom Grandmaster clocks on Intel Granite Rapids-D hardware
+
+Intel Granite Rapids-D (GNR-D) server platforms support Telecom Grandmaster (T-GM) clock deployments that use onboard Network Acceleration Complex (NAC) ports and optional Carter Flat expansion network interface cards (NICs) to share timing across a single GNSS feed.
+Before you configure a T-GM profile on GNR-D hardware, verify that your qualified hardware layout, cabling, port counts, and interface naming align with your deployment requirements.
+The associated procedure provides an example PtpConfig CR, linuxptp plugin expectations, and verification steps for Granite Rapids-D nodes.
+
+In addition to Telecom Grandmaster configurations, Intel Granite Rapids-D (GNR-D) hardware supports a Precision Time Protocol (PTP) boundary clock profile without holdover.
+For more information about boundary clock configuration on GNR-D hardware, see the Additional resources section.
+
+
+[IMPORTANT]
+----
+{FeatureName} is a Technology Preview feature only. Technology Preview features are not supported with Red Hat production service level agreements (SLAs) and might not be functionally complete. Red Hat does not recommend using them in production. These features provide early access to upcoming product features, enabling customers to test functionality and provide feedback during the development process.
+For more information about the support scope of Red Hat Technology Preview features, see Technology Preview Features Support Scope.
+----
+
+
+[NOTE]
+----
+Follower digital phase-locked loop (DPLL) behavior on GNR-D add-on network interface cards (NICs) such as Carter Flat cards is only partially visible through the Intel NIC driver: you can read high-level follower DPLL lock state (locked or not locked).
+Intel does not plan to add interfaces that expose further follower DPLL lock accuracy in software or firmware.
+The PTP Operator can surface follower DPLL lock state when the Intel NIC driver exposes it, but it cannot report additional follower DPLL accuracy metrics or diagnose follower DPLL problems on add-on NICs beyond that driver data.
+Resolution of complex follower DPLL problems might require on-site hardware access and coordination with Intel rather than diagnosis inside Red Hat OpenShift Container Platform.
+----
+
+Physical architecture and timing paths:: GNSS receivers attach to the shared timing module on supported GNR-D systems so one antenna feed can discipline multiple time transmitters across NAC and Carter Flat ports.
+Compared with earlier Intel E810 Westport Channel layouts that relied on faceplate jumpers between cards, GNR-D routes synchronization between cards by using proprietary PCIe wiring instead of external jumper cables, which supports up to 24 time transmitter ports in the same server footprint when you combine onboard ports with two expansion cards.
+
+On current Intel Granite Rapids-D platforms, a server can ship with zero, one, or two Carter Flat expansion cards. The example PtpConfig CR in the associated procedure reflects two cards.
+
+Interface naming and the GNR-D MachineConfig:: Onboard NAC ports and Carter Flat ports can appear in the same kernel namespace, which makes Precision Time Protocol (PTP) metrics ambiguous unless interfaces are renamed with distinct prefixes.
+A common layout applies the MachineConfig manifest 10-rename-gnrd-interfaces-master.yaml so each card presents a unique interface prefix before you apply a Telecom Grandmaster PtpConfig CR.
+
+* Boundary clocks without holdover on Intel Granite Rapids-D hardware
+* Configuring linuxptp services as a boundary clock without holdover on Intel Granite Rapids-D hardware
+* Configuring GNR-D T-BC holdover on a GNR-D platform
+
+## Configuring linuxptp services as a Telecom Grandmaster clock on Intel Granite Rapids-D hardware
+
+Use this procedure to configure the linuxptp services (ptp4l, phc2sys, ts2phc) as a Telecom Grandmaster (T-GM) on Intel Granite Rapids-D (GNR-D) hardware that uses onboard Network Acceleration Complex (NAC) ports and optional Carter Flat expansion network interface cards (NICs).
+In this deployment, GNSS input disciplines the platform clock and the example PtpConfig CR uses the e830 and e825 plugins for onboard NAC and optional Carter Flat ports.
+
+
+[IMPORTANT]
+----
+{FeatureName} is a Technology Preview feature only. Technology Preview features are not supported with Red Hat production service level agreements (SLAs) and might not be functionally complete. Red Hat does not recommend using them in production. These features provide early access to upcoming product features, enabling customers to test functionality and provide feedback during the development process.
+For more information about the support scope of Red Hat Technology Preview features, see Technology Preview Features Support Scope.
+----
+
+* You have verified your qualified GNR-D hardware layout, including NAC ports, Carter Flat ports, and interface naming.
+* The OpenShift CLI (`oc`) is installed.
+* You are logged in as a user with cluster-admin privileges.
+* The PTP Operator is installed.
+* You have verified that interface names, GNSS serial paths, and plugin device entries are aligned with your qualified hardware layout.
+
+1. Create a PtpConfig custom resource (CR) that matches your qualified GNR-D Telecom Grandmaster hardware layout:
+
+```yaml
+# Example Telecom Grandmaster PtpConfig for Intel Granite Rapids-D (GNR-D).
+#
+# Note:  This example configuration should be customized to match the desired
+# configuration For this GNR-D T-GM configuration, we support GNSS incoming to
+# the onboard connection, and up to 24 Time Transmitter ports including any NAC
+# ports and any additional Carter Flats ports.
+apiVersion: ptp.openshift.io/v1
+kind: PtpConfig
+metadata:
+  name: gnrd-tgm
+  namespace: openshift-ptp
+  annotations:
+    ran.openshift.io/ztp-deploy-wave: "10"
+spec:
+  profile:
+    - name: "grandmaster"
+      ptp4lOpts: "-2 --summary_interval -4"
+      phc2sysOpts: -r -u 0 -m -w -N 8 -R 16 -n 24 -s eno8703
+      ptpSchedulingPolicy: SCHED_FIFO
+      ptpSchedulingPriority: 10
+      ptpSettings:
+        logReduce: "true"
+      plugins:
+        e830:
+          devices:
+            - enp108s0f0
+            - enp110s0f0
+        e825:
+          devices:
+            - eno8703
+          settings:
+            LocalMaxHoldoverOffSet: 1500
+            LocalHoldoverTimeout: 14400
+            MaxInSpecOffset: 100
+          ublxCmds:
+            - args: #ubxtool -P 29.25 -z CFG-HW-ANT_CFG_VOLTCTRL,1
+                - "-P"
+                - "29.25"
+                - "-z"
+                - "CFG-HW-ANT_CFG_VOLTCTRL,1"
+              reportOutput: false
+            - args: #ubxtool -P 29.25 -e GPS
+                - "-P"
+                - "29.25"
+                - "-e"
+                - "GPS"
+              reportOutput: false
+            - args: #ubxtool -P 29.25 -d Galileo
+                - "-P"
+                - "29.25"
+                - "-d"
+                - "Galileo"
+              reportOutput: false
+            - args: #ubxtool -P 29.25 -d GLONASS
+                - "-P"
+                - "29.25"
+                - "-d"
+                - "GLONASS"
+              reportOutput: false
+            - args: #ubxtool -P 29.25 -d BeiDou
+                - "-P"
+                - "29.25"
+                - "-d"
+                - "BeiDou"
+              reportOutput: false
+            - args: #ubxtool -P 29.25 -d SBAS
+                - "-P"
+                - "29.25"
+                - "-d"
+                - "SBAS"
+              reportOutput: false
+            - args: #ubxtool -P 29.25 -t -w 5 -v 1 -e SURVEYIN,600,50000
+                - "-P"
+                - "29.25"
+                - "-t"
+                - "-w"
+                - "5"
+                - "-v"
+                - "1"
+                - "-e"
+                - "SURVEYIN,600,50000"
+              reportOutput: true
+            - args: #ubxtool -P 29.25 -p MON-HW
+                - "-P"
+                - "29.25"
+                - "-p"
+                - "MON-HW"
+              reportOutput: true
+            - args: #ubxtool -P 29.25 -p CFG-MSG,1,38,300
+                - "-P"
+                - "29.25"
+                - "-p"
+                - "CFG-MSG,1,38,248"
+              reportOutput: true    
+      ts2phcOpts: "-m"
+      ts2phcConf: |
+        [nmea]
+        ts2phc.master 1
+        [global]
+        use_syslog  0
+        verbose 1
+        logging_level 7
+        ts2phc.pulsewidth 100000000
+        ts2phc.nmea_serialport /dev/ttyACM0 
+        [eno8703]
+        ts2phc.extts_polarity rising
+        ts2phc.extts_correction 0
+        ts2phc.master  0
+        ts2phc.channel 0
+        ts2phc.pin_index 1
+        # This should be one section per Carter Flats (e830) card:
+        [enp108s0f0]
+        ts2phc.extts_polarity rising
+        ts2phc.extts_correction 0
+        ts2phc.master 0
+        ts2phc.channel 0
+        ts2phc.pin_index 1
+        [enp110s0f0]
+        ts2phc.extts_polarity rising
+        ts2phc.extts_correction 0
+        ts2phc.master 0
+        ts2phc.channel 0
+        ts2phc.pin_index 1
+      ptp4lConf: |
+        # All TimeTransmitter ports should be outlined here with 'masterOnly 1'
+        #[eno8303]
+        # ** Host management interface
+        [eno8403]
+        masterOnly 1
+        [eno8503]
+        masterOnly 1
+        [eno8603]
+        masterOnly 1
+        [eno8703]
+        masterOnly 1
+        [eno8803]
+        masterOnly 1
+        [eno8903]
+        masterOnly 1
+        [eno9003]
+        masterOnly 1
+        [enp108s0f0]
+        masterOnly 1
+        [enp108s0f1]
+        masterOnly 1
+        [enp108s0f2]
+        masterOnly 1
+        [enp108s0f3]
+        masterOnly 1
+        [enp108s0f4]
+        masterOnly 1
+        [enp108s0f5]
+        masterOnly 1
+        [enp108s0f6]
+        masterOnly 1
+        [enp108s0f7]
+        masterOnly 1
+        [enp110s0f0]
+        masterOnly 1
+        [enp110s0f1]
+        masterOnly 1
+        [enp110s0f2]
+        masterOnly 1
+        [enp110s0f3]
+        masterOnly 1
+        [enp110s0f4]
+        masterOnly 1
+        [enp110s0f5]
+        masterOnly 1
+        [enp110s0f6]
+        masterOnly 1
+        [enp110s0f7]
+        masterOnly 1
+        [global]
+        #
+        # Default Data Set
+        #
+        twoStepFlag 1
+        priority1 128
+        priority2 128
+        domainNumber 24
+        #utc_offset 37
+        clockClass 6
+        clockAccuracy 0x27
+        offsetScaledLogVariance 0xFFFF
+        free_running 0
+        freq_est_interval 1
+        dscp_event 0
+        dscp_general 0
+        dataset_comparison G.8275.x
+        G.8275.defaultDS.localPriority 128
+        #
+        # Port Data Set
+        #
+        logAnnounceInterval -3
+        logSyncInterval -4
+        logMinDelayReqInterval -4
+        logMinPdelayReqInterval 0
+        announceReceiptTimeout 3
+        syncReceiptTimeout 0
+        delayAsymmetry 0
+        fault_reset_interval 4
+        neighborPropDelayThresh 20000000
+        masterOnly 0
+        G.8275.portDS.localPriority 128
+        #
+        # Run time options
+        #
+        assume_two_step 0
+        logging_level 6
+        path_trace_enabled 0
+        follow_up_info 0
+        hybrid_e2e 0
+        inhibit_multicast_service 0
+        net_sync_monitor 0
+        tc_spanning_tree 0
+        tx_timestamp_timeout 50
+        unicast_listen 0
+        unicast_master_table 0
+        unicast_req_duration 3600
+        use_syslog 1
+        verbose 0
+        summary_interval -4
+        kernel_leap 1
+        check_fup_sync 0
+        #
+        # Servo Options
+        #
+        pi_proportional_const 0.0
+        pi_integral_const 0.0
+        pi_proportional_scale 0.0
+        pi_proportional_exponent -0.3
+        pi_proportional_norm_max 0.7
+        pi_integral_scale 0.0
+        pi_integral_exponent 0.4
+        pi_integral_norm_max 0.3
+        step_threshold 0.0
+        first_step_threshold 0.00002
+        clock_servo pi
+        sanity_freq_limit  200000000
+        ntpshm_segment 0
+        #
+        # Transport options
+        #
+        transportSpecific 0x0
+        ptp_dst_mac 01:1B:19:00:00:00
+        p2p_dst_mac 01:80:C2:00:00:0E
+        udp_ttl 1
+        udp6_scope 0x0E
+        uds_address /var/run/ptp4l
+        #
+        # Default interface options
+        #
+        clock_type BC
+        network_transport L2
+        delay_mechanism E2E
+        time_stamping hardware
+        tsproc_mode filter
+        delay_filter moving_median
+        delay_filter_length 10
+        egressLatency 0
+        ingressLatency 0
+        boundary_clock_jbod 1
+        #
+        # Clock description
+        #
+        productDescription ;;
+        revisionData ;;
+        manufacturerIdentity 00:00:00
+        userDescription ;
+        timeSource 0x20
+  recommend:
+    - match:
+      - nodeLabel: node-role.kubernetes.io/$mcp
+      priority: 4
+      profile: grandmaster
+```
+
+
+where:
+* eno8703 - Specifies the example leading NAC interface name used in phc2sysOpts, plugins.e825.devices, and the primary ts2phcConf stanza. Replace this value with the NAC interface name from your qualified GNR-D hardware layout.
+* enp108s0f0 and enp110s0f0 - Specify the example Carter Flat (E830) interface names listed in plugins.e830.devices and used as Carter Flat ts2phcConf stanzas. Replace these values with your Carter Flat interface names. Add or remove stanzas and plugins entries if you install fewer than two expansion cards.
+* enp108s0f1 through enp108s0f7 and enp110s0f1 through enp110s0f7 - Specify additional example time transmitter interfaces on the two Carter Flat cards as masterOnly 1 ports in ptp4lConf. Align or remove these stanzas to match your port count and naming.
+* eno8403, eno8503, eno8603, eno8703, eno8803, eno8903, and eno9003 - Specify example onboard NAC time transmitter interfaces as masterOnly 1 ports in ptp4lConf. Replace these values with your NAC port names. Remove stanzas you do not use.
+2. Customize interface names, the plugins device list, ts2phcConf, ptp4lConf, and the recommend stanza in the preceding example to match your qualified hardware layout.
+3. Add or remove Carter Flat interface blocks in ts2phcConf and ptp4lConf to match the number of expansion cards on your server.
+4. In the recommend stanza, replace the $mcp placeholder with the machine config pool label for the nodes that run this PTP profile, for example, worker.
+5. Save the customized PtpConfig CR as gnrd-grandmaster-clock-ptp-config.yaml.
+6. Verify that the plugins stanza lists the e830 and e825 device entries your qualified hardware layout requires.
+7. Apply the PtpConfig CR by running the following command:
+
+```terminal
+$ oc apply -f gnrd-grandmaster-clock-ptp-config.yaml
+```
+
+
+1. Verify that the PtpConfig profile is applied:
+1. Retrieve the pods in the openshift-ptp namespace by running the following command:
+
+```terminal
+$ oc get pods -n openshift-ptp -o wide
+```
+
+2. Review linuxptp daemon logs for the pod on your Granite Rapids-D node by running the following command, replacing <linuxptp_daemon_pod> with the pod name that is scheduled on your target node:
+
+```terminal
+$ oc logs <linuxptp_daemon_pod> -n openshift-ptp -c linuxptp-daemon-container
+```
+
+
 * Configuring the PTP fast event notifications publisher
+* Boundary clocks without holdover on Intel Granite Rapids-D hardware
+* Configuring linuxptp services as a boundary clock without holdover on Intel Granite Rapids-D hardware
+* Configuring GNR-D T-BC holdover on a GNR-D platform
 
 # Grandmaster clock PtpConfig configuration reference
 
@@ -2051,6 +2424,455 @@ The status is reported every second:
 
 * Grandmaster clock class sync state reference
 
+# Configuring GNR-D T-BC holdover on a GNR-D platform
+
+You can configure an Intel® Granite Rapids-D (GNR-D) platform device as telecom boundary clock (T-BC) with holdover support by using the PTP Operator.
+
+
+[IMPORTANT]
+----
+{FeatureName} is a Technology Preview feature only. Technology Preview features are not supported with Red Hat production service level agreements (SLAs) and might not be functionally complete. Red Hat does not recommend using them in production. These features provide early access to upcoming product features, enabling customers to test functionality and provide feedback during the development process.
+For more information about the support scope of Red Hat Technology Preview features, see Technology Preview Features Support Scope.
+----
+
+In this configuration, one time receiver (TR) port synchronizes to an upstream telecom grandmaster clock, while time transmitter (TT) ports distribute synchronized time to downstream devices. If the upstream timing source degrades, disconnects, or becomes unavailable, the system enters holdover mode and maintains timing by using configured digital phase-locked loop (DPLL) devices.
+
+This configuration requires path-based network interface naming so that the system can consistently identify NAC and Carter Flat interfaces across the deployment. The configuration uses the following custom resources:
+
+* MachineConfig: Configures path-based network interface naming for NAC and Carter Flat devices.
+* PtpConfig: Configures the PTP boundary clock profile and timing behavior.
+* HardwareConfig: Configures supported hardware-specific timing and synchronization settings.
+
+For more information about MachineConfig custom resource, see Additional resources.
+
+* Install the OpenShift CLI (oc).
+* Log in as a user with cluster-admin privileges.
+* Install the PTP Operator.
+* Deploy a GNR-D platform with supported NIC hardware.
+* Identify the TR and TT interfaces for your hardware layout.
+
+1. Configure path-based network interface naming for the GNR-D platform:
+
+```yaml
+apiVersion: machineconfiguration.openshift.io/v1
+kind: MachineConfig
+metadata:
+  name: 10-rename-gnrd-interfaces-master
+  labels:
+    machineconfiguration.openshift.io/role: master
+spec:
+  config:
+    ignition:
+      version: 3.2.0
+    storage:
+      files:
+        - path: /etc/systemd/network/10-interface-8086-12d3.link
+          # [Match]
+          # Property=ID_VENDOR_ID=0x8086
+          # Property=ID_MODEL_ID=0x12d3
+          # [Link]
+          # NamePolicy=path
+          mode: 420
+          overwrite: true
+          contents:
+            source: data:text/plain,%5BMatch%5D%0AProperty%3DID_VENDOR_ID%3D0x8086%0AProperty%3DID_MODEL_ID%3D0x12d3%0A%0A%5BLink%5D%0ANamePolicy%3Dpath%0A
+```
+
+* This configuration sets NamePolicy=path so that network interfaces use stable path-based names.
+2. Apply the MachineConfig CR by running the following command:
+
+```terminal
+$ oc apply -f gnrd-interface-names.yaml
+```
+
+3. Create a PtpConfig CR with separate TT and TR profiles:
+
+```yaml
+apiVersion: ptp.openshift.io/v1
+kind: PtpConfig
+metadata:
+  name: t-bc
+  namespace: openshift-ptp
+spec:
+  profile:
+  - name: 00-tbc-tt
+    ptp4lConf: |
+      [eno8803]
+      masterOnly 1
+      [eno8903]
+      masterOnly 1
+      [eno9003]
+      masterOnly 1
+      [eno8303]
+      masterOnly 1
+      [eno8403]
+      masterOnly 1
+      [eno8503]
+      masterOnly 1
+      [eno8603]
+      masterOnly 1
+      [enp108s0f0]
+      masterOnly 1
+      [enp108s0f1]
+      masterOnly 1
+      [enp108s0f2]
+      masterOnly 1
+      [enp108s0f3]
+      masterOnly 1
+      [enp108s0f4]
+      masterOnly 1
+      [enp108s0f5]
+      masterOnly 1
+      [enp108s0f6]
+      masterOnly 1
+      [enp108s0f7]
+      masterOnly 1
+      [enp109s0f0]
+      masterOnly 1
+      [enp109s0f1]
+      masterOnly 1
+      [enp109s0f2]
+      masterOnly 1
+      [enp109s0f3]
+      masterOnly 1
+      [enp109s0f4]
+      masterOnly 1
+      [enp109s0f5]
+      masterOnly 1
+      [enp109s0f6]
+      masterOnly 1
+      [enp109s0f7]
+      masterOnly 1
+      [global]
+      #
+      # Default Data Set
+      #
+      twoStepFlag 1
+      slaveOnly 0
+      priority1 128
+      priority2 128
+      domainNumber 24
+      #utc_offset 37
+      clockClass 248
+      clockAccuracy 0xFE
+      offsetScaledLogVariance 0xFFFF
+      free_running 0
+      freq_est_interval 1
+      dscp_event 0
+      dscp_general 0
+      dataset_comparison G.8275.x
+      G.8275.defaultDS.localPriority 128
+      #
+      # Port Data Set
+      #
+      logAnnounceInterval -3
+      logSyncInterval -4
+      logMinDelayReqInterval -4
+      logMinPdelayReqInterval -4
+      announceReceiptTimeout 3
+      syncReceiptTimeout 0
+      delayAsymmetry 0
+      fault_reset_interval -4
+      neighborPropDelayThresh 20000000
+      masterOnly 0
+      G.8275.portDS.localPriority 128
+      #
+      # Run time options
+      #
+      assume_two_step 0
+      logging_level 6
+      path_trace_enabled 0
+      follow_up_info 0
+      hybrid_e2e 0
+      inhibit_multicast_service 0
+      net_sync_monitor 0
+      tc_spanning_tree 0
+      tx_timestamp_timeout 50
+      unicast_listen 0
+      unicast_master_table 0
+      unicast_req_duration 3600
+      use_syslog 1
+      verbose 0
+      summary_interval 0
+      kernel_leap 1
+      check_fup_sync 0
+      clock_class_threshold 135
+      #
+      # Servo Options
+      #
+      pi_proportional_const 0.60
+      pi_integral_const 0.001
+      pi_proportional_scale 0.0
+      pi_proportional_exponent -0.3
+      pi_proportional_norm_max 0.7
+      pi_integral_scale 0.0
+      pi_integral_exponent 0.4
+      pi_integral_norm_max 0.3
+      step_threshold 2.0
+      first_step_threshold 0.00002
+      max_frequency 900000000
+      clock_servo pi
+      sanity_freq_limit 200000000
+      ntpshm_segment 0
+      #
+      # Transport options
+      #
+      transportSpecific 0x0
+      ptp_dst_mac 01:1B:19:00:00:00
+      p2p_dst_mac 01:80:C2:00:00:0E
+      udp_ttl 1
+      udp6_scope 0x0E
+      uds_address /var/run/ptp4l
+      #
+      # Default interface options
+      #
+      clock_type BC
+      network_transport L2
+      delay_mechanism E2E
+      time_stamping hardware
+      tsproc_mode filter
+      delay_filter moving_median
+      delay_filter_length 10
+      egressLatency 0
+      ingressLatency 0
+      boundary_clock_jbod 1
+      #
+      # Clock description
+      #
+      productDescription ;;
+      revisionData ;;
+      manufacturerIdentity 00:00:00
+      userDescription ;
+      timeSource 0xA0
+    ptp4lOpts: -2 --summary_interval -4
+    ptpSchedulingPolicy: SCHED_FIFO
+    ptpSchedulingPriority: 10
+    ptpSettings:
+      controllingProfile: 01-tbc-tr
+      logReduce: "false"
+  - name: 01-tbc-tr
+    phc2sysOpts: -r -n 24 -N 8 -R 16 -u 0 -m -s eno8703
+    ptp4lConf: |
+      # The interface name is hardware-specific
+      [eno8703]
+      masterOnly 0
+      [global]
+      #
+      # Default Data Set
+      #
+      twoStepFlag 1
+      slaveOnly 0
+      priority1 128
+      priority2 128
+      domainNumber 24
+      #utc_offset 37
+      clockClass 248
+      clockAccuracy 0xFE
+      offsetScaledLogVariance 0xFFFF
+      free_running 0
+      freq_est_interval 1
+      dscp_event 0
+      dscp_general 0
+      dataset_comparison G.8275.x
+      G.8275.defaultDS.localPriority 128
+      #
+      # Port Data Set
+      #
+      logAnnounceInterval -3
+      logSyncInterval -4
+      logMinDelayReqInterval -4
+      logMinPdelayReqInterval -4
+      announceReceiptTimeout 3
+      syncReceiptTimeout 0
+      delayAsymmetry 0
+      fault_reset_interval -4
+      neighborPropDelayThresh 20000000
+      masterOnly 0
+      G.8275.portDS.localPriority 128
+      #
+      # Run time options
+      #
+      assume_two_step 0
+      logging_level 6
+      path_trace_enabled 0
+      follow_up_info 0
+      hybrid_e2e 0
+      inhibit_multicast_service 0
+      net_sync_monitor 0
+      tc_spanning_tree 0
+      tx_timestamp_timeout 50
+      unicast_listen 0
+      unicast_master_table 0
+      unicast_req_duration 3600
+      use_syslog 1
+      verbose 0
+      summary_interval 0
+      kernel_leap 1
+      check_fup_sync 0
+      clock_class_threshold 135
+      #
+      # Servo Options
+      #
+      pi_proportional_const 0.60
+      pi_integral_const 0.001
+      pi_proportional_scale 0.0
+      pi_proportional_exponent -0.3
+      pi_proportional_norm_max 0.7
+      pi_integral_scale 0.0
+      pi_integral_exponent 0.4
+      pi_integral_norm_max 0.3
+      step_threshold 2.0
+      first_step_threshold 0.00002
+      max_frequency 900000000
+      clock_servo pi
+      sanity_freq_limit 200000000
+      ntpshm_segment 0
+      #
+      # Transport options
+      #
+      transportSpecific 0x0
+      ptp_dst_mac 01:1B:19:00:00:00
+      p2p_dst_mac 01:80:C2:00:00:0E
+      udp_ttl 1
+      udp6_scope 0x0E
+      uds_address /var/run/ptp4l
+      #
+      # Default interface options
+      #
+      clock_type OC
+      network_transport L2
+      delay_mechanism E2E
+      time_stamping hardware
+      tsproc_mode filter
+      delay_filter moving_median
+      delay_filter_length 10
+      egressLatency 0
+      ingressLatency 0
+      boundary_clock_jbod 1
+      #
+      # Clock description
+      #
+      productDescription ;;
+      revisionData ;;
+      manufacturerIdentity 00:00:00
+      userDescription ;
+      timeSource 0xA0
+    ptp4lOpts: -2 --summary_interval -4
+    ptpSchedulingPolicy: SCHED_FIFO
+    ptpSchedulingPriority: 10
+    ptpSettings:
+      clockType: T-BC
+      inSyncConditionThreshold: "10"
+      inSyncConditionTimes: "12"
+      logReduce: "false"
+    ts2phcConf: |
+      [global]
+      use_syslog  0
+      verbose 1
+      logging_level 7
+      ts2phc.pulsewidth 500000000
+      leapfile  /usr/share/zoneinfo/leap-seconds.list
+      domainNumber 24
+      uds_address /var/run/ptp4l.1.socket
+      [eno8703]
+      ts2phc.extts_correction 0
+      ts2phc.master 0
+      ts2phc.channel 0
+      ts2phc.pin_index 1
+      [enp108s0f0]
+      ts2phc.extts_correction 0
+      ts2phc.master 0
+      ts2phc.channel 0
+      ts2phc.pin_index 1
+      [enp109s0f0]
+      ts2phc.extts_polarity rising
+      ts2phc.extts_correction 0
+      ts2phc.master 0
+      ts2phc.channel 0
+      ts2phc.pin_index 1
+    ts2phcOpts: -s generic -a --ts2phc.rh_external_pps 1
+  recommend:
+  - match:
+    - nodeLabel: node-role.kubernetes.io/master
+    priority: 4
+    profile: 00-tbc-tt
+  - match:
+    - nodeLabel: node-role.kubernetes.io/master
+    priority: 4
+    profile: 01-tbc-tr
+```
+
+* The TT profile configures downstream-facing ports.
+* The TR profile configures the upstream-facing port, phc2sys, and ts2phc.
+* controllingProfile links the TT profile to the TR profile.
+* clockType: T-BC enables telecom boundary clock behavior.
+4. Apply the PtpConfig CR by running the following command:
+
+```terminal
+$ oc apply -f t-bc-config.yaml
+```
+
+5. Create a HardwareConfig CR to configure holdover thresholds:
+
+```yaml
+apiVersion: ptp.openshift.io/v2alpha1
+kind: HardwareConfig
+metadata:
+  name: t-bc
+spec:
+  profile:
+    name: GNR-D-T-BC
+    clockType: T-BC
+    clockChain:
+      structure:
+      - name: leader
+        hardwareSpecificDefinitions: <gnrd_platform>
+        dpll:
+          holdoverParameters:
+            maxInSpecOffset: 40
+            localMaxHoldoverOffset: 1500
+            localHoldoverTimeout: 14400
+  relatedPtpProfileName: 01-tbc-tr
+```
+
+* hardwareSpecificDefinitions: <gnrd_platform> applies hardware-specific behavior of the GNR-D platform. Replace <gnrd_platform> with the GNR-D platform on which you want to configure T-BC holdover. The supported GNR-D platforms are dell/XR8720t and  hpe/EL140-Gen12.
+* holdoverParameters configure DPLL holdover thresholds.
+* relatedPtpProfileName links the hardware profile to the TR profile.
+6. Apply the HardwareConfig CR by running the following command:
+
+```terminal
+$ oc apply -f hardwareconfig.yaml
+```
+
+
+* Verify that the PtpConfig and HardwareConfig resources are deployed:
+
+```terminal
+$ oc get ptpconfig -n openshift-ptp
+$ oc get hardwareconfig
+```
+
+* Check the linuxptp-daemon logs:
+
+```terminal
+$ oc logs ds/linuxptp-daemon -n openshift-ptp -c linuxptp-daemon-container --since=1s -f | grep T-BC
+```
+
+Example output
+
+```terminal
+T-BC[1760525446]:[ts2phc.1.config] eno8703 offset 1 T-BC-STATUS s2
+T-BC[1760525447]:[ts2phc.1.config] eno8703 offset 1 T-BC-STATUS s1
+```
+
+
+The status is reported every second:
+* s2: Locked - synchronized with the upstream clock
+* s1: Holdover - upstream source lost, internal oscillator maintaining timing
+* s0: Unlocked - holdover limits exceeded or no valid holdover data
+
+* Machine Configuration documentation
+
 # Configuring dynamic leap seconds handling for PTP grandmaster clocks
 
 The PTP Operator container image includes the latest leap-seconds.list file  that is available at the time of release.
@@ -2663,6 +3485,446 @@ I1115 09:41:17.117623 4143292 daemon.go:102] Phc2sysOpts: -a -r -n 24
 I1115 09:41:17.117626 4143292 daemon.go:116] ------------------------------------
 ```
 
+
+## Boundary clocks without holdover on Intel Granite Rapids-D hardware
+
+Intel Granite Rapids-D (GNR-D) server platforms support Precision Time Protocol (PTP) boundary clock (BC) deployments without holdover for high-density Radio Access Network (RAN) sites that use onboard Network Acceleration Complex (NAC) ports and optional Carter Flat expansion network interface cards (NICs).
+
+In a BC deployment, one time receiver (TR) port synchronizes to an upstream timing source while time transmitter (TT) ports distribute synchronized time to downstream devices. GNR-D platforms use platform-specific PtpConfig plugin configurations and internal timing paths.
+
+Before you configure a BC profile on GNR-D hardware, verify that your qualified hardware layout, interface naming, and plugin configuration align with your deployment requirements.
+
+GNR-D BC deployments use onboard NAC ports as the primary timing controller and can extend timing distribution by using optional Carter Flat expansion NICs.
+
+GNR-D platforms route synchronization internally instead of using external timing cabling.
+
+Your qualified hardware layout determines the available TR and TT port roles across NAC ports and optional Carter Flat expansion cards.
+
+### Boundary clock without holdover behavior
+
+GNR-D boundary clock deployments on Carter Flat hardware do not maintain time synchronization if the upstream timing source becomes unavailable. This deployment model operates without monitored holdover because Carter Flat hardware does not expose sufficient follower digital phase-locked loop (DPLL) accuracy information for holdover support.
+
+To maintain synchronization, keep a continuous connection to a qualified upstream PTP source.
+
+Red Hat tools can detect follower DPLL lock state, but they cannot monitor the detailed follower DPLL accuracy that holdover support requires.
+
+When you configure a BC profile on GNR-D hardware that uses Carter Flat NICs, disable holdover.
+
+## Configuring linuxptp services as a boundary clock without holdover on Intel Granite Rapids-D hardware
+
+Use this procedure to configure a Precision Time Protocol (PTP) boundary clock (BC) profile without holdover on Intel Granite Rapids-D (GNR-D) hardware that uses onboard Network Acceleration Complex (NAC) ports and optional Carter Flat expansion network interface cards (NICs).
+
+In this deployment, one time receiver (TR) port synchronizes to an upstream timing source and time transmitter (TT) ports distribute synchronized time downstream.
+
+
+[IMPORTANT]
+----
+GNR-D BC deployments that use Carter Flat NICs operate without monitored holdover. Disable holdover in your PtpConfig profile.
+----
+
+* You have installed the OpenShift CLI (oc).
+* You are logged in as a user with cluster-admin privileges.
+* You have installed the PTP Operator.
+* You have verified your qualified GNR-D hardware layout, including NAC ports, Carter Flat ports, and TR/TT role assignments.
+* You have verified interface naming and plugin device alignment for your hardware layout.
+
+1. Create a PtpConfig custom resource (CR) that matches your qualified GNR-D BC without holdover hardware layout:
+
+```yaml
+apiVersion: ptp.openshift.io/v1
+kind: PtpConfig
+metadata:
+  name: gnrd-bc
+  namespace: openshift-ptp
+  annotations:
+    ran.openshift.io/ztp-deploy-wave: "10"
+spec:
+  profile:
+    - name: 00-bc-tt
+      ptp4lConf: |
+        # All TimeTransmitter ports should be outlined here with 'masterOnly 1'
+        #[eno8303]
+        # ** Host management interface
+        [eno8403]
+        masterOnly 1
+        #[eno8503]
+        # ** TR port (see 01-bc-tr profile)
+        [eno8603]
+        masterOnly 1
+        [eno8703]
+        masterOnly 1
+        [eno8803]
+        masterOnly 1
+        [eno8903]
+        masterOnly 1
+        [eno9003]
+        masterOnly 1
+        [enp108s0f0]
+        masterOnly 1
+        [enp108s0f1]
+        masterOnly 1
+        [enp108s0f2]
+        masterOnly 1
+        [enp108s0f3]
+        masterOnly 1
+        [enp108s0f4]
+        masterOnly 1
+        [enp108s0f5]
+        masterOnly 1
+        [enp108s0f6]
+        masterOnly 1
+        [enp108s0f7]
+        masterOnly 1
+        [enp110s0f0]
+        masterOnly 1
+        [enp110s0f1]
+        masterOnly 1
+        [enp110s0f2]
+        masterOnly 1
+        [enp110s0f3]
+        masterOnly 1
+        [enp110s0f4]
+        masterOnly 1
+        [enp110s0f5]
+        masterOnly 1
+        [enp110s0f6]
+        masterOnly 1
+        [enp110s0f7]
+        masterOnly 1
+        [global]
+        #
+        # Default Data Set
+        #
+        twoStepFlag 1
+        slaveOnly 0
+        priority1 128
+        priority2 128
+        domainNumber 24
+        #utc_offset 37
+        clockClass 248
+        clockAccuracy 0xFE
+        offsetScaledLogVariance 0xFFFF
+        free_running 0
+        freq_est_interval 1
+        dscp_event 0
+        dscp_general 0
+        dataset_comparison G.8275.x
+        G.8275.defaultDS.localPriority 128
+        #
+        # Port Data Set
+        #
+        logAnnounceInterval -3
+        logSyncInterval -4
+        logMinDelayReqInterval -4
+        logMinPdelayReqInterval -4
+        announceReceiptTimeout 3
+        syncReceiptTimeout 0
+        delayAsymmetry 0
+        fault_reset_interval -4
+        neighborPropDelayThresh 20000000
+        masterOnly 0
+        G.8275.portDS.localPriority 128
+        #
+        # Run time options
+        #
+        assume_two_step 0
+        logging_level 6
+        path_trace_enabled 0
+        follow_up_info 0
+        hybrid_e2e 0
+        inhibit_multicast_service 0
+        net_sync_monitor 0
+        tc_spanning_tree 0
+        tx_timestamp_timeout 50
+        unicast_listen 0
+        unicast_master_table 0
+        unicast_req_duration 3600
+        use_syslog 1
+        verbose 0
+        summary_interval 0
+        kernel_leap 1
+        check_fup_sync 0
+        clock_class_threshold 135
+        #
+        # Servo Options
+        #
+
+        # NGEN TEST MODIFIED
+        # New:
+        # pi_proportional_const 0.60
+        # pi_integral_const 0.0003
+        # Old:
+        # pi_proportional_const 0.0
+        # pi_integral_const 0.0
+        # END TEST MOD
+
+        pi_proportional_const 0.60
+        pi_integral_const 0.001
+        pi_proportional_scale 0.0
+        pi_proportional_exponent -0.3
+        pi_proportional_norm_max 0.7
+        pi_integral_scale 0.0
+        pi_integral_exponent 0.4
+        pi_integral_norm_max 0.3
+        step_threshold 2.0
+        # end T-BC experiment
+        first_step_threshold 0.00002
+        max_frequency 900000000
+        clock_servo pi
+        sanity_freq_limit 200000000
+        ntpshm_segment 0
+        #
+        # Transport options
+        #
+        transportSpecific 0x0
+        ptp_dst_mac 01:1B:19:00:00:00
+        p2p_dst_mac 01:80:C2:00:00:0E
+        udp_ttl 1
+        udp6_scope 0x0E
+        uds_address /var/run/ptp4l
+        #
+        # Default interface options
+        #
+        clock_type BC
+        network_transport L2
+        delay_mechanism E2E
+        time_stamping hardware
+        tsproc_mode filter
+        delay_filter moving_median
+        delay_filter_length 10
+        egressLatency 0
+        ingressLatency 0
+        boundary_clock_jbod 1
+        #
+        # Clock description
+        #
+        productDescription ;;
+        revisionData ;;
+        manufacturerIdentity 00:00:00
+        userDescription ;
+        timeSource 0xA0
+      ptp4lOpts: -2 --summary_interval -4
+      ptpSchedulingPolicy: SCHED_FIFO
+      ptpSchedulingPriority: 10
+      ptpSettings:
+        controllingProfile: 01-bc-tr
+        logReduce: "true"
+    - name: 01-bc-tr
+      phc2sysOpts: -r -n 24 -N 8 -R 16 -u 0 -m -s $upstreamInterface
+      ptp4lConf: |
+        [$upstreamInterface]
+        masterOnly 0
+        [global]
+        #
+        # Default Data Set
+        #
+        twoStepFlag 1
+        slaveOnly 0
+        priority1 128
+        priority2 128
+        domainNumber 24
+        #utc_offset 37
+        clockClass 248
+        clockAccuracy 0xFE
+        offsetScaledLogVariance 0xFFFF
+        free_running 0
+        freq_est_interval 1
+        dscp_event 0
+        dscp_general 0
+        dataset_comparison G.8275.x
+        G.8275.defaultDS.localPriority 128
+        #
+        # Port Data Set
+        #
+        logAnnounceInterval -3
+        logSyncInterval -4
+        logMinDelayReqInterval -4
+        logMinPdelayReqInterval -4
+        announceReceiptTimeout 3
+        syncReceiptTimeout 0
+        delayAsymmetry 0
+        fault_reset_interval -4
+        neighborPropDelayThresh 20000000
+        masterOnly 0
+        G.8275.portDS.localPriority 128
+        #
+        # Run time options
+        #
+        assume_two_step 0
+        logging_level 6
+        path_trace_enabled 0
+        follow_up_info 0
+        hybrid_e2e 0
+        inhibit_multicast_service 0
+        net_sync_monitor 0
+        tc_spanning_tree 0
+        tx_timestamp_timeout 50
+        unicast_listen 0
+        unicast_master_table 0
+        unicast_req_duration 3600
+        use_syslog 1
+        verbose 0
+        summary_interval 0
+        kernel_leap 1
+        check_fup_sync 0
+        clock_class_threshold 135
+        #
+        # Servo Options
+        #
+
+        # NGEN TEST MODIFIED
+        # New:
+        # pi_proportional_const 0.60
+        # pi_integral_const 0.0003
+        # Old:
+        # pi_proportional_const 0.0
+        # pi_integral_const 0.0
+        # END TEST MOD
+
+        pi_proportional_const 0.60
+        pi_integral_const 0.001
+        pi_proportional_scale 0.0
+        pi_proportional_exponent -0.3
+        pi_proportional_norm_max 0.7
+        pi_integral_scale 0.0
+        pi_integral_exponent 0.4
+        pi_integral_norm_max 0.3
+        step_threshold 2.0
+        # end T-BC experiment
+        first_step_threshold 0.00002
+        max_frequency 900000000
+        clock_servo pi
+        sanity_freq_limit 200000000
+        ntpshm_segment 0
+        #
+        # Transport options
+        #
+        transportSpecific 0x0
+        ptp_dst_mac 01:1B:19:00:00:00
+        p2p_dst_mac 01:80:C2:00:00:0E
+        udp_ttl 1
+        udp6_scope 0x0E
+        uds_address /var/run/ptp4l
+        #
+        # Default interface options
+        #
+        clock_type OC
+        network_transport L2
+        delay_mechanism E2E
+        time_stamping hardware
+        tsproc_mode filter
+        delay_filter moving_median
+        delay_filter_length 10
+        egressLatency 0
+        ingressLatency 0
+        boundary_clock_jbod 1
+        #
+        # Clock description
+        #
+        productDescription ;;
+        revisionData ;;
+        manufacturerIdentity 00:00:00
+        userDescription ;
+        timeSource 0xA0
+      ptp4lOpts: -2 --summary_interval -4
+      ptpSchedulingPolicy: SCHED_FIFO
+      ptpSchedulingPriority: 10
+      ptpSettings:
+        clockType: T-BC
+        inSyncConditionThreshold: "10"
+        inSyncConditionTimes: "12"
+        logReduce: "true"
+        leadingInterface: eno8703
+        upstreamPort: $upstreamInterface
+      plugins:
+        e825:
+          devices:
+            - eno8703
+          settings:
+            LocalMaxHoldoverOffSet: 500
+            LocalHoldoverTimeout: 0
+            MaxInSpecOffset: 100
+        e830:
+          devices:
+            - enp108s0f0
+            - enp110s0f0
+      ts2phcConf: |
+        [global]
+        use_syslog  0
+        verbose 1
+        logging_level 7
+        ts2phc.pulsewidth 500000000
+        leapfile  /usr/share/zoneinfo/leap-seconds.list
+        domainNumber 24
+        uds_address /var/run/ptp4l.1.socket
+        [eno8703]
+        ts2phc.extts_correction 0
+        ts2phc.master 0
+        ts2phc.channel 0
+        ts2phc.pin_index 1
+        # This should be one section per Carter Flats (e830) card:
+        [enp108s0f0]
+        ts2phc.extts_polarity rising
+        ts2phc.extts_correction 0
+        ts2phc.master 0
+        ts2phc.channel 0
+        ts2phc.pin_index 1
+        [enp110s0f0]
+        ts2phc.extts_polarity rising
+        ts2phc.extts_correction 0
+        ts2phc.master 0
+        ts2phc.channel 0
+        ts2phc.pin_index 1
+      ts2phcOpts: -s generic -a --ts2phc.rh_external_pps 1
+  recommend:
+    - match:
+      - nodeLabel: node-role.kubernetes.io/$mcp
+      priority: 4
+      profile: 00-bc-tt
+    - match:
+      - nodeLabel: node-role.kubernetes.io/$mcp
+      priority: 4
+      profile: 01-bc-tr
+```
+
+
+where:
+TR interface:: Specifies the interface that synchronizes to the upstream timing source. Replace this value with the qualified TR interface from your site bill of materials.
+TT interfaces:: Specify the interfaces that distribute synchronized time downstream. Replace these values with the qualified TT interfaces for your deployment.
+plugins.e825.devices:: Specifies the qualified NAC interfaces for your hardware layout.
+plugins.e830.devices:: Specifies the qualified Carter Flat interfaces for your hardware layout, if installed.
+ptp4lConf:: Defines BC timing behavior, including TR and TT interface roles.
+ts2phcConf:: Defines timing synchronization behavior for qualified hardware devices.
+recommend:: Specifies the machine config pool that selects the target DU nodes. Replace placeholder values with the machine config pool label for your deployment.
+2. Apply the PtpConfig CR:
+
+```terminal
+$ oc apply -f <name_of_the_ptpconfig_yaml_file>
+```
+
+
+1. Verify that the PtpConfig profile is applied:
+
+```terminal
+$ oc get ptpconfig -n openshift-ptp
+```
+
+2. Verify that the linuxptp daemon is running on the target node:
+
+```terminal
+$ oc get pods -n openshift-ptp -o wide
+```
+
+3. Review linuxptp daemon logs for BC status:
+
+```terminal
+$ oc logs <linuxptp_daemon_pod> -n openshift-ptp -c linuxptp-daemon-container
+```
+
+4. Verify the following:
+* The TR port synchronizes successfully to the upstream timing source.
+* TT ports distribute timing downstream.
+* The deployed BC profile operates without holdover.
 
 # Configuring linuxptp services as an ordinary clock
 
@@ -4117,7 +5379,7 @@ The output is similar to the following:
 
 ```terminal
 NAME                 STATUS   ROLES                         AGE     VERSION
-mysno-sno.demo.lab   Ready    control-plane,master,worker   4h19m   v1.34.1
+mysno-sno.demo.lab   Ready    control-plane,master,worker   4h19m   v1.35.4
 ```
 
 
@@ -4332,7 +5594,7 @@ Example output
 ```terminal
 driver: ice
 version: 5.14.0-356.bz2232515.el9.x86_64
-firmware-version: 4.21 0x8001778b 1.3346.0
+firmware-version: 4.22 0x8001778b 1.3346.0
 ```
 
 6. For GNSS-sourced grandmaster clocks, verify that the linuxptp-daemon container is receiving signal from the GNSS antenna.

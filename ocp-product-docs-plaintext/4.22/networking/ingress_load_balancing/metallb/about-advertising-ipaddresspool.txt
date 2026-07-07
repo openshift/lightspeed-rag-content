@@ -86,7 +86,7 @@ As you add more services and MetalLB assigns more load-balancer IP addresses fro
 
 ## Advertising an advanced address pool configuration with BGP
 
-Configure MetalLB to advertise an advanced address pool by using the BGP.
+Configure MetalLB to advertise an advanced address pool by using BGP attributes such as BGP communities, route aggregation, and local preference.
 
 * Install the OpenShift CLI (`oc`).
 * Log in as a user with cluster-admin privileges.
@@ -166,6 +166,108 @@ $ oc apply -f bgpadvertisement2.yaml
 ```
 
 
+## Apply different BGP advertisement policies on a shared IP address pool
+
+Use this procedure when many BGPAdvertisement resources reference the same IPAddressPool and each advertisement must apply different BGP settings to a different group of LoadBalancer services.
+You match services with spec.serviceSelectors so each advertisement applies only where its selectors match.
+
+* You created the IPAddressPool that your advertisements reference (for example, doc-example-bgp-adv).
+
+1. Create two BGPAdvertisement resources that reference the same IPAddressPool but use different serviceSelectors and localPref values.
+
+The following example uses two LoadBalancer services that share one pool and use the labels app: web and app: api.
+It does not include a catch-all BGPAdvertisement with no serviceSelectors; for that behavior, see the description of spec.serviceSelectors in "About the BGPAdvertisement custom resource".
+
+[NOTE]
+----
+The label keys and values you set under spec.serviceSelectors must match the labels on each LoadBalancer service that should use this advertisement, and you must use the same keys and values consistently across both advertisement manifests in this procedure (for example, app: web and app: api).
+This procedure shows those selectors in the manifests first; add matching labels on your services in the next step.
+For how spec.serviceSelectors interacts with spec.aggregationLength on a BGPAdvertisement resource, see "About the BGPAdvertisement custom resource".
+----
+1. Create a file, such as bgpadvertisement-web.yaml, with content similar to the following example:
+
+```yaml
+apiVersion: metallb.io/v1beta1
+kind: BGPAdvertisement
+metadata:
+  name: bgpadvertisement-web
+  namespace: metallb-system
+spec:
+  ipAddressPools:
+  - doc-example-bgp-adv
+  localPref: 200
+  serviceSelectors:
+  - matchLabels:
+      app: web
+```
+
+
+where:
+doc-example-bgp-adv:: Specifies the name of the IPAddressPool that both advertisements share.
+localPref:: Specifies the BGP local preference for routes that this advertisement controls for matching services.
+serviceSelectors:: Specifies label selectors so MetalLB applies this advertisement only to LoadBalancer services whose labels include app: web.
+2. Apply the configuration by running the following command:
+
+```terminal
+$ oc apply -f bgpadvertisement-web.yaml
+```
+
+3. Create a file, such as bgpadvertisement-api.yaml, with content similar to the following example:
+
+```yaml
+apiVersion: metallb.io/v1beta1
+kind: BGPAdvertisement
+metadata:
+  name: bgpadvertisement-api
+  namespace: metallb-system
+spec:
+  ipAddressPools:
+  - doc-example-bgp-adv
+  localPref: 300
+  serviceSelectors:
+  - matchLabels:
+      app: api
+```
+
+
+where:
+doc-example-bgp-adv:: Specifies the same shared IPAddressPool name as the first advertisement.
+localPref:: Specifies the BGP local preference for routes that this advertisement controls for matching services.
+serviceSelectors:: Specifies label selectors so MetalLB applies this advertisement only to LoadBalancer services whose labels include app: api.
+4. Apply the configuration by running the following command:
+
+```terminal
+$ oc apply -f bgpadvertisement-api.yaml
+```
+
+
+A LoadBalancer service whose labels include app: web receives the BGP policy from bgpadvertisement-web, including localPref 200.
+A service whose labels include app: api receives the BGP policy from bgpadvertisement-api, including localPref 300.
+Each advertisement applies only to services that satisfy its serviceSelectors.
+
+For the same pattern for Layer 2 advertisements on a shared pool, see Apply different Layer 2 advertisement policies on a shared IP address pool.
+2. Add labels to each LoadBalancer service that must match the advertisements.
+1. Label the service that should match app: web by running the following command:
+
+```terminal
+$ oc label service <service_web_name> app=web -n <project>
+```
+
+
+where:
+<service_web_name>:: Specifies the name of the LoadBalancer service.
+<project>:: Specifies the namespace that contains the service.
+2. Label the service that should match app: api by running the following command:
+
+```terminal
+$ oc label service <service_api_name> app=api -n <project>
+```
+
+
+where:
+<service_api_name>:: Specifies the name of the LoadBalancer service.
+<project>:: Specifies the namespace that contains the service.
+
 # Advertising an IP address pool from a subset of nodes
 
 To advertise an IP address from an IP addresses pool, from a specific set of nodes only, use the .spec.nodeSelector specification in the BGPAdvertisement custom resource (CR). This specification associates a pool of IP addresses with a set of nodes in the cluster. This is useful when you have nodes on different subnets in a cluster and you want to advertise an IP addresses from an address pool from a specific subnet, for example a public-facing subnet only.
@@ -209,7 +311,7 @@ spec:
 
 # About the L2Advertisement custom resource
 
-To configure how application services are announced over a Layer 2 network, define the properties in the L2Advertisement custom resource (CR). Establishing these parameters ensures that MetalLB correctly manages routing for your load-balancer IP addresses within the local network infrastructure
+To configure how application services are announced over a Layer 2 network, define the properties in the L2Advertisement custom resource (CR). Establishing these parameters ensures that MetalLB correctly manages routing for your load-balancer IP addresses within the local network infrastructure.
 
 The following table details parameters for the l2Advertisements CR:
 
@@ -221,6 +323,7 @@ You can configure MetalLB so that the IPAddressPool is advertised with the L2 pr
 
 * Install the OpenShift CLI (`oc`).
 * Log in as a user with cluster-admin privileges.
+* Install the MetalLB Operator and start MetalLB.
 
 1. Create an IP address pool.
 1. Create a file, such as ipaddresspool.yaml, with content like the following example:
@@ -233,11 +336,11 @@ metadata:
   name: doc-example-l2
 spec:
   addresses:
-    - 4.4.4.0/24
+    - <ip_address_range>
   autoAssign: false
-# ...
 ```
 
+* <ip_address_range> specifies a range of IP addresses that are routable on your network, for example 4.4.4.0/24.
 2. Apply the configuration for the IP address pool:
 
 ```terminal
@@ -256,7 +359,6 @@ metadata:
 spec:
   ipAddressPools:
    - doc-example-l2
-  # ...
 ```
 
 2. Apply the configuration:
@@ -266,11 +368,39 @@ $ oc apply -f l2advertisement.yaml
 ```
 
 
+1. Verify that the IP address pool is created:
+
+```terminal
+$ oc get ipaddresspool -n metallb-system
+```
+
+
+The following is example output:
+
+```terminal
+NAME             AUTO ASSIGN   AVOID BUGGY IPS   ADDRESSES
+doc-example-l2   false         false             ["4.4.4.0/24"]
+```
+
+2. Verify that the L2 advertisement is created:
+
+```terminal
+$ oc get l2advertisement -n metallb-system
+```
+
+
+The following is example output:
+
+```terminal
+NAME              IPADDRESSPOOLS     IPADDRESSPOOL SELECTORS   INTERFACES
+l2advertisement   ["doc-example-l2"]
+```
+
+
 # Configuring MetalLB with an L2 advertisement and labels
 
-You can use the ipAddressPoolSelectors field in the BGPAdvertisement and L2Advertisement custom resource definitions to associate the IPAddressPool to the advertisement. This association is based on the label assigned to the IPAddressPool instead of the name itself.
-
-The example in the procedure shows how to configure MetalLB so that the IPAddressPool is advertised with the L2 protocol by configuring the ipAddressPoolSelectors field.
+You can use the ipAddressPoolSelectors field in the L2Advertisement custom resource definition to associate the IPAddressPool with the advertisement based on the label assigned to the pool instead of the pool name.
+The example configures MetalLB to advertise the pool over Layer 2 by using ipAddressPoolSelectors.
 
 * Install the OpenShift CLI (`oc`).
 * Log in as a user with cluster-admin privileges.
@@ -323,6 +453,105 @@ spec:
 $ oc apply -f l2advertisement.yaml
 ```
 
+
+# Apply different Layer 2 advertisement policies on a shared IP address pool
+
+Use this procedure when many L2Advertisement resources reference the same IPAddressPool and each advertisement must apply different Layer 2 settings to a different group of LoadBalancer services.
+You match services with spec.serviceSelectors so each advertisement applies only where its selectors match.
+
+* You created the IPAddressPool that your advertisements reference (for example, doc-example-l2-label).
+
+1. Create two L2Advertisement resources that reference the same IPAddressPool but use different serviceSelectors so that each advertisement applies Layer 2 settings to a different group of services.
+
+The following example uses two LoadBalancer services that share one pool and use the labels app: web and app: api.
+It does not include a catch-all L2Advertisement with no serviceSelectors; for that behavior, see the description of spec.serviceSelectors in "About the L2Advertisement custom resource".
+Each manifest lists ipAddressPools and serviceSelectors; add other fields such as interfaces or nodeSelectors when your deployment requires them.
+
+[NOTE]
+----
+The label keys and values you set under spec.serviceSelectors must match the labels on each LoadBalancer service that should use this advertisement, and you must use the same keys and values consistently across both advertisement manifests in this procedure (for example, app: web and app: api).
+This procedure shows those selectors in the manifests first; add matching labels on your services in the next step.
+For how spec.serviceSelectors interacts with the metallb.io/allow-shared-ip annotation, see "About the L2Advertisement custom resource".
+----
+1. Create a file, such as l2advertisement-web.yaml, with content similar to the following example:
+
+```yaml
+apiVersion: metallb.io/v1beta1
+kind: L2Advertisement
+metadata:
+  name: l2advertisement-web
+  namespace: metallb-system
+spec:
+  ipAddressPools:
+  - doc-example-l2-label
+  serviceSelectors:
+  - matchLabels:
+      app: web
+```
+
+
+where:
+doc-example-l2-label:: Specifies the name of the IPAddressPool that both Layer 2 advertisements share.
+serviceSelectors:: Specifies label selectors so MetalLB applies this advertisement only to LoadBalancer services whose labels include app: web.
+2. Apply the configuration by running the following command:
+
+```terminal
+$ oc apply -f l2advertisement-web.yaml
+```
+
+3. Create a file, such as l2advertisement-api.yaml, with content similar to the following example:
+
+```yaml
+apiVersion: metallb.io/v1beta1
+kind: L2Advertisement
+metadata:
+  name: l2advertisement-api
+  namespace: metallb-system
+spec:
+  ipAddressPools:
+  - doc-example-l2-label
+  serviceSelectors:
+  - matchLabels:
+      app: api
+```
+
+
+where:
+doc-example-l2-label:: Specifies the same shared IPAddressPool name as the first Layer 2 advertisement.
+serviceSelectors:: Specifies label selectors so MetalLB applies this advertisement only to LoadBalancer services whose labels include app: api.
+4. Apply the configuration by running the following command:
+
+```terminal
+$ oc apply -f l2advertisement-api.yaml
+```
+
+
+A LoadBalancer service whose labels include app: web receives the Layer 2 settings from l2advertisement-web.
+A service whose labels include app: api receives the Layer 2 settings from l2advertisement-api.
+Each advertisement applies only to services that satisfy its serviceSelectors.
+
+For the same pattern for BGP on a shared pool, see Apply different BGP advertisement policies on a shared IP address pool.
+2. Add labels to each LoadBalancer service that must match the advertisements.
+1. Label the service that should match app: web by running the following command:
+
+```terminal
+$ oc label service <service_web_name> app=web -n <project>
+```
+
+
+where:
+<service_web_name>:: Specifies the name of the LoadBalancer service.
+<project>:: Specifies the namespace that contains the service.
+2. Label the service that should match app: api by running the following command:
+
+```terminal
+$ oc label service <service_api_name> app=api -n <project>
+```
+
+
+where:
+<service_api_name>:: Specifies the name of the LoadBalancer service.
+<project>:: Specifies the namespace that contains the service.
 
 # Configuring MetalLB with an L2 advertisement for selected interfaces
 

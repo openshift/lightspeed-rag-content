@@ -1,8 +1,7 @@
 # About BGP routing
 
 
-Learn about the Border Gateway Protocol (BGP) routing capabilities available in the cluster, including implementation and configuration of BGP by using FRR-K8s resources. Take into account key considerations for using the MetalLB Operator, including required migration of existing FRRConfiguration custom resources to the openshift-frr-k8s namespace to ensure compatibility with current implementations.
-This feature provides native BGP routing capabilities for the cluster.
+To integrate BGP with MetalLB and FRR-K8s in Red Hat OpenShift Container Platform, you can review how FRR-K8s resources model cluster routing. Migrate FRRConfiguration custom resources from metallb-system to openshift-frr-k8s when admins or third parties created them outside the MetalLB Operator.
 
 [IMPORTANT]
 ----
@@ -14,6 +13,14 @@ If you are using the MetalLB Operator and there are existing FRRConfiguration CR
 To enable external routing for your cluster, configure Border Gateway Protocol (BGP) using FRRouting (FRR) and the FRR-K8s daemon. You can define routing behavior with the FRRConfiguration custom resource (CR) and ensure compatibility with the MetalLB Operator by using the required namespace and migration approach.
 
 Red Hat OpenShift Container Platform supports BGP routing through FRR, a free, open source internet routing protocol suite for Linux, UNIX, and similar operating systems. FRR-K8s is a Kubernetes-based daemon set that exposes a subset of the FRR API in a Kubernetes-compliant manner. As a cluster administrator, you can use the FRRConfiguration custom resource to access FRR services.
+
+The following diagram shows a multi-tenancy environment where two namespaces exist on an Red Hat OpenShift Container Platform node. When the OVN-Kubernetes gateway router sends traffic from a namespace to an external source, the traffic passes through the default virtual routing and forwarding (VRF) instance. BGP advertisement occurs when the FRR or OVN-Kubernetes router establishes a BGP session with the router of the cloud provider. This session ensures the router of the cloud provider knows that the node is the next-hop IP address for reaching the pod or service networks.
+
+![Image of BGP advertisement without a VPN]
+
+The following diagram shows multiple VRF BGP instances that use VRF lite. This architecture supports only local gateway mode. VRF lite provides network virtualization by using UDNs to isolate pod traffic without incurring the heavy encapsulation typical of Multi-Protocol Label Switching (MPLS) or Ethernet Virtual Private Network (EVPN) protocols. Separate L3 links get mapped to specific VRFs, so independent BGP peering sessions route traffic to the next-hop router. Further, you can deploy this L3 mechanism to multi-cloud deployments to allow specific namespaces to exist over the network.
+
+![Image of multiple VRF BGP instances that use VRF lite]
 
 ## Supported platforms
 
@@ -275,7 +282,36 @@ The parameters for the FRRConfiguration custom resource are described in the fol
 
 
 
+# Understanding no-overlay mode for layer-3 networks using Border Gateway Protocol (BGP)
+
+You can use no-overlay mode to route layer 3 pod traffic directly over the underlay network with BGP, which reduces encapsulation overhead and improves east-west performance.
+
+No-overlay mode disables the default encapsulation for the default cluster network and uses BGP-learned routes to forward pod traffic across nodes. A cluster can run overlay and no-overlay networks at the same time.
+
+For the default cluster network, no-overlay supports managed and unmanaged routing. With managed routing, OVN-Kubernetes creates a full-mesh BGP fabric between cluster nodes only, so no external BGP routers are required and pod routes are not advertised outside the cluster (intra-cluster traffic only). Managed routing requires nodes to be directly connected at layer 2; it is not suitable for clusters with nodes in different subnets. With unmanaged routing on the default network, you configure external BGP peers and use RouteAdvertisements custom resources (CRs) to advertise pod subnets to your existing BGP infrastructure.
+
+For a primary network defined by a ClusterUserDefinedNetwork CR, no-overlay supports unmanaged routing only. Configure external BGP peers and RouteAdvertisements CRs for the CUDN.
+
+Requirements:: 
+* A bare-metal cluster that uses the OVN-Kubernetes network plugin.
+* Single-node zone interconnect mode enabled for the cluster.
+* BGP routing enabled and FRR-K8s deployed.
+* Layer 3 networks only (the default network or a primary network defined by a ClusterUserDefinedNetwork CR).
+Limitations:: 
+* No-overlay mode is not supported for layer 2 networks.
+* EgressIP, EgressService, IPsec, multicast, and multiple external gateways are not supported for no-overlay networks.
+* Switching an existing network between overlay and no-overlay modes is not supported using a ClusterUserDefinedNetwork CR.
+Supported gateway modes:: 
+* On the default cluster network, no-overlay is supported in both local gateway (LGW) mode and shared gateway (SGW) mode.
+* On a primary network defined by a ClusterUserDefinedNetwork CR, no-overlay is supported in both LGW and SGW modes.
+
+[IMPORTANT]
+----
+Pods running on a CUDN configured with NoOverlay transport mode cannot establish TCP connections to NodePort services when externalTrafficPolicy is set to Cluster and the backend pod resides on a different node than the one targeted by the request. This issue occurs regardless of whether outbound SNAT is enabled or disabled.
+----
+
 # Additional resources
 
 * FRRouting User Guide: BGP
 * Migrating FRR-K8s resources
+* Improve east-west performance by routing pods on the underlay with BGP

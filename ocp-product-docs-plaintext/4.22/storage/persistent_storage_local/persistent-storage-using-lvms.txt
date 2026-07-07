@@ -1,4 +1,4 @@
-# Persistent storage using Logical Volume Manager Storage
+# Persistent storage using logical volume manager storage
 
 
 Logical Volume Manager (LVM) Storage uses LVM2 through the TopoLVM CSI driver to dynamically provision local storage on a cluster with limited resources.
@@ -346,6 +346,146 @@ The default namespace for the LVM Storage Operator is openshift-lvm-storage.
 
 * Red Hat Advanced Cluster Management for Kubernetes: Installing while connected online
 * About the LVMCluster custom resource
+
+# Static and dynamic device discovery in LVM Storage
+
+You can use static or dynamic discovery policies to manage how block devices join your volume groups. Selecting the appropriate policy helps you automate storage expansion safely or preserve a locked, predictable storage footprint over time.
+
+Static:: The Operator creates the volume group by using devices it finds at installation time. The Operator ignores devices discovered after the volume group exists.
+
+Static discovery is the default policy for new volume groups. It eliminates operational risk by locking the device set after the Operator creates the volume group.
+
+Combined with explicit device paths, it provides a fully deterministic storage configuration.
+
+Without explicit paths, the Operator discovers devices only at creation time and then stops the set.
+Dynamic:: The Operator continuously discovers and adds devices to the volume group on each reconciliation cycle.
+
+Dynamic discovery remains the default for existing volume groups where the policy field is nil to maintain backward compatibility.
+
+However, this policy can lead to unexpected behavior in production environments. Devices that appear after the initial setup because of hardware changes, driver reloads, or kernel device renaming are automatically added to the volume group.
+
+This creates operational risk because the volume group composition becomes non-deterministic and depends on the runtime state of the node rather than explicit administrator intent.
+
+
+[NOTE]
+----
+The Operator adds the DeviceDiscoveryPolicy field to the DeviceClass specification. If you explicitly set device paths in deviceSelector.paths or deviceSelector.optionalPaths, the cluster always uses those exact paths, and ignores your discovery policy setting.
+----
+
+The cluster status reports the effective policy by using DeviceDiscoveryPolicyStatus, which distinguishes three runtime states:
+
+
+
+The following table shows the behavior matrix:
+
+
+
+## Static mode enforcement
+
+To guarantee that your storage footprint remains predictable, the system enforces static mode rules after discovering initial devices. If a volume group already exists and lacks explicit paths, any newly attached devices are automatically isolated on an exclusion list to prevent unintended volume expansions.
+
+This strict filtering behavior does not apply during the very first reconciliation cycle. During this initial pass, the Operator discovers all available devices to successfully create the volume group. Once created, the Operator locks the device set during all subsequent reconciliations.
+
+The discovery policy also controls whether the controller re-queues for periodic device scanning:
+
+
+
+## Validation rules for device discovery policy
+
+To ensure your storage cluster deploys successfully and avoids misconfiguration errors, the validating webhook enforces strict rules when you create or update an LVMCluster custom resource.
+
+Creation:: 
+* If you define one device class without paths, a webhook warning appears. Avoid the default Static policy in production. Set deviceDiscoveryPolicy explicitly.
+* If multiple device classes are defined, every device class must specify device paths. Auto-discovery without paths is not allowed with many device classes. The cluster cannot determine which devices belong to which class.
+* If the deviceDiscoveryPolicy is empty and paths are missing, a webhook warning appears. Administrators must define the policy explicitly.
+Updates:: No specific update restrictions apply to the deviceDiscoveryPolicy field. You can change it at any time.
+
+The following table shows how the device discovery policy feature interacts with other features:
+
+
+
+## LVMCluster custom resource examples
+
+You can configure the deviceDiscoveryPolicy field in your LVMCluster custom resource (CR) by using these examples to meet your specific storage requirements.
+
+Explicit device paths (recommended for production):: 
+
+```yaml
+apiVersion: lvm.topolvm.io/v1alpha1
+kind: LVMCluster
+metadata:
+  name: my-lvmcluster
+spec:
+  storage:
+    deviceClasses:
+    - name: vg1
+      deviceSelector:
+        paths:
+        - /dev/disk/by-id/scsi-SATA_VBOX_HARDDISK_VB12345678-90abcdef
+        - /dev/disk/by-id/scsi-SATA_VBOX_HARDDISK_VBabcdef01-23456789
+      thinPoolConfig:
+        name: thin-pool-1
+        sizePercent: 90
+```
+
+
+The discovery policy is not relevant here. Explicit paths always define the device set.
+Static discovery without explicit paths:: 
+
+```yaml
+apiVersion: lvm.topolvm.io/v1alpha1
+kind: LVMCluster
+metadata:
+  name: my-lvmcluster
+spec:
+  storage:
+    deviceClasses:
+    - name: vg1
+      deviceDiscoveryPolicy: Static
+      thinPoolConfig:
+        name: thin-pool-1
+        sizePercent: 90
+```
+
+
+The Operator discovers and adds all available devices to the volume group during the initial reconciliation. After the Operator creates the volume group, it adds no new devices.
+Dynamic discovery without explicit paths (not recommended for production):: 
+
+```yaml
+apiVersion: lvm.topolvm.io/v1alpha1
+kind: LVMCluster
+metadata:
+  name: my-lvmcluster
+spec:
+  storage:
+    deviceClasses:
+    - name: vg1
+      deviceDiscoveryPolicy: Dynamic
+      thinPoolConfig:
+        name: thin-pool-1
+        sizePercent: 90
+```
+
+
+The Operator continuously discovers and adds devices to the volume group every 30 seconds. This setting is useful for development and testing. However, it might introduce operational risks in production environments.
+
+## LVM cluster custom resource status reporting
+
+To view a list of excluded devices and the reason for their exclusion, use the LVMVolumeGroupNodeStatus custom resource (CR).
+
+If static device discovery excludes a device, the status report displays the error in the following format:
+
+
+```text
+<device> was not part of <vg_name> at creation (static device discovery enabled)
+```
+
+
+The VGStatus.DeviceDiscoveryPolicy parameter reports the effective discovery policy as one of the following values:
+
+* Preconfigured
+* RuntimeDynamic
+* RuntimeStatic.
 
 # About the LVMCluster custom resource
 
@@ -1112,6 +1252,85 @@ policy-lvmcluster-inform   inform               Compliant          15m
 The Policy CRs must be in Compliant state.
 ----
 
+## Deleting an LVMCluster
+
+When you delete an LVMCluster custom resource (CR), the Operator enforces deletion gates to prevent data loss. The gates that apply depend on the reclaim policy that is configured for the storage class.
+
+* You have administrative access to the cluster.
+* You have identified the reclaim policy in use: Delete or Retain.
+
+1. Delete all Persistent Volume Claims (PVCs) that reference LVM StorageClass resources.
+
+If PVCs that reference LVM StorageClasses still exist, the Operator blocks LVMCluster deletion and generates a DeletionPending event:
+
+```terminal
+found PVCs provisioned by LVMS, waiting 10s for their deletion
+```
+
+2. Back up any data before deleting PVCs.
+1. List the PVCs that use the LVM StorageClass by running the following command:
+
+```terminal
+$ oc get pvc -A -o custom-columns='NAMESPACE:.metadata.namespace,NAME:.metadata.name,SC:.spec.storageClassName' | grep lvms-vg1
+```
+
+2. Delete the PVCs by running the following command:
+
+```terminal
+$ oc delete pvc <pvc_name> -n <namespace>
+```
+
+
+With the Delete reclaim policy, deleting the PVCs automatically removes the persistent volumes (PVs) and on-disk logical volumes. After all PVCs are removed, LVMCluster deletion completes automatically. No further action is required.
+3. If you use the Retain reclaim policy, delete the retained PVs.
+
+After you delete PVCs, if the reclaim policy is Retain, the Operator blocks LVMCluster deletion and generates a DeletionPending event:
+
+```terminal
+found PVs with Retain policy from LVMS, waiting 10s for manual cleanup
+```
+
+1. List the retained PVs by running the following command:
+
+```terminal
+$ oc get pv -o custom-columns='NAME:.metadata.name,SC:.spec.storageClassName' | grep lvms-vg1
+```
+
+2. Delete the PVs by running the following command:
+
+```terminal
+$ oc delete pv <pv_name>
+```
+
+4. If you are using the Retain reclaim policy, delete the TopoLVM LogicalVolume custom resources.
+
+After you delete PV objects from Kubernetes, the underlying logical volumes remain on disk because the Retain policy preserved them. The VG Manager detects this and generates a ManualCleanupRequired event:
+
+```terminal
+Warning  ManualCleanupRequired  volume group vg1 has retained logical volumes [pvc-abc123]; manual cleanup required before deletion can proceed
+```
+
+5. Deleting the LogicalVolume custom resources triggers on-disk logical volume cleanup.
+1. List the LogicalVolume custom resources by running the following command:
+
+```terminal
+$ oc get logicalvolumes
+```
+
+2. Delete the LogicalVolume custom resources for your device class by running the following command:
+
+```terminal
+$ oc delete logicalvolume <lv_name>
+```
+
+
+* Verify that the LVMCluster deletion completed by confirming the resource no longer exists by running the following command:
+
+```terminal
+$ oc get lvmcluster -A
+```
+
+
 # Provisioning storage
 
 After you have created the LVM volume groups using the LVMCluster custom resource (CR), you can provision the storage by creating persistent volume claims (PVCs).
@@ -1184,6 +1403,259 @@ NAME          STATUS   VOLUME                                     CAPACITY   ACC
 lvm-block-1   Bound    pvc-e90169a8-fd71-4eea-93b8-817155f60e47   1Gi        RWO            lvms-vg1       5s
 ```
 
+
+# StorageClass customization for LVMS device classes
+
+You can customize the StorageClass for each device class by using the optional storageClassOptions field in the LVMCluster custom resource (CR).
+
+Before, Logical Volume Manager Storage (LVMS) automatically created a StorageClass for each device class without allowing modification. If you attempted to manually edit a generated StorageClass, the Operator overwrote your changes during the next reconciliation loop.
+
+The storageClassOptions field lets you control four properties of the generated StorageClass:
+
+* reclaimPolicy
+* volumeBindingMode
+* additionalParameters
+* additionalLabels
+
+If you omit storageClassOptions, LVMS creates the StorageClass with the same defaults as in previous versions. Existing LVMCluster configurations are fully compatible with earlier versions.
+
+
+[NOTE]
+----
+No user action is required after upgrading. The storageClassOptions field is optional, and default values match the behavior before this feature was introduced.
+----
+
+## StorageClass options
+
+You can configure custom StorageClass behaviors by defining the storageClassOptions field in your device class specification.
+
+If you set an empty configuration (storageClassOptions: {}) or omit the field entirely, the Operator uses the following default settings:
+
+
+
+## Updating LVM cluster labels
+
+To organize and categorize your storage resources, you can update, remove, or clear custom storage class labels by patching the LVMCluster custom resource. Labels are the only configuration field that you can modify after cluster creation.
+
+1. Patch the LVMCluster resource to update additionalLabels by running the following command:
+
+```terminal
+$ oc -n openshift-lvm-storage patch lvmcluster <name> --type=json \
+  -p '[{"op":"replace","path":"/spec/storage/deviceClasses/0/storageClassOptions/additionalLabels","value":{"environment":"staging"}}]'
+```
+
+2. To remove a specific label, update additionalLabels without the label you want to remove. The Operator removes the label from the StorageClass during the next reconciliation.
+3. To remove all custom labels, set additionalLabels to an empty map {}.
+
+[NOTE]
+----
+The Operator preserves labels that you add directly to the StorageClass, for example with oc label storageclass lvms-vg1 my-label=value. The Operator prunes only the labels that you manage through the additionalLabels field in the LVMCluster custom resource (CR) when you remove them from the CR.
+----
+
+## Sample LVM cluster configuration with storage class option
+
+Use these examples to configure storageClassOptions in your LVMCluster custom resource (CR) to meet your specific storage requirements.
+
+
+```yaml
+apiVersion: lvm.topolvm.io/v1alpha1
+kind: LVMCluster
+metadata:
+  name: my-lvmcluster
+  namespace: openshift-lvm-storage
+spec:
+  storage:
+    deviceClasses:
+    - name: vg1
+      default: true
+      thinPoolConfig:
+        name: thin-pool-1
+        sizePercent: 90
+        overprovisionRatio: 10
+```
+
+
+This produces a StorageClass with reclaimPolicy: Delete and volumeBindingMode: WaitForFirstConsumer, which is the same as the behavior before this feature.
+
+
+```yaml
+apiVersion: lvm.topolvm.io/v1alpha1
+kind: LVMCluster
+metadata:
+  name: my-lvmcluster
+  namespace: openshift-lvm-storage
+spec:
+  storage:
+    deviceClasses:
+    - name: vg1
+      default: true
+      thinPoolConfig:
+        name: thin-pool-1
+        sizePercent: 90
+        overprovisionRatio: 10
+      storageClassOptions:
+        reclaimPolicy: Retain
+```
+
+
+
+```yaml
+apiVersion: lvm.topolvm.io/v1alpha1
+kind: LVMCluster
+metadata:
+  name: my-lvmcluster
+  namespace: openshift-lvm-storage
+spec:
+  storage:
+    deviceClasses:
+    - name: vg1
+      default: true
+      thinPoolConfig:
+        name: thin-pool-1
+        sizePercent: 90
+        overprovisionRatio: 10
+      storageClassOptions:
+        volumeBindingMode: Immediate
+```
+
+
+
+```yaml
+apiVersion: lvm.topolvm.io/v1alpha1
+kind: LVMCluster
+metadata:
+  name: my-lvmcluster
+  namespace: openshift-lvm-storage
+spec:
+  storage:
+    deviceClasses:
+    - name: vg1
+      default: true
+      thinPoolConfig:
+        name: thin-pool-1
+        sizePercent: 90
+        overprovisionRatio: 10
+      storageClassOptions:
+        reclaimPolicy: Retain
+        volumeBindingMode: WaitForFirstConsumer
+        additionalParameters:
+          custom-key: custom-value
+        additionalLabels:
+          environment: production
+          team: storage
+```
+
+
+
+```yaml
+apiVersion: lvm.topolvm.io/v1alpha1
+kind: LVMCluster
+metadata:
+  name: my-lvmcluster
+  namespace: openshift-lvm-storage
+spec:
+  storage:
+    deviceClasses:
+    - name: vg-fast
+      default: true
+      thinPoolConfig:
+        name: thin-pool-1
+        sizePercent: 90
+        overprovisionRatio: 10
+      deviceSelector:
+        paths:
+        - /dev/nvme0n1
+      storageClassOptions:
+        reclaimPolicy: Delete
+        volumeBindingMode: WaitForFirstConsumer
+        additionalLabels:
+          tier: fast
+    - name: vg-archive
+      thinPoolConfig:
+        name: thin-pool-1
+        sizePercent: 90
+        overprovisionRatio: 10
+      deviceSelector:
+        paths:
+        - /dev/sda
+      storageClassOptions:
+        reclaimPolicy: Retain
+        volumeBindingMode: WaitForFirstConsumer
+        additionalLabels:
+          tier: archive
+```
+
+
+For a device class named vg1 with the full configuration, LVMS generates a StorageClass named lvms-vg1 with the following structure:
+
+
+```yaml
+apiVersion: storage.k8s.io/v1
+kind: StorageClass
+metadata:
+  name: lvms-vg1
+  annotations:
+    description: "Provides RWO and RWOP Filesystem & Block volumes"
+    storageclass.kubernetes.io/is-default-class: "true"
+  labels:
+    environment: production
+    team: storage
+provisioner: topolvm.io
+reclaimPolicy: Retain
+volumeBindingMode: WaitForFirstConsumer
+allowVolumeExpansion: true
+parameters:
+  custom-key: custom-value
+  topolvm.io/device-class: vg1
+  csi.storage.k8s.io/fstype: xfs
+```
+
+
+The StorageClass name always follows the convention lvms-<device_class_name>.
+
+## Immutable fields of the storage class options
+
+After you create the LVMCluster, you cannot change the value of the some of the storageClassOptions fields such as reclaimPolicy, volumeBindingMode, and additionalParameters. This mirrors the behavior of Kubernetes StorageClasses, which do not allow changes to these fields after creation.
+
+If you attempt to modify an immutable field, the API server rejects the request:
+
+
+```terminal
+Invalid value: "object": reclaimPolicy is immutable once set
+```
+
+
+There is no way to patch or update immutable fields in place. To change an immutable field, you must delete the LVMCluster and recreate it with the new values.
+
+For example, you cannot change the filesystem type through additionalParameters.  The csi.storage.k8s.io/fstype parameter is managed by LVMS and is rejected at admission if set through additionalParameters. To use ext4 instead of the default xfs, use the fstype field on the device class:
+
+
+```yaml
+deviceClasses:
+- name: vg1
+  fstype: ext4
+```
+
+
+However, the fstype field is also immutable after creation.
+
+
+[NOTE]
+----
+The deletion gates require all PVCs and, for the Retain policy, all PVs to be removed before the LVMCluster can be deleted. After you recreate the LVMCluster with the new values, new PVCs use the updated StorageClass configuration.
+----
+
+## Behaviors not controlled by StorageClass options
+
+Review these behaviors before you delete an LVMCluster. Although these behaviors relate to storageClassOptions, the storageClassOptions field does not control them.
+
+Volume expansion behavior:: Logical Volume Manager Storage (LVMS) always enables volume expansion by setting allowVolumeExpansion: true on generated StorageClasses. You cannot control this setting by using the storageClassOptions field. All LVMS volumes support online expansion.
+VolumeSnapshotClass management:: The storageClassOptions field only affects StorageClasses. When you configure thin provisioning, LVMS generates a VolumeSnapshotClass for each device class. This generated class always uses a fixed value deletionPolicy: Delete, regardless of the reclaimPolicy that you set in storageClassOptions.
+
+Additionally, LVMS does not apply the additionalParameters and additionalLabels fields to VolumeSnapshotClasses. If you need to retain snapshot data, you must manage it separately from the StorageClass reclaim policy.
+Default StorageClass annotation behavior:: The default field on a device class controls the storageclass.kubernetes.io/is-default-class annotation on the generated StorageClass.
+
+Setting default: true does not guarantee that the LVMS StorageClass becomes the cluster default. If another default StorageClass already exists on the cluster, for example, gp3-csi on AWS-based Red Hat OpenShift Container Platform clusters, LVMS sets the annotation to false to prevent many cluster-wide defaults. Because the Operator actively manages this annotation, it reverts any manual, out-of-band changes during the next reconciliation loop.
 
 # Ways to scale up the storage of clusters
 

@@ -1,4 +1,4 @@
-# Preparing to update to Red Hat OpenShift Container Platform 4.21
+# Preparing to update to Red Hat OpenShift Container Platform 4.22
 
 
 Learn more about administrative tasks that cluster admins must perform to successfully initialize an update, as well as optional guidelines for ensuring a successful update.
@@ -6,6 +6,29 @@ Learn more about administrative tasks that cluster admins must perform to succes
 # Kubernetes API removals
 
 There are no Kubernetes API removals in this release.
+
+# Providing an administrator acknowledgment for Microsoft Azure or VMware vSphere clusters
+
+If you are updating a Microsoft Azure or VMware vSphere cluster from Red Hat OpenShift Container Platform 4.21 to 4.22, and you have not configured the managedBootImages parameter, the update is blocked with a "This cluster is Azure or vSphere but lacks a boot image configuration." message.
+
+The update is blocked intentionally on Azure or vSphere clusters in order to alert you that the default updated boot image behavior is changing between version 4.21 and 4.22 to enable updated boot images by default on those platforms.
+
+To allow the update, you must perform one of the following tasks:
+
+* If you want to allow the feature to be enabled, you must provide an administrator acknowledgment as described in the following procedure before you can update your cluster.
+* If you do not want the updated boot image feature enabled, you must explicitly disable the feature for compute nodes and then update your cluster.
+For more information, see "Disabling boot image management".
+
+* You must have access to the cluster as a user with the cluster-admin role.
+
+* Acknowledge that you are aware of the change in the default behavior by running the following command:
+
+```terminal
+$ oc -n openshift-config patch cm admin-acks --patch '{"data":{"ack-4.21-boot-image-opt-out-in-4.22":"true"}}' --type=merge
+```
+
+
+* Disabling boot image management
 
 # Assessing the risk of conditional updates
 
@@ -48,28 +71,208 @@ For more information, see "Backing up etcd data" and "Restoring to a previous cl
 * Backing up etcd
 * Restoring to a previous cluster state
 
+# Using the oc adm upgrade recommend command to identify update risks
+
+To identify potential update risks before initiating a cluster update, you can use the oc adm upgrade recommend command.
+
+When you run the oc adm upgrade recommend command, the output displays the following information:
+
+* Any issues that cause the Cluster Version Operator to have a status of Failing=True
+* Any firing alerts that might be a cause for concern about a cluster update
+* Information about your current update channel and your cluster's update service
+* Recommended target versions and any relevant known issues associated with each version
+
+You can use the information provided by the output to make informed decisions about the state of your cluster. Examples include whether any critical cluster issues should be addressed before attempting an update, or which specific target version would have less risk for your cluster.
+
+
+[NOTE]
+----
+The oc adm upgrade recommend command is read-only and does not affect the state of the cluster. To request an update, use the oc adm upgrade command.
+----
+
+* You installed the latest version of OpenShift CLI (`oc`).
+
+* Identify potential update risks and view recommended update versions by running the following command:
+
+```terminal
+$ oc adm upgrade recommend
+```
+
+Example output
+
+```terminal
+The following conditions found no cause for concern in updating this cluster to later releases: recommended/CriticalAlerts (AsExpected), recommended/NodeAlerts (AsExpected), recommended/PodDisruptionBudgetAlerts (AsExpected), recommended/PodImagePullAlerts (AsExpected), recommended/UpdatePrecheckAlerts (AsExpected)
+
+Upstream update service is unset, so the cluster will use an appropriate default.
+Channel: stable-4.21 (available channels: candidate-4.20, candidate-4.21, candidate-4.22, eus-4.20, fast-4.20, fast-4.21, stable-4.20, stable-4.21)
+
+Updates to 4.21:
+  VERSION     ISSUES
+  4.21.14     no known issues relevant to this cluster
+  4.21.13     no known issues relevant to this cluster
+And 2 older 4.21 updates you can see with '--show-outdated-releases' or '--version VERSION'.
+
+Updates to 4.20:
+  VERSION     ISSUES
+  4.20.20     no known issues relevant to this cluster
+```
+
+
+## Adding custom alerts to oc adm upgrade recommend command output
+
+You can configure specific alerts to be checked by the oc adm upgrade recommend command, so that if they are firing they appear in the output of the command.
+To do this, add the openShiftUpdatePrecheck label to an alert and set it to true.
+
+1. Edit a PrometheusRule custom resource (CR) by running the following command:
+
+```terminal
+$ oc edit prometheusrule <rule_name> -n <namespace>
+```
+
+
+where:
+<rule_name>:: Specifies the name of the PrometheusRule CR.
+<namespace>:: Specifies the namespace that contains the CR.
+2. Add the following snippet to the labels section of the alert you want to be checked by the oc adm upgrade recommend command:
+
+```yaml
+# ...
+     labels:
+       openShiftUpdatePrecheck: "true"
+# ...
+```
+
+Example PrometheusRule CR with precheck label
+
+```yaml
+apiVersion: monitoring.coreos.com/v1
+kind: PrometheusRule
+metadata:
+  name: storage-warning-alerts
+  namespace: openshift-monitoring
+spec:
+  groups:
+  - name: disk-usage-warnings
+    rules:
+    - alert: VolumeNearingCapacity
+      expr: (kubelet_volume_stats_used_bytes / kubelet_volume_stats_capacity_bytes) > 0.85
+      for: 15m
+      labels:
+        severity: warning
+        openShiftUpdatePrecheck: "true"
+      annotations:
+        summary: "Storage volume is over 85% full"
+        description: "The volume {{ $labels.persistentvolumeclaim }} in namespace {{ $labels.namespace }} is currently {{ $value | humanizePercentage }} full. This may cause issues during pod restarts or cluster updates."
+```
+
+
+## Accepting risks with the oc adm upgrade recommend command
+
+You can use a command flag to explicitly accept update risks that are shown in the output of the oc adm upgrade recommend command.
+
+1. Check for update risks by running the following command:
+
+```terminal
+$ oc adm upgrade recommend
+```
+
+Example output
+
+```terminal
+The following conditions found no cause for concern in updating this cluster to later releases: recommended/CriticalAlerts (AsExpected), recommended/NodeAlerts (AsExpected), recommended/PodDisruptionBudgetAlerts (AsExpected), recommended/PodImagePullAlerts (AsExpected)
+
+The following conditions found cause for concern in updating this cluster to later releases: recommended/UpdatePrecheckAlerts/TestAlert/0
+
+recommended/UpdatePrecheckAlerts/TestAlert/0=False:
+
+  Reason: Alert:firing
+  Message: warning alert TestAlert firing, suggesting issues worth investigating before updating the cluster. Test alert for updates. The alert description is: Test alert for updates <alert does not have a runbook_url annotation>
+
+Upstream update service is unset, so the cluster will use an appropriate default.
+Channel: stable-4.21 (available channels: candidate-4.20, candidate-4.21, candidate-4.22, eus-4.20, fast-4.20, fast-4.21, stable-4.20, stable-4.21)
+
+Updates to 4.21:
+  VERSION     ISSUES
+  4.21.14     no known issues relevant to this cluster
+  4.21.13     no known issues relevant to this cluster
+And 2 older 4.21 updates you can see with '--show-outdated-releases' or '--version VERSION'.
+
+Updates to 4.20:
+  VERSION     ISSUES
+  4.20.20     no known issues relevant to this cluster
+```
+
+
+In this example, TestAlert is the name of the alert that is firing on the cluster and is considered a risk to a cluster update.
+Alerts that are identified as update risks might be changed over time.
+2. Accept update risks by running the following command:
+
+```terminal
+$ oc adm upgrade recommend --accept <risk_name>
+```
+
+
+Replace <risk_name> with the name of the risk you want to accept.
+You can accept multiple risks at once by separating each risk by a comma, for example risk1,risk2,risk3.
+Example command
+
+```terminal
+$ oc adm upgrade recommend --accept TestAlert
+```
+
+Example output
+
+```terminal
+The following conditions found no cause for concern in updating this cluster to later releases: recommended/CriticalAlerts (AsExpected), recommended/NodeAlerts (AsExpected), recommended/PodDisruptionBudgetAlerts (AsExpected), recommended/PodImagePullAlerts (AsExpected)
+
+The following conditions found cause for concern in updating this cluster to later releases, but were explicitly accepted via --accept: recommended/UpdatePrecheckAlerts/TestAlert/0
+
+Upstream update service is unset, so the cluster will use an appropriate default.
+Channel: stable-4.21 (available channels: candidate-4.20, candidate-4.21, candidate-4.22, eus-4.20, fast-4.20, fast-4.21, stable-4.20, stable-4.21)
+
+Updates to 4.21:
+  VERSION     ISSUES
+  4.21.14     no known issues relevant to this cluster
+  4.21.13     no known issues relevant to this cluster
+And 2 older 4.21 updates you can see with '--show-outdated-releases' or '--version VERSION'.
+
+Updates to 4.20:
+  VERSION     ISSUES
+  4.20.20     no known issues relevant to this cluster
+```
+
+
 # Preparing for Gateway API management succession by the Ingress Operator
 
-Starting in Red Hat OpenShift Container Platform 4.19, the Ingress Operator manages the lifecycle of any Gateway API custom resource definitions (CRDs). This means that you will be denied access to creating, updating, and deleting any CRDs within the API groups that are grouped under Gateway API.
+You can prepare your cluster for Gateway API management succession by removing existing unsupported definitions and installing compliant resources. This ensures a seamless update to Red Hat OpenShift Container Platform 4.19 and prevents conflicts with the Ingress Operator.
+
+Starting in Red Hat OpenShift Container Platform 4.19, the Ingress Operator manages the lifecycle of any Gateway API custom resource definitions (CRDs). This lifecycle control blocks you from creating, updating, or deleting CRDs within the gateway.networking.k8s.io API group.
+
+
+[NOTE]
+----
+Starting in Red Hat OpenShift Container Platform 4.22, deploying the Gateway API CRD gateway.networking.x-k8s.io is no longer restricted. You can deploy that CRD without interference from the Ingress Operator. Experimental Gateway API CRDs in the gateway.networking.k8s.io group remain restricted.
+----
 
 Updating from a version before 4.19 of Red Hat OpenShift Container Platform where this management was not present requires you to replace or remove any Gateway API CRDs that already exist in the cluster so that they conform to the specific Red Hat OpenShift Container Platform specification required by the Ingress Operator. Red Hat OpenShift Container Platform version 4.19 requires Gateway API Standard version 1.2.1 CRDs.
 
 
 [WARNING]
 ----
-Updating or deleting Gateway API resources can result in downtime and loss of service or data. Be sure you understand how this will affect your cluster before performing the steps in this procedure. If necessary, back up any Gateway API objects in YAML format in order to restore it later.
+Updating or deleting Gateway API resources can result in downtime and loss of service or data. Be sure you understand how this affects your cluster before performing the steps in this procedure. If necessary, back up any Gateway API objects in YAML format to restore them later.
 ----
 
 * You have installed the OpenShift CLI (oc).
 * You have access to an Red Hat OpenShift Container Platform account with cluster administrator access.
 * Optional: You have backed up any necessary Gateway API objects.
 
+
 [WARNING]
 ----
 Backup and restore can fail or result in data loss for any CRD fields that were present in the old definitions but are absent in the new definitions.
 ----
 
-1. List all the Gateway API CRDs that you need to remove by running the following command:
+1. List all the Gateway API CRDs that you must remove by entering the following command:
 
 ```terminal
 $ oc get crd | grep -F -e gateway.networking.k8s.io -e gateway.networking.x-k8s.io
@@ -85,22 +288,24 @@ httproutes.gateway.networking.k8s.io
 referencegrants.gateway.networking.k8s.io
 ```
 
-2. Delete the Gateway API CRDs from the previous step by running the following command:
+
+If the output lists custom resource definitions (CRDs) for gateway.networking.x-k8s.io, retain those resources. The subsequent step removes only CRDs that belong to the gateway.networking.k8s.io group.
+2. Delete the Gateway API CRDs from the previous step by entering the following command:
 
 ```terminal
-$ oc delete crd gatewayclasses.networking.k8s.io && \
-oc delete crd gateways.networking.k8s.io && \
+$ oc delete crd gatewayclasses.gateway.networking.k8s.io && \
+oc delete crd gateways.gateway.networking.k8s.io && \
 oc delete crd grpcroutes.gateway.networking.k8s.io && \
 oc delete crd httproutes.gateway.networking.k8s.io && \
-oc delete crd referencesgrants.gateway.networking.k8s.io
+oc delete crd referencegrants.gateway.networking.k8s.io
 ```
 
 
 [IMPORTANT]
 ----
-Deleting CRDs removes every custom resource that relies on them and can result in data loss. Back up any necessary data before deleting the Gateway API CRDs. Any controller that was previously managing the lifecycle of the Gateway API CRDs will fail to operate properly. Attempting to force its use in conjunction with the Ingress Operator to manage Gateway API CRDs might prevent the cluster update from succeeding.
+Deleting CRDs removes every custom resource that relies on them and can result in data loss. Back up any necessary data before deleting the Gateway API CRDs. Any controller that was previously managing the lifecycle of the Gateway API CRDs ceases to function correctly. Attempting to force its use in conjunction with the Ingress Operator to manage Gateway API CRDs might prevent the cluster update from succeeding.
 ----
-3. Get the supported Gateway API CRDs by running the following command:
+3. Get the supported Gateway API CRDs by entering the following command:
 
 ```terminal
 $ oc apply -f https://github.com/kubernetes-sigs/gateway-api/releases/download/v1.2.1/standard-install.yaml
@@ -109,7 +314,7 @@ $ oc apply -f https://github.com/kubernetes-sigs/gateway-api/releases/download/v
 
 [WARNING]
 ----
-You can perform this step without deleting your CRDs. If your update to a CRD removes a field that is used by a custom resource, you can lose data. Updating a CRD a second time, to a version that re-adds a field, can cause any previously deleted data to reappear. Any third-party controller that depends on a specific Gateway API CRD version that is not supported in Red Hat OpenShift Container Platform 4.22 will break upon updating that CRD to one supported by Red Hat.
+You can perform this step without deleting your CRDs. If your update to a CRD removes a field that is used by a custom resource, you can lose data. Updating a CRD a second time, to a version that re-adds a field, can cause any previously deleted data to reappear. Any third-party controller that depends on a specific Gateway API CRD version that is not supported in Red Hat OpenShift Container Platform 4.22 breaks upon updating that CRD to one supported by Red Hat.
 For more information on the Red Hat OpenShift Container Platform implementation and the dead fields issue, see Gateway API implementation for Red Hat OpenShift Container Platform.
 ----
 

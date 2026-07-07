@@ -42,8 +42,22 @@ spec:
 
 where:
 spec.selectors:: Specifies a CEL expression for selecting a device.
-Resource slice:: The DRA driver on each node creates and manages resource slices, which describe what resources are available in that cluster. A resource slice represents one or more GPU resources that are attached to nodes. When a resource claim is created and used in a pod, Red Hat OpenShift Container Platform uses the resource slices to find nodes that have the requested resources. After finding an eligible resource slice for the resource claim, the Red Hat OpenShift Container Platform scheduler updates the resource claim with the allocation details, allocates resources to the resource claim, and schedules the pod onto a node that can access the resources.
-Example resource slice object
+Resource slice:: The DRA driver on each node creates and manages resource slices, which describe what resources are available in that cluster. A resource slice represents one or more GPU resources that are attached to nodes. The DRA can allocate either a full device or fixed-size partitions of full devices.
+
+A partitionable device is a single physical hardware device that can be split into smaller, logical instances, such as Multi-Instance GPUs, based on workload demands. By partitioning devices, you can safely and efficiently share expensive accelerators across multiple pods.
+
+[IMPORTANT]
+----
+Partitionable devices is a Technology Preview feature only. Technology Preview features are not supported with Red Hat production service level agreements (SLAs) and might not be functionally complete. Red Hat does not recommend using them in production. These features provide early access to upcoming product features, enabling customers to test functionality and provide feedback during the development process.
+For more information about the support scope of Red Hat Technology Preview features, see Technology Preview Features Support Scope.
+----
+
+To allocate partitions, the DRA creates a counter set, which is a set of named counters. The counters represent the resources available on the physical device that are used by the logical devices advertised through DRA.
+
+Logical devices can specify the consumesCounters list in a resource slice. Each entry contains a reference to a counter set and a set of named counters with the amounts they can consume.
+
+When a resource claim is created and used in a pod, Red Hat OpenShift Container Platform uses the resource slices to find nodes that have the requested resources. After finding an eligible resource slice for the resource claim, the Red Hat OpenShift Container Platform scheduler updates the resource claim with the allocation details, allocates resources to the resource claim, and schedules the pod onto a node that can access the resources.
+Example resource slice object for a device
 
 ```yaml
 apiVersion: v1
@@ -52,32 +66,101 @@ items:
   kind: ResourceSlice
 # ...
 spec:
-    driver: driver.example.com
-    nodeName: dra-example-driver
-    pool:
-      generation: 0
-      name: dra-example-driver
-      resourceSliceCount: 1
-    devices:
-    - attributes:
-        driverVersion:
-          version: 1.0.0
-        index:
-          int: 0
-        model:
-          string: LATEST-GPU-MODEL
-        uuid:
-          string: gpu-18db0e85-99e9-c746-8531-ffeb86328b39
-      capacity:
-        memory:
-          value: 10Gb
-      name: 2g-10gb
+  driver: driver.example.com
+  nodeName: dra-example-driver
+  pool:
+    generation: 0
+    name: dra-example-driver
+    resourceSliceCount: 1
+  devices:
+  - attributes:
+      driverVersion:
+        version: 1.0.0
+      index:
+        int: 0
+      model:
+        string: LATEST-GPU-MODEL
+      uuid:
+        string: gpu-18db0e85-99e9-c746-8531-ffeb86328b39
+    capacity:
+      memory:
+        value: 10Gb
+    name: 2g-10gb
 # ...
 ```
 
 where:
 spec.driver:: Specifies the name of the DRA driver, which you can specify in a device class.
 spec.devices.attributes:: Specifies a device that you can allocate by using a resource claim or resource claim template.
+Example resource slice object for a partitionable device
+
+```yaml
+apiVersion: resource.k8s.io/v1
+kind: ResourceSlice
+metadata:
+  name: counter-slice
+spec:
+  driver: "resource-driver.example.com"
+  nodeName: dra-example-driver
+  pool:
+    generation: 1
+    name: "my-pool"
+    resourceSliceCount: 2
+  sharedCounters:
+  - name: gpu-0-counter-set
+    counters:
+      memory:
+        value: 40Gi
+---
+apiVersion: resource.k8s.io/v1
+kind: ResourceSlice
+metadata:
+  name: device-slice
+spec:
+  driver: "resource-driver.example.com"
+  pool:
+    generation: 1
+    name: "my-pool"
+    resourceSliceCount: 2
+  nodeName: "my-node"
+  devices:
+  - name: gpu-0
+    capacity:
+      memory:
+        value: 40Gi
+    consumesCounters:
+    - counterSet: gpu-0-counter-set
+      counters:
+        memory:
+          value: 40Gi
+  - name: gpu-0-partition-0
+    capacity:
+      memory:
+        value: 20Gi
+    consumesCounters:
+    - counterSet: gpu-0-counter-set
+      counters:
+        memory:
+          value: 20Gi
+  - name: gpu-0-partition-1
+    capacity:
+      memory:
+        value: 20Gi
+    consumesCounters:
+    - counterSet: gpu-0-counter-set
+      counters:
+        memory:
+          value: 20Gi
+```
+
+where:
+spec.driver:: Specifies the name of the DRA driver, which you can specify in a device class.
+spec.sharedCounters:: Specifies the counter set and counters.
+spec.devices:: Specifies a list of devices that can be requested by pods.
+spec.devices.name:: Specifies the details of a single device.
+spec.devices.consumesCounters:: Specifies how much of a shared counter set the device consumes if allocated.
+
+In this example, the resource-driver.example.com DRA driver is sharing 40Gi of memory through the gpu-0-counter-set counter set in the counter-slice object. The device-slice object makes this memory available as a full device named gpu-0 or either of two partitioned devices named gpu-0-partition-0 and gpu-0-partition-1. Each device has a capacity and declares how much it consumes from the counter when allocated, either 40Gi for the full device or 20Gi of memory for each partition. You can allocate the memory by using either the full device or the partitions, but not both, enforcing mutual exclusivity between a full device and its partitions. When gpu-0 is allocated, the GPU consumes all 40Gi from the counter set, leaving 0Gi for the partitions.
 Resource claim template:: Cluster administrators and operators can create a resource claim template, which describes the GPU resource that a pod requires. The administrator or operator adds the resource claim to a pod specification. Red Hat OpenShift Container Platform uses the resource claim template to generate the resource claim for the pod. The Red Hat OpenShift Container Platform scheduler then schedules that pod on a node in the cluster that has the requested GPU.
 
 Each resource claim that Red Hat OpenShift Container Platform generates from the template is bound that specific pod. A such, the GPU cannot be used simultaneously by another workload. When the pod terminates, Red Hat OpenShift Container Platform deletes the corresponding resource claim.
@@ -195,6 +278,12 @@ The example in the following procedure creates a resource claim to schedule a po
 
 * A Dynamic Resource Allocation (DRA) driver is installed. For more information on DRA, see "Dynamic Resource Allocation" (Kubernetes documentation).
 * A resource slice has been created.
+* If your resource slice is allocating a partitioned device, you enabled the required Technology Preview features for your cluster by adding the TechPreviewNoUpgrade feature set to the FeatureGate CR named cluster. For information about enabling Feature Gates, see "Enabling features using feature gates".
+
+[WARNING]
+----
+Enabling the TechPreviewNoUpgrade feature set on your cluster cannot be undone and prevents minor version updates. This feature set allows you to enable these Technology Preview features on test clusters, where you can fully test them. Do not enable this feature set on production clusters.
+----
 * A resource claim and/or resource claim template has been created.
 Example resource claim object
 
@@ -293,3 +382,7 @@ $ oc create -f <file_name>.yaml
 
 
 For more information on configuring pod resource requests, see "Dynamic Resource Allocation" (Kubernetes documentation).
+
+# Additional resources
+
+* Enabling features using feature gates

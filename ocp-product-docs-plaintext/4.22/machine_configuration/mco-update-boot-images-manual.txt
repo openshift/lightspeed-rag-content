@@ -275,6 +275,223 @@ Example output
 ```
 
 
+# Manually updating the boot image on an AWS cluster
+
+You can manually update the boot image for your Amazon Web Services (AWS) cluster by configuring your machine sets to use the latest Red Hat OpenShift Container Platform image as the boot image to ensure that new nodes can scale up properly.
+
+Use the following procedure to create environment variables that facilitate running the required commands, identify the correct Amazon Machine Image (AMI) to use as the new boot image, and modify your compute machine sets to use that image.
+
+The process differs for clusters that use a default Red Hat Enterprise Linux CoreOS (RHCOS) image and clusters that use a custom RHCOS image from the AWS Marketplace. The following procedure helps determine which type of image you use.
+
+
+[NOTE]
+----
+For clusters that use a default RHCOS image, you can configure the cluster to automatically update the boot image each time the cluster is updated. If you are using the following procedure, ensure that automatic boot image updates are disabled and skew enforcement is in manual mode. For more information, see "Boot image management" and "Boot image skew enforcement".
+----
+
+* You have completed the general boot image prerequisites as described in the "Prerequisites" section of the Red Hat OpenShift Container Platform Boot Image Updates knowledgebase article.
+* You have installed the OpenShift CLI (`oc`).
+* You have set boot image skew enforcement to the manual or none mode. For more information, see "Configuring boot image skew enforcement".
+* You have disabled boot image management for the cluster. For more information, see "Disabling boot image management".
+* You have installed the AWS CLI.
+* You configured an AWS account to host the cluster. For information, see "Configuring an AWS account".
+* For a cluster that uses a default RHCOS image, ensure you have met the following additional prerequisites:
+* You have downloaded the latest version of the Red Hat OpenShift Container Platform installation program from the OpenShift Cluster Manager. For more information, see "Obtaining the installation program."
+* For a cluster that uses a default RHCOS image, you have installed the jq program.
+
+1. Determine if your cluster uses a default RHCOS image or a custom RHCOS image from the AWS Marketplace image:
+1. Obtain the current AWS region where the cluster is installed and set the value in an environment variable by running the following command:
+
+```terminal
+$ export REGION=$(oc get infrastructure cluster -o jsonpath='{.status.platformStatus.aws.region}')
+```
+
+2. Obtain the current Amazon Machine Image (AMI) ID for your region and set the value in an environment variable by running the following command:
+
+```terminal
+$ export CURRENT_AMI=$(oc get machineset -n openshift-machine-api -o jsonpath='{.items[0].spec.template.spec.providerSpec.value.ami.id}')
+```
+
+3. Obtain the product ID for your AMI and set the value in an environment variable by running the following command:
+
+```terminal
+$ export PRODUCT_ID=$(aws ec2 describe-images --image-ids "$CURRENT_AMI" --region "$REGION" \
+  --query 'Images[0].Name' --output text | \
+  grep -oE '[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}')
+```
+
+
+CURRENT_AMI and REGION are environment variables you created in previous steps.
+4. Display the contents of the PRODUCT_ID environment variable by running the following command:
+
+```terminal
+$ echo $PRODUCT_ID
+```
+
+* If the output for the PRODUCT_ID environment variable is empty, as shown in the following example, your cluster uses a standard Red Hat OpenShift Container Platform image.
+Example with empty output
+
+```terminal
+
+```
+
+* If the output for the PRODUCT_ID environment variable is not empty, as shown in the following example, your cluster uses an AWS Marketplace image.
+Example with non-empty output
+
+```terminal
+59ead7de-2540-4653-a8b0-fa7926d5c845
+```
+
+* If the command returns an error, and you are unable to determine your cluster variant, contact Red Hat Support. If Red Hat Support determines that your cluster uses an AWS Marketplace image, you can set the PRODUCT_ID environment variable with the appropriate product ID from the following table.
+
+```terminal
+$ export PRODUCT_ID=<Product_ID_from_table>
+```
+
+
+2. Determine the AMI for the new boot image by using one of the following steps, depending upon the type of image used in your cluster:
+* For a cluster that uses a default RHCOS image, perform the following steps:
+1. Set an environment variable with your cluster architecture by running the following command:
+
+```terminal
+$ export ARCH=<architecture_type>
+```
+
+
+Replace <architecture_type> with one of the following values:
+* Specify aarch64 for the AArch64 or ARM64 architecture.
+* Specify ppc64le for the IBM Power(R) (ppc64le) architecture.
+* Specify s390x for the IBM Z(R) and IBM(R) LinuxONE (s390x) architecture.
+* Specify x86_64 for the x86_64 or AMD64 architecture.
+
+You can find the architecture as a label in any MachineSet object.
+Example machine set with an architecture label
+
+```terminal
+apiVersion: machine.openshift.io/v1beta1
+kind: MachineSet
+metadata:
+  annotations:
+    capacity.cluster-autoscaler.kubernetes.io/labels: kubernetes.io/arch=amd64
+# ...
+```
+
+2. Obtain the AMI for the new boot image and set an environment variable with the AMI by running the following command:
+
+```terminal
+$ export AMI_ID=$(openshift-install coreos print-stream-json | jq -r ".architectures.\"${ARCH}\".images.aws.regions.\"${REGION}\".image")
+```
+
+
+ARCH and REGION are environment variables you created in previous steps.
+3. View the RHCOS version of the new boot image by running the following command:
+
+```terminal
+$ openshift-install coreos print-stream-json | jq -r ".architectures.\"${ARCH}\".images.aws.regions.\"${REGION}\".release"
+```
+
+Example output
+
+```terminal
+9.6.20251212-1
+```
+
+
+Make note of the RHCOS version for later use.
+* For a cluster that uses a custom RHCOS image, perform the following steps:
+1. Obtain a list of valid AMI images by running the following command:
+
+```terminal
+$ aws ec2 describe-images --region "${REGION}" --filters "Name=name,Values=*${PRODUCT_ID}*" \
+  --query 'reverse(sort_by(Images, &CreationDate))[].[CreationDate,ImageId,Name]' --output table
+```
+
+
+REGION and PRODUCT_ID are environment variables you created in previous steps.
+
+This command returns the AMIs ordered by creation date, with the latest images first. The RHCOS version of each AMI is contained in the AMI name. Choose the latest image version available.
+
+Make note of the Red Hat Enterprise Linux CoreOS (RHCOS) version for later use.
+2. Set an environment variable with the AMI of the new boot image by running the following command:
+
+```terminal
+$ export AMI_ID=<ami-value>
+```
+
+3. Update each of your compute machine sets to include the new boot image:
+1. Obtain the name of your machine sets for use in the following step by running the following command:
+
+```terminal
+$ oc get machineset -n openshift-machine-api
+```
+
+Example output
+
+```terminal
+NAME                                 DESIRED   CURRENT   READY   AVAILABLE   AGE
+rhhdrbk-b5564-4pcm9-worker-0         3         3         3       3           123m
+ci-ln-xj96skb-72292-48nm5-worker-d   1         1         1       1           27m
+```
+
+2. Edit a machine set to update the image field in the providerSpec stanza to add your boot image by running the following command:
+
+```terminal
+$ oc patch machineset <machineset_name> -n openshift-machine-api --type merge -p '{"spec":{"template":{"spec":{"providerSpec":{"value":{"ami":{"id":"'${AMI_ID}'"}}}}}}}'
+```
+
+
+Replace <machineset_name> with the name of your machine set.
+
+AMI_ID is the environment variable you created in a previous step.
+4. If boot image skew enforcement in your cluster is set to the manual mode, update the boot image version in the MachineConfiguration object as described in "Updating the boot image skew enforcement version."
+
+1. Scale up a machine set to check that the new node is using the new boot image:
+1. Increase the machine set replicas by one to trigger a new machine by running the following command:
+
+```terminal
+$ oc scale --replicas=<count> machineset <machineset_name> -n openshift-machine-api
+```
+
+
+where:
+<count>:: Specifies the total number of replicas, including any existing replicas, that you want for this machine set.
+<machineset_name>:: Specifies the name of the machine set to scale.
+2. Optional: View the status of the machine set as it provisions by running the following command:
+
+```terminal
+$ oc get machines.machine.openshift.io -n openshift-machine-api -w
+```
+
+
+It can take several minutes for the machine set to achieve the Running state.
+3. Verify that the new node has been created and is in the Ready state by running the following command:
+
+```terminal
+$ oc get nodes
+```
+
+2. Verify that the new node is using the new boot image by running the following command:
+
+```terminal
+$ oc debug node/<new_node> -- chroot /host cat /sysroot/.coreos-aleph-version.json
+```
+
+
+Replace <new_node> with the name of your new node.
+Example output
+
+```terminal
+{
+# ...
+    "ref": "docker://ostree-image-signed:oci-archive:/rhcos-9.6.20251212-1-ostree.x86_64.ociarchive",
+    "version": "9.6.20251212-1"
+}
+```
+
+
+where:
+version:: Specifies the boot image version.
+
 # Manually updating the boot image on an Google Cloud cluster
 
 You can manually update the boot image for your Google Cloud cluster by configuring your machine sets to use the latest Red Hat OpenShift Container Platform image as the boot image to ensure that new nodes can scale up properly.
@@ -573,6 +790,107 @@ Example output
 https://rhcos.mirror.openshift.com/art/storage/prod/streams/rhel-9.6/builds/9.6.20251212-1/x86_64/rhcos-9.6.20251212-1-nutanix.x86_64.qcow2
 ```
 
+
+# Manually updating the boot image on a bare-metal cluster
+
+For a bare-metal cluster that was installed with Red Hat OpenShift Container Platform version 4.9 or earlier, you need to change how the cluster provisions new nodes in order to update the boot image used with those nodes. Using an up-to-date boot image ensures that any new nodes can scale up properly.
+
+
+[NOTE]
+----
+The standard boot image management feature is not supported for bare-metal clusters.
+----
+
+If your bare-metal cluster was installed with Red Hat OpenShift Container Platform version 4.10 or later, boot images are kept current by the Cluster Version Operator (CVO) and are not at risk of boot image skew. Skew enforcement is disabled for the cluster by default. No further action on your part is required to maintain the boot image versioning.
+
+If your bare-metal cluster was installed with Red Hat OpenShift Container Platform version 4.9 or earlier, the cluster is using the legacy qcow2-based provisioning method. Boot images in these clusters are not managed by the CVO and could be significantly out of date. Follow the steps below to migrate the cluster to use the machine-os-images provisioning method, which was introduced in Red Hat OpenShift Container Platform 4.10. This migration ensures that the cluster always uses the release version as the boot image when a scale-up is taking place.
+
+Use the following procedure to enable the install_coreos deployment method and disable the qcow2 image cache. With these changes, the Cluster Baremetal Operator (CBO) will use the machine-os-images container from the release payload for new node provisioning. The cluster will have no skew risk, the same as a cluster at version 4.10 or later. Skew enforcement is automatically disabled after the migration is complete.
+
+
+[NOTE]
+----
+Boot image updates are not required for Agent-based Installer clusters. The boot image for Agent-based Installer nodes is generated from the current release payload through the oc adm node-image create command and does not have skew issues.
+----
+
+* You have completed the general boot image prerequisites as described in the "Prerequisites" section of the Red Hat OpenShift Container Platform Boot Image Updates knowledgebase article.
+* You have the OpenShift CLI (`oc`) installed.
+* A new physical host must be registered and in the available state and an associated BareMetalHost object must be present in the openshift-machine-api namespace so that you can scale a new machine to verify the procedure.
+
+1. Check whether your cluster is using the legacy boot image provisioning path by running the following command:
+
+```terminal
+$ oc get provisioning provisioning-configuration \
+  -o jsonpath='{.spec.provisioningOSDownloadURL}'
+```
+
+* If the output is non-empty, your cluster was installed with Red Hat OpenShift Container Platform version 4.9 or earlier. Boot images are not managed by the Cluster Version Operator (CVO) and could be significantly out of date. Follow the steps in this procedure to migrate to the current provisioning path.
+* If the output is empty, your cluster was installed with Red Hat OpenShift Container Platform version 4.10 or later. Boot images are kept current by the Cluster Version Operator (CVO) and are not at risk of skew. Skew enforcement is disabled for this cluster. No further action on your part is required to maintain the boot image versioning.
+2. Clear the legacy image fields and enable the install_coreos deployment method:
+1. Migrate each machine set to the machine-os-images provisioning path by running the following command:
+
+```terminal
+$ oc patch machineset <machineset_name> -n openshift-machine-api --type merge \
+  -p '{"spec":{"template":{"spec":{"providerSpec":{"value":{"customDeploy":{"method":"install_coreos"},"image":{"url":"","checksum":""}}}}}}}'
+```
+
+
+Replace <machineset_name> with the name of your machine set.
+2. Clear the legacy download URL by running the following command:
+
+```terminal
+$ oc patch provisioning provisioning-configuration --type=merge -p '{"spec":{"provisioningOSDownloadURL":""}}'
+```
+
+
+This process migrates the cluster to the machine-os-images provisioning method, which ensures that the latest boot image is used for scaling nodes.
+
+1. Scale up a machine set to check that the new node is using the new boot image:
+1. Increase the machine set replicas by one to trigger a new machine by running the following command:
+
+```terminal
+$ oc scale --replicas=<count> machineset <machineset_name> -n openshift-machine-api
+```
+
+
+where:
+<count>:: Specifies the total number of replicas, including any existing replicas, that you want for this machine set.
+<machineset_name>:: Specifies the name of the machine set to scale.
+2. Optional: View the status of the machine set as it provisions by running the following command:
+
+```terminal
+$ oc get machines.machine.openshift.io -n openshift-machine-api -w
+```
+
+
+It can take several minutes for the machine set to achieve the Running state.
+3. Verify that the new node has been created and is in the Ready state by running the following command:
+
+```terminal
+$ oc get nodes
+```
+
+2. Verify that the new node is using the new boot image by running the following command:
+
+```terminal
+$ oc debug node/<new_node> -- chroot /host cat /sysroot/.coreos-aleph-version.json
+```
+
+
+Replace <new_node> with the name of your new node.
+Example output
+
+```terminal
+{
+# ...
+    "ref": "docker://ostree-image-signed:oci-archive:/rhcos-9.6.20251212-1-ostree.x86_64.ociarchive",
+    "version": "9.6.20251212-1"
+}
+```
+
+
+where:
+version:: Specifies the boot image version.
 
 # Manually updating the boot image on an IBM Cloud(R) cluster
 
@@ -1007,6 +1325,7 @@ $ oc patch machineset <machineset_name> -n openshift-machine-api --type merge -p
 
 
 Replace <machineset_name> with the name of your machine set.
+8. If boot image skew enforcement in your cluster is set to the manual mode, update the version of the new boot image in the MachineConfiguration object as described in "Updating the boot image skew enforcement version".
 
 1. Scale up a machine set to check that the new node is using the new boot image:
 1. Increase the machine set replicas by one to trigger a new machine by running the following command:
@@ -1279,6 +1598,7 @@ $ oc patch machineset <machineset_name> -n openshift-machine-api --type merge -p
 Replace <machineset_name> with the name of your machine set.
 
 IMAGE_NAME is the environment variable you created in a previous step.
+7. If boot image skew enforcement in your cluster is set to the manual mode, update the version of the new boot image in the MachineConfiguration object as described in "Updating the boot image skew enforcement version".
 
 1. Scale up a machine set to check that the new node is using the new boot image:
 1. Increase the machine set replicas by one to trigger a new machine by running the following command:
@@ -1329,10 +1649,169 @@ version:: Specifies the boot image version.
 
 After you migrate all machine sets to the new boot image, you can remove the old boot image from Glance.
 
+# Manually updating the boot image on a vSphere cluster
+
+You can manually update the boot image for your VMware vSphere cluster by configuring your machine sets to use the latest Red Hat OpenShift Container Platform image as the boot image to ensure that new nodes can scale up properly.
+
+vSphere boot images use a template that you create by uploading a Red Hat Enterprise Linux CoreOS (RHCOS) OVA image to the vSphere vCenter. The template image is used by all machine sets as the boot image. Use the following procedure to identify the correct boot image to use as the new boot image, create the template from the image in vCenter, and modify your compute machine sets to use that template image.
+
+
+[NOTE]
+----
+For clusters that use a default RHCOS image, you can configure the cluster to automatically update the boot image each time the cluster is updated. If you are using the following procedure, ensure that automatic boot image updates are disabled and skew enforcement is in manual mode. For more information, see "Boot image management" and "Boot image skew enforcement".
+----
+
+* You have completed the general boot image prerequisites as described in the "Prerequisites" section of the Red Hat OpenShift Container Platform Boot Image Updates knowledgebase article.
+* You have installed the OpenShift CLI (`oc`).
+* You have set boot image skew enforcement to the manual or none mode. For more information, see "Configuring boot image skew enforcement".
+* You have disabled boot image management for the cluster. For more information, see "Disabling boot image management".
+* You have downloaded the latest version of the Red Hat OpenShift Container Platform installation program from the OpenShift Cluster Manager. For more information, see "Obtaining the installation program."
+
+1. Obtain the latest boot image to use as the new boot image:
+1. Obtain the name of the new boot image by running the following command:
+
+```terminal
+$ openshift-install coreos print-stream-json | jq '.architectures.x86_64.artifacts.vmware'
+```
+
+Example output
+
+```terminal
+{
+  "release": "9.6.20251023-0",
+  "formats": {
+    "ova": {
+      "disk": {
+        "location": "https://rhcos.mirror.openshift.com/art/storage/prod/streams/rhel-9.6/builds/9.6.20251023-0/x86_64/rhcos-9.6.20251023-0-vmware.x86_64.ova",
+        "sha256": "14fa549bb83b2e730de22312419b503bc1ce85adf72269582f0af60e366d87ff"
+      }
+    }
+  }
+}
+```
+
+2. Use the URL in the location field to download the image.
+2. In the vSphere Client, create a template for the OVA image:
+1. From the Hosts and Clusters tab, right-click your cluster name and select Deploy OVF Template.
+2. On the Select an OVF tab, specify the name of the RHCOS OVA file that you downloaded.
+3. On the Select a name and folder tab, set a Virtual machine name for your template, such as using the RHCOS version number in the image name. Click the name of your vSphere cluster and select the folder.
+4. On the Select a compute resource tab, click the name of your vSphere cluster.
+5. On the Select storage tab, configure the storage options for your VM.
+* Select Thin Provision or Thick Provision, based on your storage preferences.
+* Select the data store that you specified in your install-config.yaml file.
+* If you want to encrypt your virtual machines, select Encrypt this virtual machine. See "Requirements for encrypting virtual machines" for more information.
+6. On the Select network tab, specify the network that you configured for the cluster, if available.
+7. When creating the OVF template, do not specify values on the Customize template tab or configure the template any further.
+8. On the Ready to complete tab, verify your settings and click Finish.
+
+The vSphere Client uploads the boot image to create the OVF template. This can take a few minutes depending on network speeds. You can keep track of this process in the task tab under Deploy OVF template.
+9. After the upload is complete, click the new virtual machine and click Template -> Convert to template -> Yes.
+
+You now have a VM template based on the new boot image, which you can use to update the machine set objects.
+3. Update each of your compute machine sets to include the new boot image:
+1. Obtain the name of your machine sets for use in the following step by running the following command:
+
+```terminal
+$ oc get machineset -n openshift-machine-api
+```
+
+Example output
+
+```terminal
+NAME                                 DESIRED   CURRENT   READY   AVAILABLE   AGE
+ci-ln-xw7zmyt-72292-x7nqv-worker-a   1         1         1       1           53m
+```
+
+2. Edit a machine set to update the image field in the providerSpec stanza to add your boot image by running the following command:
+
+```terminal
+$ oc patch machineset <machineset-name> -n openshift-machine-api --type json \
+  -p '[{"op": "replace", "path": "/spec/template/spec/providerSpec/value/template", "value": "ci-ln-6vjqx8t-c1627-bwxkr-rhcos-generated-region-generated-zone"}]'
+```
+
+
+Replace <machineset_name> with the name of your machine set.
+4. If boot image skew enforcement in your cluster is set to the manual mode, update the version of the new boot image in the MachineConfiguration object as described in "Updating the boot image skew enforcement version".
+
+1. Scale up a machine set to check that the new node is using the new boot image:
+1. Increase the machine set replicas by one to trigger a new machine by running the following command:
+
+```terminal
+$ oc scale --replicas=<count> machineset <machineset_name> -n openshift-machine-api
+```
+
+
+where:
+<count>:: Specifies the total number of replicas, including any existing replicas, that you want for this machine set.
+<machineset_name>:: Specifies the name of the machine set to scale.
+2. Optional: View the status of the machine set as it provisions by running the following command:
+
+```terminal
+$ oc get machines.machine.openshift.io -n openshift-machine-api -w
+```
+
+
+It can take several minutes for the machine set to achieve the Running state.
+3. Verify that the new node has been created and is in the Ready state by running the following command:
+
+```terminal
+$ oc get nodes
+```
+
+2. Verify that the new node is using the new boot image by running the following command:
+
+```terminal
+$ oc debug node/<new_node> -- chroot /host cat /sysroot/.coreos-aleph-version.json
+```
+
+
+Replace <new_node> with the name of your new node.
+Example output
+
+```terminal
+{
+# ...
+    "ref": "docker://ostree-image-signed:oci-archive:/rhcos-9.6.20251212-1-ostree.x86_64.ociarchive",
+    "version": "9.6.20251212-1"
+}
+```
+
+
+where:
+version:: Specifies the boot image version.
+
+# Manually updating the boot image on a platform none or external cluster
+
+For platform: None and platform: External clusters, you can manually update the boot image for your cluster by configuring your machine sets to use the latest Red Hat OpenShift Container Platform image as the boot image to help ensure any new nodes can scale up properly.
+
+For these clusters, Red Hat OpenShift Container Platform does not manage node provisioning or Red Hat Enterprise Linux CoreOS (RHCOS) boot images. These clusters do not use Machine API machine sets.
+
+
+[NOTE]
+----
+The standard boot image management feature is not supported for platform: None or platform: External clusters.
+----
+
+The method for updating boot images depends on how nodes are added to your cluster as a day-2 operation.
+
+
+
+User-provisioned infrastructure:: For user-provisioned infrastructure clusters, you manage boot images as part of your infrastructure. To update the boot image, download the latest RHCOS image for your architecture from mirror.openshift.com and update your infrastructure to serve the new image.
+
+For the full procedure, see the section for your platform in "Adding compute machines to clusters with user-provisioned infrastructure manually".
+RHACM-managed clusters:: For clusters managed by RHACM, the boot image used to generate the discovery ISO image is controlled by the spec.osImageVersion parameter in the InfraEnv object on the hub cluster. After an Red Hat OpenShift Container Platform upgrade, you need to update the existing InfraEnv object to add or update spec.osImageVersion field, specifying the Red Hat OpenShift Container Platform version of the new boot image.
+External provider clusters:: For clusters managed by an external infrastructure provider, such as Oracle Cloud Infrastructure (OCI), you must upload the new boot image to the provider's image store and update your node provisioning configuration to reference the new image when creating new nodes. The exact steps are provider-specific.
+
+If boot image skew enforcement in your cluster is set to the manual mode, after updating the boot image, update the version of the new boot image in the MachineConfiguration object as described in "Updating the boot image skew enforcement version".
+
 # Additional resources
 
 * Boot image management
+* Updating the boot image skew enforcement version
+* Manually updating the boot image
 * Obtaining the installation program
 * Adding compute machines to bare metal
 * Configuring an AWS account
 * Creating additional worker machines in Google Cloud
+* Requirements for encrypting virtual machines
+* Adding compute machines to clusters with user-provisioned infrastructure manually

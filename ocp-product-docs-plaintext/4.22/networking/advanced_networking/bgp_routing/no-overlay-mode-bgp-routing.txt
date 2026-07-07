@@ -1,0 +1,504 @@
+# Improve east-west performance by routing pods on the underlay with BGP
+
+
+To improve east-west performance on bare-metal clusters, configure no-overlay mode with Border Gateway Protocol (BGP) so pod traffic uses underlay routing instead of Geneve encapsulation.
+
+[IMPORTANT]
+----
+No-overlay mode with BGP is a Technology Preview feature only. Technology Preview features are not supported with Red Hat production service level agreements (SLAs) and might not be functionally complete. Red Hat does not recommend using them in production. These features provide early access to upcoming product features, enabling customers to test functionality and provide feedback during the development process.
+For more information about the support scope of Red Hat Technology Preview features, see Technology Preview Features Support Scope.
+----
+
+# Understanding no-overlay mode for layer-3 networks using Border Gateway Protocol (BGP)
+
+You can use no-overlay mode to route layer 3 pod traffic directly over the underlay network with BGP, which reduces encapsulation overhead and improves east-west performance.
+
+No-overlay mode disables the default encapsulation for the default cluster network and uses BGP-learned routes to forward pod traffic across nodes. A cluster can run overlay and no-overlay networks at the same time.
+
+For the default cluster network, no-overlay supports managed and unmanaged routing. With managed routing, OVN-Kubernetes creates a full-mesh BGP fabric between cluster nodes only, so no external BGP routers are required and pod routes are not advertised outside the cluster (intra-cluster traffic only). Managed routing requires nodes to be directly connected at layer 2; it is not suitable for clusters with nodes in different subnets. With unmanaged routing on the default network, you configure external BGP peers and use RouteAdvertisements custom resources (CRs) to advertise pod subnets to your existing BGP infrastructure.
+
+For a primary network defined by a ClusterUserDefinedNetwork CR, no-overlay supports unmanaged routing only. Configure external BGP peers and RouteAdvertisements CRs for the CUDN.
+
+Requirements:: 
+* A bare-metal cluster that uses the OVN-Kubernetes network plugin.
+* Single-node zone interconnect mode enabled for the cluster.
+* BGP routing enabled and FRR-K8s deployed.
+* Layer 3 networks only (the default network or a primary network defined by a ClusterUserDefinedNetwork CR).
+Limitations:: 
+* No-overlay mode is not supported for layer 2 networks.
+* EgressIP, EgressService, IPsec, multicast, and multiple external gateways are not supported for no-overlay networks.
+* Switching an existing network between overlay and no-overlay modes is not supported using a ClusterUserDefinedNetwork CR.
+Supported gateway modes:: 
+* On the default cluster network, no-overlay is supported in both local gateway (LGW) mode and shared gateway (SGW) mode.
+* On a primary network defined by a ClusterUserDefinedNetwork CR, no-overlay is supported in both LGW and SGW modes.
+
+[IMPORTANT]
+----
+Pods running on a CUDN configured with NoOverlay transport mode cannot establish TCP connections to NodePort services when externalTrafficPolicy is set to Cluster and the backend pod resides on a different node than the one targeted by the request. This issue occurs regardless of whether outbound SNAT is enabled or disabled.
+----
+
+# Plan underlay routing and BGP for your cluster
+
+Plan routing mode, BGP topology, and SNAT behavior so pod subnets are routable and the design scales for your cluster size.
+
+Workflow and timing:: No-overlay mode requires BGP to be enabled on the cluster by configuring the Network custom resource (CR) so that the Cluster Network Operator (CNO) applies your settings.
+
+While no-overlay is a Technology Preview feature, enable the TechPreviewNoUpgrade feature set at installation time if you plan to use the feature on the default cluster network from day 0.
+
+Day 0 (installation): If the default cluster network will use no-overlay, supply manifests in the installation manifests/ directory so BGP and no-overlay settings are applied when the cluster is created.
+
+Day 2 (running cluster): You can patch network.operator/cluster to adjust the outboundSNAT field for clusters using unmanaged routing. Primary ClusterUserDefinedNetwork (CUDN) resources that use no-overlay can be created or updated after installation.
+Routing mode:: On the default cluster network, managed routing creates a full-mesh BGP fabric between nodes and is easier to operate. It requires nodes to be directly connected at layer 2 and is not suitable for nodes in different subnets. Unmanaged routing lets you control external peers and routing policies and is typically used when integrating with external BGP or when nodes are not in the same layer 2 segment.
+BGP topology:: For managed routing on the default cluster network, the supported topology is full mesh between nodes so that every node peers with every other node. Unmanaged routing uses your own design, for example eBGP to external routers, together with FRRConfiguration and RouteAdvertisements CRs.
+
+
+[NOTE]
+----
+Managed routing and a full-mesh BGP topology apply to the default cluster network when you choose that mode. A primary ClusterUserDefinedNetwork with no-overlay requires unmanaged routing in which you plan external BGP peers, create FRRConfiguration and RouteAdvertisements CRs for that network, and set spec.network.noOverlayOptions.outboundSNAT to Disabled.
+----
+
+SNAT behavior:: Enable outbound SNAT when pod IPs are not routable on the external network. Disable outbound SNAT when the underlay can route pod IPs directly.
+IP address planning:: Allocate pod subnets and node subnets so they do not overlap with existing networks and can be advertised to your BGP fabric.
+
+# Enable underlay routing for the default cluster network
+
+To steer default network&#8217;s east-west traffic over the underlay network instead of Geneve, configure the Cluster Network Operator (CNO) for NoOverlay transport and set the source network address translation (SNAT) and routing. If you use unmanaged routing, apply FRRConfiguration and RouteAdvertisements custom resources (CRs) so your routers exchange pod routes.
+
+* You have cluster-admin privileges.
+* Your cluster is installed on bare-metal infrastructure with single-node zone interconnect mode.
+* You have enabled Border Gateway Protocol (BGP) routing for the cluster. See "About BGP routing" and "Enabling BGP routing" for more information.
+* You deployed FRR-K8s on cluster nodes installed with the BGP prerequisite.
+
+
+[IMPORTANT]
+----
+* Choose spec.defaultNetwork.ovnKubernetesConfig.noOverlayConfig.outboundSNAT based on whether pod IPs are routable on your external network. You can set to Enabled when they are not, and Disabled when the underlay can route pod IP addressess directly.
+* For unmanaged mode you must set outboundSNAT to Enabled or cluster deployment will fail.
+----
+
+1. Enable no-overlay for the default network in the Cluster Network Operator (CNO) custom resource (CR).
+1. At installation time (day 0), set the BGP manifest in your installation manifests/ directory to configure the noOverlayConfig object such as in the following managed and unmanaged routing examples.
+Example CNO CR using no-overlay with unmanaged routing
+
+```yaml
+apiVersion: operator.openshift.io/v1
+kind: Network
+metadata:
+  name: cluster
+spec:
+  additionalRoutingCapabilities:
+    providers:
+    - FRR
+  defaultNetwork:
+    ovnKubernetesConfig:
+      routeAdvertisements: Enabled
+      transport: NoOverlay
+      noOverlayConfig:
+        outboundSNAT: Enabled
+        routing: Unmanaged
+    type: OVNKubernetes
+```
+
+Example CNO CR using no-overlay with managed routing
+
+```yaml
+apiVersion: operator.openshift.io/v1
+kind: Network
+metadata:
+  name: cluster
+spec:
+  additionalRoutingCapabilities:
+    providers:
+    - FRR
+  defaultNetwork:
+    ovnKubernetesConfig:
+      routeAdvertisements: Enabled
+      transport: NoOverlay
+      noOverlayConfig:
+        outboundSNAT: Enabled
+        routing: Managed
+        bgpTopology: FullMesh
+        asNumber: 64512
+    type: OVNKubernetes
+```
+
+spec.defaultNetwork.ovnKubernetesConfig.noOverlayConfig.bgpTopology:: Specifies FullMesh for a full-mesh BGP fabric between nodes.
+spec.defaultNetwork.ovnKubernetesConfig.noOverlayConfig.asNumber:: Optional: specifies the BGP autonomous system number used in the default VRF. When omitted, 64512 is used.
+2. On a running cluster (day 2), configure the noOverlayConfig object in CNO using the following command:
+
+```terminal
+$ oc patch network.operator.openshift.io cluster --type merge --patch '{"spec":{"defaultNetwork":{"ovnKubernetesConfig":{"noOverlayConfig":{"outboundSNAT":"Enabled"}}}}}'
+```
+
+3. For managed routing, proceed to the verification step. Do not create RouteAdvertisements or FRRConfiguration objects. OVN-Kubernetes can reconcile the managed BGP fabric
+2. If you use unmanaged routing, add manifests to the installation manifests/ directory (day 0) for the following custom resources (CRs):
+1. Add the following FRRConfiguration CR:
+
+```yaml
+apiVersion: frrk8s.metallb.io/v1beta1
+kind: FRRConfiguration
+metadata:
+  name: external-bgp
+  namespace: openshift-frr-k8s
+  labels:
+    network: default
+spec:
+  bgp:
+    routers:
+    - asn: 64512
+      neighbors:
+      - address: 192.168.111.1
+        asn: 64512
+        disableMP: true
+        toReceive:
+          allowed:
+            mode: filtered
+```
+
+
+Replace spec.bgp.routers[].neighbors[].address, ASN values, and toReceive filters so they match your external BGP design.
+2. Add the following RouteAdvertisements CR:
+
+```yaml
+apiVersion: k8s.ovn.org/v1
+kind: RouteAdvertisements
+metadata:
+  name: default
+spec:
+  advertisements:
+  - PodNetwork
+  frrConfigurationSelector:
+    matchLabels:
+      network: default
+```
+
+3. Optional: Alternatively, you can create or apply the following CRs with oc apply (day 2):
+1. Create an FRRConfiguration CR that defines BGP peering toward your external router.
+Example FRRConfiguration CR for unmanaged routing
+
+```yaml
+apiVersion: frrk8s.metallb.io/v1beta1
+kind: FRRConfiguration
+metadata:
+  name: external-bgp
+  namespace: openshift-frr-k8s
+  labels:
+    network: default
+spec:
+  bgp:
+    routers:
+    - asn: 64512
+      neighbors:
+      - address: 192.168.111.1
+        asn: 64512
+        disableMP: true
+        toReceive:
+          allowed:
+            mode: filtered
+```
+
+
+Replace spec.bgp.routers[].neighbors[].address, ASN values, and toReceive filters so they match your external BGP design.
+2. Apply the FRRConfiguration CR using the following command:
+
+```terminal
+$ oc apply -f <frrconfiguration_file>.yaml
+```
+
+
+Replace <frrconfiguration_file>.yaml with your manifest file name.
+3. Create a RouteAdvertisements CR that advertises the pod network.
+Example RouteAdvertisements CR for unmanaged routing
+
+```yaml
+apiVersion: k8s.ovn.org/v1
+kind: RouteAdvertisements
+metadata:
+  name: default
+spec:
+  advertisements:
+  - PodNetwork
+  frrConfigurationSelector:
+    matchLabels:
+      network: default
+  networkSelectors:
+  - networkSelectionType: DefaultNetwork
+  nodeSelector: {}
+```
+
+
+[NOTE]
+----
+For unmanaged routing on the default network, at least one RouteAdvertisements object must select the default network. In the example, the spec.networkSelectors entry with networkSelectionType: DefaultNetwork selects the default network, spec.advertisements includes PodNetwork, and the RouteAdvertisements CR reaches Accepted=True in status. OVN-Kubernetes uses this configuration when advertising pod subnets to your BGP infrastructure.
+----
+4. Apply the RouteAdvertisements CR using the following command:
+
+```terminal
+$ oc apply -f <routeadvertisements_file>.yaml
+```
+
+
+Replace <routeadvertisements_file>.yaml with your file name.
+
+1. Verify that the OVN-Kubernetes pods are running:
+
+```terminal
+$ oc get pods -n openshift-ovn-kubernetes
+```
+
+
+* About BGP routing
+* Enabling BGP routing
+
+# Create a ClusterUserDefinedNetwork CR that uses underlay routing
+
+Create a layer 3 ClusterUserDefinedNetwork (CUDN) custom resource (CR) with no-overlay transport and unmanaged routing so pods use BGP routes instead of encapsulation for east-west traffic.
+
+You advertise pod subnets using FRRConfiguration and RouteAdvertisements CRs. For managed routing and a full-mesh BGP fabric between nodes on the default cluster network, see "Enable underlay routing for the default cluster network".
+
+
+[IMPORTANT]
+----
+* On a primary CUDN, NoOverlay mode supports unmanaged routing only. Managed routing (full-mesh BGP between nodes without external peers) is supported on the default cluster network only.
+* On a primary CUDN, NoOverlay transport and outboundSNAT set to Enabled are not supported.
+----
+
+* You have cluster-admin privileges.
+* Your cluster is installed on bare-metal infrastructure with single-node zone interconnect mode.
+* You have enabled the NoOverlayMode feature flag in the TechPreviewNoUpgrade feature set.
+* You enabled BGP routing support for the cluster.
+* You deployed FRR-K8s on cluster nodes.
+
+1. Create a ClusterUserDefinedNetwork CR that uses no-overlay transport.
+
+[NOTE]
+----
+For a primary layer 3 ClusterUserDefinedNetwork CR, every namespace that matches spec.namespaceSelector must include the k8s.ovn.org/primary-user-defined-network label before workloads can use the network; that label can only be set when the namespace is created.
+----
+1. Set spec.network.noOverlayOptions.routing to Unmanaged.
+Example ClusterUserDefinedNetwork CR for no-overlay mode with outboundSNAT set to Disabled
+
+```yaml
+apiVersion: k8s.ovn.org/v1
+kind: ClusterUserDefinedNetwork
+metadata:
+  name: high-perf-network
+  labels:
+    network: high-perf-network
+spec:
+  namespaceSelector:
+    matchLabels:
+      app: performance-sensitive
+  network:
+    topology: Layer3
+    layer3:
+      role: Primary
+      subnets:
+      - cidr: 10.200.0.0/16
+        hostSubnet: 24
+    transport: "NoOverlay"
+    noOverlayOptions:
+      outboundSNAT: "Disabled"
+      routing: "Unmanaged"
+```
+
+
+[IMPORTANT]
+----
+Pods running on a CUDN running NoOverlay mode cannot establish TCP connections to NodePort services. This occurs when externalTrafficPolicy is set to Cluster and the backend pod resides on a different node than the one targeted by the request. This issue occurs regardless of whether outbound SNAT is enabled or disabled.
+----
+2. Apply the ClusterUserDefinedNetwork CR by entering the following command:
+
+```terminal
+$ oc apply -f <cudn_file>.yaml
+```
+
+
+Replace <cudn_file>.yaml with the name of your ClusterUserDefinedNetwork CR file.
+2. Create a RouteAdvertisements CR
+1. Set spec.advertisements to PodNetwork to advertise the CUDN pod subnets to your external BGP infrastructure.
+Example RouteAdvertisements CR advertising the CUDN pod subnets
+
+```yaml
+apiVersion: k8s.ovn.org/v1
+kind: RouteAdvertisements
+metadata:
+  name: high-perf-network
+spec:
+  nodeSelector: {}
+  frrConfigurationSelector:
+    matchLabels:
+      network: high-perf-network
+  networkSelectors:
+  - networkSelectionType: ClusterUserDefinedNetworks
+    clusterUserDefinedNetworkSelector:
+      networkSelector:
+        matchLabels:
+          network: high-perf-network
+  advertisements:
+  - PodNetwork
+```
+
+
+where:
+spec.nodeSelector:: Specifies which nodes to include in the advertisements; when empty ({}), all nodes are selected.
+spec.frrConfigurationSelector:: Specifies the FRRConfiguration that peers with your external routers. Use matchLabels to select the FRRConfiguration by its labels.
+spec.networkSelectors.networkSelectionType:: Specifies the type of network to advertise. Set to ClusterUserDefinedNetworks to advertise a cluster user-defined network (CUDN). Set to DefaultNetwork to advertise the default cluster network.
+spec.advertisements:: Specifies the type of networks to advertise. Set to PodNetwork to advertise pod subnets. Set to EgressIP to advertise EgressIPs.
+2. Apply the RouteAdvertisements CR by entering the following command:
+
+```terminal
+$ oc apply -f <routeadvertisements_file>.yaml
+```
+
+
+Replace <routeadvertisements_file>.yaml with the name of your RouteAdvertisements CR file.
+3. Verify that the no-overlay transport was accepted by entering the following command:
+
+```terminal
+$ oc get clusteruserdefinednetwork high-perf-network -o yaml
+```
+
+
+# Reference for Cluster Network Operator (CNO) settings for default network underlay routing
+
+Review the Cluster Network Operator (CNO) custom resource (CR) fields that control BGP, route advertisements, and no-overlay mode for the default OVN-Kubernetes cluster network. No-overlay mode for the default network is configured on the CNO CR.
+
+
+```yaml
+apiVersion: operator.openshift.io/v1
+kind: Network
+metadata:
+  name: cluster
+spec:
+  additionalRoutingCapabilities:
+    providers:
+    - FRR
+  defaultNetwork:
+    ovnKubernetesConfig:
+      routeAdvertisements: Enabled
+      transport: NoOverlay
+      noOverlayConfig:
+        outboundSNAT: Enabled
+        routing: Managed
+        bgpTopology: FullMesh
+        asNumber: 64512
+    type: OVNKubernetes
+```
+
+
+where:
+
+spec.defaultNetwork.type:: Must be OVNKubernetes.
+spec.additionalRoutingCapabilities.providers:: Specifies additional routing components on the cluster. For BGP and route advertisements, include FRR so FRR-K8s is deployed on nodes.
+spec.defaultNetwork.ovnKubernetesConfig.routeAdvertisements:: Specifies whether the cluster can import and advertise routes as configured by RouteAdvertisements objects and related BGP configuration. Set to Enabled so the cluster can import and advertise routes as configured by RouteAdvertisements objects and related BGP configuration.
+spec.defaultNetwork.ovnKubernetesConfig.transport:: Specifies the transport protocol. Set to NoOverlay to disable the default encapsulation for the default network and use underlay for routing pod traffic.
+spec.defaultNetwork.ovnKubernetesConfig.noOverlayConfig.outboundSNAT:: Specifies outbound SNAT for the default network. Set to Enabled or Disabled. When Enabled, outbound pod traffic to networks outside the pod subnet is source NATed to the node IP when required. When Disabled, the underlay must route pod IPs directly. Pod-to-pod traffic within the cluster is not SNATed; traffic to node IPs, the Kubernetes API, and cluster DNS is still SNATed where applicable.
+spec.defaultNetwork.ovnKubernetesConfig.noOverlayConfig.routing:: Specifies the routing mode for the default network. Set to Managed for a full-mesh BGP fabric between nodes (intra-cluster), or Unmanaged when you provide FRRConfiguration and RouteAdvertisements CRs for external BGP.
+spec.defaultNetwork.ovnKubernetesConfig.noOverlayConfig.bgpTopology:: Specifies the BGP topology for the default network. When routing is set to Managed, set to FullMesh so every node runs a BGP router and peers with all other nodes.
+spec.defaultNetwork.ovnKubernetesConfig.noOverlayConfig.asNumber:: Specifies the BGP autonomous system (AS) number for the default VRF. When routing is set to Managed, optional BGP AS number for the default VRF. When omitted, the default is 64512.
+
+# Reference for underlay routing settings on a ClusterUserDefinedNetwork custom resource (CR)
+
+Review the full spec paths on a ClusterUserDefinedNetwork custom resource (CR) when you use no-overlay transport on a primary layer 3 cluster user-defined network.
+
+
+```yaml
+apiVersion: k8s.ovn.org/v1
+kind: ClusterUserDefinedNetwork
+metadata:
+  name: high-perf-network
+  labels:
+    network: high-perf-network
+spec:
+  namespaceSelector:
+    matchLabels:
+      app: performance-sensitive
+  network:
+    topology: Layer3
+    layer3:
+      role: Primary
+      subnets:
+      - cidr: 10.200.0.0/16
+        hostSubnet: 24
+    transport: "NoOverlay"
+    noOverlayOptions:
+      outboundSNAT: "Disabled"
+      routing: "Unmanaged"
+```
+
+
+where:
+
+spec.namespaceSelector:: Specifies label selectors for namespaces that can attach workloads to the primary network.
+spec.network.topology:: Specifies the network topology. Must be Layer3.
+spec.network.layer3.role:: Specifies the role of the network. For a primary CUDN, set to Primary.
+spec.network.layer3.subnets:: Specifies a list of objects with cidr and hostSubnet fields that define the pod address space and per-node prefix size.
+spec.network.transport:: Specifies the transport protocol. Set to NoOverlay to disable the default encapsulation for this CUDN and use underlay routing for pod traffic.
+spec.network.noOverlayOptions:: Specifies routing mode and SNAT behavior for this network. Required when transport is set to NoOverlay.
+spec.network.noOverlayOptions.routing:: Specifies the routing mode for the network. For a CUDN, set to Unmanaged only. You manage external BGP peers and RouteAdvertisements CR for this network. No-overlay managed routing mode is only supported on the default cluster network. You must configure no-overlay managed routing on the Cluster Network Operator (CNO) CR, not on a CUDN.
+spec.network.noOverlayOptions.outboundSNAT:: Specifies outbound SNAT for this network. For a primary ClusterUserDefinedNetwork CR with NoOverlay transport, set to Disabled when the underlay routes pod IPs directly. A value of Enabled is not supported on this CR type. To use Enabled or Disabled with no-overlay on the default cluster network, configure spec.defaultNetwork.ovnKubernetesConfig.noOverlayConfig.outboundSNAT on the CNO CR instead.
+
+# Troubleshoot connectivity for pods that use underlay routing
+
+To troubleshoot connectivity and resolve no-overlay connectivity issues, you can verify BGP sessions, route advertisements, and network status.
+
+* You have cluster-admin privileges.
+* You configured no-overlay mode for the default network or a ClusterUserDefinedNetwork (CUDN) CR.
+
+1. Verify that FRR-K8s pods are running by running the following command:
+
+```terminal
+$ oc get pods -n openshift-frr-k8s
+```
+
+2. If you configured no-overlay for the default network, verify the Cluster Network Operator (CNO) CR by running the following command:
+
+```terminal
+$ oc get network.operator cluster -o yaml
+```
+
+
+Confirm that spec.defaultNetwork.ovnKubernetesConfig includes the expected routeAdvertisements, transport, and noOverlayConfig values.
+3. If you use unmanaged routing, verify RouteAdvertisements objects by running the following commands:
+
+```terminal
+$ oc describe routeadvertisements <routeadvertisements_name>
+```
+
+
+Replace <routeadvertisements_name> with the name of your RouteAdvertisements object.
+
+The output should show Accepted=True in the status section.
+
+[NOTE]
+----
+If you use managed routing, you typically do not create RouteAdvertisements yourself for intra-cluster-only designs; if pod connectivity fails, continue with the remaining steps in this procedure.
+----
+4. If you configured a no-overlay ClusterUserDefinedNetwork CR, check its status by running the following command:
+
+```terminal
+$ oc get clusteruserdefinednetwork <cudn_name> -o yaml
+```
+
+
+Replace <cudn_name> with the name of your CUDN CR.
+5. Check for BGP-related errors in the OVN-Kubernetes logs by entering the following command:
+
+```terminal
+$ oc logs -n openshift-ovn-kubernetes -l app=ovnkube-node
+```
+
+6. Confirm that pod subnets are present in the node routing table by entering the following command:
+
+```terminal
+$ oc debug node/<node_name> -- chroot /host ip route
+```
+
+
+# Additional resources
+
+* About BGP routing
+* About route advertisements
+* About user-defined networks
+* Best practices for ClusterUserDefinedNetwork CRs
