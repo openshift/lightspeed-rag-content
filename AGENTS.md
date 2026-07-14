@@ -4,6 +4,20 @@
 
 All specifications live in `.ai/spec/`. Start with `.ai/spec/README.md` for project overview, reading order, and structure guide.
 
+## Commands
+
+```bash
+make build-byok-image  # Build the BYOK tool container image
+make test              # Run tests
+make lint              # Lint checks
+```
+
+## Conventions
+
+- Python codebase — follow the same style as lightspeed-service (Ruff, Black)
+- BYOK tool image is the primary deliverable; the main RAG content image is deprecated
+- OKP/Solr serves OCP product docs now; this repo only handles customer BYOK content
+
 ## Git and PR Workflow
 
 ### Commit Messages
@@ -30,6 +44,3 @@ When finishing a development branch:
 3. Push to the contributor's fork remote (not `origin`)
 4. Create the PR against `origin/main` using `--head <user>:<branch>`
 
-## Risk Levels
-
-Risk levels are enforced via a PreToolUse hook before every Jira create/edit call. The rubric and classification examples live in [lightspeed-team-harness/hooks/risk-rubric.md](https://github.com/openshift/lightspeed-team-harness/blob/main/hooks/risk-rubric.md).
