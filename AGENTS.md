@@ -7,16 +7,17 @@ All specifications live in `.ai/spec/`. Start with `.ai/spec/README.md` for proj
 ## Commands
 
 ```bash
-make build-byok-image  # Build the BYOK tool container image
-make test              # Run tests
-make lint              # Lint checks
+make build-image       # Build the RAG content container image
+make verify            # Lint + type checks
+make -C lsc test-unit  # Run unit tests (lsc library)
+make -C lsc verify     # Full lint suite (lsc library)
+make format            # Format code
 ```
 
 ## Conventions
 
 - Python codebase — follow the same style as lightspeed-service (Ruff, Black)
-- BYOK tool image is the primary deliverable; the main RAG content image is deprecated
-- OKP/Solr serves OCP product docs now; this repo only handles customer BYOK content
+- Two build targets: root Makefile for the main RAG content image, `lsc/` for the BYOK tool library
 
 ## Git and PR Workflow
 
