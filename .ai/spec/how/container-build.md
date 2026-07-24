@@ -132,7 +132,7 @@ The `ubi-minimal` image is pinned by SHA256 digest. Digest updates are managed b
 ## BYOK Containerfile.tool
 
 ```
-FROM ubi9/ubi:latest
+FROM registry.redhat.io/rhai/base-image-cpu-rhel9:3.3
   ├── dnf install buildah python3.12 python3.12-pip
   ├── pip install requirements.cpu.txt (--no-deps)
   ├── COPY embeddings_model

@@ -81,4 +81,4 @@ When what/ and how/ file names don't match 1:1, this table maps behavioral specs
 
 ## Relationship to lightspeed-service
 
-This project produces artifacts consumed by lightspeed-service. The service's `what/rag.md` spec describes how it loads and queries these indexes at runtime. This project's specs describe how the indexes are built. The integration contract is documented in `what/system-overview.md`.
+This project produces artifacts consumed by lightspeed-service. The `lightspeed-service` repo's `what/rag.md` spec describes how it loads and queries these indexes at runtime. This project's specs describe how the indexes are built. The integration contract is documented in `what/system-overview.md`.
