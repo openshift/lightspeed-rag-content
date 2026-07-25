@@ -50,7 +50,7 @@ This spec defines the rules for acquiring, processing, and organizing input cont
 
 15. Every document processed for embedding must carry at minimum two metadata fields: `docs_url` (source URL) and `title` (document title). The lsc library additionally includes `url_reachable` (boolean indicating URL validity) to support the `unreachable_action` filtering rules below. The plaintext pipeline does not include `url_reachable` in metadata.
 
-16. `title` is extracted from the first line of the document file, stripping any leading `# ` Markdown heading prefix. For OKP files, `title` comes from the TOML frontmatter instead.
+16. `title` is extracted from the first line of the document file, stripping any leading `# ` Markdown heading prefix. [DEPRECATED] For OKP files, `title` comes from the TOML frontmatter instead.
 
 17. `docs_url` is derived from the file path using content-type-specific URL construction rules:
     - [DEPRECATED] **OCP docs**: `https://docs.openshift.com/container-platform/{version}/{relative_path}.html` -- the `.txt` extension is replaced with `.html`, and the embeddings root directory prefix is stripped.
