@@ -31,7 +31,7 @@ BYOK enables customers to create custom RAG indexes from their own documentation
 | `OUT_IMAGE_TAG` | `byok-image` | Tag for the output container image |
 | `VECTOR_DB_INDEX` | `vector_db_index` | Index ID string |
 | `BYOK_TOOL_IMAGE` | `registry.redhat.io/.../lightspeed-rag-tool-rhel9:latest` | Base image for the tool stage |
-| `UBI_BASE_IMAGE` | `registry.access.redhat.com/ubi9/ubi:latest` | Base image for the output container |
+| `UBI_BASE_IMAGE` | `registry.access.redhat.com/ubi9/ubi:latest` | When set in the tool container environment: controls the output container's base image (default: `registry.access.redhat.com/ubi9/ubi:latest`). Note: `Containerfile.tool` itself uses a separate default of `registry.redhat.io/rhai/base-image-cpu-rhel9:3.3` for its own base image, also via `UBI_BASE_IMAGE`. |
 | `LOG_LEVEL` | `info` | buildah log level |
 
 ## Configuration Surface -- CLI Arguments (`generate_embeddings_tool.py`)
