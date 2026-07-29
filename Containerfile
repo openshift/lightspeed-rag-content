@@ -40,15 +40,15 @@ RUN if [ "$FLAVOR" == "gpu" ]; then \
 
 COPY scripts/generate_embeddings.py .
 RUN set -e && python3.12 generate_embeddings.py -f tvk-content -md embeddings_model \
-            -mn ${EMBEDDING_MODEL} -o vector_db/tvk-content \
-            -i tvk-content -hb $HERMETIC
+            -mn ${EMBEDDING_MODEL} -o vector_db \
+            -i tvk_rag_index -hb $HERMETIC
 # TODO: Add runbooks for MVP2
 # RUN set -e && python3.12 generate_embeddings.py -f tvk-content -r runbooks/alerts -md embeddings_model \
-#             -mn ${EMBEDDING_MODEL} -o vector_db/tvk-content \
-#             -i tvk-content -hb $HERMETIC
+#             -mn ${EMBEDDING_MODEL} -o vector_db \
+#             -i tvk_rag_index -hb $HERMETIC
 
 FROM registry.access.redhat.com/ubi9/ubi-minimal@sha256:12db9874bd753eb98b1ab3d840e75de5d6842ac0604fbd68c012adefe97140be
-COPY --from=lightspeed-rag-builder /workdir/vector_db/tvk-content /rag/vector_db/tvk-content
+COPY --from=lightspeed-rag-builder /workdir/vector_db /rag/vector_db
 COPY --from=lightspeed-rag-builder /workdir/embeddings_model /rag/embeddings_model
 
 # this directory is checked by ecosystem-cert-preflight-checks task in Konflux
