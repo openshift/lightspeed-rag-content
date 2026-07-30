@@ -1,0 +1,549 @@
+# Configure and use OADP VMFR
+
+
+Use OADP virtual machine (VM) file restore (VMFR) to discover VM backups, restore files, and access restored files through a web browser or SSH-based tools. You can recover individual files from VM backups without restoring the entire VM.
+
+# Enabling OADP VMFR
+
+Enable OADP virtual machine file restore (VMFR) by configuring the DataProtectionApplication (DPA) custom resource (CR) with the vmFileRestore section. You can allow file-level restore operations for VM backups.
+
+* You are logged in to the cluster with the cluster-admin role.
+* The OADP Operator is installed.
+* The DataProtectionApplication (DPA) CR is configured.
+* OpenShift Virtualization is installed and running on the cluster.
+* You have a default storage class configured on the cluster.
+
+1. Edit the DataProtectionApplication CR to enable the VMFR feature:
+
+```yaml
+apiVersion: oadp.openshift.io/v1alpha1
+kind: DataProtectionApplication
+metadata:
+  name: oadp-backup
+  namespace: openshift-adp
+spec:
+  configuration:
+    nodeAgent:
+      enable: true
+      uploaderType: kopia
+    velero:
+      defaultPlugins:
+        - kubevirt
+        - csi
+        - openshift
+        - aws
+      disableFsBackup: false
+  vmFileRestore:
+    enable: true
+  backupLocations:
+    - velero:
+        config:
+          profile: "default"
+          region: <region>
+        provider: aws
+        default: true
+        credential:
+          key: cloud
+          name: <cloud_credentials>
+        objectStorage:
+          bucket: <bucket_name>
+          prefix: velero
+```
+
+
+where:
+kubevirt:: Specifies the kubevirt Velero plugin in the defaultPlugins list. This plugin is required for VM backup and file-level restore operations.
+vmFileRestore:: Specifies the section in the DPA spec to enable the VMFR feature.
+enable:: Specifies whether to enable the VMFR feature. Set to true to enable the feature.
+2. Apply the DPA configuration by running the following command:
+
+```terminal
+$ oc apply -f <dpa_cr_filename>
+```
+
+
+Replace <dpa_cr_filename> with the file name containing the DPA CR configuration.
+
+1. To verify that the DPA is reconciled with the VMFR feature enabled, run the following command:
+
+```terminal
+$ oc get dpa -n openshift-adp -o yaml
+```
+
+
+In the output, verify that the status.conditions section includes a condition with type: VMFileRestoreReady and status: "True".
+2. To verify that the oadp-vm-file-restore-controller-manager pod is running, run the following command:
+
+```terminal
+$ oc get pod -n openshift-adp
+```
+
+
+The output should include a running oadp-vm-file-restore-controller-manager pod.
+
+# Creating a VirtualMachineBackupsDiscovery CR
+
+Create a VirtualMachineBackupsDiscovery (VMBD) custom resource (CR) to identify which Velero backups contain a specified virtual machine (VM). You can locate available backups before performing a file-level restore.
+
+After you create a VMBD CR, the CR undergoes the following phases:
+
+* The initial phase for the CR is New.
+* The controller compiles candidate backups and verifies VM presence in each backup.
+* Upon successful discovery, the status.phase field of the VMBD CR is updated to Completed.
+
+
+[IMPORTANT]
+----
+Create all VMFR custom resources in the protected namespace, which is openshift-adp by default.
+----
+
+* You are logged in to the cluster with the cluster-admin role.
+* You have installed the OADP Operator.
+* You have configured the DataProtectionApplication (DPA) CR with the VMFR feature enabled.
+* You have existing Velero backups that contain kubevirt virtual machine data.
+
+1. Create a VirtualMachineBackupsDiscovery CR YAML manifest file with the following configuration:
+
+```yaml
+apiVersion: oadp.openshift.io/v1alpha1
+kind: VirtualMachineBackupsDiscovery
+metadata:
+  name: find-my-vm-backups
+  namespace: openshift-adp
+spec:
+  virtualMachineName: "production-web-server"
+  virtualMachineNamespace: "production"
+```
+
+
+where:
+name:: Specifies a name for the VMBD CR. For example, find-my-vm-backups.
+namespace:: Specifies the namespace where the VMBD CR is created. This must be the OADP protected namespace, typically openshift-adp.
+virtualMachineName:: Specifies the name of the virtual machine to search for in backups. For example, production-web-server.
+virtualMachineNamespace:: Specifies the namespace of the target virtual machine. For example, production.
+2. Optional: To filter backups by a time range, add startTime and endTime fields to the spec section:
+
+```yaml
+apiVersion: oadp.openshift.io/v1alpha1
+kind: VirtualMachineBackupsDiscovery
+metadata:
+  name: find-my-vm-backups
+  namespace: openshift-adp
+spec:
+  virtualMachineName: "production-web-server"
+  virtualMachineNamespace: "production"
+  startTime: "2025-08-01"
+  endTime: "2025-09-01"
+```
+
+
+where:
+startTime:: Specifies the start of the time range to filter backups. Backups created before this date are excluded.
+endTime:: Specifies the end of the time range to filter backups. Backups created after this date are excluded.
+3. Optional: To discover specific backups by name, add the requestedBackups field to the spec section:
+
+```yaml
+apiVersion: oadp.openshift.io/v1alpha1
+kind: VirtualMachineBackupsDiscovery
+metadata:
+  name: find-my-vm-backups
+  namespace: openshift-adp
+spec:
+  virtualMachineName: "production-web-server"
+  virtualMachineNamespace: "production"
+  requestedBackups:
+    - "initial-backup-from-2024-01-01"
+    - "last-working-from-2025-07-28"
+```
+
+
+where:
+requestedBackups:: Specifies a list of backup names to include in the discovery. These backups are included regardless of any time range filter.
+4. To apply the VMBD CR configuration, run the following command:
+
+```terminal
+$ oc apply -f <vmbd_cr_filename>
+```
+
+
+Replace <vmbd_cr_filename> with the file name containing the VMBD CR configuration.
+
+* To verify that the VMBD CR is successfully created and discovery is complete, run the following command:
+
+```terminal
+$ oc get vmbd find-my-vm-backups -n openshift-adp -o yaml
+```
+
+
+```yaml
+apiVersion: oadp.openshift.io/v1alpha1
+kind: VirtualMachineBackupsDiscovery
+metadata:
+  name: find-my-vm-backups
+  namespace: openshift-adp
+spec:
+  virtualMachineName: "production-web-server"
+  virtualMachineNamespace: "production"
+status:
+  phase: Completed
+  validBackups:
+    - name: "backup-2025-09-20"
+      namespace: openshift-adp
+      createdAt: "2025-09-20T02:00:00Z"
+    - name: "backup-2025-09-15"
+      namespace: openshift-adp
+      createdAt: "2025-09-15T02:00:00Z"
+  backupDiscoveryProgress:
+    - name: "backup-2025-09-20"
+      namespace: openshift-adp
+      status: Completed
+      message: "VM found in backup"
+      createdAt: "2025-09-20T02:00:00Z"
+    - name: "backup-2025-09-15"
+      namespace: openshift-adp
+      status: Completed
+      message: "VM found in backup"
+      createdAt: "2025-09-15T02:00:00Z"
+  conditions:
+    - type: Ready
+      status: "True"
+      message: "Successfully discovered 2 valid backups"
+      reason: DiscoverySuccessful
+  discoveryStats:
+    totalCandidates: 2
+    completed: 2
+    failed: 0
+    inProgress: 0
+    pending: 0
+    skipped: 0
+  observedGeneration: 1
+```
+
+
+where:
+phase: Completed:: Specifies that the discovery process is complete.
+validBackups:: Specifies the list of backups that contain the specified virtual machine. Each entry includes the name, namespace, and createdAt timestamp.
+backupDiscoveryProgress:: Specifies the discovery progress for each candidate backup, including the status and message.
+discoveryStats:: Specifies the total number of candidate backups processed and the count of completed, failed, in-progress, pending, and skipped results.
+observedGeneration:: Specifies the last generation value processed by the controller.
+
+# Creating a VirtualMachineFileRestore CR
+
+Create a VirtualMachineFileRestore (VMFR) custom resource (CR) to make files from discovered virtual machine (VM) backups accessible for browsing and downloading. You can recover individual files without restoring the entire VM.
+
+After you create a VMFR CR, the CR undergoes the following phases:
+
+* The initial phase for the CR is New.
+* The controller validates the referenced discovery, restores PVCs, and creates file-serving resources.
+* Upon successful setup, the status.phase field of the VMFR CR is updated to Completed.
+
+
+[NOTE]
+----
+All VMFR custom resources must be created in the protected namespace, which is openshift-adp by default.
+----
+
+* You are logged in to the cluster with the cluster-admin role.
+* You have installed the OADP Operator.
+* You have configured the DataProtectionApplication (DPA) CR with the VMFR feature enabled.
+* You have created a VirtualMachineBackupsDiscovery (VMBD) CR and its status.phase is Completed.
+
+1. [Optional] Create a secret containing the credentials for accessing the file browser:
+
+If you do not create a secret, the VMFR controller creates a secret for you and references it in the VMFR CR.
+
+```yaml
+apiVersion: v1
+kind: Secret
+metadata:
+  name: vmfr-credentials
+  namespace: openshift-adp
+type: Opaque
+data:
+  password: <base64_encoded_password>
+  username: <base64_encoded_username>
+```
+
+
+where:
+password:: Specifies the base64-encoded password for the file browser. The password must be at least 12 characters long before encoding.
+username:: Specifies the base64-encoded username for the file browser.
+2. Create a VirtualMachineFileRestore CR YAML manifest file with the following configuration.
+
+To configure file browser access:
+
+```yaml
+apiVersion: oadp.openshift.io/v1alpha1
+kind: VirtualMachineFileRestore
+metadata:
+  name: restore-config-files
+  namespace: openshift-adp
+spec:
+  backupsDiscoveryRef: find-my-vm-backups
+  selectedBackups:
+    - backup-2025-09-20
+    - backup-2025-09-15
+  fileAccess:
+    fileBrowser:
+      credentialsSecretRef:
+        name: vmfr-credentials
+      exposeExternally: true
+```
+
+
+To configure SSH access:
+
+```yaml
+apiVersion: oadp.openshift.io/v1alpha1
+kind: VirtualMachineFileRestore
+metadata:
+  name: restore-config-files
+  namespace: openshift-adp
+spec:
+  backupsDiscoveryRef: find-my-vm-backups
+  selectedBackups:
+    - backup-2025-09-20
+    - backup-2025-09-15
+  fileAccess:
+    ssh: {}
+```
+
+
+where:
+name:: Specifies a name for the VMFR CR. For example, restore-config-files.
+namespace:: Specifies the namespace where the VMFR CR is created. This must be the OADP protected namespace, typically openshift-adp.
+backupsDiscoveryRef:: Specifies the name of the VMBD CR that contains the discovery results. This VMBD CR must be in the Completed phase.
+selectedBackups:: Specifies a list of backup names from the VMBD valid results to restore. A Velero restore operation is created for each backup in this list.
+fileAccess:: Specifies the configuration for accessing the restored files.
+fileBrowser:: Specifies the file browser configuration for web-based access.
+credentialsSecretRef:: Specifies the name of the Kubernetes secret that contains the credentials for file browser access.
+exposeExternally:: Specifies whether to create an external route for accessing the file browser. Set to true to create a publicly accessible route.
+ssh:: Specifies the SSH access configuration. Set to {} to enable SSH access with autogenerated credentials. The controller generates an SSH key pair and stores it in a Kubernetes secret.
+
+Optionally, you can also specify a username, and publickey for enabling the SSH access as shown in the following example:
+
+```yaml
+...
+   ssh:
+     username: fedora
+     publicKey: ""
+```
+
+3. To apply the VMFR CR configuration, run the following command:
+
+```terminal
+$ oc apply -f <vmfr_cr_filename>
+```
+
+
+Replace <vmfr_cr_filename> with the file name containing the VMFR CR configuration.
+
+* To verify that the VMFR CR is successfully created and file access is available, run the following command:
+
+```terminal
+$ oc get vmfr restore-config-files -n openshift-adp -o yaml
+```
+
+
+```yaml
+apiVersion: oadp.openshift.io/v1alpha1
+kind: VirtualMachineFileRestore
+metadata:
+  name: restore-config-files
+  namespace: openshift-adp
+spec:
+  backupsDiscoveryRef: find-my-vm-backups
+  selectedBackups:
+    - backup-2025-09-20
+    - backup-2025-09-15
+  fileAccess:
+    fileBrowser:
+      credentialsSecretRef:
+        name: vmfr-credentials
+      exposeExternally: true
+status:
+  phase: Completed
+  fileServingInfo:
+    fileBrowser:
+      clusterAccess: https://restore-config-files-fileserver-svc.production-production-web-server-a1b2c3.svc.cluster.local:8443
+      publicAccess: https://restore-config-files.vmfr.apps.example.com
+      credentialsSecretRef:
+        name: restore-config-files-filebrowser-xk4wm
+        namespace: production-production-web-server-a1b2c3
+  conditions:
+    - type: Ready
+      status: "True"
+      message: "File restore completed, files accessible via file server and external route"
+      reason: Completed
+    - type: Available
+      status: "True"
+      message: "File server is accessible and serving files"
+      reason: FileServerAvailable
+  pvcRestores:
+    - pvcName: production-web-server-dv
+      pvcNamespace: production
+      pvcUID: 05ac1521-2a16-4a71-b81f-ccad592b89cd
+      restores:
+        - veleroBackupName: backup-2025-09-20
+          veleroBackupNamespace: openshift-adp
+          veleroRestoreName: vmfr-restore-config-files-backup-2025-09-20-89lfl
+          veleroRestoreNamespace: openshift-adp
+          phase: Completed
+          state: available
+          timestamp: "2025-09-20T02:00:00Z"
+        - veleroBackupName: backup-2025-09-15
+          veleroBackupNamespace: openshift-adp
+          veleroRestoreName: vmfr-restore-config-files-backup-2025-09-15-bfqx4
+          veleroRestoreNamespace: openshift-adp
+          phase: Completed
+          state: available
+          timestamp: "2025-09-15T02:00:00Z"
+      size: 150Mi
+  createdNamespace: production-production-web-server-a1b2c3
+  observedGeneration: 1
+```
+
+
+where:
+phase: Completed:: Specifies that the file restore process is complete and file-serving endpoints are available.
+fileServingInfo.fileBrowser:: Specifies the endpoint details and credentials for accessing the restored files through the file browser.
+clusterAccess:: Specifies the cluster-internal URL for accessing the file browser.
+publicAccess:: Specifies the externally accessible URL for the file browser. This field is present only when exposeExternally is set to true.
+credentialsSecretRef:: Specifies the Kubernetes secret that contains the generated credentials for accessing the file browser interface, including the name and namespace of the secret.
+pvcRestores:: Specifies the restore status grouped by PVC. Each PVC entry includes the pvcName, pvcNamespace, pvcUID, and a restores list with details for each backup restore.
+state:: Specifies the state of the restored PVC. Possible values include available, processing, failed, backup-deleted, backup-missing, unsupported-plugin, and extraction-failed.
+createdNamespace:: Specifies the temporary namespace created for hosting the file-serving resources. This namespace is cleaned up when you delete the VMFR CR.
+
+# Accessing restored files through a web browser
+
+Access restored virtual machine (VM) files through a web browser by using the file browser interface provided by the VirtualMachineFileRestore (VMFR) custom resource (CR). You can browse, preview, and download files from VM backups.
+
+* You are logged in to the cluster with the cluster-admin role.
+* A VirtualMachineFileRestore (VMFR) CR with the fileAccess.fileBrowser section configured exists.
+* The VMFR CR status.phase is Completed.
+
+1. To retrieve the file browser access URLs, run the following command:
+
+```terminal
+$ oc get vmfr <vmfr_cr_name> -n openshift-adp -o jsonpath='{.status.fileServingInfo.fileBrowser}'
+```
+
+
+Replace <vmfr_cr_name> with the name of the VMFR CR. The output includes the clusterAccess URL for cluster-internal access and the publicAccess URL if exposeExternally is set to true.
+2. If the VMFR CR has exposeExternally set to true, open a web browser and navigate to the publicAccess URL from the status output.
+
+If exposeExternally is not enabled, set up port forwarding to the file-serving service by running the following command:
+
+```terminal
+$ oc port-forward svc/vmfr-<vmfr_cr_name>-fileserver-svc -n <restore_namespace> 8443:8443
+```
+
+
+Replace <vmfr_cr_name> with the name of the VMFR CR and <restore_namespace> with the namespace from the status.createdNamespace field. Then navigate to https://localhost:8443 in your web browser.
+3. Log in by using the credentials from the secret you created for file browser access.
+OADP VM File Restore Browser login page
+![OADP VM File Restore Browser login page]
+4. Browse the files organized by date, backup name, and PVC name.
+File browser listing showing backup contents
+![File browser listing showing backup contents]
+5. View the file content by selecting the file. To download a file, select the file and click Download. To download a directory as an archive, select the directory and click Download.
+File preview in the file browser
+![File preview in the file browser]
+
+# Accessing restored files through SSH
+
+Access restored virtual machine (VM) files through SSH by using rsync, scp, or sftp with the VirtualMachineFileRestore (VMFR) custom resource (CR). You can transfer files from VM backups efficiently.
+
+When you configure SSH access, the VMFR controller autogenerates an SSH key pair and stores it in a Kubernetes secret. The default SSH username is oadp. The SSH file server listens on port 2222.
+
+The remote path for restored files follows the format /restores/<date>/<backup_name>/<vm_name>/<path_to_file>.
+
+* You are logged in to the cluster with the cluster-admin role.
+* You have created a VirtualMachineFileRestore (VMFR) CR with the fileAccess.ssh section configured.
+* The VMFR CR status.phase is Completed.
+
+1. To retrieve the SSH access information, run the following command:
+
+```terminal
+$ oc get vmfr <vmfr_cr_name> -o jsonpath='{.status.fileServingInfo.ssh}' | jq
+```
+
+
+Replace <vmfr_cr_name> with the name of the VMFR CR. The output includes the clusterAccess URL and credentialsSecretRef containing the name and namespace of the generated SSH key secret.
+2. Retrieve the private key from the generated secret and save it to a file:
+
+```terminal
+$ oc get secret <secret_name> -n <secret_namespace> -o jsonpath='{.data.privateKey}' | base64 -d > id-rsa
+```
+
+
+Replace <secret_name> and <secret_namespace> with the values from the status.fileServingInfo.ssh.credentialsSecretRef field.
+3. Set the correct permissions on the private key file:
+
+```terminal
+$ chmod 600 id-rsa
+```
+
+4. Get the name of the file server service created in the VMFR namespace:
+
+```terminal
+$ oc get svc -n <created_namespace> | grep fileserver
+```
+
+
+Replace <created_namespace> with the value from the status.createdNamespace field of the VMFR CR.
+5. To copy a file from the backup by using scp, run the following command:
+
+```terminal
+$ scp -P 2222 -i id-rsa \
+  -o StrictHostKeyChecking=no \
+  -o UserKnownHostsFile=/dev/null \
+  oadp@<fileserver_svc>.<created_namespace>.svc.cluster.local:<remote_path> \
+  <local_destination>
+```
+
+
+where:
+<fileserver_svc>:: Specifies the name of the file server service.
+<created_namespace>:: Specifies the namespace from the status.createdNamespace field.
+<remote_path>:: Specifies the path to the file in the format /restores/<date>/<backup_name>/<vm_name>/<path_to_file>.
+<local_destination>:: Specifies the local file path to save the restored file.
+6. To start an interactive SFTP session, run the following command:
+
+```terminal
+$ sftp -P 2222 -i id-rsa \
+  -o StrictHostKeyChecking=no \
+  oadp@<fileserver_svc>.<created_namespace>.svc.cluster.local
+```
+
+
+# Deleting a VirtualMachineFileRestore CR
+
+Delete a VirtualMachineFileRestore (VMFR) custom resource (CR) to clean up file-serving resources after you have recovered the files you need. This helps you free cluster resources used by the file-serving pod and temporary namespace.
+
+When you delete a VMFR CR, the controller performs the following cleanup operations:
+
+* Stops the file-serving pod and associated services.
+* Deletes the restored PVCs.
+* Deletes the temporary namespace if one was automatically created.
+
+* You are logged in to the cluster with the cluster-admin role.
+* You have a VirtualMachineFileRestore CR that you want to delete.
+
+* To delete a VirtualMachineFileRestore CR, run the following command:
+
+```terminal
+$ oc delete vmfr <vmfr_cr_name> -n openshift-adp
+```
+
+
+Replace <vmfr_cr_name> with the name of the VMFR CR.
+
+* To verify that the VMFR CR is deleted and resources are cleaned up, run the following command:
+
+```terminal
+$ oc get vmfr -n openshift-adp
+```
+
+
+The deleted VMFR CR should not appear in the output.

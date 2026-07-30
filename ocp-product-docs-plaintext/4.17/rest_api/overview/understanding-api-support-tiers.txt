@@ -16,7 +16,9 @@ All commercially supported APIs, components, and features are associated under o
 
 ## API tier 1
 
-APIs and application operating environments (AOEs) are stable within a major release. They may be deprecated within a major release, but they will not be removed until a subsequent major release.
+APIs and application operating environments (AOEs) are stable within a major version. APIs and AOEs can be deprecated within a major version; however, they will not be removed until a subsequent major version.
+
+After an API or AOE is deprecated, the API or AOE will be available for a minimum of one year or until the next major version is released, whichever is longer.
 
 ## API tier 2
 

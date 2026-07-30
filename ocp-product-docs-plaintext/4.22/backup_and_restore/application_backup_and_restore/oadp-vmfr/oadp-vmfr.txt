@@ -1,0 +1,178 @@
+# OADP virtual machine file restore
+
+
+Use OADP virtual machine file restore (VMFR) to recover individual files from kubevirt VM backups without restoring the entire VM. You can browse, compare, and download files from multiple backups simultaneously.
+
+# What problem is OADP VMFR solving
+
+Recover individual files from kubevirt virtual machine (VM) backups without restoring the entire VM. You can browse multiple backups simultaneously and retrieve only the files you need through standard tools such as a web browser or rsync.
+
+Current VM backup recovery workflows require you to restore an entire virtual machine to access a single file. This uses substantial cluster resources and time. The virtual machine file restore (VMFR) feature addresses this problem by providing a Kubernetes-native mechanism for file-level recovery from VM backups created by OADP.
+
+The VMFR feature uses a two-phase approach:
+
+1. Backup discovery: Identify which Velero backups contain a specified virtual machine by creating a VirtualMachineBackupsDiscovery (VMBD) custom resource (CR).
+2. File restore: Make the discovered backup files accessible for browsing and downloading by creating a VirtualMachineFileRestore (VMFR) CR.
+
+OADP VMFR offers the following benefits:
+
+* You can recover individual files from VM backups without restoring the entire VM.
+* You can browse and compare files across multiple backup versions simultaneously.
+* You can access restored files through a web browser or SSH-based tools such as rsync, scp, and sftp.
+* All operations are managed within the cluster by using standard Kubernetes resources.
+* Temporary namespaces isolate file-serving resources and are cleaned up automatically.
+
+# When to use OADP VMFR
+
+Review the following scenarios where OADP virtual machine file restore (VMFR) addresses common file recovery challenges. This helps you determine whether VMFR is the appropriate solution for your use case.
+
+Configuration issue investigation:: You have a production virtual machine (VM) that has a configuration issue. You need to compare configuration files from before and after the incident. Without VMFR, you have to restore multiple full VMs and perform manual file comparisons, which uses significant time and resources. With VMFR, you can browse files from multiple backup versions simultaneously and compare configurations without restoring any VMs.
+Selective file recovery:: You accidentally delete critical documents from a VM. The files exist in a recent backup, but restoring the entire VM would overwrite changes made since that backup. With VMFR, you can recover the specific files you need without losing the current VM state or overwriting recent modifications.
+Multi-VM backup discovery:: You have a namespace that runs multiple VMs with daily backups over several weeks. You need to recover a file from a specific VM but do not know which backup contains it. Without VMFR, you must inspect each backup individually or attempt multiple restores. With VMFR, you can create a VirtualMachineBackupsDiscovery CR to identify which backups contain the target VM and then restore files from the target backup.
+
+# OADP VMFR custom resources
+
+Use OADP virtual machine file restore (VMFR) custom resources to discover VM backups and restore individual files from those backups. You can perform file-level recovery for kubevirt VMs.
+
+The OADP VMFR feature uses the following custom resources (CRs) to perform file-level restore operations:
+
+
+
+# How OADP VMFR works
+
+Review how OADP virtual machine file restore (VMFR) processes file-level restore requests through a two-phase workflow that discovers virtual machine (VM) backups and makes their contents accessible for browsing and downloading.
+
+## Backup discovery phase
+
+The backup discovery phase identifies which Velero backups contain a specified VM. When you create a VirtualMachineBackupsDiscovery (VMBD) CR, the discovery controller performs the following steps:
+
+1. Compiles a list of candidate backups from explicitly named backups or all cluster backups.
+2. Filters candidates by time range if you specify startTime and endTime boundaries.
+3. Validates that each candidate backup is in the Completed phase.
+4. Verifies that the specified VM is present in each candidate backup by querying Velero metadata.
+5. Updates the VMBD status with categorized results of valid and invalid backups.
+
+## File restore phase
+
+The file restore phase makes the discovered backup files accessible. When you create a VirtualMachineFileRestore (VMFR) CR, the restore controller performs the following steps:
+
+1. Validates that the referenced VMBD CR exists and is in the Completed phase.
+2. Verifies that the selected backups exist in the valid discovery results.
+3. Extracts persistent volume claim (PVC) metadata from the selected backup manifests.
+4. Creates a temporary namespace to isolate file-serving resources.
+5. Triggers Velero restore objects for the PVCs for each backup. The restore objects use includedResources to restore only PersistentVolumeClaims (PVCs) and VolumeSnapshots, and use orLabelSelectors to target specific PVCs by their velero.kubevirt.io/pvc-uid label. A namespaceMapping redirects the restored PVCs to the temporary namespace.
+6. Creates a file-serving pod with an initialization container and access sidecars.
+
+## File-serving pod architecture
+
+The file-serving pod uses libguestfs and FUSE to mount VM disk images without requiring privileged access. The initialization container performs the following steps:
+
+1. Scans PVCs to locate VM disk image files.
+2. Detects disk image formats, including qcow2 and raw.
+3. Mounts disk images as read-only under the /backups/ directory.
+4. Organizes files by backup name and PVC name.
+
+After initialization, the sidecars provide file access through web or SSH methods.
+
+The mounted directory structure provides an intuitive organization as shown in the following example:
+
+
+```terminal
+/backups/
+  <backup_name_1>/
+    <vm_disk_root>/
+      etc/
+      var/
+    <vm_disk_data>/
+      application-data/
+  <backup_name_2>/
+    <vm_disk_root>/
+      etc/
+      var/
+```
+
+
+# OADP VMFR prerequisites
+
+Configure your cluster environment to enable OADP virtual machine file restore (VMFR) operations by meeting the following prerequisites. This helps you perform file-level restore from virtual machine backups.
+
+* You have installed the OADP Operator.
+* You have configured the DataProtectionApplication (DPA) CR with the vmFileRestore.enable field set to true.
+* The DPA CR includes the kubevirt plugin in the defaultPlugins list.
+* OpenShift Virtualization is installed and running on the cluster.
+* You have a default storage class configured on the cluster.
+* You have existing Velero backups that contain kubevirt virtual machine data.
+
+# OADP VMFR file access methods
+
+Access restored files from virtual machine (VM) backups through a web browser or SSH-based tools. OADP virtual machine file restore (VMFR) provides access methods that you can configure individually or together.
+
+## Web browser access
+
+The web access method uses a FileBrowser container to serve an HTTPS interface for browsing and downloading files. Web browser access provides the following capabilities:
+
+* Directory navigation across backup versions
+* File preview for common text and image formats
+* Individual file or directory archive downloads
+* Credential management through Kubernetes secrets
+* ClusterIP service exposure for internal cluster access
+* Optional external route exposure for access outside the cluster by setting exposeExternally: true in the VMFR CR
+
+## SSH-based access
+
+The SSH access method provides command-line file transfer capabilities through key-based authentication. When you configure fileAccess.ssh: {} in the VMFR CR, the controller autogenerates an SSH key pair and stores it in a Kubernetes secret. SSH-based access supports the following tools:
+
+* scp for individual file transfer
+* sftp for interactive file browsing sessions
+* rsync over SSH for synchronizing files and directories
+
+SSH access uses the following defaults:
+
+* Default username: oadp
+* Default port: 2222
+* Remote path format: `/restores/<date>/<backup_name>/<vm_name>/_<path_to_fi
+* SSH access uses key-based authentication only. Password-based logins are not supported.
+
+# OADP VMFR limitations
+
+Review the limitations of OADP virtual machine file restore (VMFR) to understand which operations are restricted. This helps you plan appropriate file-level restore strategies within the supported functionality.
+
+The following limitations apply to OADP VMFR:
+
+* VMFR supports only kubevirt VM backups created by OADP with the kubevirt Velero plugin. Backups created without this plugin are not supported.
+* Restored files are mounted as read-only. You cannot modify files directly in the backup.
+* VMFR supports the following disk image formats: qcow2 and raw. Other disk image formats are not supported.
+* VMFR supports the following file systems: ext4, xfs, ntfs, and fat. Other file systems are not supported.
+* File-serving pods require sufficient disk capacity to mount and serve backup data. Each restore operation mounts the PVC at the size it was at the time of backup. Ensure that your cluster has adequate disk resources available.
+* The VMFR CR must reference a VirtualMachineBackupsDiscovery CR that is in the Completed phase. You cannot create a VMFR CR without a completed discovery.
+* VMFR does not replace full VM restore capabilities. File-level restore and full VM restore are separate workflows that coexist.
+* VMFR does not support hot-mount capabilities into running VMs.
+
+# OADP VMFR security considerations
+
+Review the security considerations for OADP virtual machine file restore (VMFR) to understand how access control, data protection, and multi-tenancy are managed. This helps you to plan secure file-level restore operations.
+
+Access control:: VMFR enforces the following access control policies:
+* File-serving resources are created in a temporary namespace that is separate from the OADP namespace. This namespace is owned by the VirtualMachineFileRestore CR and is cleaned up automatically when you delete the CR.
+* The discovery controller requires read-only access to Velero Backup resources.
+* The file restore controller requires create and delete access for namespaces, pods, services, and PVCs.
+* Cluster administrators require create, read, update, and delete access to VirtualMachineBackupsDiscovery and VirtualMachineFileRestore resources in the OADP namespace.
+* Controllers authenticate to object storage by using the Velero backup storage location credentials. Controllers have read-only access to backup data and never modify backups.
+Data protection:: VMFR protects data in transit by using the following mechanisms:
+* Web browser access uses HTTPS endpoints with TLS certificates.
+* SSH access uses auto generated key pairs.
+* Credentials are stored in Kubernetes secrets.
+Multi-tenancy:: VMFR supports multi-tenancy through namespace isolation:
+* Multiple VirtualMachineFileRestore resources can exist simultaneously. Each resource creates an isolated temporary namespace.
+* Resources from different restores cannot interfere with each other.
+* You can restore the same VM from different backups in parallel.
+* Temporary namespace names are derived from the VirtualMachineFileRestore resource name, and PVC names in the temporary namespace use the backup name as a suffix to prevent naming conflicts.
+
+# OADP VMFR discovery and restore phases
+
+Review the status phases of VirtualMachineBackupsDiscovery (VMBD) and VirtualMachineFileRestore (VMFR) custom resources (CRs) to track the progress of file-level restore operations. This helps you monitor and troubleshoot VMFR requests.
+
+
+
+
+

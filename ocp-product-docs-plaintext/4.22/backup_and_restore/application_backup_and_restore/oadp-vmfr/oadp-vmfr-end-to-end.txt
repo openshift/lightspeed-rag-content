@@ -1,0 +1,318 @@
+# Recovering files from a virtual machine backup
+
+Recover files from a virtual machine (VM) backup by creating a backup, discovering which backups contain the target VM, and restoring individual files through SSH. Complete this end-to-end OADP VM file restore (VMFR) workflow to quickly regain access to your data.
+
+* You are logged in to the cluster with the cluster-admin role.
+* You have installed the OADP Operator.
+* OpenShift Virtualization is installed and running on the cluster.
+* You have installed the virtctl CLI tool to access the VM.
+
+1. Create a secret for the cloud storage credentials by running the following command:
+
+```terminal
+$ oc create secret generic <secret_name> -n openshift-adp --from-file cloud=<credentials_file_path>
+```
+
+
+where:
+<secret_name>:: Specifies the name of the cloud credentials secret.
+<credentials_file_path>:: Specifies the path to the file that contains the cloud storage credentials.
+2. Create a DataProtectionApplication (DPA) CR with the VMFR feature enabled and the kubevirt plugin:
+
+```yaml
+apiVersion: oadp.openshift.io/v1alpha1
+kind: DataProtectionApplication
+metadata:
+  name: vmfr-dpa
+  namespace: openshift-adp
+spec:
+  backupLocations:
+    - velero:
+        credential:
+          key: cloud
+          name: <secret_name>
+        default: true
+        objectStorage:
+          bucket: <bucket_name>
+          prefix: velero
+        provider: <provider>
+  configuration:
+    velero:
+      defaultPlugins:
+        - csi
+        - openshift
+        - kubevirt
+        - <provider>
+      disableFsBackup: false
+    nodeAgent:
+      enable: true
+      uploaderType: kopia
+  vmFileRestore:
+    enable: true
+```
+
+
+where:
+<secret_name>:: Specifies the name of the cloud credentials secret you created.
+<bucket_name>:: Specifies the name of the object storage bucket.
+<provider>:: Specifies the cloud provider plugin, such as aws, gcp, or azure.
+vmFileRestore:: Enables the VMFR feature by setting the enable field to true.
+3. Apply the DPA configuration by running the following command:
+
+```terminal
+$ oc apply -f <dpa_cr_filename>
+```
+
+4. Verify that the DPA is reconciled and the VMFR feature is enabled by running the following command:
+
+```terminal
+$ oc get dpa -n openshift-adp -o yaml
+```
+
+
+In the output, verify that the status.conditions section includes a condition with type: VMFileRestoreReady and status: "True".
+5. Verify that the velero, nodeAgent, and oadp-vm-file-restore-controller-manager pods are running by running the following command:
+
+```terminal
+$ oc get pod -n openshift-adp
+```
+
+6. Generate an SSH key pair for accessing the VM:
+
+```terminal
+$ ssh-keygen -t ed25519 -f ~/.ssh/<vm_key_name> -C "<vm_key_name>"
+```
+
+
+Replace <vm_key_name> with a name for the SSH folder and the key file.
+7. Create a namespace for the VM by running the following command:
+
+```terminal
+$ oc create ns <vm_namespace>
+```
+
+8. Create a Kubernetes secret with the SSH public key in the VM namespace:
+
+```terminal
+$ oc create secret generic <ssh_secret_name> \
+  --from-file=key=<path_to_public_key> \
+  -n <vm_namespace>
+```
+
+
+where:
+<ssh_secret_name>:: Specifies the name of the secret that contains the SSH public key.
+<path_to_public_key>:: Specifies the path to the SSH public key file you created in an earlier step. For example, $HOME/.ssh/vm-key.pub.
+<vm_namespace>:: Specifies the namespace for the VM.
+9. Create a VirtualMachine CR by using the built-in VM template fedora-server-small:
+
+```terminal
+$ oc process -n openshift fedora-server-small -p NAME=<vm_name> | oc apply -n <vm_namespace> -f -
+```
+
+
+where:
+<vm_name>:: Specifies the name of the VM.
+<vm_namespace>:: Specifies the namespace for the VM.
+10. Wait for the VM to be ready:
+
+```terminal
+$ oc wait --for=condition=Ready vmi/<vm_name> -n <vm_namespace>
+```
+
+11. Patch the VM configuration accessCredentials object with the SSH public key:
+
+```terminal
+$ oc patch vm <vm_name> -n <vm_namespace> --type=merge -p '{"spec":{"template":{"spec":{"accessCredentials":[{"sshPublicKey":{"propagationMethod":{"noCloud":{}},"source":{"secret":{"secretName":"<ssh_secret_name>"}}}}]}}}}'
+```
+
+
+where:
+<vm_name>:: Specifies the name of the VM.
+<vm_namespace>:: Specifies the namespace for the VM.
+<ssh_secret_name>:: Specifies the name of the secret that contains the SSH public key.
+12. SSH to the VM and create a test file:
+
+```terminal
+$ virtctl ssh <vm_user>@vmi/<vm_name> \
+  -n <vm_namespace> \
+  --identity-file=$HOME/.ssh/<vm_key_name> \
+  --local-ssh-opts="-o StrictHostKeyChecking=no" \
+  -c "echo 'Test file for VMFR validation - $(date)' > /home/fedora/test-vmfr-file.txt"
+```
+
+
+where:
+<vm_user>:: Specifies the name of the VM user. For the in-built VM template, the user name is fedora.
+13. Create a Backup CR to back up the VM namespace:
+
+```yaml
+apiVersion: velero.io/v1
+kind: Backup
+metadata:
+  name: <backup_name>
+  namespace: openshift-adp
+spec:
+  includedNamespaces:
+    - <vm_namespace>
+  snapshotMoveData: true
+```
+
+14. Apply the Backup CR by running the following command:
+
+```terminal
+$ oc apply -f <backup_cr_filename>
+```
+
+15. Verify that the backup is complete by running the following command:
+
+```terminal
+$ oc get backup.velero <backup_name> -n openshift-adp -o jsonpath='{.status.phase}'
+```
+
+
+The output should display Completed.
+16. Create a VirtualMachineBackupsDiscovery CR to identify which backups contain the target VM:
+
+```yaml
+apiVersion: oadp.openshift.io/v1alpha1
+kind: VirtualMachineBackupsDiscovery
+metadata:
+  name: <vmbd_name>
+  namespace: openshift-adp
+spec:
+  virtualMachineName: <vm_name>
+  virtualMachineNamespace: <vm_namespace>
+```
+
+17. Apply the VMBD CR by running the following command:
+
+```terminal
+$ oc apply -f <vmbd_cr_filename>
+```
+
+18. Verify that the discovery is complete by running the following command:
+
+```terminal
+$ oc get vmbd <vmbd_name> -n openshift-adp
+```
+
+
+The PHASE column should display Completed.
+19. Create a VirtualMachineFileRestore CR with SSH access to restore files from the discovered backups:
+
+```yaml
+apiVersion: oadp.openshift.io/v1alpha1
+kind: VirtualMachineFileRestore
+metadata:
+  name: <vmfr_name>
+  namespace: openshift-adp
+spec:
+  backupsDiscoveryRef: <vmbd_name>
+  fileAccess:
+    ssh: {}
+```
+
+
+The ssh: {} configuration instructs the controller to autogenerate an SSH key pair and store it in a Kubernetes secret. The default SSH username is oadp.
+20. Apply the VMFR CR by running the following command:
+
+```terminal
+$ oc apply -f <vmfr_cr_filename>
+```
+
+21. Wait for the VMFR phase to complete:
+
+```terminal
+$ oc get vmfr <vmfr_name> -n openshift-adp
+```
+
+
+The PHASE column should display Completed.
+22. Retrieve the SSH access information by running the following command:
+
+```terminal
+$ oc get vmfr <vmfr_name> -o jsonpath='{.status.fileServingInfo.ssh}' | jq
+```
+
+
+The output includes the clusterAccess URL and the credentialsSecretRef containing the name and namespace of the auto generated SSH key secret.
+23. Retrieve the private key from the auto generated secret and save it to a file:
+
+```terminal
+$ oc get secret <secret_name> -n <secret_namespace> -o jsonpath='{.data.privateKey}' | base64 -d > id-rsa
+```
+
+
+Replace <secret_name> and <secret_namespace> with the values from the status.fileServingInfo.ssh.credentialsSecretRef field.
+24. Copy the private key to the VM so that you can use it for scp from within the VM:
+
+```terminal
+$ virtctl scp id-rsa \
+  <vm_user>@vmi/<vm_name>:/home/<vm_user>/id-rsa \
+  -n <vm_namespace> \
+  --identity-file=$HOME/.ssh/<vm_key_name>
+```
+
+25. Update the file permissions on the private key inside the VM:
+
+```terminal
+$ virtctl ssh <vm_user>@vmi/<vm_name> \
+  -n <vm_namespace> \
+  --identity-file=$HOME/.ssh/<vm_key_name> \
+  --local-ssh-opts="-o StrictHostKeyChecking=no" \
+  -c "chmod 600 /home/<vm_user>/id-rsa"
+```
+
+26. Get the name of the file server service created in the VMFR namespace:
+
+```terminal
+$ SVC=$(oc get svc -n <created_namespace> | grep fileserver | awk '{print $1}')
+```
+
+
+Replace <created_namespace> with the value from the status.createdNamespace field of the VMFR CR.
+27. Restore the file by using scp from within the VM. The remote path format is /restores/<date>/<backup_name>/<vm_name>/<path_to_file>:
+
+```terminal
+$ virtctl ssh <vm_user>@vmi/<vm_name> \
+  -n <vm_namespace> \
+  --identity-file=$HOME/.ssh/<vm_key_name> \
+  --local-ssh-opts="-o StrictHostKeyChecking=no" \
+  -c "scp -P 2222 \
+  -i /home/<vm_user>/id-rsa \
+  -o StrictHostKeyChecking=no \
+  -o UserKnownHostsFile=/dev/null \
+  oadp@<fileserver_svc>.<created_namespace>.svc.cluster.local:<remote_path> \
+  /tmp/restored.txt"
+```
+
+
+where:
+<fileserver_svc>:: Specifies the name of the file server service you retrieved in an earlier step.
+<created_namespace>:: Specifies the namespace from the status.createdNamespace field.
+<remote_path>:: Specifies the path to the file in the format /restores/<date>/<backup_name>/<vm_name>/<path_to_file>. For example, "/restores/2026-02-10/test-backup/fedora-vm-test/home/fedora/test-vmfr-file.txt"
+28. Verify that the restored file is intact by comparing MD5 checksums:
+
+```terminal
+$ virtctl ssh <vm_user>@vmi/<vm_name> \
+  -n <vm_namespace> \
+  --identity-file=$HOME/.ssh/<vm_key_name> \
+  --local-ssh-opts="-o StrictHostKeyChecking=no" \
+  -c "echo '===MD5 Checksums===' && md5sum /home/fedora/test-vmfr-file.txt /tmp/restored.txt"
+```
+
+
+The checksums of the original and restored files should match. You should see an output as shown in the following example:
+
+```terminal
+===MD5 Checksums===
+92245490c552e83baf5f2a2e898d9fff  /home/fedora/test-vmfr-file.txt
+92245490c552e83baf5f2a2e898d9fff  /tmp/restored.txt
+```
+
+29. After you have recovered the files, delete the VMFR CR to clean up resources:
+
+```terminal
+$ oc delete vmfr <vmfr_name> -n openshift-adp
+```
