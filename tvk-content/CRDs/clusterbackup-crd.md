@@ -8,7 +8,7 @@ The ClusterBackup CR triggers a multi-namespace backup defined by a ClusterBacku
 
 | Field | Type | Description | Required |
 |-------|------|-------------|----------|
-| `spec.type` | string | Backup type: `Full`, `Incremental`, or `Mixed` | Yes |
+| `spec.type` | string | Backup type: `Full`, `Incremental`, or `Mixed` | No |
 | `spec.clusterBackupPlan.name` | string | Name of the ClusterBackupPlan CR | Yes |
 
 ## Status Fields

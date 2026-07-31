@@ -23,7 +23,7 @@ The TrilioVaultManager (TVM) CR is the primary resource for installing and manag
 | `spec.gatewayAPI.enabled` | bool | Enable Gateway API-based UI access | No |
 | `spec.gatewayAPI.host` | string | Hostname when using Gateway API | No |
 | `spec.gatewayAPI.gatewayConfig` | object | Gateway class / gateway reference / TLS config | No |
-| `spec.componentConfiguration` | object | Per-component resources and settings (keys use kebab-case, e.g. `control-plane`, `web-backend`, `ingress-controller`, `admission-webhook`, `gateway-controller`, `web`, `exporter`, `exporter`) | No |
+| `spec.componentConfiguration` | object | Per-component resources and settings (keys use kebab-case, e.g. `control-plane`, `web-backend`, `ingress-controller`, `admission-webhook`, `gateway-controller`, `web`, `exporter`) | No |
 | `spec.logConfig.logLevel` | string | Log level: `Panic`, `Fatal`, `Error`, `Warn`, `Info`, `Debug`, `Trace` | No |
 | `spec.logConfig.datamoverLogLevel` | string | Datamover log level (same enum as `logLevel`) | No |
 | `spec.csiConfig` | object | CSI driver include/exclude lists | No |
