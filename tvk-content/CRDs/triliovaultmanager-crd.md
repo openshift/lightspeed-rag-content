@@ -19,9 +19,13 @@ The TrilioVaultManager (TVM) CR is the primary resource for installing and manag
 | `spec.ingressConfig.host` | string | Hostname for the management console | No |
 | `spec.ingressConfig.tlsSecretName` | string | TLS secret for HTTPS | No |
 | `spec.ingressConfig.ingressClass` | string | Ingress class name | No |
-| `spec.componentConfiguration` | object | Per-component resources and settings | No |
-| `spec.logConfig.logLevel` | string | Log level: Trace, Debug, Info, Warning, Error | No |
-| `spec.logConfig.datamoverLogLevel` | string | Datamover log level | No |
+| `spec.ingressConfig.ingressEnabled` | bool | Enable Ingress-based UI access | No |
+| `spec.gatewayAPI.enabled` | bool | Enable Gateway API-based UI access | No |
+| `spec.gatewayAPI.host` | string | Hostname when using Gateway API | No |
+| `spec.gatewayAPI.gatewayConfig` | object | Gateway class / gateway reference / TLS config | No |
+| `spec.componentConfiguration` | object | Per-component resources and settings (keys use kebab-case, e.g. `control-plane`, `web-backend`, `ingress-controller`, `admission-webhook`, `gateway-controller`, `web`, `exporter`, `exporter`) | No |
+| `spec.logConfig.logLevel` | string | Log level: `Panic`, `Fatal`, `Error`, `Warn`, `Info`, `Debug`, `Trace` | No |
+| `spec.logConfig.datamoverLogLevel` | string | Datamover log level (same enum as `logLevel`) | No |
 | `spec.csiConfig` | object | CSI driver include/exclude lists | No |
 | `spec.pauseSchedule` | bool | Pause all scheduled backups | No |
 | `spec.helmValues` | object | Extra Helm values passed to TVK chart | No |
@@ -30,7 +34,7 @@ The TrilioVaultManager (TVM) CR is the primary resource for installing and manag
 
 | Field | Type | Description |
 |-------|------|-------------|
-| `status.status` | string | `Initialized`, `Deployed`, `ReleaseFailed`, `Irreconcilable` |
+| `status.status` | string | `Initialized`, `Deployed`, `Updated`, `ReleaseFailed`, `Irreconcilable` |
 | `status.releaseVersion` | string | Deployed TVK version |
 | `status.dashboard` | string | URL of the management console |
 | `status.conditions` | []Condition | Detailed condition history |
@@ -54,6 +58,7 @@ metadata:
   name: triliovault-manager
   namespace: trilio-system
 spec:
+  applicationScope: Cluster
   tvkInstanceName: my-tvk
   logConfig:
     logLevel: Info
@@ -66,7 +71,7 @@ spec:
     host: tvk.example.com
     tlsSecretName: tvk-tls
   componentConfiguration:
-    ingressController:
+    ingress-controller:
       enabled: true
       service:
         type: LoadBalancer

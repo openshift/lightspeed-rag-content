@@ -9,15 +9,15 @@ The Snapshot CR creates a point-in-time CSI volume snapshot of an application wi
 | Field | Type | Description | Required |
 |-------|------|-------------|----------|
 | `spec.backupPlan.name` | string | Name of the BackupPlan CR | Yes |
-| `spec.backupPlan.namespace` | string | Namespace of the BackupPlan CR | Yes |
+| `spec.backupPlan.namespace` | string | Namespace of the BackupPlan CR (optional when in the same namespace) | No |
 
 ## Status Fields
 
 | Field | Type | Description |
 |-------|------|-------------|
-| `status.status` | string | `Queued`, `InProgress`, `Available`, `Failed`, `Canceled` |
+| `status.status` | string | `Queued`, `InProgress`, `Pending`, `Error`, `Completed`, `Failed`, `Available`, `Coalescing`, `Canceling`, `Canceled`, `Degraded` |
 | `status.phase` | string | Current operation phase |
-| `status.phaseStatus` | string | `InProgress`, `Error`, `Completed`, `Failed` |
+| `status.phaseStatus` | string | `InProgress`, `Pending`, `Error`, `Completed`, `Failed` |
 | `status.size` | Quantity | Total snapshot size |
 | `status.startTimestamp` | Time | When the snapshot started |
 | `status.completionTimestamp` | Time | When the snapshot completed |
@@ -25,6 +25,7 @@ The Snapshot CR creates a point-in-time CSI volume snapshot of an application wi
 | `status.expirationTimestamp` | Time | Retention expiry time |
 | `status.duration` | Duration | Total snapshot duration |
 | `status.encryptionEnabled` | bool | Whether encryption was applied |
+| `status.tvkVersion` | string | TVK version that created the snapshot |
 
 ## Snapshot vs Backup
 

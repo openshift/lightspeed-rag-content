@@ -86,7 +86,7 @@ spec:
 | `ingressConfig.tlsSecretName` | TLS secret name | "" |
 | `ingressConfig.ingressClass` | Ingress class | "" |
 | `ingressConfig.annotations` | Extra annotations | {} |
-| `componentConfiguration.ingressController.service.type` | Service type | NodePort |
+| `componentConfiguration.ingress-controller.service.type` | Service type | NodePort |
 
 ### Access Methods
 

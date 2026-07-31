@@ -8,25 +8,36 @@ The BackupPlan defines what to back up and how, including the target storage, re
 
 | Field | Type | Description | Required |
 |-------|------|-------------|----------|
-| `spec.backupConfig.target` | ObjectReference | Reference to the Target CR for storage | Yes |
+| `spec.backupConfig.target` | ObjectReference | Reference to the Target CR for storage | Yes (when `backupConfig` is set) |
 | `spec.backupConfig.retentionPolicy` | ObjectReference | Reference to a Retention Policy CR | No |
 | `spec.backupConfig.schedulePolicy.fullBackupPolicy` | ObjectReference | Schedule Policy for full backups | No |
 | `spec.backupConfig.schedulePolicy.incrementalBackupPolicy` | ObjectReference | Schedule Policy for incremental backups | No |
-| `spec.backupPlanComponents` | object | Application components to back up (Helm, Operator, custom selectors) | No |
-| `spec.hookConfig` | object | Pre/post backup hook references | No |
+| `spec.backupConfig.maxIncrBackupsPerFullBackup` | uint8 | Max incremental backups between full backups (1-15) | No |
+| `spec.snapshotConfig.target` | ObjectReference | Target for snapshot operations | Yes (when `snapshotConfig` is set) |
+| `spec.snapshotConfig.retentionPolicy` | ObjectReference | Retention policy for snapshots | No |
+| `spec.snapshotConfig.schedulePolicy.snapshotPolicy` | ObjectReference | Schedule Policy for snapshots | No |
+| `spec.backupPlanComponents.helmReleases` | []string | Helm release names to back up | No |
+| `spec.backupPlanComponents.operators` | []object | Operator-managed applications to back up | No |
+| `spec.backupPlanComponents.customSelector` | object | Custom resource selectors (`selectResources` / `excludeResources`) | No |
+| `spec.hookConfig` | object | Pre/post backup hook references (`hooks` required when set) | No |
 | `spec.includeResources` | ResourceSelector | Resources to include (namespace-scope) | No |
 | `spec.excludeResources` | ResourceSelector | Resources to exclude | No |
-| `spec.encryption` | object | Encryption key reference for encrypted backups | No |
-| `spec.backupPlanFlags` | object | Feature flags (e.g., `retainHelmApps`) | No |
+| `spec.encryption.encryptionSecret` | ObjectReference | Encryption key reference for encrypted backups | Yes (when `encryption` is set) |
+| `spec.backupPlanFlags.skipImageBackup` | bool | Skip container image backup | No |
+| `spec.backupPlanFlags.pauseSchedule` | bool | Pause scheduled backups | No |
+| `spec.backupPlanFlags.retainHelmApps` | bool | Retain Helm app metadata | No |
+| `spec.securityScanConfig` | object | Security scan instance configuration | No |
+| `spec.continuousRestoreConfig` | object | Continuous restore instance configuration | No |
 
 ## Status Fields
 
 | Field | Type | Description |
 |-------|------|-------------|
-| `status.status` | string | `Available`, `InProgress`, `Unavailable` |
+| `status.status` | string | `Available`, `InProgress`, `Unavailable`, `Error` |
 | `status.scope` | string | `App` or `Namespace` |
 | `status.applicationType` | string | `Helm`, `Operator`, `Custom`, `Namespace` |
 | `status.pauseSchedule` | bool | Whether scheduled backups are paused |
+| `status.condition` | []Condition | Sync and validation conditions |
 
 ## Example
 
@@ -49,8 +60,8 @@ spec:
         name: daily-schedule
         namespace: trilio-system
   backupPlanComponents:
-    helmCharts:
-      - name: my-release
+    helmReleases:
+      - my-release
   encryption:
     encryptionSecret:
       name: backup-encryption-key

@@ -8,19 +8,19 @@ The Policy CR defines operational policies for TVK, including retention, schedul
 
 | Field | Type | Description | Required |
 |-------|------|-------------|----------|
-| `spec.type` | string | Policy type (see types below) | Yes |
+| `spec.type` | string | Policy type: `Timeout`, `Retention`, `Cleanup`, `Schedule`, `SecurityScan`, `ContinuousRestore` | Yes |
 | `spec.default` | bool | Whether this is the default policy of its type | No |
 
 ### Retention Policy
 
 | Field | Type | Description | Required |
 |-------|------|-------------|----------|
-| `spec.retentionConfig.latest` | int | Number of latest backups to retain | No |
-| `spec.retentionConfig.weekly` | int | Number of weekly backups to retain | No |
+| `spec.retentionConfig.latest` | int | Number of latest backups to retain (min 1) | No |
+| `spec.retentionConfig.weekly` | int | Number of weekly backups to retain (min 1) | No |
 | `spec.retentionConfig.dayOfWeek` | string | Day for weekly retention (e.g., `Monday`) | No |
-| `spec.retentionConfig.monthly` | int | Number of monthly backups to retain | No |
+| `spec.retentionConfig.monthly` | int | Number of monthly backups to retain (min 1) | No |
 | `spec.retentionConfig.dateOfMonth` | int | Date for monthly retention (1-28) | No |
-| `spec.retentionConfig.yearly` | int | Number of yearly backups to retain | No |
+| `spec.retentionConfig.yearly` | int | Number of yearly backups to retain (min 1) | No |
 | `spec.retentionConfig.monthOfYear` | string | Month for yearly retention (e.g., `January`) | No |
 
 ### Schedule Policy
@@ -33,8 +33,21 @@ The Policy CR defines operational policies for TVK, including retention, schedul
 
 | Field | Type | Description | Required |
 |-------|------|-------------|----------|
-| `spec.cleanupConfig.backupDays` | int | Delete backups older than N days | No |
-| `spec.cleanupConfig.restoreDays` | int | Delete restores older than N days | No |
+| `spec.cleanupConfig.days` | int | Delete backups/restores older than N days | Yes |
+| `spec.cleanupConfig.backupDays` | int | Deprecated; use `days` instead | No |
+
+### ContinuousRestore Policy
+
+| Field | Type | Description | Required |
+|-------|------|-------------|----------|
+| `spec.continuousRestoreConfig.consistentSets` | int | Number of ConsistentSets to retain (1-10) | Yes |
+
+### SecurityScan Policy
+
+| Field | Type | Description | Required |
+|-------|------|-------------|----------|
+| `spec.securityScanConfig.schedule` | []string | Cron schedules for periodic scans | No |
+| `spec.securityScanConfig.retention` | int | Number of scan reports to retain | No |
 
 ## Examples
 
@@ -81,7 +94,7 @@ metadata:
 spec:
   type: Cleanup
   cleanupConfig:
-    backupDays: 30
+    days: 30
 ```
 
 ## Related Resources

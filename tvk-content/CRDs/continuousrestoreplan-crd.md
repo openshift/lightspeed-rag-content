@@ -10,7 +10,7 @@ The ContinuousRestorePlan CR enables continuous disaster recovery by automatical
 |-------|------|-------------|----------|
 | `spec.continuousRestorePolicy` | ObjectReference | Reference to a ContinuousRestore type Policy CR | Yes |
 | `spec.target` | ObjectReference | Reference to the Target CR to watch for backups | Yes |
-| `spec.transformComponents` | object | PVC transformation config (storage class, access mode) | No |
+| `spec.transformComponents` | object | Transform configuration for restore (`custom[]` jsonPatches and/or `helm[]`) | No |
 
 ## How It Works
 

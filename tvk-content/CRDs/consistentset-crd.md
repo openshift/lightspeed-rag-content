@@ -10,14 +10,14 @@ The ConsistentSet CR represents a consistency point in a continuous restore work
 |-------|------|-------------|----------|
 | `spec.continuousRestorePlan` | ObjectReference | Reference to the ContinuousRestorePlan CR | Yes |
 | `spec.location` | string | Target location of the source Backup/ClusterBackup | Yes |
-| `spec.transformComponents` | object | PVC transformation configuration for the restore | No |
+| `spec.transformComponents` | object | Transform configuration for restore (`custom[]` jsonPatches and/or `helm[]`) | No |
 
 ## Status Fields
 
 | Field | Type | Description |
 |-------|------|-------------|
-| `status.status` | string | Overall status of the consistent set |
-| `status.condition` | []Condition | Condition details |
+| `status.status` | string | `Available`, `InProgress`, `Error`, `Failed`, `Unavailable`, `InUse`, `Queued` |
+| `status.condition` | []Condition | Phase conditions such as `PreConsistentSet`, `DataRestore`, `DataSnapshot` |
 
 ## How It Works
 

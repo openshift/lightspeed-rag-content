@@ -8,21 +8,21 @@ The ClusterBackup CR triggers a multi-namespace backup defined by a ClusterBacku
 
 | Field | Type | Description | Required |
 |-------|------|-------------|----------|
-| `spec.type` | string | Backup type: `Full`, `Incremental`, or `Mixed` | No (defaults to Full) |
+| `spec.type` | string | Backup type: `Full`, `Incremental`, or `Mixed` | Yes |
 | `spec.clusterBackupPlan.name` | string | Name of the ClusterBackupPlan CR | Yes |
 
 ## Status Fields
 
 | Field | Type | Description |
 |-------|------|-------------|
-| `status.status` | string | `Queued`, `InProgress`, `Available`, `Failed`, `Canceled`, `Degraded` |
-| `status.phase` | string | Current operation phase |
-| `status.phaseStatus` | string | Phase status: `InProgress`, `Error`, `Completed`, `Failed` |
+| `status.status` | string | `Queued`, `InProgress`, `Pending`, `Error`, `Completed`, `Failed`, `Available`, `Coalescing`, `Canceling`, `Canceled`, `Degraded` |
 | `status.size` | Quantity | Total backup size |
 | `status.startTimestamp` | Time | When the backup started |
 | `status.completionTimestamp` | Time | When the backup completed |
 | `status.percentageCompletion` | int | Progress (0-100) |
 | `status.duration` | Duration | Total backup duration |
+| `status.tvkVersion` | string | TVK version that created the backup |
+| `status.condition` | []Condition | Phase conditions (`PreClusterBackupValidation`, `Snapshot`, `Backup`, etc.) |
 
 ## Example
 
@@ -48,4 +48,5 @@ kubectl describe clusterbackup multi-ns-backup
 
 - [ClusterBackupPlan CRD](clusterbackupplan-crd.md)
 - [ClusterRestore CRD](clusterrestore-crd.md)
+- [ClusterSnapshot CRD](clustersnapshot-crd.md)
 - [Backup CRD](backup-crd.md)
