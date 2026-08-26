@@ -6,15 +6,13 @@ This spec defines the rules for building container images, hermetic build suppor
 
 > The main RAG content image is deprecated. OCP product docs are now served by OKP via the RHOKP sidecar deployed by the operator. Only the BYOK tool image is actively maintained.
 
-1. [DEPRECATED] Two Containerfiles exist for building the main RAG content image:
-   - **`lsc/Containerfile.konflux`** (primary): Uses the lsc library pipeline with `custom_processor.py`, produces `llamastack-faiss` indexes. Used by the `lightspeed-ocp-rag-push/pull-request` Konflux pipelines.
-   - **Root `Containerfile`** (alternative): Uses the plaintext pipeline with `scripts/generate_embeddings.py`, produces LlamaIndex FAISS indexes. Used by the `own-app-lightspeed-rag-content` Konflux pipelines.
+1. [DEPRECATED] The root `Containerfile` builds the main RAG content image using the plaintext pipeline with `scripts/generate_embeddings.py`, producing LlamaIndex FAISS indexes. [REMOVED: `lsc/Containerfile.konflux` and the lsc library pipeline have been deleted along with their Tekton pipelines.]
 
 2. [DEPRECATED] Both Containerfiles follow a multi-stage build: a builder stage generates all vector indexes, then a minimal final stage copies only the output artifacts.
 
 3. [DEPRECATED] Both builder stages iterate over all version directories in `ocp-product-docs-plaintext/` and generate one index per version. Each version's index includes both OCP docs and runbooks.
 
-4. [DEPRECATED] The root Containerfile creates a `latest` symlink pointing to the highest version directory (determined by version-aware sorting). The lsc Containerfile does not create this symlink.
+4. [DEPRECATED] The root Containerfile creates a `latest` symlink pointing to the highest version directory (determined by version-aware sorting).
 
 5. [DEPRECATED] The final image uses `ubi9/ubi-minimal` (pinned by digest) as base and contains only:
    - `/rag/vector_db/ocp_product_docs/` -- all version index directories.
@@ -29,7 +27,7 @@ This spec defines the rules for building container images, hermetic build suppor
 
 8. [DEPRECATED] Container labels must satisfy Red Hat enterprise contract requirements: `com.redhat.component`, `cpe`, `description`, `distribution-scope`, `io.k8s.description`, `io.k8s.display-name`, `io.openshift.tags`, `name`, `release`, `url`, `vendor`, `version`, `summary`.
 
-9. [DEPRECATED] The root Containerfile supports two base images selected by `FLAVOR` build arg (`cpu` or `gpu`). The lsc Containerfile is GPU-only (always uses the CUDA base image).
+9. [DEPRECATED] The root Containerfile previously supported `FLAVOR` build arg for CPU/GPU base image selection. Now CPU-only.
 
 ## Behavioral Rules -- BYOK Tool Image
 
@@ -51,16 +49,15 @@ This spec defines the rules for building container images, hermetic build suppor
 
 ## Behavioral Rules -- CI/CD (Konflux/Tekton)
 
-17. Six pipelines exist as Tekton PipelineRun definitions:
-    - [DEPRECATED] `lightspeed-ocp-rag-push/pull-request` -- primary RAG content image using `lsc/Containerfile.konflux`. No longer built; OCP docs served by OKP.
-    - [DEPRECATED] `own-app-lightspeed-rag-content-push/pull-request` -- alternative RAG content image using root `Containerfile`. No longer built; OCP docs served by OKP.
+17. Two active pipelines exist as Tekton PipelineRun definitions:
     - `lightspeed-rag-tool-push/pull-request` -- BYOK tool image using `byok/Containerfile.tool`. Actively maintained.
+    - [REMOVED] `lightspeed-ocp-rag-push/pull-request` and `own-app-lightspeed-rag-content-push/pull-request` have been deleted. OCP docs are served by OKP.
 
 18. Push pipelines trigger on merge to `main`. Pull-request pipelines trigger on PRs.
 
 19. All pipelines use hermetic builds with Cachi2 prefetch for pip packages, RPMs, and generic artifacts.
 
-20. [DEPRECATED] The primary RAG image (`lsc/Containerfile.konflux`) always builds with GPU. The alternative RAG image (root `Containerfile`) builds with `FLAVOR=gpu` in CI.
+20. [REMOVED] The lsc/GPU pipeline has been deleted. All builds are now CPU-only.
 
 21. [DEPRECATED] An integration test verifies the built image contains the expected paths: an `index_store.json` file under `/rag/vector_db/ocp_product_docs/{version}/` for every OCP version present in `ocp-product-docs-plaintext/`, and `config.json` under `/rag/embeddings_model/`.
 
@@ -68,26 +65,21 @@ This spec defines the rules for building container images, hermetic build suppor
 
 | Parameter | Type | Default | Purpose |
 |---|---|---|---|
-| `FLAVOR` | Build arg | `cpu` | Base image selection: `cpu` or `gpu` |
 | `HERMETIC` | Build arg | `false` | Enable hermetic build mode |
 | `EMBEDDING_MODEL` | Build arg | `sentence-transformers/all-mpnet-base-v2` | HuggingFace repo ID |
 | `artifacts.lock.yaml` | File | -- | Pinned `model.safetensors` URL + SHA256 |
 | `rpms.in.yaml` | File | -- | RPM dependency specifications |
 | `rpms.lock.yaml` | File | -- | Locked RPM versions |
-| `requirements.cpu.txt` | File | -- | Exported pip dependencies with hashes (CPU) |
-| `requirements.gpu.txt` | File | -- | Exported pip dependencies with hashes (GPU) |
-| `pdm.lock.cpu` | File | -- | PDM lockfile (CPU) |
-| `pdm.lock.gpu` | File | -- | PDM lockfile (GPU) |
-| `renovate.json` | File | -- | Dependency update automation config |
+| `requirements.hashes.source.cpu.txt` | File | -- | Hashed PyPI source dependencies |
+| `requirements.hashes.wheel.cpu.txt` | File | -- | Hashed RHOAI wheel dependencies |
+| `requirements-build.cpu.txt` | File | -- | Build dependencies |
+| `requirements.hermetic.txt` | File | -- | Bootstrap deps (pip) |
+| `requirements.overrides.txt` | File | -- | Version pins for uv compilation |
 
 ## Constraints
 
 1. The NLTK data directory must be symlinked after pip install to make tokenization data available.
 
-2. GPU builds require the CUDA compatibility library path to be set for library discovery.
+2. Python dependencies are compiled by uv with split lockfiles (RHOAI wheels vs PyPI source). `scripts/konflux_requirements.sh` generates the lockfiles.
 
-3. Python dependencies are managed by PDM with separate lockfiles per compute flavor. The `pdm export` command generates the `requirements.*.txt` files used by pip inside the container build.
-
-4. The `ubi-minimal` final image is pinned by digest, not tag. Digest updates are managed by automated Konflux/Mintmaker PRs.
-
-5. Python package auto-updates via Renovate are disabled (configured in `renovate.json`). Dependency updates are manual and require lockfile regeneration.
+3. The `ubi-minimal` final image is pinned by digest, not tag. Digest updates are managed by automated Konflux/Mintmaker PRs.

@@ -30,7 +30,7 @@ These specs describe HOW the RAG content pipeline is structured -- module bounda
 | [project-structure.md](how/project-structure.md) | Directory layout, module map, dependency management, key relationships |
 | [plaintext-pipeline.md](how/plaintext-pipeline.md) | `scripts/generate_embeddings.py` -- the production pipeline used by the Containerfile |
 | [html-pipeline.md](how/html-pipeline.md) | `scripts/html_embeddings/` + `scripts/html_chunking/` -- HTML-based pipeline with semantic chunking |
-| [lsc-library.md](how/lsc-library.md) | `lsc/src/lightspeed_rag_content/` -- installable library with multi-backend support |
+| [lsc-library.md](how/lsc-library.md) | [REMOVED] `lsc/` directory has been deleted -- retained for historical reference |
 | [container-build.md](how/container-build.md) | Containerfiles, Makefile targets, Konflux/Tekton pipelines, dependency management |
 
 ### decisions/ -- Architecture Decision Records
@@ -57,7 +57,7 @@ AI agents (Claude). Specs optimize for precision, unambiguous rules, and machine
 | Navigate the codebase | `how/project-structure.md` |
 | Modify the plaintext pipeline | `how/plaintext-pipeline.md` |
 | Modify the HTML pipeline | `how/html-pipeline.md` |
-| Modify the lsc library | `how/lsc-library.md` |
+| ~~Modify the lsc library~~ | `how/lsc-library.md` [REMOVED -- lsc/ deleted] |
 | Modify the container build or CI | `how/container-build.md` |
 | See what's planned | Look for `[PLANNED: OLS-XXXX]` in `what/` specs |
 | See recorded architecture decisions | `decisions/` |
@@ -69,8 +69,8 @@ When what/ and how/ file names don't match 1:1, this table maps behavioral specs
 | what/ | how/ |
 |---|---|
 | `what/system-overview.md` | `how/project-structure.md` |
-| `what/content-sources.md` | `how/plaintext-pipeline.md`, `how/html-pipeline.md`, `how/lsc-library.md` |
-| `what/embedding-pipeline.md` | `how/plaintext-pipeline.md`, `how/html-pipeline.md`, `how/lsc-library.md` |
+| `what/content-sources.md` | `how/plaintext-pipeline.md`, `how/html-pipeline.md` |
+| `what/embedding-pipeline.md` | `how/plaintext-pipeline.md`, `how/html-pipeline.md` |
 | `what/byok.md` | `how/container-build.md` (BYOK Containerfile sections) |
 | `what/container-build.md` | `how/container-build.md` |
 

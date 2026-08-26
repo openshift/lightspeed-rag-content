@@ -14,14 +14,14 @@ OpenShift LightSpeed RAG Content is a BYOK tooling provider for the OpenShift Li
    - **BYOK tool image**: Contains buildah, the embedding toolchain, and the embedding model. Used by customers to build custom RAG images from their own Markdown content.
    - [DEPRECATED: **Main RAG content image** — previously contained all OCP version vector indexes, the `latest` symlink, and the embedding model. No longer built; OCP docs are served by OKP.]
 
-4. Three pipeline implementations exist for generating vector indexes, all deprecated for OCP docs production:
-   - [DEPRECATED] **lsc library pipeline** (`lsc/Containerfile.konflux` + `lsc/custom_processor.py`): Was the primary Konflux CI pipeline. Used the lsc library and produced `llamastack-faiss` indexes. Used by the `lightspeed-ocp-rag-push` and `lightspeed-ocp-rag-pull-request` Tekton pipelines.
-   - [DEPRECATED for OCP docs] **Plaintext pipeline** (`scripts/generate_embeddings.py` + root `Containerfile`): Was an alternative build variant. Processed pre-converted plaintext OCP docs and Markdown runbooks using plain LlamaIndex FAISS. The BYOK path in `generate_embeddings_tool.py` remains active.
+4. Two pipeline implementations exist for generating vector indexes:
+   - **Plaintext pipeline** (`scripts/generate_embeddings.py` + root `Containerfile`): Processes pre-converted plaintext OCP docs and Markdown runbooks using plain LlamaIndex FAISS. The BYOK path in `generate_embeddings_tool.py` remains active. [DEPRECATED for OCP docs production; OCP docs now served by OKP.]
    - [DEPRECATED] **HTML pipeline** (`scripts/html_embeddings/`): Downloaded HTML documentation from the Red Hat portal, stripped non-content markup, performed semantic HTML chunking, and generated embeddings. Was never used by any CI pipeline.
+   - [REMOVED] The **lsc library pipeline** (`lsc/`) has been deleted. It used the lsc library to produce `llamastack-faiss` indexes via the `lightspeed-ocp-rag-push/pull-request` Tekton pipelines.
 
 5. The embedding model must be redistributable under an Apache 2.0 compatible license.
 
-6. The project supports two compute flavors: CPU and GPU. The CPU flavor uses a PyTorch build from pytorch.org without CUDA. The GPU flavor uses standard PyTorch with NVIDIA CUDA 12.9.
+6. The project uses CPU-only builds. The GPU flavor has been retired along with the lsc pipeline.
 
 ## Integration Contract
 
@@ -50,11 +50,11 @@ The OpenShift LightSpeed operator configures BYOK RAG content references via the
 
 ## Constraints
 
-1. Both CPU and GPU compute flavors must be supported. The Containerfile selects the base image via the `FLAVOR` build arg.
+1. CPU-only builds. The GPU flavor has been retired.
 
 2. Hermetic builds (no network access during build) must be supported for Konflux/Cachi2 CI. All dependencies -- Python packages, RPMs, and the embedding model binary -- must be prefetchable.
 
-3. The project uses PDM for dependency management with separate lockfiles per compute flavor (`pdm.lock.cpu`, `pdm.lock.gpu`).
+3. The project uses uv for dependency compilation with a single set of CPU lockfiles.
 
 ## Planned Changes
 

@@ -1,41 +1,48 @@
 ARG EMBEDDING_MODEL=sentence-transformers/all-mpnet-base-v2
-ARG FLAVOR=cpu
 ARG HERMETIC=false
 
-FROM registry.access.redhat.com/ubi9/python-312 as cpu-base
+FROM registry.access.redhat.com/ubi9/python-312 as lightspeed-rag-builder
 ARG EMBEDDING_MODEL
-ARG FLAVOR
-
-FROM registry.redhat.io/rhai/base-image-cuda-12.9-rhel9:3.4.0-1777399555 as gpu-base
-ARG EMBEDDING_MODEL
-ARG FLAVOR
-USER 0
-RUN dnf install -y python3.12 python3.12-pip libcudnn9 libnccl libcusparselt0
-
-FROM ${FLAVOR}-base as lightspeed-rag-builder
-ARG EMBEDDING_MODEL
-ARG FLAVOR
 ARG HERMETIC
 
 USER 0
 WORKDIR /workdir
 
-COPY requirements.gpu.txt .
-RUN pip3.12 install --no-cache-dir -r requirements.gpu.txt && ln -s /usr/local/lib/python3.12/site-packages/llama_index/core/_static/nltk_cache /root/nltk_data
+# Konflux hermetic: Cachi2 vendor layout (PIP_FIND_LINKS) + hashed split lockfiles
+COPY \
+    requirements.hashes.wheel.cpu.txt \
+    requirements.hashes.source.cpu.txt \
+    requirements-build.cpu.txt \
+    requirements.hermetic.txt \
+    pyproject.toml \
+    LICENSE \
+    /workdir/
+
+# Upgrade pip first (pip==25.3 is prefetched in requirements.hermetic.txt).
+# cachi2.env sets PIP_FIND_LINKS so the upgrade resolves from the prefetch cache in hermetic builds.
+RUN /usr/bin/python3.12 -m pip install --upgrade pip && \
+    if [ -f /cachi2/cachi2.env ]; then \
+        . /cachi2/cachi2.env && \
+        /usr/bin/python3.12 -m pip install --no-cache-dir --no-deps --ignore-installed \
+            --no-index --find-links "${PIP_FIND_LINKS}" \
+            -r requirements.hashes.wheel.cpu.txt \
+            -r requirements.hashes.source.cpu.txt; \
+    else \
+        /usr/bin/python3.12 -m pip install --no-cache-dir -e ".[cpu]"; \
+    fi
+RUN ln -s "/usr/local/lib/python3.12/site-packages/llama_index/core/_static/nltk_cache" /root/nltk_data
 
 COPY ocp-product-docs-plaintext ./ocp-product-docs-plaintext
 COPY runbooks ./runbooks
 
 COPY embeddings_model ./embeddings_model
-RUN cd embeddings_model; if [ "$HERMETIC" == "true" ]; then \
-        cp /cachi2/output/deps/generic/model.safetensors model.safetensors; \
-    else \
-        curl -L -O https://huggingface.co/sentence-transformers/all-mpnet-base-v2/resolve/9a3225965996d404b775526de6dbfe85d3368642/model.safetensors; \
-    fi
-
-RUN if [ "$FLAVOR" == "gpu" ]; then \
-        python3.12 -c "import torch; print(torch.version.cuda); print(torch.cuda.is_available());"; \
-    fi
+RUN cat embeddings_model/model.safetensors.tar.gz.* | \
+      tar xzf - --no-same-owner -C embeddings_model || \
+      { echo "ERROR: failed to extract model.safetensors from chunks"; exit 1; } && \
+    rm -f embeddings_model/model.safetensors.tar.gz.* && \
+    /usr/bin/python3.12 -c \
+      "import safetensors; safetensors.safe_open('embeddings_model/model.safetensors', framework='pt'); print('OK: model.safetensors')" || \
+    { echo "ERROR: corrupt safetensors file: embeddings_model/model.safetensors"; exit 1; }
 
 COPY scripts/generate_embeddings.py .
 RUN set -e && for OCP_VERSION in $(ls -1 ocp-product-docs-plaintext); do \
