@@ -33,6 +33,10 @@ These specs describe HOW the RAG content pipeline is structured -- module bounda
 | [lsc-library.md](how/lsc-library.md) | `lsc/src/lightspeed_rag_content/` -- installable library with multi-backend support |
 | [container-build.md](how/container-build.md) | Containerfiles, Makefile targets, Konflux/Tekton pipelines, dependency management |
 
+### decisions/ -- Architecture Decision Records
+
+`decisions/` holds lightweight ADRs recording notable architectural decisions. Each file follows the `NNNN-slug.md` naming convention. See [decisions/README.md](decisions/README.md).
+
 ## Scope
 
 These specs cover the **lightspeed-rag-content** project only -- the offline pipeline that produces pre-built vector indexes and packages them as container images. The lightspeed-service (which consumes these artifacts at runtime), the operator, and the console plugin are separate projects.
@@ -56,6 +60,7 @@ AI agents (Claude). Specs optimize for precision, unambiguous rules, and machine
 | Modify the lsc library | `how/lsc-library.md` |
 | Modify the container build or CI | `how/container-build.md` |
 | See what's planned | Look for `[PLANNED: OLS-XXXX]` in `what/` specs |
+| See recorded architecture decisions | `decisions/` |
 
 ## Cross-Reference
 
