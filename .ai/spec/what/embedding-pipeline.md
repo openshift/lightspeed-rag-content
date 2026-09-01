@@ -20,7 +20,7 @@ This spec defines the shared behavioral rules that all pipeline implementations 
 
 6. Embeddings are generated using a HuggingFace-compatible sentence-transformer model loaded from a local filesystem directory.
 
-7. The default embedding model is `sentence-transformers/all-mpnet-base-v2`, producing 768-dimensional vectors. The model must be redistributable under an Apache 2.0 compatible license. [PLANNED: OLS-1729 -- fine-tuned embedding models]
+7. The default embedding model is `sentence-transformers/all-mpnet-base-v2`, producing 768-dimensional vectors. The model must be redistributable under an Apache 2.0 compatible license. [Fine-tuned embedding models (OLS-1729) were previously planned but removed — superseded by OKP adoption; see Planned Changes.]
 
 8. The embedding dimension is determined dynamically at initialization by encoding a probe string through the model, not hardcoded. This ensures correctness regardless of which model is loaded.
 

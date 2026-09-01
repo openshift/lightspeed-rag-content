@@ -170,7 +170,7 @@ FROM ${UBI_BASE_IMAGE}
 
 | Target | Command | Purpose |
 |---|---|---|
-| `install-tools` | `pip3.11 install pdm` | Install PDM if not present |
+| `install-tools` | `pip3.12 install --no-cache-dir --upgrade pip pdm` | Install PDM if not present |
 | `pdm-lock-check` | `pdm lock --check --group {cpu,gpu}` | Validate both lockfiles |
 | `install-deps` | `pdm sync --group $(TORCH_GROUP) --lockfile pdm.lock.$(TORCH_GROUP)` | Install runtime deps |
 | `install-deps-test` | `pdm sync --dev --group $(TORCH_GROUP) ...` | Install dev deps |
