@@ -38,15 +38,13 @@ RUN /usr/bin/python3.12 -m pip install --upgrade pip && \
 RUN ln -sf "/usr/local/lib/python3.12/site-packages/llama_index/core/_static/nltk_cache" /root/nltk_data
 
 COPY embeddings_model ./embeddings_model
-ENV HERMETIC=$HERMETIC
-RUN cd embeddings_model && \
-    if [ ! -f model.safetensors ]; then \
-        if [ "$HERMETIC" == "true" ]; then \
-            cp /cachi2/output/deps/generic/model.safetensors model.safetensors; \
-        else \
-            curl -L -O https://huggingface.co/sentence-transformers/all-mpnet-base-v2/resolve/9a3225965996d404b775526de6dbfe85d3368642/model.safetensors; \
-        fi \
-    fi
+RUN cat embeddings_model/model.safetensors.tar.gz.* | \
+      tar xzf - --no-same-owner -C embeddings_model || \
+      { echo "ERROR: failed to extract model.safetensors from chunks"; exit 1; } && \
+    rm -f embeddings_model/model.safetensors.tar.gz.* && \
+    /usr/bin/python3.12 -c \
+      "import safetensors; safetensors.safe_open('embeddings_model/model.safetensors', framework='pt'); print('OK: model.safetensors')" || \
+    { echo "ERROR: corrupt safetensors file"; exit 1; }
 COPY byok/generate_embeddings_tool.py byok/Containerfile.output ./
 
 # this directory is checked by ecosystem-cert-preflight-checks task in Konflux
