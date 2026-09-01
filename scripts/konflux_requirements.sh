@@ -14,7 +14,7 @@ set -euo pipefail
 # Align with RHOAI wheels on packages.redhat.com (cp312 ubi9)
 PY_VERSION="3.12"
 
-RHOAI_INDEX_URL="https://packages.redhat.com/api/pypi/public-rhai/rhoai/3.5/cpu-ubi9/simple/"
+RHOAI_INDEX_URL="https://packages.redhat.com/api/pypi/public-rhai/rhoai/3.4/cpu-ubi9/simple/"
 PYPROJECT="pyproject.toml"
 OVERRIDES="requirements.overrides.txt"
 EXTRA_FLAVOR_ARG="--extra cpu"
