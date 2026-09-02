@@ -9,15 +9,13 @@ All specifications live in `.ai/spec/`. Start with `.ai/spec/README.md` for proj
 ```bash
 make build-image       # Build the RAG content container image
 make verify            # Lint + type checks
-make -C lsc test-unit  # Run unit tests (lsc library)
-make -C lsc verify     # Full lint suite (lsc library)
 make format            # Format code
 ```
 
 ## Conventions
 
 - Python codebase — follow the same style as lightspeed-service (Ruff, Black)
-- Two build targets: root Makefile for the main RAG content image, `lsc/` for the BYOK tool library
+- Single build target: root Makefile for the RAG content image
 
 ## Git and PR Workflow
 
