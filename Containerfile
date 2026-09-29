@@ -53,7 +53,7 @@ RUN set -e && for OCP_VERSION in $(ls -1 ocp-product-docs-plaintext); do \
 RUN LATEST_VERSION=$(ls -1 vector_db/ocp_product_docs/ | sort -V | tail -n 1) && \
     cd vector_db/ocp_product_docs && ln -s ${LATEST_VERSION} latest
 
-FROM registry.access.redhat.com/ubi9/ubi-minimal@sha256:7b8e25a1b56ca4d00219198f3b5b51a3e1693a5c4f5369c5e190d7d6cb3f980e
+FROM registry.access.redhat.com/ubi9/ubi-minimal@sha256:beeada7dd17903dfb69fd5f6916c054720bf28a52daaa2f7a1910a1394244bd2
 COPY --from=lightspeed-rag-builder /workdir/vector_db/ocp_product_docs /rag/vector_db/ocp_product_docs
 COPY --from=lightspeed-rag-builder /workdir/embeddings_model /rag/embeddings_model
 
