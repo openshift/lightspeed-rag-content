@@ -13,8 +13,8 @@ This spec documents the Containerfiles, Makefile targets, and Konflux/Tekton pip
 | `.tekton/lightspeed-rag-tool-push.yaml` | Konflux push pipeline for BYOK tool image |
 | `.tekton/lightspeed-rag-tool-pull-request.yaml` | Konflux PR pipeline for BYOK tool image |
 | `pyproject.toml` | Project metadata, dependency groups, linting config |
-| `requirements.hashes.source.cpu.txt` / `requirements.hashes.wheel.cpu.txt` | Split hashed lockfiles (PyPI source vs RHOAI wheels) |
-| `requirements-build.cpu.txt` | Build dependencies lockfile |
+| `requirements.hashes.source.txt` / `requirements.hashes.wheel.txt` | Split hashed lockfiles (PyPI source vs RHOAI wheels) |
+| `requirements-build.txt` | Build dependencies lockfile |
 | `requirements.hermetic.txt` | Hermetic build bootstrap deps (pip) |
 | `requirements.overrides.txt` | Version overrides for uv compilation |
 | `rpms.in.yaml` / `rpms.lock.yaml` | RPM dependency spec + lockfile for Cachi2 |
@@ -91,8 +91,8 @@ FROM ${UBI_BASE_IMAGE}
 | Target | Command | Purpose |
 |---|---|---|
 | `install-tools` | Verify uv + Python 3.12 | Check prerequisites |
-| `install-deps` | `uv pip install -e ".[cpu]"` | Install runtime deps |
-| `install-deps-test` | `uv pip install -e ".[cpu]" black mypy ruff` | Install dev deps |
+| `install-deps` | `uv pip install` | Install runtime deps |
+| `install-deps-test` | `uv pip install" black mypy ruff` | Install dev deps |
 | `update-konflux-deps` | `scripts/konflux_requirements.sh` | Regenerate split lockfiles for Konflux |
 | `check-types` | `mypy --explicit-package-bases scripts` | Type checking |
 | `format` | `black scripts && ruff check scripts --fix` | Code formatting |
@@ -111,7 +111,7 @@ Two active pipelines (`lightspeed-rag-tool-push/pull-request`) are Tekton Pipeli
 ### Prefetch dependencies
 
 Cachi2 prefetches three dependency types:
-- **pip**: From split lockfiles (`requirements.hashes.source.cpu.txt` + `requirements.hashes.wheel.cpu.txt`) with explicit `binary.packages` lists.
+- **pip**: From split lockfiles (`requirements.hashes.source.txt` + `requirements.hashes.wheel.txt`) with explicit `binary.packages` lists.
 - **rpm**: From `rpms.lock.yaml`.
 
 ### Build
@@ -141,9 +141,9 @@ pyproject.toml
 scripts/konflux_requirements.sh (uv pip compile)
      │
      ▼
-requirements.hashes.source.cpu.txt   (PyPI packages, hashed)
-requirements.hashes.wheel.cpu.txt    (RHOAI wheels, hashed)
-requirements-build.cpu.txt           (build deps via pybuild-deps)
+requirements.hashes.source.txt   (PyPI packages, hashed)
+requirements.hashes.wheel.txt    (RHOAI wheels, hashed)
+requirements-build.txt           (build deps via pybuild-deps)
 requirements.hermetic.txt            (bootstrap: uv, uv-build, maturin, pip==26.1.2)
 requirements.overrides.txt           (version pins for uv)
 

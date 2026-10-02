@@ -66,9 +66,9 @@ This spec defines the rules for building container images, hermetic build suppor
 | `embeddings_model/model.safetensors.tar.gz.*` | Files | -- | Committed chunks of the embedding-model archive |
 | `rpms.in.yaml` | File | -- | RPM dependency specifications |
 | `rpms.lock.yaml` | File | -- | Locked RPM versions |
-| `requirements.hashes.source.cpu.txt` | File | -- | Hashed PyPI source dependencies |
-| `requirements.hashes.wheel.cpu.txt` | File | -- | Hashed RHOAI wheel dependencies |
-| `requirements-build.cpu.txt` | File | -- | Build dependencies |
+| `requirements.hashes.source.txt` | File | -- | Hashed PyPI source dependencies |
+| `requirements.hashes.wheel.txt` | File | -- | Hashed RHOAI wheel dependencies |
+| `requirements-build.txt` | File | -- | Build dependencies |
 | `requirements.hermetic.txt` | File | -- | Bootstrap deps (pip) |
 | `requirements.overrides.txt` | File | -- | Version pins for uv compilation |
 
