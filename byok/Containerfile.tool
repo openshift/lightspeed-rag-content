@@ -1,5 +1,5 @@
 ARG BYOK_TOOL_IMAGE=registry.redhat.io/openshift-lightspeed-tech-preview/lightspeed-rag-tool-rhel9:latest
-ARG UBI_BASE_IMAGE=quay.io/aipcc/base-images/cpu:3.5
+ARG UBI_BASE_IMAGE=quay.io/aipcc/base-images/cpu:3.5.2-1790703656
 ARG HERMETIC=false
 FROM ${UBI_BASE_IMAGE}
 ARG LOG_LEVEL=info
@@ -9,15 +9,15 @@ ARG BYOK_TOOL_IMAGE
 ARG UBI_BASE_IMAGE
 ARG HERMETIC
 USER 0
-RUN dnf install -y buildah python3.12 python3.12-pip && dnf clean all
+RUN dnf install -y buildah python3.12-pip && dnf update -y --nodocs && dnf clean all
 
 WORKDIR /workdir
 
 # Same CPU lockfiles as the lightspeed-rag-tool image (repo root; see scripts/konflux_requirements.sh)
 COPY \
-    requirements.hashes.wheel.cpu.txt \
-    requirements.hashes.source.cpu.txt \
-    requirements-build.cpu.txt \
+    requirements.hashes.wheel.txt \
+    requirements.hashes.source.txt \
+    requirements-build.txt \
     requirements.hermetic.txt \
     pyproject.toml \
     LICENSE \
@@ -30,10 +30,10 @@ RUN /usr/bin/python3.12 -m pip install --upgrade pip && \
         . /cachi2/cachi2.env && \
         /usr/bin/python3.12 -m pip install --no-cache-dir --no-deps --ignore-installed \
             --no-index --find-links "${PIP_FIND_LINKS}" \
-            -r requirements.hashes.wheel.cpu.txt \
-            -r requirements.hashes.source.cpu.txt; \
+            -r requirements.hashes.wheel.txt \
+            -r requirements.hashes.source.txt; \
     else \
-        /usr/bin/python3.12 -m pip install --no-cache-dir -e ".[cpu]"; \
+        /usr/bin/python3.12 -m pip install --no-cache-dir; \
     fi
 RUN ln -sf "/usr/local/lib/python3.12/site-packages/llama_index/core/_static/nltk_cache" /root/nltk_data
 

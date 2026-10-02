@@ -52,7 +52,7 @@ BYOK enables customers to create custom RAG indexes from their own documentation
 
 2. The tool container runs as root (USER 0) because buildah requires privilege for image building.
 
-3. BYOK uses CPU-only dependencies from the split RHOAI-wheel and PyPI-source lockfiles (`requirements.hashes.wheel.cpu.txt` and `requirements.hashes.source.cpu.txt`). GPU acceleration is not supported for BYOK.
+3. BYOK uses CPU-only dependencies from the split RHOAI-wheel and PyPI-source lockfiles (`requirements.hashes.wheel.txt` and `requirements.hashes.source.txt`). GPU acceleration is not supported for BYOK.
 
 4. The output directory path is sanitized via `os.path.normpath("/" + path).lstrip("/")` to prevent path traversal.
 

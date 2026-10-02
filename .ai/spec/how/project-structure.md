@@ -71,9 +71,9 @@ Contains the `sentence-transformers/all-mpnet-base-v2` model files (`config.json
 | `Containerfile` | RAG content image -- multi-stage build (builder, minimal). CPU-only. |
 | `Makefile` | Developer-facing build automation (install-deps, update-docs, build-image, format, verify, etc.). |
 | `pyproject.toml` | Project metadata. Dependencies, optional groups (cpu), ruff/mypy config. |
-| `requirements.hashes.source.cpu.txt` | Hashed PyPI source dependencies for Cachi2. |
-| `requirements.hashes.wheel.cpu.txt` | Hashed RHOAI wheel dependencies for Cachi2. |
-| `requirements-build.cpu.txt` | Build-time pip dependencies for Cachi2. |
+| `requirements.hashes.source.txt` | Hashed PyPI source dependencies for Cachi2. |
+| `requirements.hashes.wheel.txt` | Hashed RHOAI wheel dependencies for Cachi2. |
+| `requirements-build.txt` | Build-time pip dependencies for Cachi2. |
 | `requirements.hermetic.txt` | Bootstrap deps (pip) for hermetic builds. |
 | `requirements.overrides.txt` | Version pins for uv compilation. |
 | `rpms.in.yaml` / `rpms.lock.yaml` | RPM dependency spec + lockfile for Cachi2 hermetic builds. |
