@@ -13,7 +13,7 @@ RUN dnf install -y buildah python3.12-pip && dnf update -y --nodocs && dnf clean
 
 WORKDIR /workdir
 
-# Same CPU lockfiles as the lightspeed-rag-tool image (repo root; see scripts/konflux_requirements.sh)
+# CPU lockfiles generated from profiles.toml (see scripts/konflux_resolve.py)
 COPY \
     requirements.hashes.wheel.txt \
     requirements.hashes.source.txt \
@@ -23,29 +23,37 @@ COPY \
     LICENSE \
     /workdir/
 
-# Upgrade pip first (pip==26.1.2 is prefetched in requirements.hermetic.txt).
-# cachi2.env sets PIP_FIND_LINKS so the upgrade resolves from the prefetch cache in hermetic builds.
-RUN /usr/bin/python3.12 -m pip install --upgrade pip && \
+# The RHOAI image runs /opt/app-root/bin/python3.12 (VIRTUAL_ENV=/opt/app-root).
+# Install into that interpreter in both hermetic and local builds; system Python's
+# /usr/local site-packages are not visible to the runtime interpreter.
+# cachi2.env sets PIP_FIND_LINKS so the upgrade resolves from the prefetch cache.
+RUN /opt/app-root/bin/python3.12 -m pip install --upgrade pip && \
     if [ -f /cachi2/cachi2.env ]; then \
         . /cachi2/cachi2.env && \
-        /usr/bin/python3.12 -m pip install --no-cache-dir --no-deps --ignore-installed \
+        /opt/app-root/bin/python3.12 -m pip install --no-cache-dir --no-deps --ignore-installed \
             --no-index --find-links "${PIP_FIND_LINKS}" \
             -r requirements.hashes.wheel.txt \
             -r requirements.hashes.source.txt; \
     else \
-        /usr/bin/python3.12 -m pip install --no-cache-dir; \
+        /opt/app-root/bin/python3.12 -m pip install --no-cache-dir --no-deps \
+            -r requirements.hashes.wheel.txt && \
+        /opt/app-root/bin/python3.12 -m pip install --no-cache-dir --no-deps \
+            -r requirements.hashes.source.txt; \
     fi
-RUN ln -sf "/usr/local/lib/python3.12/site-packages/llama_index/core/_static/nltk_cache" /root/nltk_data
+RUN ln -sf "$(/opt/app-root/bin/python3.12 -c 'from pathlib import Path; import llama_index.core; print(Path(llama_index.core.__file__).parent / "_static/nltk_cache")')" /root/nltk_data
 
 COPY embeddings_model ./embeddings_model
 RUN cat embeddings_model/model.safetensors.tar.gz.* | \
       tar xzf - --no-same-owner -C embeddings_model || \
       { echo "ERROR: failed to extract model.safetensors from chunks"; exit 1; } && \
     rm -f embeddings_model/model.safetensors.tar.gz.* && \
-    /usr/bin/python3.12 -c \
+    /opt/app-root/bin/python3.12 -c \
       "import safetensors; safetensors.safe_open('embeddings_model/model.safetensors', framework='pt'); print('OK: model.safetensors')" || \
     { echo "ERROR: corrupt safetensors file"; exit 1; }
-COPY byok/generate_embeddings_tool.py byok/Containerfile.output ./
+COPY byok/generate_embeddings_tool.py byok/Containerfile.output byok/smoke_tool.py ./
+# Run the real embedding CLI with the image's default Python, not system Python.
+# This gates both PR and release builds on successful imports and FAISS persistence.
+RUN python3.12 smoke_tool.py
 
 # this directory is checked by ecosystem-cert-preflight-checks task in Konflux
 RUN mkdir /licenses

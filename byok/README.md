@@ -46,6 +46,19 @@ $ podman run -it --rm --device=/dev/fuse \
 
 The tool runs on CPUs, not GPUs.
 
+The image build runs `smoke_tool.py` with the image's default `python3.12` and a sample
+Markdown file. It checks that the embedding script writes a nonempty FAISS index and
+its metadata. To verify a published tool image independently (without running buildah):
+
+```bash
+$ podman run --rm --entrypoint python3.12 \
+  registry.redhat.io/openshift-lightspeed-tech-preview/lightspeed-rag-tool-rhel9:latest \
+  smoke_tool.py
+```
+
+Use the published image digest when validating a release, rather than a locally cached
+`latest` tag; older images can have a different Python environment.
+
 There are two mandatory parameters:
 
 - <dir_tree_with_markdown_files> is the root of the directory tree containing the content to be included in the BYOK RAG database, in Markdown. It is accessed for reading. File extensions are expected to be `.md`.
