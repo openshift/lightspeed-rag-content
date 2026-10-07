@@ -1,0 +1,170 @@
+---
+apiVersion: tekton.dev/v1beta1
+kind: Pipeline
+metadata:
+  name: byok-tool-integration-tests-pipeline
+spec:
+  description: |
+    Run the snapshot's BYOK tool image on a provisioned Podman VM. The test
+    exercises the default nested build, loads its output archive and validates
+    the resulting image (not just the runtime Python import).
+  params:
+    - name: SNAPSHOT
+      type: string
+      description: Konflux application snapshot containing lightspeed-rag-tool.
+    - name: test-name
+      type: string
+      default: byok-tool-integration-tests
+    - name: platforms
+      type: array
+      description: Konflux multi-platform VM types. The BYOK image currently supports amd64 only.
+      default:
+        - linux-mlarge/amd64
+  tasks:
+    - name: resolve-tool-image
+      params:
+        - name: SNAPSHOT
+          value: $(params.SNAPSHOT)
+      taskSpec:
+        params:
+          - name: SNAPSHOT
+            type: string
+        results:
+          - name: tool-image
+            value: $(steps.extract.results.tool-image)
+          - name: commit
+            value: $(steps.extract.results.commit)
+          - name: repo-url
+            value: $(steps.extract.results.repo-url)
+        steps:
+          - name: extract
+            image: registry.access.redhat.com/ubi9/python-312:latest
+            env:
+              - name: SNAPSHOT
+                value: $(params.SNAPSHOT)
+              - name: RESULTS_DIR
+                value: $(step.results.tool-image.path)
+              - name: COMMIT_PATH
+                value: $(step.results.commit.path)
+              - name: REPO_PATH
+                value: $(step.results.repo-url.path)
+            results:
+              - name: tool-image
+                type: string
+              - name: commit
+                type: string
+              - name: repo-url
+                type: string
+            script: |
+              #!/usr/bin/env python3.12
+              import json
+              import os
+              from pathlib import Path
+
+              components = json.loads(os.environ["SNAPSHOT"])["components"]
+              matches = [c for c in components if c.get("name") == "lightspeed-rag-tool"]
+              if len(matches) != 1:
+                  raise ValueError("SNAPSHOT must contain one lightspeed-rag-tool component")
+              component = matches[0]
+              image = component.get("containerImage")
+              source = component.get("source", {}).get("git", {})
+              if not image or not source.get("revision") or not source.get("url"):
+                  raise ValueError("SNAPSHOT must include image, source.git.url and revision")
+              Path(os.environ["RESULTS_DIR"]).write_text(image)
+              Path(os.environ["COMMIT_PATH"]).write_text(source["revision"])
+              Path(os.environ["REPO_PATH"]).write_text(source["url"])
+
+    - name: run-on-vm
+      matrix:
+        params:
+          - name: PLATFORM
+            value:
+              - $(params.platforms)
+      params:
+        - name: tool-image
+          value: $(tasks.resolve-tool-image.results.tool-image)
+        - name: commit
+          value: $(tasks.resolve-tool-image.results.commit)
+        - name: repo-url
+          value: $(tasks.resolve-tool-image.results.repo-url)
+      taskSpec:
+        params:
+          - name: PLATFORM
+            description: VM platform used by the Konflux multi-platform controller.
+          - name: tool-image
+          - name: commit
+          - name: repo-url
+        results:
+          - name: TEST_OUTPUT
+            description: Konflux integration test result (JSON).
+        volumes:
+          - name: workdir
+            emptyDir: {}
+          - name: ssh
+            secret:
+              secretName: multi-platform-ssh-$(context.taskRun.name)
+        steps:
+          - name: run-byok-e2e
+            image: registry.access.redhat.com/ubi9/ubi:latest
+            workingDir: /var/workdir
+            volumeMounts:
+              - name: workdir
+                mountPath: /var/workdir
+              - name: ssh
+                mountPath: /ssh
+            env:
+              - name: TOOL_IMAGE
+                value: $(params.tool-image)
+              - name: REPO_URL
+                value: $(params.repo-url)
+              - name: REPO_REV
+                value: $(params.commit)
+              - name: RESULTS_TEST_OUTPUT_PATH
+                value: $(results.TEST_OUTPUT.path)
+            script: |
+              #!/bin/bash
+              set -euo pipefail
+              result=FAILURE
+              write_result() {
+                local failures=1 successes=0
+                if [ "$result" = SUCCESS ]; then failures=0; successes=1; fi
+                printf '{"result":"%s","timestamp":"%s","failures":%s,"successes":%s,"warnings":0}\n' \
+                  "$result" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$failures" "$successes" \
+                  > "$RESULTS_TEST_OUTPUT_PATH"
+              }
+              trap write_result EXIT
+
+              dnf -y install git openssh-clients
+              if [ -e /ssh/error ]; then cat /ssh/error; exit 1; fi
+              SSH_HOST=$(cat /ssh/host)
+              if [ "$SSH_HOST" = localhost ]; then
+                echo 'A Podman VM is required; the controller returned localhost' >&2
+                exit 1
+              fi
+              mkdir -p ~/.ssh
+              if [ -s /ssh/otp ]; then
+                curl --fail --silent --show-error --cacert /ssh/otp-ca \
+                  -d @/ssh/otp "$(cat /ssh/otp-server)" > ~/.ssh/id_rsa
+                echo >> ~/.ssh/id_rsa
+              elif [ -s /ssh/id_rsa ]; then
+                cp /ssh/id_rsa ~/.ssh/id_rsa
+              else
+                echo 'No VM SSH credentials supplied by the controller' >&2
+                exit 1
+              fi
+              chmod 0400 ~/.ssh/id_rsa
+
+              # Use the test from the same revision as the built image, as in the
+              # lightspeed-core pipeline; never silently fall back to main.
+              git init -q repo
+              git -C repo remote add origin "$REPO_URL"
+              git -C repo fetch -q --depth=1 origin "$REPO_REV"
+              git -C repo checkout -q FETCH_HEAD
+              test -f repo/tests/integration-konflux/byok-e2e.sh
+
+              # Image refs are passed to the remote shell only after validation.
+              [[ "$TOOL_IMAGE" =~ ^[a-zA-Z0-9._:/@-]+$ ]] || exit 1
+              ssh -o StrictHostKeyChecking=accept-new -o ServerAliveInterval=60 \
+                -o ServerAliveCountMax=10 "$SSH_HOST" \
+                "bash -s -- '$TOOL_IMAGE'" < repo/tests/integration-konflux/byok-e2e.sh
+              result=SUCCESS

@@ -53,7 +53,9 @@ This spec defines the rules for building container images, hermetic build suppor
 
 18. Push pipelines trigger on merge to `main`. Pull-request pipelines trigger on PRs.
 
-19. All pipelines use hermetic builds with Cachi2 prefetch for pip packages and RPMs.
+19. All image-build pipelines use hermetic builds with Cachi2 prefetch for pip packages and RPMs.
+
+19a. The separate `byok-tool-integration-tests-pipeline` selects the `lightspeed-rag-tool` image and source revision from the Konflux snapshot. On a provisioned amd64 Podman VM it runs the tool's default nested Buildah workflow with mounted Markdown, loads the produced image archive, and checks vector DB artifacts and metadata. It runs on PR/push snapshots only after the `IntegrationTestScenario` is registered in the tenant. A separate build-time smoke test checks the embedding CLI and FAISS import.
 
 20. [REMOVED] The lsc/GPU pipeline has been deleted. All builds are now CPU-only.
 
