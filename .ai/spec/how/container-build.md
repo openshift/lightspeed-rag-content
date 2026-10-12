@@ -12,6 +12,11 @@ This spec documents the Containerfiles, Makefile targets, and Konflux/Tekton pip
 | `Makefile` | Developer-facing build automation |
 | `.tekton/lightspeed-rag-tool-push.yaml` | Konflux push pipeline for BYOK tool image |
 | `.tekton/lightspeed-rag-tool-pull-request.yaml` | Konflux PR pipeline for BYOK tool image |
+| `.tekton/integration-tests/pipelines/byok-integration-test.yaml` | Snapshot-selected VM integration pipeline |
+| `.tekton/integration-tests/byok-integration-test-scenario.yaml` | Required rag-tool application test registration |
+| `.tekton/integration-tests/scripts/run-in-vm.sh` | Secure VM execution, artifact retrieval, TEST_OUTPUT reporting |
+| `tests/integration-konflux/` | Default-CMD workflow, fictional runbook, OLS config, answer/citation validation |
+| `tests/unit/` | Runtime environment, actual snapshot extraction script, and answer validation regression tests |
 | `pyproject.toml` | Project metadata, dependency groups, linting config |
 | `requirements.hashes.source.txt` / `requirements.hashes.wheel.txt` | Split hashed lockfiles (PyPI source vs RHOAI wheels) |
 | `requirements-build.txt` | Build dependencies lockfile |
@@ -55,7 +60,8 @@ The `ubi-minimal` image is pinned by SHA256 digest. Digest updates are managed b
 ```
 FROM quay.io/aipcc/base-image-cpu-rhel9:3.5
   ├── dnf install buildah python3.12 python3.12-pip
-  ├── pip install split lockfiles from Cachi2 cache (hermetic) or `.[cpu]` (local)
+  ├── PATH-selected python3.12 -m pip install split lockfiles from Cachi2 cache (hermetic) or `.[cpu]` (local)
+  ├── Discover NLTK cache from runtime llama_index.core and symlink /root/nltk_data
   ├── COPY embeddings_model and reassemble model.safetensors from archive chunks
   ├── COPY byok/generate_embeddings_tool.py, byok/Containerfile.output
   ├── Enterprise contract labels
@@ -125,6 +131,22 @@ Uses `buildah` task with:
 
 - **Source image**: Created for artifact provenance tracking.
 - **Label check**: Validates enterprise contract labels.
+
+### Customer-workflow integration
+
+The required IntegrationTestScenario for application `rag-tool` resolves the BYOK test pipeline.
+The pipeline extracts the digest-pinned `lightspeed-rag-tool` image and source commit from
+SNAPSHOT and runs the test on a `linux-mlarge/amd64` VM. The VM runner uses an infrastructure
+container for Podman tooling, transfers registry and OpenAI credentials without shell tracing,
+and returns Konflux `TEST_OUTPUT` even on workflow failure.
+
+`tests/integration-konflux/pipeline-konflux.sh` runs the product's default CMD with mounted
+fictional Markdown, `STORAGE_DRIVER=vfs`, and the snapshot tool image as `BYOK_TOOL_IMAGE`.
+It loads the archive, extracts `/rag/vector_db`, checks metadata, and runs the OLS service's
+default entrypoint with that index. The query must return the answer-only fictional recovery
+phrase and the expected `referenced_documents` title/URL. The OLS service and output UBI base
+are explicit digest-pinned parameters because they are not components of the `rag-tool`
+application snapshot. See `byok/README.md` for local execution, registration, and credentials.
 
 ## Dependency Management Flow
 

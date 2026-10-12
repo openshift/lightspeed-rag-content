@@ -1,4 +1,4 @@
-LINT_PYTHON := scripts/generate_embeddings.py scripts/download_embeddings_model.py byok/generate_embeddings_tool.py
+LINT_PYTHON := scripts/generate_embeddings.py scripts/download_embeddings_model.py byok/generate_embeddings_tool.py tests/unit tests/integration-konflux/validate_response.py
 
 install-tools: ## Install uv (Python 3.12) for local development
 	@command -v uv > /dev/null || { echo >&2 "uv is not installed. Install: https://docs.astral.sh/uv/"; exit 1; }
@@ -23,16 +23,19 @@ update-rpm-lock:
 	@echo "  rpm-lockfile-prototype rpms.in.yaml --outfile rpms.lock.yaml"
 	@echo "Adjust paths if you maintain a separate lockfile."
 
+test-unit: ## Run BYOK runtime and integration-harness regression tests
+	uv run --no-project --python 3.12 --with pyyaml python -m unittest discover -s tests/unit -v
+
 check-types: install-tools .venv ## Checks type hints in sources
 	.venv/bin/mypy --explicit-package-bases --disallow-untyped-calls --disallow-untyped-defs --disallow-incomplete-defs scripts
 
 format: install-tools .venv
 	.venv/bin/black $(LINT_PYTHON)
-	.venv/bin/ruff check $(LINT_PYTHON) --fix --per-file-ignores=scripts/*:S101,byok/*:S101
+	.venv/bin/ruff check $(LINT_PYTHON) --fix --extend-per-file-ignores=scripts/*:S101,byok/*:S101
 
 verify: install-tools .venv
 	.venv/bin/black --check $(LINT_PYTHON)
-	.venv/bin/ruff check $(LINT_PYTHON) --per-file-ignores=scripts/*:S101,byok/*:S101
+	.venv/bin/ruff check $(LINT_PYTHON) --extend-per-file-ignores=scripts/*:S101,byok/*:S101
 
 update-docs: ## Update the plaintext OCP docs in ocp-product-docs-plaintext/
 	@set -e && for OCP_VERSION in $$(ls -1 ocp-product-docs-plaintext); do \

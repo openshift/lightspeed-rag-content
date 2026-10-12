@@ -1,0 +1,173 @@
+apiVersion: tekton.dev/v1
+kind: Pipeline
+metadata:
+  name: byok-customer-integration-test
+spec:
+  description: >-
+    Run the BYOK product's default CMD on a Konflux VM, load its customer image
+    archive, and require an OLS answer and citation grounded in fictional Markdown.
+  params:
+    - name: SNAPSHOT
+      type: string
+      description: Application snapshot containing lightspeed-rag-tool.
+    - name: platforms
+      type: array
+      default:
+        - linux-mlarge/amd64
+    - name: ols-service-image
+      type: string
+      description: Digest-pinned OLS consumer image; not part of the rag-tool application.
+    - name: ubi-base-image
+      type: string
+      description: Digest-pinned base for the customer output image.
+    - name: openai-secret
+      type: string
+      default: openai
+  tasks:
+    - name: init-snapshot
+      params:
+        - name: SNAPSHOT
+          value: $(params.SNAPSHOT)
+      taskSpec:
+        params:
+          - name: SNAPSHOT
+            type: string
+        results:
+          - name: tool-image
+            value: $(steps.extract.results.tool-image)
+          - name: revision
+            value: $(steps.extract.results.revision)
+          - name: repo-url
+            value: $(steps.extract.results.repo-url)
+        steps:
+          - name: extract
+            image: quay.io/konflux-qe-incubator/konflux-qe-tools:latest
+            env:
+              - name: SNAPSHOT
+                value: $(params.SNAPSHOT)
+            results:
+              - name: tool-image
+                type: string
+              - name: revision
+                type: string
+              - name: repo-url
+                type: string
+            script: |
+              #!/usr/bin/env bash
+              set -euo pipefail
+              COMPONENT="$(jq -ce '[.components[] | select(.name == "lightspeed-rag-tool")] |
+                if length == 1 then .[0] else error("Expected exactly one lightspeed-rag-tool") end' <<< "$SNAPSHOT")"
+              IMAGE="$(jq -er '.containerImage' <<< "$COMPONENT")"
+              REVISION="$(jq -er '.source.git.revision' <<< "$COMPONENT")"
+              REPO_URL="$(jq -er '.source.git.url' <<< "$COMPONENT")"
+              [[ "$IMAGE" =~ ^[^[:space:]]+@sha256:[a-f0-9]{64}$ ]] || { echo "Snapshot image must be digest-pinned" >&2; exit 1; }
+              [[ "$REVISION" =~ ^[a-f0-9]{40}$ ]] || { echo "Snapshot revision must be a commit SHA" >&2; exit 1; }
+              [[ "$REPO_URL" =~ ^https://github.com/[a-zA-Z0-9_.-]+/[a-zA-Z0-9_.-]+$ ]] || { echo "Invalid snapshot repository URL" >&2; exit 1; }
+              printf %s "$IMAGE" > "$(step.results.tool-image.path)"
+              printf %s "$REVISION" > "$(step.results.revision.path)"
+              printf %s "$REPO_URL" > "$(step.results.repo-url.path)"
+              echo "BYOK tool image: $IMAGE; source: $REPO_URL@$REVISION"
+    - name: run-customer-workflow
+      runAfter:
+        - init-snapshot
+      matrix:
+        params:
+          - name: PLATFORM
+            value:
+              - $(params.platforms)
+      params:
+        - name: tool-image
+          value: $(tasks.init-snapshot.results.tool-image)
+        - name: revision
+          value: $(tasks.init-snapshot.results.revision)
+        - name: repo-url
+          value: $(tasks.init-snapshot.results.repo-url)
+        - name: ols-service-image
+          value: $(params.ols-service-image)
+        - name: ubi-base-image
+          value: $(params.ubi-base-image)
+        - name: openai-secret
+          value: $(params.openai-secret)
+      taskSpec:
+        params:
+          - name: PLATFORM
+            type: string
+          - name: tool-image
+            type: string
+          - name: revision
+            type: string
+          - name: repo-url
+            type: string
+          - name: ols-service-image
+            type: string
+          - name: ubi-base-image
+            type: string
+          - name: openai-secret
+            type: string
+        results:
+          - name: TEST_OUTPUT
+            description: Konflux standard JSON test result.
+        volumes:
+          - name: workdir
+            emptyDir: {}
+          - name: ssh
+            secret:
+              secretName: multi-platform-ssh-$(context.taskRun.name)
+          - name: openai
+            secret:
+              secretName: $(params.openai-secret)
+          - name: quay-auth
+            secret:
+              secretName: openshift-lightspeed
+          - name: redhat-auth
+            secret:
+              secretName: registry-redhat-io
+        steps:
+          - name: run-in-vm
+            image: registry.access.redhat.com/ubi9/ubi:latest
+            securityContext:
+              runAsUser: 0
+            computeResources:
+              requests:
+                memory: 1Gi
+              limits:
+                memory: 2Gi
+            workingDir: /var/workdir
+            volumeMounts:
+              - name: workdir
+                mountPath: /var/workdir
+              - name: ssh
+                mountPath: /ssh
+                readOnly: true
+              - name: openai
+                mountPath: /var/run/openai
+                readOnly: true
+              - name: quay-auth
+                mountPath: /var/run/quay-auth
+                readOnly: true
+              - name: redhat-auth
+                mountPath: /var/run/redhat-auth
+                readOnly: true
+            env:
+              - name: BYOK_TOOL_IMAGE
+                value: $(params.tool-image)
+              - name: OLS_SERVICE_IMAGE
+                value: $(params.ols-service-image)
+              - name: UBI_BASE_IMAGE
+                value: $(params.ubi-base-image)
+              - name: REPO_URL
+                value: $(params.repo-url)
+              - name: REPO_REV
+                value: $(params.revision)
+              - name: RESULTS_TEST_OUTPUT_PATH
+                value: $(results.TEST_OUTPUT.path)
+            script: |
+              #!/usr/bin/env bash
+              set -euo pipefail
+              trap 'status=$?; if [[ ! -s "$RESULTS_TEST_OUTPUT_PATH" ]]; then printf "{\"result\":\"FAILURE\",\"timestamp\":\"%s\",\"failures\":1,\"successes\":0,\"warnings\":0}" "$(date -u +%FT%TZ)" > "$RESULTS_TEST_OUTPUT_PATH"; fi; exit "$status"' EXIT
+              dnf -y install git openssh-clients rsync jq
+              git clone --filter=blob:none --no-checkout "$REPO_URL" repo
+              git -C repo sparse-checkout set .tekton/integration-tests tests/integration-konflux
+              git -C repo fetch --depth=1 origin "$REPO_REV"
+              git -C repo checkout --detach "$REPO_REV"
+              bash repo/.tekton/integration-tests/scripts/run-in-vm.sh

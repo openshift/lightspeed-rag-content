@@ -31,7 +31,7 @@ This spec defines the rules for building container images, hermetic build suppor
 
 10. The BYOK tool image is built from `byok/Containerfile.tool`. It contains: `buildah`, Python 3.12, CPU Python dependencies, the embedding model, the BYOK embedding script (`generate_embeddings_tool.py`), and the output Containerfile template (`Containerfile.output`).
 
-11. The tool image's CMD runs `buildah build` to produce the customer's RAG image from Markdown content mounted at `/markdown`, then pushes the result as a tar archive to `/output/`.
+11. The tool image's CMD runs `buildah build` to produce the customer's RAG image from Markdown content mounted at `/markdown`, then pushes the result as a tar archive to `/output/`. Dependency installation, model validation, and embedding execution use the same PATH-selected `python3.12` environment.
 
 ## Behavioral Rules -- Hermetic Builds
 
@@ -57,6 +57,8 @@ This spec defines the rules for building container images, hermetic build suppor
 
 20. [REMOVED] The lsc/GPU pipeline has been deleted. All builds are now CPU-only.
 
+21. The required BYOK customer-workflow integration scenario runs the exact snapshot tool image with its default CMD on an x86_64 Konflux VM. It uses that same image for the nested build, loads the exported customer image, checks the packaged index metadata, and serves the index through an explicitly digest-pinned OLS image with real LLM inference. Success requires an answer-only fact from fictional Markdown and its matching document title/URL citation. Missing snapshot components, image digests, or source commits must fail rather than fall back to a mutable tag or branch.
+
 ## Configuration Surface
 
 | Parameter | Type | Default | Purpose |
@@ -74,7 +76,7 @@ This spec defines the rules for building container images, hermetic build suppor
 
 ## Constraints
 
-1. The NLTK data directory must be symlinked after pip install to make tokenization data available.
+1. The NLTK data directory must be symlinked after pip install to make tokenization data available. Its path is discovered from `llama_index.core` in the runtime Python environment, not a hard-coded system site-packages directory.
 
 2. Python dependencies are compiled by uv with split lockfiles (RHOAI wheels vs PyPI source). `scripts/konflux_requirements.sh` generates the lockfiles.
 
