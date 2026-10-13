@@ -20,29 +20,32 @@ COPY \
     requirements-build.txt \
     requirements.hermetic.txt \
     pyproject.toml \
+    README.md \
     LICENSE \
     /workdir/
 
 # Upgrade pip first (pip==26.1.2 is prefetched in requirements.hermetic.txt).
 # cachi2.env sets PIP_FIND_LINKS so the upgrade resolves from the prefetch cache in hermetic builds.
-RUN /usr/bin/python3.12 -m pip install --upgrade pip && \
+RUN python3.12 -m pip install --upgrade pip && \
     if [ -f /cachi2/cachi2.env ]; then \
         . /cachi2/cachi2.env && \
-        /usr/bin/python3.12 -m pip install --no-cache-dir --no-deps --ignore-installed \
+        python3.12 -m pip install --no-cache-dir --no-deps --ignore-installed \
             --no-index --find-links "${PIP_FIND_LINKS}" \
             -r requirements.hashes.wheel.txt \
             -r requirements.hashes.source.txt; \
     else \
-        /usr/bin/python3.12 -m pip install --no-cache-dir; \
+        python3.12 -m pip install --no-cache-dir -e ".[cpu]"; \
     fi
-RUN ln -sf "/usr/local/lib/python3.12/site-packages/llama_index/core/_static/nltk_cache" /root/nltk_data
+RUN NLTK_CACHE=$(python3.12 -c \
+      "from pathlib import Path; import llama_index.core; print(Path(llama_index.core.__file__).parent / '_static' / 'nltk_cache')") && \
+    test -d "$NLTK_CACHE" && ln -sfn "$NLTK_CACHE" /root/nltk_data
 
 COPY embeddings_model ./embeddings_model
 RUN cat embeddings_model/model.safetensors.tar.gz.* | \
       tar xzf - --no-same-owner -C embeddings_model || \
       { echo "ERROR: failed to extract model.safetensors from chunks"; exit 1; } && \
     rm -f embeddings_model/model.safetensors.tar.gz.* && \
-    /usr/bin/python3.12 -c \
+    python3.12 -c \
       "import safetensors; safetensors.safe_open('embeddings_model/model.safetensors', framework='pt'); print('OK: model.safetensors')" || \
     { echo "ERROR: corrupt safetensors file"; exit 1; }
 COPY byok/generate_embeddings_tool.py byok/Containerfile.output ./
