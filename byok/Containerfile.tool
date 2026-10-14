@@ -56,7 +56,7 @@ COPY LICENSE /licenses/
 
 # Labels for enterprise contract
 LABEL com.redhat.component=openshift-lightspeed-rag-content
-LABEL cpe="cpe:/a:redhat:openshift_lightspeed:1::el9"
+LABEL cpe="cpe:/a:redhat:openshift_lightspeed:2::el9"
 LABEL description="Red Hat OpenShift Lightspeed BYO Knowledge Tools"
 LABEL distribution-scope=private
 LABEL io.k8s.description="Red Hat OpenShift Lightspeed BYO Knowledge Tools"
