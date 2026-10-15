@@ -14,8 +14,26 @@ install-deps-test: install-tools .venv ## Install with dev tools (Ruff, mypy, et
 	uv pip install --python .venv/bin/python -e ".[cpu]" black mypy ruff "types-requests"
 
 # Regenerate Cachi2/Konflux lockfiles; commit outputs + update .tekton `binary.packages` if the wheel set changes
-update-konflux-deps: install-tools
-	./scripts/konflux_requirements.sh
+update-konflux-deps: install-tools ## Regenerate all Konflux hermetic requirements files
+	unset UV_CONFIG_FILE UV_INDEX_URL UV_DEFAULT_INDEX PIP_INDEX_URL PIP_EXTRA_INDEX_URL && \
+	export UV_NO_CONFIG=1 && \
+	python3 scripts/konflux_resolve.py --profile cpu
+
+konflux-requirements: ## Alias for update-konflux-deps
+	unset UV_CONFIG_FILE UV_INDEX_URL UV_DEFAULT_INDEX PIP_INDEX_URL PIP_EXTRA_INDEX_URL && \
+	export UV_NO_CONFIG=1 && \
+	python3 scripts/konflux_resolve.py --profile cpu
+
+bump: ## Bump a single dependency for CVE fix and regenerate hermetic requirements
+	@if [ -z "$(PKG)" ]; then echo "Usage: make bump PKG=<package> VERSION=<version>" >&2; exit 1; fi
+	@if [ -z "$(VERSION)" ]; then echo "Usage: make bump PKG=<package> VERSION=<version>" >&2; exit 1; fi
+	scripts/bump_dep.sh "$(PKG)" "$(VERSION)"
+	unset UV_CONFIG_FILE UV_INDEX_URL UV_DEFAULT_INDEX PIP_INDEX_URL PIP_EXTRA_INDEX_URL && \
+	export UV_NO_CONFIG=1 && \
+	python3 scripts/konflux_resolve.py --profile cpu
+	@echo ""
+	@echo "=== Changed files ==="
+	@git diff --stat
 
 # Regenerate rpms.lock.yaml (subscription + rpm-lockfile-prototype / Konflux tooling; not scripted in-repo).
 update-rpm-lock:
