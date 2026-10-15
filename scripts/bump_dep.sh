@@ -66,5 +66,4 @@ if [[ "$updated" -eq 0 ]]; then
     updated=1
 fi
 
-echo "Done.  Remember to regenerate hermetic requirements:"
-echo "  make update-konflux-deps"
+echo "Done. Version constraint updated."
