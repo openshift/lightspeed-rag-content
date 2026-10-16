@@ -1,5 +1,7 @@
 LINT_PYTHON := scripts/generate_embeddings.py scripts/download_embeddings_model.py byok/generate_embeddings_tool.py
 
+.PHONY: check-unused-deps
+
 install-tools: ## Install uv (Python 3.12) for local development
 	@command -v uv > /dev/null || { echo >&2 "uv is not installed. Install: https://docs.astral.sh/uv/"; exit 1; }
 	@command -v python3.12 > /dev/null || { echo >&2 "Python 3.12 is required."; exit 1; }
@@ -15,13 +17,16 @@ install-deps-test: install-tools .venv ## Install with dev tools (Ruff, mypy, et
 
 # Regenerate Cachi2/Konflux lockfiles; commit outputs + update .tekton `binary.packages` if the wheel set changes
 update-konflux-deps: install-tools
-	./scripts/konflux_requirements.sh
+	python3 scripts/konflux_resolve.py --profile cpu
 
 # Regenerate rpms.lock.yaml (subscription + rpm-lockfile-prototype / Konflux tooling; not scripted in-repo).
 update-rpm-lock:
 	@echo "From repo root, with Red Hat repo auth configured, run your org's rpm-lock workflow, e.g.:"
 	@echo "  rpm-lockfile-prototype rpms.in.yaml --outfile rpms.lock.yaml"
 	@echo "Adjust paths if you maintain a separate lockfile."
+
+check-unused-deps: ## Detect potentially unused dependencies in the BYOK tool image
+	uvx deptry==0.24.0 byok
 
 check-types: install-tools .venv ## Checks type hints in sources
 	.venv/bin/mypy --explicit-package-bases --disallow-untyped-calls --disallow-untyped-defs --disallow-incomplete-defs scripts
