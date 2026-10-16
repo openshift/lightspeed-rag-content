@@ -2,7 +2,7 @@
 """Policy-driven dependency resolver for Hermeto/Cachi2 hermetic builds.
 
 Enforces: RHOAI wheel > PyPI sdist > PyPI wheel (last resort).
-Usage: python3 scripts/konflux_resolve.py --profile cpu|cuda [--verbose | --quiet]
+Usage: python3 scripts/konflux_resolve.py --profile cpu [--freeze-except PACKAGE] [--verbose | --quiet]
 """
 
 from __future__ import annotations
@@ -933,6 +933,83 @@ def load_wheel_only(path: str) -> set[str]:
     return names
 
 
+_BUILD_PYTHON_RE = re.compile(r"pip-compile with Python (\d+\.\d+)")
+
+
+def load_build_deps_python_version(path: str, default: str) -> str:
+    """Return the interpreter version recorded in a pybuild-deps output.
+
+    pip-compile resolves against its running interpreter, so regenerating
+    the file under a different Python changes the pins and their hashes.
+    The version recorded in the existing output file therefore wins over
+    the profile's ``python_version``.
+    """
+    try:
+        with open(path, encoding="utf-8") as f:
+            for line in f:
+                match = _BUILD_PYTHON_RE.search(line)
+                if match:
+                    return match.group(1)
+    except FileNotFoundError:
+        pass
+    return default
+
+
+_PIN_RE = re.compile(r"^([a-zA-Z0-9][a-zA-Z0-9._-]*)==([^\s\\]+)")
+
+
+def collect_committed_pins(paths: Sequence[str], exclude: str) -> dict[str, str]:
+    """Collect committed ``name==version`` pins from requirements files.
+
+    Skips missing files, option lines, and annotations.  The package named by
+    *exclude* (the one being bumped) is omitted so it can move; the mapping
+    feeds both the uv constraints wall and the build-dependency restore.
+    """
+    excluded = normalize_name(exclude)
+    pins: dict[str, str] = {}
+    for path in paths:
+        try:
+            with open(path, encoding="utf-8") as f:
+                for line in f:
+                    match = _PIN_RE.match(line)
+                    if match is None:
+                        continue
+                    name = normalize_name(match.group(1))
+                    if name != excluded:
+                        pins[name] = match.group(2)
+        except FileNotFoundError:
+            continue
+    return pins
+
+
+def restore_build_dep_pins(path: str, pins: dict[str, str]) -> int:
+    """Rewrite package pins in a requirements-build file to committed versions.
+
+    pybuild-deps cannot be constrained, so a targeted bump rewrites the
+    freshly compiled file afterwards: packages present in *pins* revert to
+    their committed version while ordering, annotations, and new packages
+    keep their freshly resolved versions.  Returns the number of rewrites.
+    """
+    with open(path, encoding="utf-8") as f:
+        lines = f.readlines()
+
+    restored = 0
+    for index, line in enumerate(lines):
+        match = _PIN_RE.match(line)
+        if match is None:
+            continue
+        name = normalize_name(match.group(1))
+        if name not in pins or pins[name] == match.group(2):
+            continue
+        start = match.end(1)
+        lines[index] = f"{line[:start]}=={pins[name]}{line[match.end(2):]}"
+        restored += 1
+
+    with open(path, "w", encoding="utf-8") as f:
+        f.writelines(lines)
+    return restored
+
+
 # ---------------------------------------------------------------------------
 # Hybrid resolution: uv pip compile + RHOAI reclassification
 # ---------------------------------------------------------------------------
@@ -956,8 +1033,12 @@ def uv_resolve(
     rhoai_index_url: str,
     suffix: str,
     extras: Sequence[str] = (),
+    freeze_except: str | None = None,
 ) -> dict[str, dict[str, Any]]:
     """Run ``uv pip compile --index-strategy prefer-index`` to resolve deps.
+
+    When *freeze_except* is set, constrain all other packages to their
+    committed hashed-requirements versions.
 
     Returns ``{normalized_name: {"version": str, "index": str}}``
     where *index* is the URL of the index the package was resolved from.
@@ -996,6 +1077,29 @@ def uv_resolve(
         cmd += ["--override", overrides_file]
     for extra in extras:
         cmd += ["--extra", extra]
+    freeze_file: str | None = None
+    if freeze_except is not None:
+        pin_paths = [
+            os.path.join(KONFLUX_DIR, f"requirements.hashes.wheel{suffix}.txt"),
+            os.path.join(KONFLUX_DIR, f"requirements.hashes.source{suffix}.txt"),
+            os.path.join(KONFLUX_DIR, f"requirements.hashes.wheel.pypi{suffix}.txt"),
+        ]
+        pins = collect_committed_pins(pin_paths, freeze_except)
+        if pins:
+            freeze_file = os.path.join(
+                KONFLUX_DIR, f"_tmp_freeze_constraints{suffix}.txt"
+            )
+            with open(freeze_file, "w", encoding="utf-8") as f:
+                for name in sorted(pins):
+                    f.write(f"{name}=={pins[name]}\n")
+            cmd += ["--constraints", freeze_file]
+            logger.info(
+                "Freezing %d packages at committed versions (except %s)",
+                len(pins),
+                freeze_except,
+            )
+        else:
+            logger.warning("No committed pins found to freeze except %s", freeze_except)
 
     logger.debug("Running: %s", " ".join(cmd))
     try:
@@ -1004,6 +1108,9 @@ def uv_resolve(
         print("Failed:")
         print(e.stderr)
         sys.exit(1)
+    finally:
+        if freeze_file and os.path.exists(freeze_file):
+            os.remove(freeze_file)
 
     resolved: dict[str, dict[str, Any]] = {}
     current_package: str | None = None
@@ -1174,7 +1281,12 @@ def main() -> None:
     parser = argparse.ArgumentParser(
         description="Policy-driven dependency resolver for Hermeto/Cachi2 builds."
     )
-    parser.add_argument("--profile", required=True, help="Build profile (cpu|cuda)")
+    parser.add_argument("--profile", required=True, help="Build profile (cpu)")
+    parser.add_argument(
+        "--freeze-except",
+        metavar="PACKAGE",
+        help="Freeze every package at its committed version except PACKAGE",
+    )
     verbosity = parser.add_mutually_exclusive_group()
     verbosity.add_argument("--verbose", action="store_true", help="Verbose logging")
     verbosity.add_argument("--quiet", action="store_true", help="Errors only")
@@ -1207,6 +1319,7 @@ def main() -> None:
         rhoai_index_url,
         suffix,
         config.get("extras", []),
+        freeze_except=args.freeze_except,
     )
 
     # Step 2: Build resolved dict from uv output + index annotations
@@ -1278,28 +1391,73 @@ def main() -> None:
     sdist_names = list(buckets["pypi_sdist"].keys())
     build_output = os.path.join(KONFLUX_DIR, f"requirements-build{suffix}.txt")
     if sdist_names:
+        # pip-compile resolves against its running interpreter, so the Python
+        # version recorded in the existing output file wins over the profile.
+        build_python = load_build_deps_python_version(build_output, python_version)
+        logger.info(
+            "Build deps: compiling under Python %s (recorded in %s)",
+            build_python,
+            os.path.basename(build_output),
+        )
+        if build_python != python_version:
+            logger.warning(
+                "Build-deps Python %s differs from the profile's %s; the recorded "
+                "version wins to keep requirements-build.txt stable",
+                build_python,
+                python_version,
+            )
+        frozen_build_pins: dict[str, str] = {}
+        if args.freeze_except:
+            frozen_build_pins = collect_committed_pins(
+                [build_output], args.freeze_except
+            )
+            if frozen_build_pins:
+                logger.info(
+                    "Freezing %d build-dependency pins at committed versions",
+                    len(frozen_build_pins),
+                )
         tmp_sdist_file = os.path.join(KONFLUX_DIR, f"_tmp_sdist_list{suffix}.txt")
         try:
             with open(tmp_sdist_file, "w", encoding="utf-8") as f:
                 for name in sorted(sdist_names):
                     info = buckets["pypi_sdist"][name]
                     f.write(f"{name}=={info['version']}\n")
-            build_deps_executable = shutil.which("pybuild-deps")
-            if build_deps_executable is None:
-                raise RuntimeError("pybuild-deps is not installed")
+            subprocess_env = os.environ.copy()
+            for variable in (
+                "UV_CONFIG_FILE",
+                "UV_INDEX_URL",
+                "UV_DEFAULT_INDEX",
+                "UV_INDEX",
+                "UV_EXTRA_INDEX_URL",
+                "PIP_INDEX_URL",
+                "PIP_EXTRA_INDEX_URL",
+            ):
+                subprocess_env.pop(variable, None)
+            subprocess_env["UV_NO_CONFIG"] = "1"
             try:
                 subprocess.run(
                     [
-                        build_deps_executable,
+                        "uv",
+                        "run",
+                        "--no-project",
+                        "-p",
+                        build_python,
+                        "--with",
+                        "pybuild-deps==0.5.0",
+                        "--with",
+                        "pip-tools==7.5.3",
+                        "--with",
+                        "pip==24.3.1",
+                        "pybuild-deps",
                         "compile",
                         f"--output-file={build_output}",
                         tmp_sdist_file,
                     ],
                     check=True,
+                    env=subprocess_env,
                 )
             except subprocess.CalledProcessError as e:
-                print("Failed:")
-                print(e.stderr)
+                print(f"pybuild-deps compile failed with exit code {e.returncode}")
                 sys.exit(1)
         finally:
             if os.path.exists(tmp_sdist_file):
@@ -1314,6 +1472,9 @@ def main() -> None:
             build_output,
             rhoai_names | bootstrap_names,
         )
+        if frozen_build_pins:
+            restored = restore_build_dep_pins(build_output, frozen_build_pins)
+            logger.info("Restored %d build-dependency pins", restored)
     else:
         with open(build_output, "w", encoding="utf-8") as f:
             f.write("# No sdist packages — no build dependencies needed.\n")

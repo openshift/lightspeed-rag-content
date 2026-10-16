@@ -13,7 +13,7 @@ RUN dnf install -y buildah python3.12-pip && dnf update -y --nodocs && dnf clean
 
 WORKDIR /workdir
 
-# Same CPU lockfiles as the lightspeed-rag-tool image (repo root; see scripts/konflux_requirements.sh)
+# Same CPU lockfiles as the lightspeed-rag-tool image (repo root; refresh with make bump)
 COPY \
     requirements.hashes.wheel.txt \
     requirements.hashes.source.txt \

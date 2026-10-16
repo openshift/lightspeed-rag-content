@@ -96,10 +96,10 @@ FROM ${UBI_BASE_IMAGE}
 
 | Target | Command | Purpose |
 |---|---|---|
-| `install-tools` | Verify uv + Python 3.12 | Check prerequisites |
+| `install-tools` | Verify uv + Python 3 resolver runtime | Check prerequisites |
 | `install-deps` | `uv pip install` | Install runtime deps |
 | `install-deps-test` | `uv pip install" black mypy ruff` | Install dev deps |
-| `update-konflux-deps` | `scripts/konflux_requirements.sh` | Regenerate split lockfiles for Konflux |
+| `bump` | `make bump [PKG=<name> VERSION=<version>]` | Single dependency-update entry point: refresh every dependency to the latest allowed version, or with `PKG`/`VERSION` update one constraint while freezing every other package at its committed version; regenerates Konflux lockfiles and the CPU PDM lock |
 | `check-types` | `mypy --explicit-package-bases scripts` | Type checking |
 | `format` | `black scripts && ruff check scripts --fix` | Code formatting |
 | `verify` | `black --check scripts && ruff check scripts` | Lint verification |
@@ -107,6 +107,11 @@ FROM ${UBI_BASE_IMAGE}
 | `update-model` | `python scripts/download_embeddings_model.py` | Download embedding model |
 | `build-image` | `podman build -t rag-content .` | Local container build |
 | `model-safetensors` | `wget model.safetensors` if not present | Download model binary |
+
+
+Keep the Konflux lockfiles and CPU PDM lock synchronized. After editing `pyproject.toml` or `requirements.overrides.txt` directly, run `make bump` (no arguments) to refresh both. The `make bump PKG=<name> VERSION=<version>` form updates the constraint first, then regenerates the Konflux lockfiles and refreshes the CPU PDM lock in that order. In targeted mode, uv constrains all other packages to their committed versions and the build-dependency pins are restored after compilation. Konflux prefers RHOAI-index wheels while PDM resolves indexed packages from PyPI, so versions can differ when the sources expose different builds.
+
+The build-dependency compilation invoked by `scripts/konflux_resolve.py` runs under the Python version recorded in `requirements-build.txt` and pins its toolchain to `pybuild-deps==0.5.0`, `pip-tools==7.5.3`, and `pip==24.3.1`.
 
 The `verify` and `format` targets apply `--per-file-ignores=scripts/*:S101` to allow assert statements in scripts.
 
@@ -150,7 +155,9 @@ application snapshot. See `byok/README.md` for local execution, registration, an
 
 ## Dependency Management Flow
 
-```
+make bump (single dependency-update entry point; PKG/VERSION optional)
+     │
+     ▼
 pyproject.toml
 ├── [project.dependencies]           Core deps (llama-index, faiss, etc.)
 ├── [project.optional-dependencies]
@@ -160,14 +167,22 @@ pyproject.toml
 
      │
      ▼
-scripts/konflux_requirements.sh (uv pip compile)
+scripts/konflux_resolve.py (host python3)
      │
      ▼
 requirements.hashes.source.txt   (PyPI packages, hashed)
 requirements.hashes.wheel.txt    (RHOAI wheels, hashed)
 requirements-build.txt           (build deps via pybuild-deps)
-requirements.hermetic.txt            (bootstrap: uv, uv-build, maturin, pip==26.1.2)
+requirements.hermetic.txt            (bootstrap: maturin, uv, uv-build, wheel)
 requirements.overrides.txt           (version pins for uv)
+
+pyproject.toml + requirements.overrides.txt
+     │
+     ▼
+scripts/sync_pdm_lock.py
+     │
+     ▼
+pdm.lock.cpu (CPU local installs)
 
 rpms.in.yaml → rpms.lock.yaml
      (Cachi2 RPM resolution for container build)
@@ -182,4 +197,4 @@ embeddings_model/model.safetensors.tar.gz.*
 
 - The `ubi-minimal` final image digest is periodically updated by Konflux/Mintmaker automation, which submits PRs to update the `@sha256:...` pinning.
 
-- `scripts/generate_packages_to_prefetch.py` is a legacy Cachito-era script (obsolete). Lockfile generation is now handled by `scripts/konflux_requirements.sh`.
+- `scripts/generate_packages_to_prefetch.py` is a legacy Cachito-era script (obsolete). Lockfile generation is now handled by `scripts/konflux_resolve.py`.

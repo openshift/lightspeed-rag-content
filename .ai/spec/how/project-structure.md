@@ -87,7 +87,7 @@ Contains the `sentence-transformers/all-mpnet-base-v2` model files (`config.json
 
 **Package manager**: uv for compilation, pip for installation. CPU-only builds.
 
-**Lockfile generation**: `scripts/konflux_requirements.sh` compiles `pyproject.toml` with uv using dual-index strategy (RHOAI wheels first, then PyPI). Produces split hashed lockfiles for Cachi2 prefetch.
+**Lockfile generation**: `make bump` runs `scripts/konflux_resolve.py` to produce split hashed lockfiles for Cachi2 prefetch (RHOAI wheels first, then PyPI). Build-dependency compilation uses pinned tools under the Python version recorded in `requirements-build.txt`. The same target refreshes the CPU PDM lock used for local installs. Targeted `PKG`/`VERSION` bumps freeze all other dependencies at their committed versions.
 
 **Core dependencies**: `llama-index-core`, `llama-index-vector-stores-faiss`, `llama-index-embeddings-huggingface`, `llama-index-readers-file`, `faiss-cpu`, `torch` (RHOAI CPU wheel), `huggingface-hub`, `accelerate`, `python-frontmatter`, `beautifulsoup4`, `aiohttp`, `PyYAML`, `urllib3`.
 

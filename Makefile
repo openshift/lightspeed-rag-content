@@ -1,8 +1,9 @@
-LINT_PYTHON := scripts/generate_embeddings.py scripts/download_embeddings_model.py byok/generate_embeddings_tool.py tests/unit tests/integration-konflux/validate_response.py
+LINT_PYTHON := scripts/bump_dep.py scripts/sync_pdm_lock.py scripts/generate_embeddings.py scripts/download_embeddings_model.py byok/generate_embeddings_tool.py tests/unit tests/integration-konflux/validate_response.py
+SANITIZE_PYTHON_ENV := unset UV_CONFIG_FILE UV_INDEX_URL UV_DEFAULT_INDEX UV_INDEX UV_EXTRA_INDEX_URL PIP_INDEX_URL PIP_EXTRA_INDEX_URL && export UV_NO_CONFIG=1
 
-install-tools: ## Install uv (Python 3.12) for local development
+install-tools: ## Verify uv and the Python 3 resolver runtime
 	@command -v uv > /dev/null || { echo >&2 "uv is not installed. Install: https://docs.astral.sh/uv/"; exit 1; }
-	@command -v python3.12 > /dev/null || { echo >&2 "Python 3.12 is required."; exit 1; }
+	@command -v python3 > /dev/null || { echo >&2 "Python 3 is required to run the dependency resolver."; exit 1; }
 
 .venv:
 	uv venv -p 3.12
@@ -13,9 +14,40 @@ install-deps: install-tools .venv ## Install app dependencies (matches pyproject
 install-deps-test: install-tools .venv ## Install with dev tools (Ruff, mypy, etc.)
 	uv pip install --python .venv/bin/python -e ".[cpu]" black mypy ruff "types-requests"
 
-# Regenerate Cachi2/Konflux lockfiles; commit outputs + update .tekton `binary.packages` if the wheel set changes
-update-konflux-deps: install-tools
-	./scripts/konflux_requirements.sh
+# Single entry point for Python dependency updates. Commit the regenerated
+# outputs and update .tekton `binary.packages` if the wheel set changes.
+# Targeted bumps freeze all other packages at their committed versions.
+.PHONY: bump
+
+bump: install-tools ## Bump deps: no args = latest; PKG=... VERSION=... = one pkg (others frozen)
+	@if [ -n "$(PKG)" ] || [ -n "$(VERSION)" ]; then \
+		if [ -z "$(PKG)" ] || [ -z "$(VERSION)" ]; then \
+			echo "Usage: make bump [PKG=<package> VERSION=<version>]" >&2; \
+			exit 1; \
+		fi; \
+	fi
+	$(SANITIZE_PYTHON_ENV) && \
+	if [ -n "$(PKG)" ]; then \
+		uv run --no-project --python 3.12 python \
+			scripts/bump_dep.py "$(PKG)" "$(VERSION)"; \
+	fi
+	$(SANITIZE_PYTHON_ENV) && \
+	if [ -n "$(PKG)" ]; then \
+		python3 scripts/konflux_resolve.py --profile cpu --freeze-except "$(PKG)"; \
+	else \
+		python3 scripts/konflux_resolve.py --profile cpu; \
+	fi
+	$(SANITIZE_PYTHON_ENV) && \
+	if [ -n "$(PKG)" ]; then \
+		uv run --no-project --python 3.12 python \
+			scripts/sync_pdm_lock.py "$(PKG)"; \
+	else \
+		uv run --no-project --python 3.12 python \
+			scripts/sync_pdm_lock.py --update-all; \
+	fi
+	@echo ""
+	@echo "=== Changed files ==="
+	@git diff --stat
 
 # Regenerate rpms.lock.yaml (subscription + rpm-lockfile-prototype / Konflux tooling; not scripted in-repo).
 update-rpm-lock:
