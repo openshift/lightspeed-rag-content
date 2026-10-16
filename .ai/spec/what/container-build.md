@@ -78,6 +78,6 @@ This spec defines the rules for building container images, hermetic build suppor
 
 1. The NLTK data directory must be symlinked after pip install to make tokenization data available. Its path is discovered from `llama_index.core` in the runtime Python environment, not a hard-coded system site-packages directory.
 
-2. Python dependencies are compiled by uv with split lockfiles (RHOAI wheels vs PyPI source). `scripts/konflux_requirements.sh` generates the lockfiles.
+2. `make bump` is the single dependency-update entry point: with no arguments it resolves every dependency to the latest allowed version; with `PKG=<name> VERSION=<version>` it updates one dependency while freezing every other package at its committed version. Both modes generate the split Konflux lockfiles (`scripts/konflux_resolve.py`) and refresh the CPU PDM lock.
 
 3. The `ubi-minimal` final image is pinned by digest, not tag. Digest updates are managed by automated Konflux/Mintmaker PRs.
