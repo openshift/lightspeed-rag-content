@@ -2,9 +2,8 @@ LINT_PYTHON := scripts/generate_embeddings.py scripts/download_embeddings_model.
 
 .PHONY: check-unused-deps
 
-install-tools: ## Install uv (Python 3.12) for local development
+install-tools: ## Install uv for local development
 	@command -v uv > /dev/null || { echo >&2 "uv is not installed. Install: https://docs.astral.sh/uv/"; exit 1; }
-	@command -v python3.12 > /dev/null || { echo >&2 "Python 3.12 is required."; exit 1; }
 
 .venv:
 	uv venv -p 3.12

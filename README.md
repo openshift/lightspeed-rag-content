@@ -39,7 +39,10 @@ requires Podman or Docker, Python 3.12+ with `packaging`, and `pybuild-deps` on
 
 Run with a clean uv configuration (`UV_NO_CONFIG=1`, with `UV_CONFIG_FILE` and
 custom index environment variables unset) so host-side build requirements stay
-on public PyPI. Review all generated requirements and `.tekton/` changes;
+on public PyPI. `requirements.overrides.txt` pins Torch to the tested RHOAI CPU
+version (`2.11.0`), following the lightspeed-service convention. Update this pin
+deliberately when upgrading the RHOAI CPU stack; `prefer-index` alone permits
+PyPI fallback. Review all generated requirements and `.tekton/` changes;
 `requirements-build.txt` must not contain `--index-url`. Do not commit generated
 files until regeneration completes successfully.
 
