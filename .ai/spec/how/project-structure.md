@@ -34,7 +34,8 @@ OpenShift LightSpeed RAG Content is organized into three areas: `scripts/` (pipe
 | `distance.py` | Debug utility -- computes cosine + euclidean distance between two text embeddings. |
 | `iterate_docstore.py` | Debug utility -- dumps all nodes from a vector DB's docstore.json. |
 | `download_embeddings_model.py` | Downloads the embedding model from HuggingFace via `snapshot_download()`. Removes unneeded files (pytorch_model.bin, onnx/, openvino/). |
-| `generate_packages_to_prefetch.py` | Generates Cachi2-compatible requirements files for hermetic builds. Complex: strips torch, handles CPU wheel separately, computes hashes. |
+| `konflux_resolve.py` | Dependency input updates, forked-uv compilation, recursive build discovery, hashed requirements and Tekton prefetch generation. |
+| `generate_packages_to_prefetch.py` | Obsolete Cachito-era helper; exits with a pointer to `make bump`. |
 | `verify_rag_image_test.py` | Integration test -- verifies container image has `/rag/vector_db/{version}/index_store.json` and `/rag/embeddings_model/config.json`. |
 
 ### `byok/` -- BYOK tooling
@@ -75,7 +76,7 @@ Contains the `sentence-transformers/all-mpnet-base-v2` model files (`config.json
 | `requirements.hashes.wheel.txt` | Hashed RHOAI wheel dependencies for Cachi2. |
 | `requirements-build.txt` | Build-time pip dependencies for Cachi2. |
 | `requirements.hermetic.txt` | Bootstrap deps (pip) for hermetic builds. |
-| `requirements.overrides.txt` | Version pins for uv compilation. |
+| `requirements.overrides.txt` | Deliberately configured override policy; not modified by targeted updates. |
 | `rpms.in.yaml` / `rpms.lock.yaml` | RPM dependency spec + lockfile for Cachi2 hermetic builds. |
 | `embeddings_model/model.safetensors.tar.gz.*` | Committed chunks of the embedding-model archive. |
 | `.gitleaks.toml` | Secret scanning configuration. |
@@ -87,7 +88,7 @@ Contains the `sentence-transformers/all-mpnet-base-v2` model files (`config.json
 
 **Package manager**: uv for compilation, pip for installation. CPU-only builds.
 
-**Lockfile generation**: `scripts/konflux_requirements.sh` compiles `pyproject.toml` with uv using dual-index strategy (RHOAI wheels first, then PyPI). Produces split hashed lockfiles for Cachi2 prefetch.
+**Lockfile generation**: `make bump` invokes `scripts/konflux_resolve.py`, using the forked `quay.io/syedriko/uv:prefer-index` image for RHOAI-first compilation. Targeted updates (`PKG`/`VERSION`) reuse compatible existing pins while allowing necessary runtime/build/bootstrap changes. Source-build discovery runs under Python 3.12; joint resolution produces hashed runtime and build/bootstrap requirements plus Tekton prefetch updates. See [container-build.md](container-build.md#targeted-dependency-resolution).
 
 **Core dependencies**: `llama-index-core`, `llama-index-vector-stores-faiss`, `llama-index-embeddings-huggingface`, `llama-index-readers-file`, `faiss-cpu`, `torch` (RHOAI CPU wheel), `huggingface-hub`, `accelerate`, `python-frontmatter`, `beautifulsoup4`, `aiohttp`, `PyYAML`, `urllib3`.
 
