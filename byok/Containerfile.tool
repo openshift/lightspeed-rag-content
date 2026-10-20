@@ -9,7 +9,7 @@ ARG BYOK_TOOL_IMAGE
 ARG UBI_BASE_IMAGE
 ARG HERMETIC
 USER 0
-RUN dnf install -y buildah python3.12-pip && dnf update -y --nodocs && dnf clean all
+RUN dnf install -y buildah python3.12-pip zlib-devel libjpeg-turbo-devel && dnf update -y --nodocs && dnf clean all
 
 WORKDIR /workdir
 
