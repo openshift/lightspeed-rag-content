@@ -18,10 +18,11 @@ This spec documents the Containerfiles, Makefile targets, and Konflux/Tekton pip
 | `tests/integration-konflux/` | Default-CMD workflow, fictional runbook, OLS config, answer/citation validation |
 | `tests/unit/` | Runtime environment, actual snapshot extraction script, and answer validation regression tests |
 | `pyproject.toml` | Project metadata, dependency groups, linting config |
-| `requirements.hashes.source.txt` / `requirements.hashes.wheel.txt` | Split hashed lockfiles (PyPI source vs RHOAI wheels) |
-| `requirements-build.txt` | Build dependencies lockfile |
-| `requirements.hermetic.txt` | Hermetic build bootstrap deps (pip) |
-| `requirements.overrides.txt` | Version overrides for uv compilation |
+| `requirements.hashes.source.txt` / `requirements.hashes.wheel.txt` | Split hashed runtime lockfiles (PyPI source vs RHOAI wheels) |
+| `requirements.hashes.wheel.pypi.txt` | Hashed runtime PyPI wheel fallbacks, prefetched and installed by BYOK |
+| `requirements-build.txt` | Hashed PyPI build dependencies lockfile |
+| `requirements.hermetic.txt` | RHOAI build/bootstrap wheels |
+| `requirements.overrides.txt` | Explicit override policy for uv compilation; not modified by targeted updates |
 | `rpms.in.yaml` / `rpms.lock.yaml` | RPM dependency spec + lockfile for Cachi2 |
 | `embeddings_model/model.safetensors.tar.gz.*` | Committed chunks of the embedding-model binary |
 
@@ -96,10 +97,12 @@ FROM ${UBI_BASE_IMAGE}
 
 | Target | Command | Purpose |
 |---|---|---|
-| `install-tools` | Verify uv + Python 3.12 | Check prerequisites |
+| `install-tools` | Verify uv | Check prerequisites; uv provisions Python 3.12 |
 | `install-deps` | `uv pip install` | Install runtime deps |
 | `install-deps-test` | `uv pip install" black mypy ruff` | Install dev deps |
-| `update-konflux-deps` | `scripts/konflux_requirements.sh` | Regenerate split lockfiles for Konflux |
+| `bump` | `scripts/konflux_resolve.py --profile cpu [--package PKG --version VERSION]` | Refresh dependencies or perform a targeted minimum-version update |
+| `update-konflux-deps` | Alias for `bump` | Compatibility entry point |
+| `test-resolver-image` | `OLS_TEST_RESOLVER_IMAGE=1 make test-unit` | Exercise the real forked uv using local package-index fixtures |
 | `check-types` | `mypy --explicit-package-bases scripts` | Type checking |
 | `format` | `black scripts && ruff check scripts --fix` | Code formatting |
 | `verify` | `black --check scripts && ruff check scripts` | Lint verification |
@@ -116,9 +119,11 @@ Two active pipelines (`lightspeed-rag-tool-push/pull-request`) are Tekton Pipeli
 
 ### Prefetch dependencies
 
-Cachi2 prefetches three dependency types:
-- **pip**: From split lockfiles (`requirements.hashes.source.txt` + `requirements.hashes.wheel.txt`) with explicit `binary.packages` lists.
+Cachi2 prefetches two dependency types:
+- **pip**: Runtime packages from `requirements.hashes.source.txt`, `requirements.hashes.wheel.txt`, and `requirements.hashes.wheel.pypi.txt`; build/bootstrap wheels from `requirements.hermetic.txt`; and PyPI build dependencies from `requirements-build.txt` via `requirements_build_files`. Explicit `binary.packages` lists distinguish wheels from source distributions.
 - **rpm**: From `rpms.lock.yaml`.
+
+`byok/Containerfile.tool` copies all three runtime lockfiles and passes each to the hermetic `pip install` command. `requirements.hashes.wheel.pypi.txt` may contain no packages, but must still be generated, prefetched, and consumed so an allowed PyPI wheel fallback is not omitted from the image. This wiring does not change the resolver's RHOAI-first source-selection policy.
 
 ### Build
 
@@ -160,14 +165,16 @@ pyproject.toml
 
      │
      ▼
-scripts/konflux_requirements.sh (uv pip compile)
+make bump → scripts/konflux_resolve.py
+     (forked uv image: --index-strategy prefer-index)
      │
      ▼
-requirements.hashes.source.txt   (PyPI packages, hashed)
-requirements.hashes.wheel.txt    (RHOAI wheels, hashed)
-requirements-build.txt           (build deps via pybuild-deps)
-requirements.hermetic.txt            (bootstrap: uv, uv-build, maturin, pip==26.1.2)
-requirements.overrides.txt           (version pins for uv)
+requirements.hashes.source.txt       (PyPI runtime source distributions, hashed)
+requirements.hashes.wheel.txt        (RHOAI runtime wheels, hashed)
+requirements.hashes.wheel.pypi.txt    (PyPI runtime wheel fallbacks, hashed)
+requirements-build.txt              (PyPI build dependencies, pinned and hashed)
+requirements.hermetic.txt           (RHOAI build/bootstrap wheels)
+requirements.overrides.txt          (explicit override policy for uv)
 
 rpms.in.yaml → rpms.lock.yaml
      (Cachi2 RPM resolution for container build)
@@ -176,10 +183,22 @@ embeddings_model/model.safetensors.tar.gz.*
      (committed model archive chunks reassembled during the image build)
 ```
 
+### Targeted dependency resolution
+
+`make bump` provisions Python 3.12, packaging, tomlkit, and source-discovery tooling through host uv. It invokes the existing resolver with optional `--package`/`--version` arguments. Compilation remains in `quay.io/syedriko/uv:prefer-index`: the index policy is implemented by that fork, not upstream uv.
+
+For targeted updates, the resolver seeds a scratch output file with runtime, build, and bootstrap pins, then uses `--upgrade-package` to allow the target to move. Pins are preferences rather than constraints. Tomlkit preserves project-file structure when raising direct/optional dependency floors. Equality restrictions, including wildcard release-series bounds such as `==1.*`, are retained; incompatible requested minima fail without editing the project. The requested minimum is passed in memory through every solve (initial runtime, joint resolution, and runtime projection), and written only to a temporary scratch file passed with `--constraints`. No persistent transitive-minimum file is read or written. Subsequent targeted runs use current lockfiles as preferences; full refreshes use the existing project requirements and override policy without any remembered transitive minimums. Existing `requirements.overrides.txt` is still passed with `--override` as deliberate policy, but targeted updates never modify it.
+
+Source-build requirements are discovered with `pybuild_deps.finder.find_build_dependencies` under the profile interpreter. The resolver jointly compiles project, bootstrap, and reachable build requirements, then projects that solution onto runtime roots using exact constraints from the **new** solution. Index annotations and dependency-parent annotations track source policy and recursive build reachability. Discovery repeats until the roots and selected versions stabilize, with cycle detection and a 12-round limit. Runtime/build overlap therefore uses the same selected version instead of deleting an unchecked duplicate or restoring an old pin.
+
+If a joint solve is incompatible, discovery retains the source-package versions that introduced build requirements. A breadth-first search retries with temporary exclusions of those versions, rediscovering requirements from scratch while preserving the original lockfile preferences, requested minimum, and project/override policy. This allows a build-tool update to move its source parent without refreshing unrelated dependencies. The search tries at most 64 alternatives; exhaustion reports an explicit error rather than publishing an unchecked result. Non-resolution failures are not retried.
+
+Runtime artifacts go in `requirements.hashes.wheel.txt` (RHOAI wheels), `requirements.hashes.source.txt` (PyPI source), or `requirements.hashes.wheel.pypi.txt` (permitted PyPI wheel fallbacks); build-only RHOAI artifacts go in `requirements.hermetic.txt`, and build-only PyPI artifacts in `requirements-build.txt`. Both Tekton prefetch configurations include `requirements.hashes.wheel.pypi.txt`, and their binary package lists include runtime and build wheels. All outputs are generated in scratch space before publication. PDM locks are not synchronized.
+
 ## Implementation Notes
 
 - The NLTK data symlink (`ln -s .../nltk_cache /root/nltk_data`) is required because LlamaIndex's sentence tokenizer depends on NLTK's `punkt` tokenizer data. The data is bundled with the llama-index-core package but needs to be discoverable at the default NLTK data path.
 
 - The `ubi-minimal` final image digest is periodically updated by Konflux/Mintmaker automation, which submits PRs to update the `@sha256:...` pinning.
 
-- `scripts/generate_packages_to_prefetch.py` is a legacy Cachito-era script (obsolete). Lockfile generation is now handled by `scripts/konflux_requirements.sh`.
+- `scripts/generate_packages_to_prefetch.py` is a legacy Cachito-era script (obsolete). Lockfile generation is now handled by `make bump` and `scripts/konflux_resolve.py`.

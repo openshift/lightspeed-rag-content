@@ -37,7 +37,7 @@ This spec defines the rules for building container images, hermetic build suppor
 
 12. Hermetic builds (`HERMETIC=true`) operate without network access during the container build step.
 
-13. All Python packages are pre-fetched via Cachi2 and installed from the prefetch cache. The requirements files include package hashes for verification.
+13. All Python packages are pre-fetched via Cachi2 and installed from the prefetch cache. The requirements files include package hashes for verification. The BYOK hermetic build must prefetch and install all three runtime requirement sets: RHOAI wheels (`requirements.hashes.wheel.txt`), PyPI source distributions (`requirements.hashes.source.txt`), and permitted PyPI wheel fallbacks (`requirements.hashes.wheel.pypi.txt`).
 
 14. The embedding model binary (`model.safetensors`) is stored as committed archive chunks and reassembled during the image build; it is not fetched as a Cachi2 generic artifact.
 
@@ -69,15 +69,22 @@ This spec defines the rules for building container images, hermetic build suppor
 | `rpms.in.yaml` | File | -- | RPM dependency specifications |
 | `rpms.lock.yaml` | File | -- | Locked RPM versions |
 | `requirements.hashes.source.txt` | File | -- | Hashed PyPI source dependencies |
-| `requirements.hashes.wheel.txt` | File | -- | Hashed RHOAI wheel dependencies |
-| `requirements-build.txt` | File | -- | Build dependencies |
-| `requirements.hermetic.txt` | File | -- | Bootstrap deps (pip) |
-| `requirements.overrides.txt` | File | -- | Version pins for uv compilation |
+| `requirements.hashes.wheel.txt` | File | -- | Hashed RHOAI runtime wheel dependencies |
+| `requirements.hashes.wheel.pypi.txt` | File | -- | Hashed PyPI runtime wheel fallbacks |
+| `requirements-build.txt` | File | -- | Hashed PyPI build dependencies |
+| `requirements.hermetic.txt` | File | -- | Hashed RHOAI build/bootstrap wheels |
+| `requirements.overrides.txt` | File | -- | Deliberately configured overrides of upstream requirements |
 
 ## Constraints
 
 1. The NLTK data directory must be symlinked after pip install to make tokenization data available. Its path is discovered from `llama_index.core` in the runtime Python environment, not a hard-coded system site-packages directory.
 
-2. Python dependencies are compiled by uv with split lockfiles (RHOAI wheels vs PyPI source). `scripts/konflux_requirements.sh` generates the lockfiles.
+2. Python dependency updates use `make bump` and generate split Konflux requirements for RHOAI wheels, PyPI source dependencies, and permitted PyPI wheel fallbacks.
+   - With no arguments, the command refreshes dependencies to the newest mutually compatible versions permitted by the project requirements and overrides.
+   - With `PKG=<name> VERSION=<version>`, the command sets the named dependency's minimum version to `VERSION` and produces a compatible dependency set containing that version or a newer one.
+   - Targeted updates must prefer existing locked versions of other packages. Other runtime, build, or bootstrap dependencies may be updated, added, or removed as needed to accommodate the requested update. Unrelated dependencies must not be refreshed merely because newer versions are available.
+   - Requested minimums must intersect upstream dependency ranges, not replace them. Transitive minimums apply only to the current targeted run and must not introduce a persistent policy file or new inputs for full refreshes. Subsequent targeted updates use the current lockfiles as preferences, not a history of requested minimums. Direct and optional dependency minimums are updated in the project requirements. Deliberately configured overrides are a separate policy input and must not be modified by targeted updates.
+   - If project constraints prevent a compatible solution satisfying the requested minimum version, the command must fail with a diagnostic identifying the blocking constraints. It must not silently lower the requested minimum or discard explicit compatibility restrictions.
+   - Successful updates regenerate the affected requirements and prefetch configuration. The resulting dependency set must satisfy the applicable constraints for the image's target Python version and platform.
 
 3. The `ubi-minimal` final image is pinned by digest, not tag. Digest updates are managed by automated Konflux/Mintmaker PRs.
