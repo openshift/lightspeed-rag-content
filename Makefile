@@ -1,5 +1,7 @@
 LINT_PYTHON := scripts/konflux_resolve.py scripts/generate_embeddings.py scripts/download_embeddings_model.py byok/generate_embeddings_tool.py tests/unit tests/integration-konflux/validate_response.py
 
+.PHONY: check-unused-deps verify
+
 install-tools: ## Verify uv; Python 3.12 is provisioned by uv
 	@command -v uv > /dev/null || { echo >&2 "uv is not installed. Install: https://docs.astral.sh/uv/"; exit 1; }
 
@@ -40,6 +42,9 @@ test-unit: ## Run runtime, dependency-tooling, and integration-harness regressio
 .PHONY: test-resolver-image
 test-resolver-image: ## Include real forked-uv prefer-index resolution tests (requires Podman/Docker)
 	OLS_TEST_RESOLVER_IMAGE=1 $(MAKE) test-unit
+
+check-unused-deps: ## Detect potentially unused dependencies in the BYOK tool image
+	uvx deptry==0.24.0 byok
 
 check-types: install-tools .venv ## Checks type hints in sources
 	.venv/bin/mypy --explicit-package-bases --disallow-untyped-calls --disallow-untyped-defs --disallow-incomplete-defs scripts

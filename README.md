@@ -1,5 +1,27 @@
 # OpenShift Lightspeed RAG content
 
+## BYOK dependency audit
+
+Run `make check-unused-deps` to audit the Python code shipped by
+`byok/Containerfile.tool`. The target scans `byok/`, not the deprecated root
+image pipeline or unrelated development scripts. It runs a pinned deptry through
+`uvx` in an isolated tool environment; the first run needs package-index access.
+It does not install application dependencies or change lockfiles and is separate
+from `make verify`.
+
+Only the unused-dependency rule (`DEP002`) is enabled. Findings return a nonzero
+exit status and require review: packages can be used indirectly by the embedding
+stack, required as runtime backends, or declared to enforce security-version
+floors. For example, PyTorch is required despite no direct import in the BYOK
+script. Package/import-name mappings live in `pyproject.toml`; shared namespaces
+such as `llama_index` make detection approximate.
+
+Before removing a candidate, test Markdown ingestion (including YAML frontmatter),
+embedding generation, and FAISS persistence with the pinned dependency stack.
+The base image may already contain a package, so removing it from the application
+requirements does not necessarily remove it from the final image. Regenerate
+Konflux inputs only after confirming a removal is safe.
+
 ## Hermetic / Konflux dependency lockfiles
 
 Cachi2 prefetch uses split hashed requirements for runtime dependencies, build dependencies, and bootstrap tools. Update them with:
@@ -22,6 +44,8 @@ Runtime and recursively discovered source-build requirements are resolved togeth
 `make update-konflux-deps` remains an alias for `make bump`. Run `make test-unit` for unit tests, or `make test-resolver-image` to also exercise deterministic local indexes through the real forked image.
 
 If discovery fails with a `dbm` cache error, remove the corrupted `pybuild-deps` cache under `~/.cache/pybuild-deps/` and rerun. Do not commit generated outputs until the command completes successfully.
+
+`requirements.overrides.txt` pins Torch to the tested RHOAI CPU version (`2.11.0`). Update this pin deliberately when upgrading the RHOAI CPU stack; `prefer-index` alone permits PyPI fallback.
 
 RPM lockfiles (`rpms.lock.yaml`) are maintained with your org’s **rpm-lockfile** workflow; see `make update-rpm-lock` for a short pointer.
 
