@@ -26,17 +26,17 @@ RUN if [ -f /cachi2/cachi2.env ]; then . /cachi2/cachi2.env; fi && \
 WORKDIR /work
 
 # --- faiss v1.12.0 (same version as the service's faiss-cpu) ---
-COPY third_party/faiss-v1.12.0.tar.gz /work/
-RUN tar xzf faiss-v1.12.0.tar.gz && mkdir faiss-build && cd faiss-build && \
-    cmake ../faiss-1.12.0 \
+COPY third_party/faiss/ /work/faiss/
+RUN mkdir faiss-build && cd faiss-build && \
+    cmake /work/faiss \
       -DFAISS_ENABLE_GPU=OFF -DFAISS_ENABLE_PYTHON=OFF \
       -DFAISS_ENABLE_C_API=ON -DBUILD_SHARED_LIBS=ON \
       -DBUILD_TESTING=OFF -DCMAKE_BUILD_TYPE=Release && \
     make -j"$(nproc)" faiss_c && \
     mkdir -p /out/faiss/lib /out/faiss/include-c-api /out/faiss/src && \
     cp /work/faiss-build/faiss/libfaiss.so /work/faiss-build/c_api/libfaiss_c.so /out/faiss/lib/ && \
-    cp -r /work/faiss-1.12.0/c_api/. /out/faiss/include-c-api/ && \
-    cp -r /work/faiss-1.12.0 /out/faiss/src && \
+    cp -r /work/faiss/c_api/. /out/faiss/include-c-api/ && \
+    cp -r /work/faiss /out/faiss/src && \
     for lib in libopenblas.so.0 libgfortran.so.5 libquadmath.so.0 \
                libgomp.so.1 libstdc++.so.6; do \
         cp -L "/usr/lib64/$lib" /out/faiss/lib/ 2>/dev/null || true; \
