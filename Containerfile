@@ -1,11 +1,10 @@
 # Go BYOK tool image: markdown -> mpnet/ONNX -> FAISS -> docker-archive.
 #
 # Everything is built from source: faiss v1.12.0 and onnxruntime v1.31.0 are
-# compiled from vendored source tarballs, the model ships as gzip chunks,
-# and Go modules are vendored. The only network use at build time is the
-# base images, the RPM toolchain, and onnxruntime's cmake FetchContent
-# dependencies (source tarballs from GitHub, not pre-built binaries).
-# Konflux hermetic builds prefetch the RPMs via cachi2.
+# compiled from git submodules, the model ships as gzip chunks, and Go modules
+# are vendored. onnxruntime's cmake FetchContent dependencies are also git
+# submodules (third_party/onnxruntime-deps/), so the build needs zero network
+# access beyond the base images and the RPM toolchain (which cachi2 prefetches).
 ARG GO_TOOLSET=registry.access.redhat.com/ubi9/go-toolset:latest
 ARG NATIVE_IMAGE=registry.access.redhat.com/ubi9/ubi:latest
 ARG TOOL_IMAGE=registry.access.redhat.com/ubi9/ubi-micro@sha256:7325ffb45d8401b227033dc26c567e138c919731ed2f8119e921ddba71835f87
@@ -15,7 +14,7 @@ ARG OUTPUT_BASE_IMAGE=registry.access.redhat.com/ubi9/ubi-minimal@sha256:c2fcb17
 FROM ${OUTPUT_BASE_IMAGE} AS output-base
 
 # ---------------------------------------------------------------------------
-# Native stage: compile faiss and onnxruntime from vendored source.
+# Native stage: compile faiss and onnxruntime from git submodules.
 # ---------------------------------------------------------------------------
 FROM ${NATIVE_IMAGE} AS native
 USER root
@@ -25,9 +24,9 @@ RUN if [ -f /cachi2/cachi2.env ]; then . /cachi2/cachi2.env; fi && \
     alternatives --set python3 /usr/bin/python3.12 2>/dev/null || true && \
     dnf clean all
 WORKDIR /work
-COPY third_party/ /work/
 
 # --- faiss v1.12.0 (same version as the service's faiss-cpu) ---
+COPY third_party/faiss-v1.12.0.tar.gz /work/
 RUN tar xzf faiss-v1.12.0.tar.gz && mkdir faiss-build && cd faiss-build && \
     cmake ../faiss-1.12.0 \
       -DFAISS_ENABLE_GPU=OFF -DFAISS_ENABLE_PYTHON=OFF \
@@ -43,10 +42,17 @@ RUN tar xzf faiss-v1.12.0.tar.gz && mkdir faiss-build && cd faiss-build && \
         cp -L "/usr/lib64/$lib" /out/faiss/lib/ 2>/dev/null || true; \
     done
 
-# --- onnxruntime v1.31.0 (from source, CPU only) ---
-RUN tar xzf onnxruntime-v1.31.0-src.tar.gz && \
+# --- onnxruntime v1.31.0 (from git submodule, CPU only) ---
+# The FetchContent dependencies are also git submodules, so the build
+# needs zero network access for source code.
+COPY scripts/setup-ort-deps.sh /work/setup-ort-deps.sh
+COPY third_party/onnxruntime/ /work/onnxruntime/
+COPY third_party/onnxruntime-deps/ /work/onnxruntime-deps/
+
+RUN chmod +x /work/setup-ort-deps.sh && \
+    cd /work && eval "$(/work/setup-ort-deps.sh /work/onnxruntime)" && \
     mkdir -p /out/onnxruntime/lib /out/onnxruntime/include && \
-    cd /work/onnxruntime-src/cmake && mkdir build && cd build && \
+    cd /work/onnxruntime/cmake && mkdir build && cd build && \
     cmake .. \
       -DCMAKE_BUILD_TYPE=Release \
       -Donnxruntime_BUILD_SHARED_LIB=ON \
@@ -54,14 +60,11 @@ RUN tar xzf onnxruntime-v1.31.0-src.tar.gz && \
       -Donnxruntime_ENABLE_PYTHON=OFF \
       -Donnxruntime_ENABLE_TRAINING=OFF \
       -Donnxruntime_USE_CUDA=OFF \
-      -DMLAS_COMPILER_SUPPORTS_AVXVNNI=FALSE && \
+      -DMLAS_COMPILER_SUPPORTS_AVXVNNI=FALSE \
+      $CMAKE_DEP_FLAGS && \
     make -j"$(nproc)" onnxruntime && \
-    cp libonnxruntime.so /out/onnxruntime/lib/ && \
-    cp libonnxruntime.so.1 /out/onnxruntime/lib/ 2>/dev/null || \
-      ln -sf libonnxruntime.so /out/onnxruntime/lib/libonnxruntime.so.1 && \
-    cp libonnxruntime.so.1.31.0 /out/onnxruntime/lib/ 2>/dev/null || true && \
-    cp -r /work/onnxruntime-src/include/onnxruntime /out/onnxruntime/include/ && \
-    cp -r /work/onnxruntime-src/include/onnxruntime /out/onnxruntime/include/ && cp /work/onnxruntime-src/include/onnxruntime/core/session/*.h /out/onnxruntime/include/
+    cp libonnxruntime.so* /out/onnxruntime/lib/ && \
+    cp /work/onnxruntime/include/onnxruntime/core/session/*.h /out/onnxruntime/include/
 
 # --- model reassembly (chunks follow the embeddings_model precedent) ---
 COPY model/ /work/model/

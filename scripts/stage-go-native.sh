@@ -58,16 +58,20 @@ if ! faiss_staged; then
 fi
 
 if [ ! -f "onnxruntime/lib/libonnxruntime.so.1" ]; then
-    VENDORED_ORT_SRC="$REPO_ROOT/third_party/onnxruntime-v${ORT_VERSION}-src.tar.gz"
-    if [ ! -f "$VENDORED_ORT_SRC" ]; then
-        echo "ERROR: onnxruntime source not found at $VENDORED_ORT_SRC" >&2
+    ORT_SRC="$REPO_ROOT/third_party/onnxruntime"
+    if [ ! -f "$ORT_SRC/cmake/CMakeLists.txt" ]; then
+        echo "ERROR: onnxruntime submodule not initialized at $ORT_SRC" >&2
+        echo "  run: git submodule update --init --recursive" >&2
         exit 1
     fi
-    rm -rf onnxruntime-src onnxruntime ort-src-build
-    tar xzf "$VENDORED_ORT_SRC"
+    rm -rf onnxruntime ort-src-build
     mkdir -p onnxruntime/lib onnxruntime/include ort-src-build
+
+    # Set up FetchContent source overrides from git submodules
+    eval "$("$REPO_ROOT/scripts/setup-ort-deps.sh" "$ORT_SRC")"
+
     cd ort-src-build
-    cmake ../onnxruntime-src/cmake \
+    cmake "$ORT_SRC/cmake" \
         -DCMAKE_BUILD_TYPE=Release \
         -Donnxruntime_BUILD_SHARED_LIB=ON \
         -Donnxruntime_BUILD_UNIT_TESTS=OFF \
@@ -75,13 +79,13 @@ if [ ! -f "onnxruntime/lib/libonnxruntime.so.1" ]; then
         -Donnxruntime_ENABLE_TRAINING=OFF \
         -Donnxruntime_USE_CUDA=OFF \
         -DMLAS_COMPILER_SUPPORTS_AVXVNNI=FALSE \
+        $CMAKE_DEP_FLAGS \
         >/dev/null
     make -j"$(nproc)" onnxruntime >/dev/null
     cd "$STAGE"
     cp ort-src-build/libonnxruntime.so* onnxruntime/lib/
-    cp -r onnxruntime-src/include/onnxruntime onnxruntime/include/
-    cp onnxruntime-src/include/onnxruntime/core/session/*.h onnxruntime/include/
-    rm -rf onnxruntime-src ort-src-build
+    cp "$ORT_SRC"/include/onnxruntime/core/session/*.h onnxruntime/include/
+    rm -rf ort-src-build
 fi
 
 FAISS_LIB="$STAGE/faiss/lib"
