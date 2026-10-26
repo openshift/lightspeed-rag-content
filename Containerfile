@@ -1,11 +1,11 @@
 # Go BYOK tool image: markdown -> mpnet/ONNX -> FAISS -> docker-archive.
 #
-# Everything heavy comes from the repository: faiss v1.12.0 source and the
-# onnxruntime release are vendored in third_party/, the model ships
-# as gzip chunks in model/, and Go modules are vendored. The only
-# network use at build time is the base images and (locally) the RPM
-# toolchain for the faiss compile; Konflux hermetic builds prefetch those
-# RPMs via cachi2 (see .tekton/lightspeed-rag-content-*.yaml).
+# Everything is built from source: faiss v1.12.0 and onnxruntime v1.31.0 are
+# compiled from vendored source tarballs, the model ships as gzip chunks,
+# and Go modules are vendored. The only network use at build time is the
+# base images, the RPM toolchain, and onnxruntime's cmake FetchContent
+# dependencies (source tarballs from GitHub, not pre-built binaries).
+# Konflux hermetic builds prefetch the RPMs via cachi2.
 ARG GO_TOOLSET=registry.access.redhat.com/ubi9/go-toolset:latest
 ARG NATIVE_IMAGE=registry.access.redhat.com/ubi9/ubi:latest
 ARG TOOL_IMAGE=registry.access.redhat.com/ubi9/ubi-micro@sha256:7325ffb45d8401b227033dc26c567e138c919731ed2f8119e921ddba71835f87
@@ -15,47 +15,64 @@ ARG OUTPUT_BASE_IMAGE=registry.access.redhat.com/ubi9/ubi-minimal@sha256:c2fcb17
 FROM ${OUTPUT_BASE_IMAGE} AS output-base
 
 # ---------------------------------------------------------------------------
-# Native stage: compile faiss from the vendored source (same v1.12.0 as the
-# service's faiss-cpu, so serialized indexes stay byte-compatible), unpack
-# the pinned onnxruntime release, and reassemble the ONNX model from chunks.
+# Native stage: compile faiss and onnxruntime from vendored source.
 # ---------------------------------------------------------------------------
 FROM ${NATIVE_IMAGE} AS native
 USER root
 RUN if [ -f /cachi2/cachi2.env ]; then . /cachi2/cachi2.env; fi && \
-    dnf install -y --nodocs gcc gcc-c++ cmake make openblas-devel tar gzip && dnf clean all
+    dnf install -y --nodocs gcc gcc-c++ cmake make openblas-devel tar gzip \
+      python3.12 git patch && \
+    alternatives --set python3 /usr/bin/python3.12 2>/dev/null || true && \
+    dnf clean all
 WORKDIR /work
 COPY third_party/ /work/
-RUN tar xzf faiss-v1.12.0.tar.gz && mkdir build && cd build && \
-    cmake ../faiss-1.12.0 -DFAISS_ENABLE_GPU=OFF -DFAISS_ENABLE_PYTHON=OFF \
-      -DFAISS_ENABLE_C_API=ON -DBUILD_SHARED_LIBS=ON -DBUILD_TESTING=OFF \
-      -DCMAKE_BUILD_TYPE=Release && \
+
+# --- faiss v1.12.0 (same version as the service's faiss-cpu) ---
+RUN tar xzf faiss-v1.12.0.tar.gz && mkdir faiss-build && cd faiss-build && \
+    cmake ../faiss-1.12.0 \
+      -DFAISS_ENABLE_GPU=OFF -DFAISS_ENABLE_PYTHON=OFF \
+      -DFAISS_ENABLE_C_API=ON -DBUILD_SHARED_LIBS=ON \
+      -DBUILD_TESTING=OFF -DCMAKE_BUILD_TYPE=Release && \
     make -j"$(nproc)" faiss_c && \
-    mkdir -p /out/faiss/lib /out/faiss/include-c-api /out/faiss/src \
-             /out/onnxruntime/lib /out/onnxruntime/include /out/model && \
-    cp /work/build/faiss/libfaiss.so /work/build/c_api/libfaiss_c.so /out/faiss/lib/ && \
+    mkdir -p /out/faiss/lib /out/faiss/include-c-api /out/faiss/src && \
+    cp /work/faiss-build/faiss/libfaiss.so /work/faiss-build/c_api/libfaiss_c.so /out/faiss/lib/ && \
     cp -r /work/faiss-1.12.0/c_api/. /out/faiss/include-c-api/ && \
     cp -r /work/faiss-1.12.0 /out/faiss/src && \
-    for lib in libopenblas.so.0 libgfortran.so.5 libquadmath.so.0 libgomp.so.1 libstdc++.so.6; do \
-        cp -L "/usr/lib64/$lib" /out/faiss/lib/; \
-    done && \
-    rm -rf /work/build /out/faiss/src/build
+    for lib in libopenblas.so.0 libgfortran.so.5 libquadmath.so.0 \
+               libgomp.so.1 libstdc++.so.6; do \
+        cp -L "/usr/lib64/$lib" /out/faiss/lib/ 2>/dev/null || true; \
+    done
 
-RUN tar xzf onnxruntime-linux-x64-1.31.0.tgz && \
-    cp onnxruntime-linux-x64-1.31.0/lib/libonnxruntime.so.1* /out/onnxruntime/lib/ && \
-    ln -sf libonnxruntime.so.1.31.0 /out/onnxruntime/lib/libonnxruntime.so && \
-    cp -r onnxruntime-linux-x64-1.31.0/include /out/onnxruntime/
+# --- onnxruntime v1.31.0 (from source, CPU only) ---
+RUN tar xzf onnxruntime-v1.31.0-src.tar.gz && \
+    mkdir -p /out/onnxruntime/lib /out/onnxruntime/include && \
+    cd /work/onnxruntime-src/cmake && mkdir build && cd build && \
+    cmake .. \
+      -DCMAKE_BUILD_TYPE=Release \
+      -Donnxruntime_BUILD_SHARED_LIB=ON \
+      -Donnxruntime_BUILD_UNIT_TESTS=OFF \
+      -Donnxruntime_ENABLE_PYTHON=OFF \
+      -Donnxruntime_ENABLE_TRAINING=OFF \
+      -Donnxruntime_USE_CUDA=OFF \
+      -DMLAS_COMPILER_SUPPORTS_AVXVNNI=FALSE && \
+    make -j"$(nproc)" onnxruntime && \
+    cp libonnxruntime.so /out/onnxruntime/lib/ && \
+    cp libonnxruntime.so.1 /out/onnxruntime/lib/ 2>/dev/null || \
+      ln -sf libonnxruntime.so /out/onnxruntime/lib/libonnxruntime.so.1 && \
+    cp libonnxruntime.so.1.31.0 /out/onnxruntime/lib/ 2>/dev/null || true && \
+    cp -r /work/onnxruntime-src/include/onnxruntime /out/onnxruntime/include/ && \
+    cp -r /work/onnxruntime-src/include/onnxruntime /out/onnxruntime/include/ && cp /work/onnxruntime-src/include/onnxruntime/core/session/*.h /out/onnxruntime/include/
 
-# reassemble + verify the model (chunks follow the embeddings_model precedent)
+# --- model reassembly (chunks follow the embeddings_model precedent) ---
 COPY model/ /work/model/
-RUN cat /work/model/mpnet.onnx.gz.* | gunzip > /out/model/mpnet.onnx && \
+RUN mkdir -p /out/model && cat /work/model/mpnet.onnx.gz.* | gunzip > /out/model/mpnet.onnx && \
     cd /out/model && sha256sum -c /work/model/mpnet.onnx.sha256 && \
     cp /work/model/tokenizer.json /work/model/cl100k_base.tiktoken \
        /work/model/sentence_bert_config.json /out/model/
 
 # ---------------------------------------------------------------------------
 # Builder: compile the cgo binary against the native stage; bake the
-# deterministic output base layer (the flattened rootfs never lands in the
-# runtime image).
+# deterministic output base layer.
 # ---------------------------------------------------------------------------
 FROM ${GO_TOOLSET} AS builder
 USER root

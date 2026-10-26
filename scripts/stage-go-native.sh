@@ -58,20 +58,30 @@ if ! faiss_staged; then
 fi
 
 if [ ! -f "onnxruntime/lib/libonnxruntime.so.1" ]; then
-    VENDORED_ORT="$REPO_ROOT/byok-go/third_party/onnxruntime-linux-x64-${ORT_VERSION}.tgz"
-    if [ -f "$VENDORED_ORT" ]; then
-        cp "$VENDORED_ORT" ort.tgz
-    else
-        curl -sL -o "ort.tgz" \
-            "https://github.com/microsoft/onnxruntime/releases/download/v${ORT_VERSION}/onnxruntime-linux-x64-${ORT_VERSION}.tgz"
+    VENDORED_ORT_SRC="$REPO_ROOT/third_party/onnxruntime-v${ORT_VERSION}-src.tar.gz"
+    if [ ! -f "$VENDORED_ORT_SRC" ]; then
+        echo "ERROR: onnxruntime source not found at $VENDORED_ORT_SRC" >&2
+        exit 1
     fi
-    rm -rf "onnxruntime-linux-x64-${ORT_VERSION}" onnxruntime
-    tar xzf ort.tgz
-    mkdir -p onnxruntime/lib
-    cp "onnxruntime-linux-x64-${ORT_VERSION}"/lib/libonnxruntime.so.1* onnxruntime/lib/
-    ln -sf "libonnxruntime.so.1.${ORT_VERSION#1.}" onnxruntime/lib/libonnxruntime.so
-    cp -r "onnxruntime-linux-x64-${ORT_VERSION}"/include onnxruntime/include
-    rm -rf "onnxruntime-linux-x64-${ORT_VERSION}" ort.tgz
+    rm -rf onnxruntime-src onnxruntime ort-src-build
+    tar xzf "$VENDORED_ORT_SRC"
+    mkdir -p onnxruntime/lib onnxruntime/include ort-src-build
+    cd ort-src-build
+    cmake ../onnxruntime-src/cmake \
+        -DCMAKE_BUILD_TYPE=Release \
+        -Donnxruntime_BUILD_SHARED_LIB=ON \
+        -Donnxruntime_BUILD_UNIT_TESTS=OFF \
+        -Donnxruntime_ENABLE_PYTHON=OFF \
+        -Donnxruntime_ENABLE_TRAINING=OFF \
+        -Donnxruntime_USE_CUDA=OFF \
+        -DMLAS_COMPILER_SUPPORTS_AVXVNNI=FALSE \
+        >/dev/null
+    make -j"$(nproc)" onnxruntime >/dev/null
+    cd "$STAGE"
+    cp ort-src-build/libonnxruntime.so* onnxruntime/lib/
+    cp -r onnxruntime-src/include/onnxruntime onnxruntime/include/
+    cp onnxruntime-src/include/onnxruntime/core/session/*.h onnxruntime/include/
+    rm -rf onnxruntime-src ort-src-build
 fi
 
 FAISS_LIB="$STAGE/faiss/lib"
