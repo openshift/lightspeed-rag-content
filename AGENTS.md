@@ -1,21 +1,33 @@
-# OpenShift LightSpeed RAG Content - Development Guide for AI
+# OpenShift Lightspeed RAG Content (Go) — Development Guide for AI
 
-## Specs
+## Overview
 
-All specifications live in `.ai/spec/`. Start with `.ai/spec/README.md` for project overview, reading order, and structure guide.
+BYOK RAG tool: generates a FAISS vector database from customer-supplied
+Markdown and packages it as a `podman load`-able docker-archive. Go
+implementation with ONNX Runtime for inference and faiss for indexing.
 
 ## Commands
 
 ```bash
-make build-image       # Build the RAG content container image
-make verify            # Lint + type checks
-make format            # Format code
+make build          # build the binary (stages native libs first)
+make build-image    # build the container image from vendored artifacts
+make test           # pure-Go unit tests (no native libraries needed)
+make test-native    # all tests incl. cgo packages
+make format         # gofmt
+make lint           # gofmt check
 ```
 
 ## Conventions
 
-- Python codebase — follow the same style as lightspeed-service (Ruff, Black)
-- Single build target: root Makefile for the RAG content image
+- Go 1.26, `gofmt` formatting, no external linters
+- Internal packages under `internal/`, binary under `cmd/`
+- Native libraries (faiss, onnxruntime) are cgo; pure-Go packages are
+  testable without them (`make test`)
+- Vendored Go modules (`vendor/`) — no network needed for `go build`
+- The embedding model ships as gzip chunks in `model/` (regenerate with
+  `make model-chunks MODEL=...`)
+- Third-party sources (faiss v1.12.0, onnxruntime 1.31.0) are vendored in
+  `third_party/` for hermetic builds
 
 ## Git and PR Workflow
 
@@ -28,18 +40,6 @@ make format            # Format code
 This repo uses a **fork-based workflow**:
 
 1. **Push to your fork**, not to `origin` (openshift/lightspeed-rag-content)
-2. **Create the PR** against `origin/main` using your fork's branch:
-   ```bash
-   git push <your-fork-remote> <branch>
-   gh pr create --repo openshift/lightspeed-rag-content --head <your-github-user>:<branch> --base main
-   ```
-3. **PR title** must start with the Jira reference: `OLS-XXXX: description`
-4. **Squash commits** before pushing -- one logical commit per PR unless the PR explicitly tracks multiple independent changes
-
-### Branch Completion
-When finishing a development branch:
-1. Remove any process artifacts (design docs, plans in `docs/superpowers/`)
-2. Squash commits with the Jira-prefixed message
-3. Push to the contributor's fork remote (not `origin`)
-4. Create the PR against `origin/main` using `--head <user>:<branch>`
-
+2. **Create the PR** against `origin/main` using your fork's branch
+3. **PR title** must start with the Jira reference
+4. **Squash commits** before pushing

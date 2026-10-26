@@ -1,40 +1,73 @@
-# OpenShift Lightspeed RAG content
+# lightspeed-rag-content
 
-## Hermetic / Konflux dependency lockfiles
+BYOK RAG tool for OpenShift Lightspeed: generates a FAISS vector database
+from customer-supplied Markdown and packages it as a `podman load`-able
+docker-archive. The output is consumed by the OLS service via
+`llama-index-core` + `FaissVectorStore.from_persist_dir`.
 
-Cachi2 prefetch uses split hashed requirements for runtime dependencies, build dependencies, and bootstrap tools. Update them with:
+Go implementation with ONNX Runtime for inference (mpnet embeddings) and
+faiss for indexing (same v1.12.0 as the service, so serialized indexes are
+byte-compatible).
+
+## Usage
 
 ```bash
-make bump                                  # refresh dependencies using existing project policy
-make bump PKG=<package> VERSION=<minimum>   # require this version or newer
+podman run --rm \
+  -v <markdown_dir>:/markdown:Z \
+  -v <output_dir>:/output:Z \
+  -e OUT_IMAGE_TAG=my-byok-image \
+  -e VECTOR_DB_INDEX=my-index \
+  <tool-image>
 ```
 
-Replace the placeholders with the package name and minimum version, and repeat the targeted command for each package you need to update.
+Produces `<output_dir>/my-byok-image.tar` — a docker-archive containing
+`/rag/vector_db` with the FAISS index.
 
-Targeted updates prefer existing locked versions of other packages, but allow changes required by the update—including build dependencies and shared runtime/build packages. `VERSION` is a minimum, not an exact pin. Explicit compatibility bounds are preserved; an unsatisfiable update fails with the resolver's diagnostic. Direct-URL dependencies must be updated explicitly in `pyproject.toml` rather than rewritten by the command.
+## Development
 
-A targeted update applies the requested minimum as a temporary constraint for that run, intersecting rather than replacing upstream requirements. Direct and optional dependency minimums are also updated in `pyproject.toml`; transitive minimums are not saved as persistent policy. `requirements.overrides.txt` remains separate, deliberately configured policy and is never modified by targeted updates.
+```bash
+make test           # pure-Go unit tests (no native libs needed)
+make build          # build the binary (stages faiss + onnxruntime first)
+make build-image    # build the container image from vendored artifacts
+make test-native    # all tests incl. cgo packages
+```
 
-The implementation is in `scripts/konflux_resolve.py`. **Compilation uses the forked `quay.io/syedriko/uv:prefer-index` image**, whose `prefer-index` policy is not available in upstream uv. Host uv provisions Python **3.12** and the discovery tools (`pybuild-deps`, `pip-tools`, `pip`). Podman or Docker and network access to the package indexes are required.
+The six pure-Go packages (`tokenizer`, `counter`, `chunker`, `docparse`,
+`persist`, `assemble`) test without any native libraries. The two cgo
+packages (`embed`, `faissidx`) need faiss and onnxruntime staged via
+`scripts/stage-go-native.sh`.
 
-Runtime and recursively discovered source-build requirements are resolved together. Existing lockfile versions are soft preferences, never restored after resolution. Build/bootstrap requirements use the profile's target Python version, not an old generated-file header. Generated requirements and Tekton prefetch lists are staged before replacing their existing files; review their diffs after a successful run. A failed run may leave the requested minimum in the input files, but does not publish partially generated requirements. PDM lockfiles are not refreshed.
+## Layout
 
-`make update-konflux-deps` remains an alias for `make bump`. Run `make test-unit` for unit tests, or `make test-resolver-image` to also exercise deterministic local indexes through the real forked image.
+```
+cmd/byok-go/       — production binary
+cmd/byok-go-dev/   — dev helpers (chunk dumps, query embeddings)
+internal/tokenizer  — pure-Go WordPiece (exact Python parity)
+internal/counter    — cl100k_base counting (llama_index's budget tokenizer)
+internal/chunker    — SentenceSplitter-mirroring span chunker
+internal/docparse   — markdown walk, frontmatter, metadata
+internal/persist    — llama_index storage format emitters
+internal/assemble   — docker-archive assembly without a container runtime
+internal/embed      — onnxruntime cgo wrapper (mpnet inference)
+internal/faissidx   — faiss C API cgo wrapper (byte-identical serialization)
+model/              — mpnet.onnx as gzip chunks + tokenizer + ranks
+third_party/        — faiss v1.12.0 source + onnxruntime 1.31.0 release
+testdata/           — committed fixtures for unit tests
+vendor/             — vendored Go modules
+```
 
-If discovery fails with a `dbm` cache error, remove the corrupted `pybuild-deps` cache under `~/.cache/pybuild-deps/` and rerun. Do not commit generated outputs until the command completes successfully.
+## Verified parity (2026-10-23, llama-index-core 0.14.23)
 
-RPM lockfiles (`rpms.lock.yaml`) are maintained with your org’s **rpm-lockfile** workflow; see `make update-rpm-lock` for a short pointer.
+- **Tokenizer**: exact token-id parity with the transformers tokenizer
+- **Embeddings**: cosine 1.00000000 against the torch reference
+- **FAISS**: serialization byte-identical to `faiss::write_index`
+- **Chunker**: 78% exact / 82% within-50-chars boundary match on real docs,
+  median deviation 0, identical chunking on the e2e corpus
+- **Persist format**: loads through llama-index; retrieval returns correct
+  chunks with citation metadata
+- **Batching**: measured net-negative for long-chunk CPU workloads;
+  `BatchSize` defaults to 1 (see `internal/embed/embed.go`)
 
-### Typical dependency update workflow
+## License
 
-1. **Run `make bump`.** This resolves updated dependency versions using the existing project requirements and overrides, then regenerates the lockfiles and prefetch configuration. It does not rewrite those policy inputs.
-2. **Run `make bump PKG=<package> VERSION=<minimum>` for each package you need to update.** Each run uses the current lockfiles as version preferences, including the results of the preceding update. Other packages can change when compatibility requires it, but are not refreshed merely because newer versions exist.
-3. **Review and commit the changes together.** Include any changes to `pyproject.toml`, the generated requirements, and Tekton prefetch configuration. There is no additional constraints file to create, review, or maintain.
-
-The requested minimum is enforced throughout that targeted run, including build dependency resolution. Afterward, the selected version is recorded in the generated lockfiles. For a package declared in `pyproject.toml`, its updated minimum also persists there. For a transitive package, later runs prefer its locked version but do not remember the earlier request as a hard minimum; a later compatible solution may select an older version.
-
-If resolution fails, inspect its diagnostic for the blocking requirements. Do not use an override simply to bypass a parent's compatibility restriction. A failed targeted update may leave an edited minimum in `pyproject.toml`; if you abandon the request, revert only that attempt's input changes. Generated requirements are not published when resolution fails.
-
-## Legacy
-
-`scripts/generate_packages_to_prefetch.py` is **obsolete** (Cachito-era); it exits with an error and points to the targets above.
+Apache License 2.0
