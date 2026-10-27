@@ -44,15 +44,15 @@ RUN mkdir faiss-build && cd faiss-build && \
 
 # --- onnxruntime v1.31.0 (from git submodule, CPU only) ---
 # The FetchContent dependencies are also git submodules, so the build
-# needs zero network access for source code.
-COPY scripts/setup-ort-deps.sh /work/scripts/setup-ort-deps.sh
-COPY third_party/onnxruntime/ /work/third_party/onnxruntime/
-COPY third_party/onnxruntime-deps/ /work/third_party/onnxruntime-deps/
-
-RUN chmod +x /work/scripts/setup-ort-deps.sh && \
-    cd /work && eval "$(/work/scripts/setup-ort-deps.sh third_party/onnxruntime)" && \
+# Build onnxruntime from source using the mirror mechanism:
+# dep archives are downloaded from GitHub (source code, SHA1-verified) and
+# cached in a mirror directory; cmake's FetchContent then uses local copies.
+COPY scripts/setup-ort-mirror.sh /work/scripts/setup-ort-mirror.sh
+RUN chmod +x /work/scripts/setup-ort-mirror.sh && \
+    cd /work && eval "$(scripts/setup-ort-mirror.sh /work/ort-mirror)" && \
     mkdir -p /out/onnxruntime/lib /out/onnxruntime/include && \
-    cd /work/third_party/onnxruntime/cmake && mkdir build && cd build && \
+    cd /work/third_party/onnxruntime/cmake && \
+    rm -rf build && mkdir build && cd build && \
     cmake .. \
       -DCMAKE_BUILD_TYPE=Release \
       -Donnxruntime_BUILD_SHARED_LIB=ON \
@@ -61,9 +61,10 @@ RUN chmod +x /work/scripts/setup-ort-deps.sh && \
       -Donnxruntime_ENABLE_TRAINING=OFF \
       -Donnxruntime_USE_CUDA=OFF \
       -DMLAS_COMPILER_SUPPORTS_AVXVNNI=FALSE \
-      $CMAKE_DEP_FLAGS && \
+      $ORT_MIRROR_FLAGS && \
     make -j"$(nproc)" onnxruntime && \
     cp libonnxruntime.so* /out/onnxruntime/lib/ && \
+    cp /work/third_party/onnxruntime/include/onnxruntime/core/session/*.h /out/onnxruntime/include/
     cp /work/third_party/onnxruntime/include/onnxruntime/core/session/*.h /out/onnxruntime/include/
 
 # --- model reassembly (chunks follow the embeddings_model precedent) ---

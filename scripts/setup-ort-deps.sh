@@ -34,14 +34,17 @@ fi
 # the FETCHCONTENT_SOURCE_DIR_<NAME> variable)
 declare -A DEP_MAP=(
     [ABSEIL_CPP]="abseil-cpp"
+    [EIGEN3]="eigen"
     [PROTOBUF]="protobuf"
     [DATE]="date"
     [EIGEN]="eigen"
     [FLATBUFFERS]="flatbuffers"
     [GSL]="GSL"
+    [MP11]="mp11"
     [NLOHMANN_JSON]="nlohmann_json"
     [PYTORCH_CPUINFO]="pytorch_cpuinfo"
     [RE2]="re2"
+    [SAFEINT]="safeint"
 )
 
 # Build the cmake flags
