@@ -77,6 +77,32 @@ RUN mkdir -p /out/model && cat /work/model/mpnet.onnx.gz.* | gunzip > /out/model
     cp /work/model/tokenizer.json /work/model/cl100k_base.tiktoken \
        /work/model/sentence_bert_config.json /out/model/
 
+# --- third-party license files (surfaced in the image for SBOM/attribution) ---
+RUN mkdir -p /out/licenses && \
+    cp /work/faiss/LICENSE /out/licenses/faiss-LICENSE && \
+    cp /work/third_party/onnxruntime/LICENSE /out/licenses/onnxruntime-LICENSE && \
+    if [ -f /work/third_party/onnxruntime/cmake/external/onnx/LICENSE ]; then \
+        cp /work/third_party/onnxruntime/cmake/external/onnx/LICENSE \
+           /out/licenses/onnx-LICENSE; \
+    fi && \
+    for d in /work/third_party/onnxruntime-deps/*/; do \
+        name="$(basename "$d")"; \
+        for f in LICENSE LICENSE.txt LICENSE.md LICENSE.MIT \
+                 COPYING COPYING.txt COPYRIGHT \
+                 COPYING.APACHE COPYING.BSD COPYING.MINPACK COPYING.MPL2; do \
+            if [ -f "$d/$f" ]; then \
+                cp "$d/$f" "/out/licenses/onnxruntime-deps-$name-$f"; \
+            fi; \
+        done; \
+    done && \
+    cp /work/third_party/onnxruntime-deps/mp11/README.md \
+       /out/licenses/onnxruntime-deps-mp11-README.md && \
+    if [ -d /work/third_party/onnxruntime-deps/nlohmann_json/LICENSES ]; then \
+        mkdir -p /out/licenses/nlohmann_json-LICENSES && \
+        cp /work/third_party/onnxruntime-deps/nlohmann_json/LICENSES/*.txt \
+           /out/licenses/nlohmann_json-LICENSES/; \
+    fi
+
 # ---------------------------------------------------------------------------
 # Builder: compile the cgo binary against the native stage; bake the
 # deterministic output base layer.
@@ -112,6 +138,7 @@ WORKDIR /workdir
 COPY --from=native /out/faiss/lib/ /opt/byok/libs/
 COPY --from=native /out/onnxruntime/lib/ /opt/byok/libs/
 COPY --from=native /out/model/ /opt/byok/
+COPY --from=native /out/licenses/ /opt/byok/licenses/
 COPY --from=builder /out/base-layer.tar /opt/byok/base-layer.tar
 COPY --from=builder /out/byok-go /usr/local/bin/byok-go
 
