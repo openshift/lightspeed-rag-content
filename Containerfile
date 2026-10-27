@@ -7,8 +7,8 @@
 # access beyond the base images and the RPM toolchain (which cachi2 prefetches).
 ARG GO_TOOLSET=registry.access.redhat.com/ubi9/go-toolset:latest
 ARG NATIVE_IMAGE=registry.access.redhat.com/ubi9/ubi:latest
-ARG TOOL_IMAGE=registry.access.redhat.com/ubi9/ubi-micro@sha256:7325ffb45d8401b227033dc26c567e138c919731ed2f8119e921ddba71835f87
-ARG OUTPUT_BASE_IMAGE=registry.access.redhat.com/ubi9/ubi-minimal@sha256:c2fcb1793e00a434470271be7f46eadc2462b39f8370e6a81c861c72fb8d38db
+ARG TOOL_IMAGE=registry.access.redhat.com/ubi9/ubi-micro@sha256:5be877a2a280ae36eb9ab80ca4efb28bbf77c57abbba38137cdc37a03b8465e6
+ARG OUTPUT_BASE_IMAGE=registry.access.redhat.com/ubi9/ubi-minimal@sha256:6f3a78179e0b30b930a186e7f68a4af52e51bb82406c9653be10bddd624e40f5
 
 # Customer output image base, flattened into the baked base layer.
 FROM ${OUTPUT_BASE_IMAGE} AS output-base

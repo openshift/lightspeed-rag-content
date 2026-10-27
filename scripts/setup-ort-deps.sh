@@ -45,12 +45,18 @@ declare -A DEP_MAP=(
     [PYTORCH_CPUINFO]="pytorch_cpuinfo"
     [RE2]="re2"
     [SAFEINT]="safeint"
+    [ONNX]="__onnxruntime_internal__"
 )
 
 # Build the cmake flags
 FLAGS=""
 for name in "${!DEP_MAP[@]}"; do
-    dir="$DEPS_DIR/${DEP_MAP[$name]}"
+    if [ "${DEP_MAP[$name]}" = "__onnxruntime_internal__" ]; then
+        # onnx is onnxruntime's own git submodule
+        dir="$ORT_PATH/cmake/external/onnx"
+    else
+        dir="$DEPS_DIR/${DEP_MAP[$name]}"
+    fi
     if [ -d "$dir" ]; then
         FLAGS="$FLAGS -DFETCHCONTENT_SOURCE_DIR_${name}=$dir"
     else
