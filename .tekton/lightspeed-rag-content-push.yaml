@@ -29,27 +29,27 @@ spec:
     value: .
   - name: hermetic
     value: 'true'
-  - name: build-args
-    value:
-    - HERMETIC=true
-  - name: build-source-image
-    value: 'true'
-  - name: enable-package-registry-proxy
-    value: 'true'
   - name: prefetch-input
     value: "[\n  {\n    \"type\": \"gomod\",\n    \"path\": \".\"\n  },\n  {\n   \
       \ \"type\": \"rpm\",\n    \"path\": \".\"\n  }\n]"
+  - name: build-source-image
+    value: 'true'
+  - name: build-platforms
+    value:
+    - linux/x86_64
+  - name: privileged-nested
+    value: 'false'
+  - name: enable-package-registry-proxy
+    value: 'true'
   pipelineSpec:
     description: 'Build the BYOK RAG tool (Go) container image.
 
 
       Uses buildah with trusted artifacts. Go modules are prefetched by cachi2
 
-      (gomod); the faiss + onnxruntime native libraries are compiled from
+      (gomod). The faiss + onnxruntime native libraries are compiled from git
 
-      vendored source in the build. RPM toolchain (gcc, cmake, openblas-devel)
-
-      is prefetched via cachi2 rpm.
+      submodules in the build. RPM toolchain is prefetched via cachi2 rpm.
 
       '
     params:
@@ -62,6 +62,10 @@ spec:
       type: string
     - description: Fully Qualified Output Image
       name: output-image
+      type: string
+    - default: 5d
+      description: The duration after which the image will be automatically deleted.
+      name: image-expires-after
       type: string
     - default: .
       description: Path to the source code of an application's component from where
@@ -85,45 +89,89 @@ spec:
       description: Build dependencies to be prefetched
       name: prefetch-input
       type: string
-    - default: ''
-      description: Image tag expiration time
-      name: image-expires-after
-      type: string
     - default: 'false'
       description: Build a source image.
       name: build-source-image
       type: string
-    - default: []
-      description: Array of --build-arg values ("arg=value" strings) for buildah
-      name: build-args
+    - default: linux/x86_64
+      description: List of platforms to build the image for.
+      name: build-platforms
       type: array
+    - default: 'false'
+      description: Whether to run the build in privileged mode (for nested builds)
+      name: privileged-nested
+      type: string
     - default: 'true'
       description: Use the package registry proxy when prefetching dependencies
       name: enable-package-registry-proxy
       type: string
     tasks:
+    - name: init
+      params:
+      - name: enable-cache-proxy
+        value: $(params.enable-package-registry-proxy)
+      taskRef:
+        params:
+        - name: name
+          value: init
+        - name: bundle
+          value: quay.io/konflux-ci/tekton-catalog/task-init:0.4.3@sha256:7854d7babe4136e53e337f6433d952532314433b48bb62b422ddc02700934d85
+        - name: kind
+          value: task
+        resolver: bundles
+    - name: clone-repository
+      params:
+      - name: url
+        value: $(params.git-url)
+      - name: revision
+        value: $(params.revision)
+      - name: ociStorage
+        value: $(params.output-image).git
+      - name: ociArtifactExpiresAfter
+        value: $(params.image-expires-after)
+      runAfter:
+      - init
+      taskRef:
+        params:
+        - name: name
+          value: git-clone-oci-ta
+        - name: bundle
+          value: quay.io/konflux-ci/tekton-catalog/task-git-clone-oci-ta:0.2.6@sha256:a3678910c2bf9187a66a96066193cb41046fbb7097160bf2be6a374ed5e49d30
+        - name: kind
+          value: task
+        resolver: bundles
+      workspaces:
+      - name: basic-auth
+        workspace: git-auth
     - name: prefetch-dependencies
       params:
       - name: input
         value: $(params.prefetch-input)
-      - name: source-artifact
-        value: $(tasks.git-clone.results.EXECUTOR)
+      - name: enable-package-registry-proxy
+        value: $(params.enable-package-registry-proxy)
+      - name: SOURCE_ARTIFACT
+        value: $(tasks.clone-repository.results.SOURCE_ARTIFACT)
+      - name: ociStorage
+        value: $(params.output-image).prefetch
+      - name: ociArtifactExpiresAfter
+        value: $(params.image-expires-after)
+      runAfter:
+      - clone-repository
       taskRef:
         params:
         - name: name
-          value: prefetch-dependencies
-        - name: package
-          value: konflux-ci.dev
+          value: prefetch-dependencies-oci-ta
         - name: bundle
-          value: quay.io/konflux-ci/tekton-catalog/task-prefetch-dependencies
-        kind: Task
+          value: quay.io/konflux-ci/tekton-catalog/task-prefetch-dependencies-oci-ta:0.10.3@sha256:0c386f2c26b46b978280c5c54caac26bcd524975f8f7cc06bb080ba00eae3ad4
+        - name: kind
+          value: task
         resolver: bundles
-      when:
-      - input: $(params.enable-package-registry-proxy)
-        operator: in
-        values:
-        - 'true'
-    - name: build-image-index
+      workspaces:
+      - name: git-basic-auth
+        workspace: git-auth
+      - name: netrc
+        workspace: netrc
+    - name: build-images
       params:
       - name: IMAGE
         value: $(params.output-image)
@@ -133,18 +181,25 @@ spec:
         value: $(params.path-context)
       - name: HERMETIC
         value: $(params.hermetic)
-      - name: BUILD_ARGS
+      - name: PREFETCH_INPUT
+        value: $(params.prefetch-input)
+      - name: IMAGE_EXPIRES_AFTER
+        value: $(params.image-expires-after)
+      - name: COMMIT_SHA
+        value: $(tasks.clone-repository.results.commit)
+      - name: PLATFORM
         value:
-        - $(params.build-args[*])
+        - $(params.build-platforms)
+      runAfter:
+      - prefetch-dependencies
       taskRef:
         params:
         - name: name
           value: build-image-index
-        - name: package
-          value: konflux-ci.dev
         - name: bundle
-          value: quay.io/konflux-ci/tekton-catalog/task-build-image-index
-        kind: Task
+          value: quay.io/konflux-ci/tekton-catalog/task-build-image-index:0.4.3@sha256:0f18b2b4b50d1a0b1c1bd52d34bc892cbcb7d1e0a2e2ea70b1cf5c01b1d0a1d8
+        - name: kind
+          value: task
         resolver: bundles
       when:
       - input: $(params.skip-checks)
@@ -155,33 +210,32 @@ spec:
       params:
       - name: IMAGE
         value: $(params.output-image)
+      - name: COMMIT_SHA
+        value: $(tasks.clone-repository.results.commit)
+      runAfter:
+      - build-images
       taskRef:
         params:
         - name: name
           value: source-image
-        - name: package
-          value: konflux-ci.dev
         - name: bundle
-          value: quay.io/konflux-ci/tekton-catalog/task-source-image
-        kind: Task
+          value: quay.io/konflux-ci/tekton-catalog/task-source-image:0.4.3@sha256:8755d0f26e7b0e0f0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e
+        - name: kind
+          value: task
         resolver: bundles
       when:
       - input: $(params.build-source-image)
         operator: in
         values:
         - 'true'
-  finally:
-  - name: show-results
-    params:
-    - name: pipelinerun-name
-      value: $(context.pipelineRun.name)
-    taskRef:
-      params:
-      - name: name
-        value: show-sbom
-      - name: package
-        value: konflux-ci.dev
-      - name: bundle
-        value: quay.io/konflux-ci/tekton-catalog/task-show-sbom
-      kind: Task
-      resolver: bundles
+    workspaces:
+    - name: git-auth
+      optional: true
+    - name: netrc
+      optional: true
+  taskRunTemplate:
+    serviceAccountName: build-pipeline-lightspeed-rag-content
+  workspaces:
+  - name: git-auth
+    secret:
+      secretName: '{{ git_auth_secret }}'
