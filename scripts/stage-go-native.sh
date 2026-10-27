@@ -66,7 +66,7 @@ if ! ort_staged; then
     mkdir -p onnxruntime/lib onnxruntime/include ort-src-build
 
     # Set up FetchContent source overrides from git submodules
-    eval "$("$REPO_ROOT/scripts/setup-ort-mirror.sh" "$ORT_SRC")"
+    eval "$("$REPO_ROOT/scripts/setup-ort-deps.sh" "$ORT_SRC")"
 
     cd ort-src-build
     cmake "$ORT_SRC/cmake" \
@@ -77,7 +77,8 @@ if ! ort_staged; then
         -Donnxruntime_ENABLE_TRAINING=OFF \
         -Donnxruntime_USE_CUDA=OFF \
         -DMLAS_COMPILER_SUPPORTS_AVXVNNI=FALSE \
-        $ORT_MIRROR_FLAGS \
+        $CMAKE_DEP_FLAGS \
+        -DCMAKE_CXX_FLAGS="-I$REPO_ROOT/third_party/onnxruntime-deps/protobuf/third_party/utf8_range" \
         >/dev/null
     make -j"$(nproc)" onnxruntime >/dev/null
     cd "$STAGE"

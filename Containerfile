@@ -43,13 +43,15 @@ RUN mkdir faiss-build && cd faiss-build && \
     done
 
 # --- onnxruntime v1.31.0 (from git submodule, CPU only) ---
-# The FetchContent dependencies are also git submodules, so the build
-# Build onnxruntime from source using the mirror mechanism:
-# dep archives are downloaded from GitHub (source code, SHA1-verified) and
-# cached in a mirror directory; cmake's FetchContent then uses local copies.
-COPY scripts/setup-ort-mirror.sh /work/scripts/setup-ort-mirror.sh
-RUN chmod +x /work/scripts/setup-ort-mirror.sh && \
-    cd /work && eval "$(scripts/setup-ort-mirror.sh /work/ort-mirror)" && \
+# All FetchContent dependencies are git submodules in third_party/onnxruntime-deps/.
+# cmake's FETCHCONTENT_SOURCE_DIR_<NAME> tells FetchContent to use local source
+# directories instead of downloading. The extra include path is needed because
+# protobuf's utf8_range headers live in a nested submodule.
+COPY scripts/setup-ort-deps.sh /work/scripts/setup-ort-deps.sh
+COPY third_party/onnxruntime/ /work/third_party/onnxruntime/
+COPY third_party/onnxruntime-deps/ /work/third_party/onnxruntime-deps/
+RUN chmod +x /work/scripts/setup-ort-deps.sh && \
+    cd /work && eval "$(scripts/setup-ort-deps.sh third_party/onnxruntime)" && \
     mkdir -p /out/onnxruntime/lib /out/onnxruntime/include && \
     cd /work/third_party/onnxruntime/cmake && \
     rm -rf build && mkdir build && cd build && \
@@ -61,11 +63,12 @@ RUN chmod +x /work/scripts/setup-ort-mirror.sh && \
       -Donnxruntime_ENABLE_TRAINING=OFF \
       -Donnxruntime_USE_CUDA=OFF \
       -DMLAS_COMPILER_SUPPORTS_AVXVNNI=FALSE \
-      $ORT_MIRROR_FLAGS && \
+      $CMAKE_DEP_FLAGS \
+      -DCMAKE_CXX_FLAGS="-I/work/third_party/onnxruntime-deps/protobuf/third_party/utf8_range" && \
     make -j"$(nproc)" onnxruntime && \
     cp libonnxruntime.so* /out/onnxruntime/lib/ && \
     cp /work/third_party/onnxruntime/include/onnxruntime/core/session/*.h /out/onnxruntime/include/
-    cp /work/third_party/onnxruntime/include/onnxruntime/core/session/*.h /out/onnxruntime/include/
+
 
 # --- model reassembly (chunks follow the embeddings_model precedent) ---
 COPY model/ /work/model/
