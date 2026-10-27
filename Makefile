@@ -78,3 +78,10 @@ model-chunks: ## Regenerate model/ chunks from a local mpnet.onnx (MODEL=...)
 clean: ## Remove build artifacts
 	rm -f $(BINARY) byok-go-dev
 	rm -rf .byok-go-native
+
+.PHONY: test-e2e
+test-e2e: ## Run the customer-workflow e2e test (requires tool + service images + OpenAI key)
+	@test -n "$$(BYOK_TOOL_IMAGE)" || { echo "Set BYOK_TOOL_IMAGE to the tool image"; exit 1; }
+	@test -n "$$(OLS_SERVICE_IMAGE)" || { echo "Set OLS_SERVICE_IMAGE to the service image"; exit 1; }
+	@test -n "$$(OPENAI_API_KEY)" || { echo "Set OPENAI_API_KEY"; exit 1; }
+	ARTIFACT_DIR=/tmp/byok-e2e-artifacts bash tests/integration-konflux/pipeline-konflux.sh

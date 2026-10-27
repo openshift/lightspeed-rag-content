@@ -1,0 +1,41 @@
+apiVersion: tekton.dev/v1
+kind: Task
+metadata:
+  name: extract-snapshot
+spec:
+  params:
+    - name: snapshot
+      type: string
+  results:
+    - name: tool-image
+      description: The digest-pinned tool image from the snapshot.
+  steps:
+    - name: extract
+      image: registry.access.redhat.com/ubi9/ubi:latest
+      env:
+        - name: SNAPSHOT
+          value: $(params.snapshot)
+      script: |
+        #!/usr/bin/env bash
+        set -euo pipefail
+        IMAGE=$(python3 -c "
+        import json, os, sys
+        data = json.loads(os.environ['SNAPSHOT'])
+        for component in data.get('components', []):
+            if component.get('name') == 'lightspeed-rag-content':
+                for container in component.get('containerImages', []):
+                    image = container.get('image', '')
+                    if 'lightspeed-rag-content' in image:
+                        print(image)
+                        break
+                break
+        ")
+        if [ -z "$IMAGE" ]; then
+          echo "ERROR: No lightspeed-rag-content image found in snapshot" >&2
+          exit 1
+        fi
+        case "$IMAGE" in
+          *@sha256:*) ;;
+          *) echo "ERROR: Image is not digest-pinned: $IMAGE" >&2; exit 1 ;;
+        esac
+        printf '%s' "$IMAGE" > "$(results.tool-image.path)"

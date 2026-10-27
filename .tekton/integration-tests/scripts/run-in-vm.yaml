@@ -1,0 +1,87 @@
+apiVersion: tekton.dev/v1
+kind: Task
+metadata:
+  name: run-byok-e2e-in-vm
+spec:
+  params:
+    - name: tool-image
+      type: string
+      description: Digest-pinned BYOK tool image.
+    - name: ols-service-image
+      type: string
+      description: Digest-pinned OLS service image.
+    - name: openai-secret
+      type: string
+      default: openai
+  results:
+    - name: TEST_OUTPUT
+      description: Konflux TEST_OUTPUT result (SUCCESS or FAILURE).
+  steps:
+    - name: run-e2e
+      image: registry.access.redhat.com/ubi9/ubi:latest
+      env:
+        - name: BYOK_TOOL_IMAGE
+          value: $(params.tool-image)
+        - name: OLS_SERVICE_IMAGE
+          value: $(params.ols-service-image)
+        - name: REGISTRY_AUTH_FILE
+          value: /var/run/merged-auth/auth.json
+        - name: ARTIFACT_DIR
+          value: /var/workdir/artifacts
+        - name: RESULTS_TEST_OUTPUT_PATH
+          value: $(results.TEST_OUTPUT.path)
+      volumeMounts:
+        - name: openai
+          mountPath: /var/run/openai
+          readOnly: true
+        - name: quay-auth
+          mountPath: /var/run/quay-auth
+          readOnly: true
+        - name: redhat-auth
+          mountPath: /var/run/redhat-auth
+          readOnly: true
+      script: |
+        #!/usr/bin/env bash
+        set -euo pipefail
+        mkdir -p "$ARTIFACT_DIR"
+
+        # Merge registry credentials
+        mkdir -p /var/run/merged-auth
+        jq -se '
+          if all(.[]; (.auths | type == "object") and (.auths | length > 0)) then
+            {auths: (reduce .[] as $config ({}; . + $config.auths))}
+          else
+            error("Registry configurations must contain nonempty auths objects")
+          end
+        ' /var/run/quay-auth/.dockerconfigjson /var/run/redhat-auth/.dockerconfigjson \
+          > /var/run/merged-auth/auth.json
+        chmod 600 /var/run/merged-auth/auth.json
+
+        export OPENAI_API_KEY="$(cat /var/run/openai/token)"
+
+        # Copy test files to a writable location
+        WORK="$(mktemp -d)"
+        cp -r /workspace/source/tests/integration-konflux "$WORK/tests/"
+        chmod -R a+rX "$WORK/tests"
+
+        # Run the e2e test
+        if bash "$WORK/tests/integration-konflux/pipeline-konflux.sh" \
+            > "$ARTIFACT_DIR/workflow.log" 2>&1; then
+          echo -n "SUCCESS" > "$RESULTS_TEST_OUTPUT_PATH"
+          echo "BYOK e2e test passed"
+        else
+          echo -n "FAILURE" > "$RESULTS_TEST_OUTPUT_PATH"
+          echo "BYOK e2e test failed — see $ARTIFACT_DIR/workflow.log"
+          cat "$ARTIFACT_DIR/workflow.log" | tail -20 >&2
+          exit 1
+        fi
+  volumes:
+    - name: openai
+      secret:
+        secretName: $(params.openai-secret)
+    - name: quay-auth
+      secret:
+        secretName: openshift-lightspeed
+    - name: redhat-auth
+      secret:
+        secretName: registry-redhat-io
