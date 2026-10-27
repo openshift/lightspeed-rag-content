@@ -12,11 +12,20 @@
 set -euo pipefail
 
 ORT_SRC="${1:-third_party/onnxruntime}"
-DEPS_DIR="third_party/onnxruntime-deps"
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 
-if [ ! -f "$REPO_ROOT/$ORT_SRC/cmake/CMakeLists.txt" ]; then
-    echo "ERROR: onnxruntime source not found at $REPO_ROOT/$ORT_SRC" >&2
+# Accept either a relative path from REPO_ROOT or an absolute path
+if [[ "$ORT_SRC" = /* ]]; then
+    ORT_PATH="$ORT_SRC"
+else
+    ORT_PATH="$REPO_ROOT/$ORT_SRC"
+fi
+
+# The deps directory is a sibling of the onnxruntime directory
+DEPS_DIR="$(dirname "$ORT_PATH")/onnxruntime-deps"
+
+if [ ! -f "$ORT_PATH/cmake/CMakeLists.txt" ]; then
+    echo "ERROR: onnxruntime source not found at $ORT_PATH" >&2
     exit 1
 fi
 
@@ -38,7 +47,7 @@ declare -A DEP_MAP=(
 # Build the cmake flags
 FLAGS=""
 for name in "${!DEP_MAP[@]}"; do
-    dir="$REPO_ROOT/$DEPS_DIR/${DEP_MAP[$name]}"
+    dir="$DEPS_DIR/${DEP_MAP[$name]}"
     if [ -d "$dir" ]; then
         FLAGS="$FLAGS -DFETCHCONTENT_SOURCE_DIR_${name}=$dir"
     else
@@ -63,20 +72,20 @@ apply_patch() {
 
 echo "Applying onnxruntime patches to submodules..." >&2
 
-PATCHES_DIR="$REPO_ROOT/$ORT_SRC/cmake/patches"
+PATCHES_DIR="$ORT_PATH/cmake/patches"
 apply_patch "$PATCHES_DIR/date/date.patch" \
-    "$REPO_ROOT/$DEPS_DIR/date" "date"
+    "$DEPS_DIR/date" "date"
 apply_patch "$PATCHES_DIR/gsl/1213.patch" \
-    "$REPO_ROOT/$DEPS_DIR/GSL" "GSL"
+    "$DEPS_DIR/GSL" "GSL"
 apply_patch "$PATCHES_DIR/flatbuffers/flatbuffers.patch" \
-    "$REPO_ROOT/$DEPS_DIR/flatbuffers" "flatbuffers"
+    "$DEPS_DIR/flatbuffers" "flatbuffers"
 apply_patch "$PATCHES_DIR/onnx/onnx.patch" \
-    "$REPO_ROOT/$ORT_SRC/cmake/external/onnx" "onnx"
+    "$ORT_PATH/cmake/external/onnx" "onnx"
 
 # cpuinfo patches are ARM64-specific; skip on x86_64
 if [ "$(uname -m)" = "aarch64" ]; then
     apply_patch "$PATCHES_DIR/cpuinfo/enable_deinit_refcounting.patch" \
-        "$REPO_ROOT/$DEPS_DIR/pytorch_cpuinfo" "pytorch_cpuinfo"
+        "$DEPS_DIR/pytorch_cpuinfo" "pytorch_cpuinfo"
 fi
 
 echo "CMAKE_DEP_FLAGS=\"$FLAGS\""
