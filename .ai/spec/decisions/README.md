@@ -1,5 +1,26 @@
-# Architectural Decision Records
+# Architecture Decision Records
 
-This directory holds lightweight decision records for lightspeed-rag-content.
+Lightweight ADRs recording notable architectural decisions. Each file
+follows the `NNNN-slug.md` naming convention (zero-padded, sequential).
 
-Each file follows the naming convention `NNNN-slug.md` (e.g., `0001-mcp-transport-choice.md`).
+## Format
+
+```markdown
+# NNNN: <decision title>
+
+Date: YYYY-MM-DD
+Status: accepted | superseded by NNNN | rejected
+
+## Context
+Why this decision was needed.
+
+## Decision
+What was decided.
+
+## Consequences
+What changes, risks, and follow-ups result.
+```
+
+## Recorded Decisions
+
+(None yet for the Go implementation.)

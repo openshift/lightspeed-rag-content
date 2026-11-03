@@ -1,4 +1,16 @@
 #!/usr/bin/env bash
+# BYOK customer-workflow e2e test for the Go tool.
+#
+# Exercises the shipped tool image end-to-end:
+#   1. Run the tool's default CMD on a fictional markdown corpus
+#   2. Load the output container image archive with podman
+#   3. Extract /rag/vector_db and assert metadata fields
+#   4. Start the real OLS service with the extracted index
+#   5. Send a query that can only be answered from the corpus
+#   6. Assert the answer contains the recovery phrase and correct citation
+#
+# Adapted from the Python tool's e2e test: no fuse, no registry credentials,
+# no nested builds — the Go tool needs none of those.
 set -euo pipefail
 umask 077
 
@@ -6,7 +18,6 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 : "${BYOK_TOOL_IMAGE:?Set BYOK_TOOL_IMAGE to the product image under test}"
 : "${OLS_SERVICE_IMAGE:?Set OLS_SERVICE_IMAGE to a digest-pinned OLS service image}"
 : "${OPENAI_API_KEY:?Set OPENAI_API_KEY for real inference}"
-: "${UBI_BASE_IMAGE:?Set UBI_BASE_IMAGE to a digest-pinned output base image}"
 
 ARTIFACT_DIR="${ARTIFACT_DIR:-$(mktemp -d /tmp/byok-test-artifacts.XXXXXX)}"
 mkdir -p "$ARTIFACT_DIR"
@@ -19,7 +30,6 @@ SERVICE_CONTAINER="$RUN_ID-service"
 OUTPUT_CONTAINER="$RUN_ID-output"
 OUT_IMAGE_TAG="$RUN_ID"
 OUTPUT_IMAGE="localhost/$OUT_IMAGE_TAG:latest"
-AUTH_FILE="${REGISTRY_AUTH_FILE:-${XDG_RUNTIME_DIR:-/run/user/$(id -u)}/containers/auth.json}"
 
 cleanup() {
     local status=$?
@@ -43,29 +53,30 @@ podman unshare chown 1001:0 "$WORK_DIR/credentials/openai-api-key" 2>/dev/null \
 podman unshare chmod 400 "$WORK_DIR/credentials/openai-api-key" 2>/dev/null \
     || chmod 400 "$WORK_DIR/credentials/openai-api-key"
 
-AUTH_ARGS=()
-if [[ -f "$AUTH_FILE" ]]; then
-    AUTH_ARGS=(-v "$AUTH_FILE:/run/user/0/containers/auth.json:ro" -e REGISTRY_AUTH_FILE=/run/user/0/containers/auth.json)
-fi
-
+# ---------------------------------------------------------------------------
+# 1. Run the tool's default CMD on the corpus
+#    (no fuse, no registry, no auth — the Go tool needs none of those)
+# ---------------------------------------------------------------------------
 echo "[byok-e2e] Running default CMD: $BYOK_TOOL_IMAGE"
 podman pull "$BYOK_TOOL_IMAGE"
-podman run --name "$TOOL_CONTAINER" --network=host --device=/dev/fuse \
-    --security-opt label=disable \
-    "${AUTH_ARGS[@]}" \
+podman run --name "$TOOL_CONTAINER" \
     -v "$WORK_DIR/markdown:/markdown" \
     -v "$WORK_DIR/output:/output" \
-    -e BYOK_TOOL_IMAGE="$BYOK_TOOL_IMAGE" \
-    -e UBI_BASE_IMAGE="$UBI_BASE_IMAGE" \
     -e OUT_IMAGE_TAG="$OUT_IMAGE_TAG" \
     -e VECTOR_DB_INDEX=byok-e2e-index \
-    -e STORAGE_DRIVER=vfs \
     "$BYOK_TOOL_IMAGE" 2>&1 | tee "$ARTIFACT_DIR/build.log"
 
+# ---------------------------------------------------------------------------
+# 2. Load the output container image archive
+# ---------------------------------------------------------------------------
 ARCHIVE="$WORK_DIR/output/$OUT_IMAGE_TAG.tar"
 test -s "$ARCHIVE"
 echo "[byok-e2e] Loading the customer image archive"
 podman load -i "$ARCHIVE" | tee "$ARTIFACT_DIR/load.log"
+
+# ---------------------------------------------------------------------------
+# 3. Extract and validate /rag/vector_db
+# ---------------------------------------------------------------------------
 podman create --name "$OUTPUT_CONTAINER" "$OUTPUT_IMAGE" /bin/true >/dev/null
 podman cp "$OUTPUT_CONTAINER:/rag/vector_db/." "$WORK_DIR/index"
 podman unshare chmod -R a+rX "$WORK_DIR/index" 2>/dev/null || chmod -R a+rX "$WORK_DIR/index"
@@ -85,6 +96,9 @@ assert metadata["vector-db"] == "faiss.IndexFlatIP", metadata
 PY
 cp "$WORK_DIR/index/metadata.json" "$ARTIFACT_DIR/metadata.json"
 
+# ---------------------------------------------------------------------------
+# 4. Start the real OLS service with the extracted index
+# ---------------------------------------------------------------------------
 echo "[byok-e2e] Starting OLS with the index extracted from the archive"
 podman pull "$OLS_SERVICE_IMAGE"
 podman run -d --name "$SERVICE_CONTAINER" --network=host \
@@ -110,6 +124,9 @@ for _ in $(seq 1 60); do
 done
 [[ "$READY" == true ]] || { echo "[byok-e2e] OLS readiness timed out" >&2; exit 1; }
 
+# ---------------------------------------------------------------------------
+# 5. Ask a question that can only be answered from the BYOK corpus
+# ---------------------------------------------------------------------------
 echo "[byok-e2e] Asking for a fact absent from the question and training knowledge"
 HTTP_CODE="$(curl --silent --show-error --max-time 180 \
     -o "$ARTIFACT_DIR/response.json" -w '%{http_code}' \
@@ -117,5 +134,9 @@ HTTP_CODE="$(curl --silent --show-error --max-time 180 \
     -d '{"query":"Our Zyranex T7 relay controller deployment on OpenShift reports ZRX-4401. According to our internal runbook, what exact recovery phrase must the operator enter before restarting the deployment?"}' \
     http://127.0.0.1:18080/v1/query)"
 [[ "$HTTP_CODE" == 200 ]] || { echo "[byok-e2e] Query returned HTTP $HTTP_CODE" >&2; exit 1; }
+
+# ---------------------------------------------------------------------------
+# 6. Assert the answer contains the recovery phrase and correct citation
+# ---------------------------------------------------------------------------
 python3 "$SCRIPT_DIR/validate_response.py" "$ARTIFACT_DIR/response.json"
 echo "[byok-e2e] Customer BYOK workflow passed"

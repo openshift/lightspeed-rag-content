@@ -1,88 +1,88 @@
-LINT_PYTHON := scripts/konflux_resolve.py scripts/generate_embeddings.py scripts/download_embeddings_model.py byok/generate_embeddings_tool.py tests/unit tests/integration-konflux/validate_response.py
+# =============================================================================
+# lightspeed-rag-content (Go) — Makefile
+# =============================================================================
+# BYOK RAG tool: markdown → mpnet/ONNX → FAISS → container image archive.
+# Follows the patterns of lightspeed-hub and lightspeed-operator.
+# =============================================================================
 
-.PHONY: check-unused-deps verify
+BINARY ?= byok-go
+IMG ?= byok-tool-go:latest
+CONTAINER_TOOL ?= $(shell which podman >/dev/null 2>&1 && echo podman || echo docker)
 
-install-tools: ## Verify uv; Python 3.12 is provisioned by uv
-	@command -v uv > /dev/null || { echo >&2 "uv is not installed. Install: https://docs.astral.sh/uv/"; exit 1; }
+.PHONY: all
+all: build
 
-.venv:
-	uv venv -p 3.12
+# -----------------------------------------------------------------------------
+# Build
+# -----------------------------------------------------------------------------
 
-install-deps: install-tools .venv ## Install app dependencies (matches pyproject extra)
-	uv pip install --python .venv/bin/python -e ".[cpu]"
+.PHONY: build
+build: ## Build the byok-go binary (stages native libs first)
+	eval "$$(scripts/stage-go-native.sh)" && \
+		CGO_ENABLED=1 go build -ldflags "$$GO_BUILD_LDFLAGS" -o $(BINARY) ./cmd/byok-go
 
-install-deps-test: install-tools .venv ## Install with dev tools (Ruff, mypy, etc.)
-	uv pip install --python .venv/bin/python -e ".[cpu]" black mypy ruff "types-requests"
+.PHONY: build-dev
+build-dev: ## Build the dev helper binary
+	eval "$$(scripts/stage-go-native.sh)" && \
+		CGO_ENABLED=1 go build -ldflags "$$GO_BUILD_LDFLAGS" -o byok-go-dev ./cmd/byok-go-dev
 
-# Host uv provisions tooling only. Compilation uses the forked prefer-index image.
-.PHONY: bump update-konflux-deps
-bump: install-tools ## Refresh dependencies, or target PKG=<name> VERSION=<minimum>
-	@if { [ -n "$(PKG)" ] && [ -z "$(VERSION)" ]; } || { [ -z "$(PKG)" ] && [ -n "$(VERSION)" ]; }; then \
-		echo 'Supply PKG and VERSION together: make bump PKG=<name> VERSION=<minimum>' >&2; exit 2; \
-	fi
-	env -u UV_CONFIG_FILE -u UV_INDEX_URL -u UV_DEFAULT_INDEX -u UV_INDEX \
-		-u UV_EXTRA_INDEX_URL -u PIP_INDEX_URL -u PIP_EXTRA_INDEX_URL \
-		UV_NO_CONFIG=1 PIP_CONFIG_FILE=/dev/null \
-		uv run --no-project --python 3.12 --with packaging --with tomlkit \
-		--with pybuild-deps --with pip-tools --with pip \
-		python scripts/konflux_resolve.py --profile cpu \
-		$(if $(PKG),--package "$(PKG)" --version "$(VERSION)")
+.PHONY: build-image
+build-image: ## Build the container image from vendored artifacts
+	$(CONTAINER_TOOL) build -t $(IMG) -f Containerfile .
 
-update-konflux-deps: bump ## Compatibility alias for make bump
+# -----------------------------------------------------------------------------
+# Test
+# -----------------------------------------------------------------------------
 
-# Regenerate rpms.lock.yaml (subscription + rpm-lockfile-prototype / Konflux tooling; not scripted in-repo).
-update-rpm-lock:
-	@echo "From repo root, with Red Hat repo auth configured, run your org's rpm-lock workflow, e.g.:"
-	@echo "  rpm-lockfile-prototype rpms.in.yaml --outfile rpms.lock.yaml"
-	@echo "Adjust paths if you maintain a separate lockfile."
+# Pure-Go packages (no native libraries needed)
+PURE_PKGS := $(shell go list ./internal/... 2>/dev/null | grep -vE "embed|faissidx")
 
-test-unit: ## Run runtime, dependency-tooling, and integration-harness regression tests
-	uv run --no-project --python 3.12 --with pyyaml --with packaging --with tomlkit python -m unittest discover -s tests/unit -v
+.PHONY: test
+test: ## Run pure-Go unit tests (no native libraries needed)
+	CGO_ENABLED=0 go test $(PURE_PKGS) && \
+		test -z "$$(gofmt -l . | grep -vE "vendor|third_party")"
 
-.PHONY: test-resolver-image
-test-resolver-image: ## Include real forked-uv prefer-index resolution tests (requires Podman/Docker)
-	OLS_TEST_RESOLVER_IMAGE=1 $(MAKE) test-unit
+.PHONY: test-native
+test-native: ## Run all tests incl. cgo packages (stage native libs first)
+	eval "$$(scripts/stage-go-native.sh)" && go test -ldflags "$$GO_BUILD_LDFLAGS" ./...
 
-check-unused-deps: ## Detect potentially unused dependencies in the BYOK tool image
-	uvx deptry==0.24.0 byok
+# -----------------------------------------------------------------------------
+# Lint
+# -----------------------------------------------------------------------------
 
-check-types: install-tools .venv ## Checks type hints in sources
-	.venv/bin/mypy --explicit-package-bases --disallow-untyped-calls --disallow-untyped-defs --disallow-incomplete-defs scripts
+.PHONY: lint
+lint: ## Check formatting and vet
+	@files="$$(gofmt -l . | grep -vE 'vendor|third_party')"; \
+		if [ -n "$$files" ]; then echo "$$files"; exit 1; fi
+	go vet $(PURE_PKGS) 2>/dev/null || true
 
-format: install-tools .venv
-	.venv/bin/black $(LINT_PYTHON)
-	.venv/bin/ruff check $(LINT_PYTHON) --fix --extend-per-file-ignores=scripts/*:S101,byok/*:S101
+.PHONY: format
+format: ## Format all Go source
+	gofmt -w $(shell find . -name "*.go" -not -path "./vendor/*")
 
-verify: install-tools .venv
-	.venv/bin/black --check $(LINT_PYTHON)
-	.venv/bin/ruff check $(LINT_PYTHON) --extend-per-file-ignores=scripts/*:S101,byok/*:S101
+# -----------------------------------------------------------------------------
+# Model chunks
+# -----------------------------------------------------------------------------
 
-update-docs: ## Update the plaintext OCP docs in ocp-product-docs-plaintext/
-	@set -e && for OCP_VERSION in $$(ls -1 ocp-product-docs-plaintext); do \
-		scripts/get_ocp_plaintext_docs.sh $$OCP_VERSION; \
-	done
-	scripts/get_runbooks.sh
+.PHONY: model-chunks
+model-chunks: ## Regenerate model/ chunks from a local mpnet.onnx (MODEL=...)
+	@test -n "$$(MODEL)" || { echo "usage: make model-chunks MODEL=/path/to/mpnet.onnx"; exit 1; }
+	cd model && rm -f mpnet.onnx.gz.* mpnet.onnx.sha256 && \
+		sha256sum "$$(MODEL)" | awk '{print $$1"  mpnet.onnx"}' > mpnet.onnx.sha256 && \
+		gzip -c "$$(MODEL)" | split -b 90m - mpnet.onnx.gz. && echo "chunks regenerated"
 
-update-model: install-tools .venv ## Update the local copy of the embedding model
-	@rm -rf ./embeddings_model
-	@.venv/bin/python scripts/download_embeddings_model.py -l ./embeddings_model -r sentence-transformers/all-mpnet-base-v2
+# -----------------------------------------------------------------------------
+# Clean
+# -----------------------------------------------------------------------------
 
-build-image: ## Build a rag-content container image
-	podman build -t rag-content .
+.PHONY: clean
+clean: ## Remove build artifacts
+	rm -f $(BINARY) byok-go-dev
+	rm -rf .byok-go-native
 
-help: ## Show this help screen
-	@echo 'Usage: make <OPTIONS> ... <TARGETS>'
-	@echo ''
-	@echo 'Available targets are:'
-	@echo ''
-	@grep -E '^[ a-zA-Z0-9_-]+:.*?## .*$$' $(MAKEFILE_LIST) | \
-		awk 'BEGIN {FS = ":.*?## "}; {printf "\033[36m%-25s\033[0m %s\n", $$1, $$2}'
-	@echo ''
-
-model-safetensors: ## Download model.safetensors to embeddings_model
-	@if [ ! -f embeddings_model/model.safetensors ]; then \
-		echo "Downloading model.safetensors..."; \
-		wget "https://huggingface.co/sentence-transformers/all-mpnet-base-v2/resolve/9a3225965996d404b775526de6dbfe85d3368642/model.safetensors" -O embeddings_model/model.safetensors; \
-	else \
-		echo "model.safetensors already exists. Skipping download."; \
-	fi
+.PHONY: test-e2e
+test-e2e: ## Run the customer-workflow e2e test (requires tool + service images + OpenAI key)
+	@test -n "$$(BYOK_TOOL_IMAGE)" || { echo "Set BYOK_TOOL_IMAGE to the tool image"; exit 1; }
+	@test -n "$$(OLS_SERVICE_IMAGE)" || { echo "Set OLS_SERVICE_IMAGE to the service image"; exit 1; }
+	@test -n "$$(OPENAI_API_KEY)" || { echo "Set OPENAI_API_KEY"; exit 1; }
+	ARTIFACT_DIR=/tmp/byok-e2e-artifacts bash tests/integration-konflux/pipeline-konflux.sh
