@@ -1,64 +1,87 @@
 # BYOK (Bring Your Own Knowledge)
 
-BYOK enables customers to create custom RAG indexes from their own documentation, so that OpenShift LightSpeed responses incorporate organization-specific knowledge alongside standard product documentation.
+BYOK enables customers to create custom RAG indexes from their own
+documentation, so that OpenShift Lightspeed responses incorporate
+organization-specific knowledge alongside standard product documentation.
 
 ## Behavioral Rules
 
-1. BYOK accepts customer-supplied Markdown files as input, mounted at `/markdown` in the tool container.
+1. BYOK accepts customer-supplied Markdown files as input, mounted at
+   `/markdown` in the tool container. The input directory is walked
+   recursively; only files with the `.md` extension are processed. An input
+   directory with no Markdown files is an error.
 
-2. Markdown files may optionally contain YAML frontmatter (delimited by `---`) with `title` and `url` fields. If present, these override the default metadata extraction.
+2. Documents are ingested as raw text (no Markdown structure parsing).
 
-3. If no YAML frontmatter is present, `title` is extracted from the first line of the file (stripping any leading `# ` prefix), and `docs_url` defaults to the file path.
+3. Markdown files may optionally contain YAML frontmatter (delimited by
+   `---`) with `title` and `url` fields. If present, these override the
+   default metadata extraction.
 
-4. Only `.md` files are processed. Files are read recursively from the input directory using `FlatReader` (raw text ingestion -- no Markdown structure parsing).
+4. If no YAML frontmatter is present, `title` is extracted from the first
+   `# ` heading line of the document body; if the document has no heading,
+   `title` defaults to the file path.
 
-5. The BYOK tool uses the same embedding model (`sentence-transformers/all-mpnet-base-v2`), default chunk size (380 tokens), default chunk overlap (0), and FAISS output format (`IndexFlatIP`) as the main pipeline. Customer indexes are interchangeable with product indexes from lightspeed-service's perspective.
+5. `docs_url` defaults to the file path. YAML frontmatter with a `url` field
+   overrides it.
 
-6. The BYOK tool produces a container image as an OCI tar archive at `/output/{tag}.tar`. The output image contains the vector DB at `/rag/vector_db/`.
+6. Each document carries five metadata fields in the docstore:
+   `filename`, `extension`, `file_path`, `title`, `docs_url`. Every chunk of
+   a document inherits the document's metadata.
 
-7. The tool container uses `buildah` internally to build the output image. It runs a nested container build using `Containerfile.output`, which:
-   - Uses the tool image itself as the builder stage to run the embedding generation script.
-   - Copies the generated vectors into a minimal UBI base image.
+7. The BYOK tool uses the same embedding model
+   (`sentence-transformers/all-mpnet-base-v2`), default chunk size (380
+   tokens), default chunk overlap (0), and FAISS output format
+   (`IndexFlatIP`) as the service expects. Customer indexes are
+   interchangeable with product indexes from lightspeed-service's
+   perspective.
 
-8. Node filtering (the whitespace-only check applied in other pipelines) is NOT applied in BYOK. All chunks from the text splitter are included in the index.
+8. The tool produces a container image archive (docker-archive format) at
+   `/output/{tag}.tar`. The output image contains the vector DB at
+   `/rag/vector_db/`. The archive is assembled in-process, without
+   a container runtime (no buildah, no nested build): the output image is
+   a baked base layer plus one data layer.
 
-9. The output image contains only the vector DB, NOT the embedding model. The service must provide the model separately (typically from the main RAG content image).
+9. Node filtering (whitespace-only chunk checks applied in other pipelines)
+   is NOT applied in BYOK. All chunks from the splitter are included in the
+   index.
 
-## Configuration Surface -- Environment Variables (Tool Container)
+10. The output image contains only the vector DB, NOT the embedding model.
+    lightspeed-service ships its own copy of the embedding model for query
+    embedding.
+
+## Configuration Surface — Environment Variables (Tool Container)
 
 | Variable | Default | Purpose |
 |---|---|---|
 | `OUT_IMAGE_TAG` | `byok-image` | Tag for the output container image |
 | `VECTOR_DB_INDEX` | `vector_db_index` | Index ID string |
-| `BYOK_TOOL_IMAGE` | `registry.redhat.io/.../lightspeed-rag-tool-rhel9:latest` | Base image for the tool stage |
-| `UBI_BASE_IMAGE` | `registry.access.redhat.com/ubi9/ubi:latest` | When set in the tool container environment: controls the output container's base image (default: `registry.access.redhat.com/ubi9/ubi:latest`). Note: `Containerfile.tool` itself uses a separate default of `registry.redhat.io/rhai/base-image-cpu-rhel9:3.3` for its own base image, also via `UBI_BASE_IMAGE`. |
-| `LOG_LEVEL` | `info` | buildah log level |
 
-## Configuration Surface -- CLI Arguments (`generate_embeddings_tool.py`)
+## Configuration Surface — CLI Flags (`byok-go`)
 
-| Argument | Default | Purpose |
+| Flag | Default | Purpose |
 |---|---|---|
-| `-i` / `--input-dir` | (required) | Input directory with Markdown content |
-| `-emd` / `--embedding-model-dir` | `embeddings_model` | Embedding model directory |
-| `-emn` / `--embedding-model-name` | (required) | HuggingFace repo ID |
-| `-cs` / `--chunk-size` | `380` | Chunk size in tokens |
-| `-co` / `--chunk-overlap` | `0` | Chunk overlap in tokens |
-| `-o` / `--output-dir` | (required) | Vector DB output directory |
-| `-id` / `--index-id` | (required) | Index ID string |
+| `-i` | `/markdown` | Input directory with markdown content |
+| `-o` | (empty → `/output/$OUT_IMAGE_TAG.tar`) | Output image archive path |
+| `-tag` | `byok-image` | Repository tag for the output image |
+| `-id` | `vector_db_index` | Index ID string |
+| `-model` | `/opt/byok` | Directory with `mpnet.onnx`, `tokenizer.json`, `cl100k_base.tiktoken`, `sentence_bert_config.json` |
+| `-base-layer` | `/opt/byok/base-layer.tar` | Baked output base layer |
+| `-threads` | `4` | ONNX Runtime intra-op threads |
 
 ## Constraints
 
-1. The tool container requires `buildah` and uses `BUILDAH_ISOLATION=chroot` for rootless container building.
+1. The tool image runs as root (USER 0) — the tool writes directly to the
+   mounted `/output` volume and needs no container runtime.
 
-2. The tool container runs as root (USER 0) because buildah requires privilege for image building.
+2. The output directory path is not sanitized against path traversal beyond
+   what the CLI flags permit; the customer controls both mounts.
 
-3. BYOK uses CPU-only dependencies from the split RHOAI-wheel and PyPI-source lockfiles (`requirements.hashes.wheel.txt` and `requirements.hashes.source.txt`). GPU acceleration is not supported for BYOK.
-
-4. The output directory path is sanitized via `os.path.normpath("/" + path).lstrip("/")` to prevent path traversal.
-
-5. The customer must mount their Markdown content at `/markdown` and their output directory at `/output` when running the tool container.
+3. The customer must mount their Markdown content at `/markdown` and their
+   output directory at `/output` when running the tool container.
 
 ## Planned Changes
 
-- [PLANNED: OCPSTRAT-1494 Phase 2] Seamless one-click import from Git repositories and Confluence, replacing the manual container-based workflow.
+- [PLANNED: OCPSTRAT-1494 Phase 2] Seamless one-click import from Git
+  repositories and Confluence, replacing the manual container-based
+  workflow.
 - [PLANNED: OLS-1872] Internal web source integration for BYOK.

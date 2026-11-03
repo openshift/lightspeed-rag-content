@@ -1,91 +1,94 @@
 # Embedding Pipeline
 
-> **OKP adoption notice:** With OKP adoption, the embedding pipeline is used only for BYOK customer content. OCP product docs embedding is deprecated — product documentation is served by OKP via the RHOKP sidecar deployed by the operator.
+This spec defines the behavioral rules for the BYOK embedding pipeline:
+chunking, embedding, vector store output, and the output-image format. The
+implementation architecture is documented in `how/byok-pipeline.md`.
 
-This spec defines the shared behavioral rules that all pipeline implementations (plaintext, HTML, lsc library) must satisfy. Individual pipeline architectures are documented in the corresponding `how/` specs.
+## Behavioral Rules — Chunking
 
-## Behavioral Rules -- Chunking
+1. Documents are split into chunks before embedding. The default chunk size
+   is 380 tokens with 0 overlap. The budget is metadata-aware: the token
+   count of the document's metadata string is subtracted from the chunk
+   size (mirroring llama_index's `split_text_metadata_aware`).
 
-1. Documents must be split into chunks before embedding. The default chunk size is configurable via CLI with a default of 380 tokens and 0 overlap.
+2. Chunking mirrors llama_index's `SentenceSplitter`: split on paragraph
+   separators, then punkt sentence boundaries, then phrase boundaries,
+   recursing on oversized pieces, then greedily merging pieces up to the
+   token budget. Chunks are verbatim text slices of the source document.
 
-2. Plaintext documents use LlamaIndex's default sentence splitter (`SentenceSplitter`), which splits on sentence boundaries and respects the configured chunk size and overlap.
+3. Chunk boundaries are token-counted with the `cl100k_base` tokenizer
+   (llama_index's budget tokenizer), not the embedding model's WordPiece
+   tokenizer.
 
-3. Markdown and HTML documents may use LlamaIndex's `MarkdownNodeParser` for section-aware splitting. This parser splits on Markdown heading boundaries, producing one node per section.
+4. A document whose metadata consumes the entire chunk budget is an error.
 
-4. HTML documents may alternatively use a semantic chunking algorithm that respects HTML DOM structure -- splitting at section, table, list, code block, and definition list boundaries -- and preserves HTML anchor IDs for deep-link metadata generation.
+## Behavioral Rules — Embedding
 
-5. Chunks consisting entirely of non-whitespace characters (containing no spaces, tabs, or newlines) must be filtered out as invalid. This catches degenerate chunks produced from non-textual content.
+5. Embeddings are generated with the ONNX export of
+   `sentence-transformers/all-mpnet-base-v2`, producing 768-dimensional
+   vectors, loaded from a local file. No model download ever occurs.
 
-## Behavioral Rules -- Embedding
+6. The model's maximum sequence length is read from
+   `sentence_bert_config.json` in the model directory (default 384);
+   inputs are truncated to it.
 
-6. Embeddings are generated using a HuggingFace-compatible sentence-transformer model loaded from a local filesystem directory.
+7. Texts are embedded in batches sorted by length to minimize padding.
 
-7. The default embedding model is `sentence-transformers/all-mpnet-base-v2`, producing 768-dimensional vectors. The model must be redistributable under an Apache 2.0 compatible license. [Fine-tuned embedding models (OLS-1729) were previously planned but removed — superseded by OKP adoption; see Planned Changes.]
+8. Mean pooling with L2 normalization is applied, producing normalized
+   embeddings as required by `IndexFlatIP`.
 
-8. The embedding dimension is determined dynamically at initialization by encoding a probe string through the model, not hardcoded. This ensures correctness regardless of which model is loaded.
+## Behavioral Rules — Vector Store Output
 
-9. The environment variables `HF_HOME` and `TRANSFORMERS_OFFLINE=1` must be set before loading the model to prevent runtime model downloads and direct HuggingFace Hub to the local model directory.
+9. The vector store backend is FAISS `IndexFlatIP` (inner product
+   similarity). Vectors are added in the same order as the docstore nodes.
 
-10. The LLM setting must be explicitly set to `None` (via `resolve_llm(None)`) to prevent LlamaIndex from attempting to load a language model, which is not needed for embedding generation.
+10. The FAISS index is serialized with faiss's `write_index` format
+    (byte-compatible with faiss-cpu v1.12.0 as used by the service).
 
-## Behavioral Rules -- Vector Store Output
+11. The output directory follows llama-index-core's storage persistence
+    format, as loaded by `FaissVectorStore.from_persist_dir`: the FAISS bytes under
+    `default__vector_store.json` (raw faiss bytes under a `.json`-named
+    file, replicating llama_index's quirk), plus `graph_store.json`,
+    `index_store.json`, `docstore.json`, and an empty
+    `image__vector_store.json`.
 
-11. The primary vector store backend is FAISS using `IndexFlatIP` (inner product similarity). `IndexFlatIP` requires normalized vectors; the sentence-transformers model produces normalized embeddings by default.
+12. A `metadata.json` file is written alongside the index containing at
+    minimum: execution time, embedding model name, index ID, vector DB type,
+    embedding dimension, chunk size, chunk overlap, and total embedded
+    files count.
 
-12. Alternative backends are supported by the lsc library: PostgreSQL via `PGVectorStore`, llama-stack with faiss, and llama-stack with sqlite-vec.
+13. Each index is identified by an index ID string (default
+    `vector_db_index` for BYOK).
 
-13. Each index is identified by an index ID string. For OCP product docs, the convention is `ocp-product-docs-{version}` with dots replaced by underscores (e.g., `ocp-product-docs-4_19`).
+## Behavioral Rules — Metadata per Chunk
 
-14. FAISS indexes persisted via LlamaIndex produce a directory containing: `docstore.json`, `index_store.json`, `graph_store.json`, `vector_store.json`.
+14. Each chunk stored in the vector index carries the document's metadata:
+    `filename`, `extension`, `file_path`, `title`, `docs_url`.
 
-15. A `metadata.json` file must be written alongside the index containing at minimum: execution time, embedding model name, index ID, vector DB type, embedding dimension, chunk size, chunk overlap, and total embedded files count.
+15. Each docstore node records the chunk's source document ID, its own UUID,
+    verbatim chunk text with character start/end offsets, and the source
+    document's content hash.
 
-16. llama-stack backends produce a `llama-stack.yaml` configuration file and a provider-specific database file (`faiss_store.db` or `sqlitevec_store.db`) instead of the LlamaIndex JSON files.
+## Behavioral Rules — Output Image
 
-## Behavioral Rules -- Index Organization
+16. The output is a container image archive in the docker-archive
+    (`docker save`) format: a JSON config (fixed epoch creation
+    timestamp, amd64/linux) plus two layers — the baked ubi9-minimal base
+    layer and a data layer containing `/rag/vector_db`.
 
-17. Each OCP version gets its own index in a separate directory: `vector_db/ocp_product_docs/{version}/`.
-
-18. A `latest` symlink must be created pointing to the highest version directory, determined by version-aware sorting.
-
-19. Runbook embeddings are merged into each OCP version index -- they are combined with OCP doc nodes into a single index, not stored separately.
-
-## Behavioral Rules -- Metadata per Chunk
-
-20. Each chunk stored in the vector index must carry metadata including at minimum: `docs_url` (source URL) and `title` (document title).
-
-21. For HTML pipeline chunks, additional metadata is carried: `section_title` (nearest heading text), `chunk_index` (position within the source document), `total_chunks` (total chunks from that document), `token_count` (tokens in the chunk), and `source_file` (relative path to the source file).
-
-22. For llama-stack backends, `document_id` must also be present in chunk metadata to support the citation linking mechanism.
-
-## Configuration Surface
-
-| CLI Argument | Default | Purpose |
-|---|---|---|
-| `--folder` / `-f` | (required) | Input document directory |
-| `--model-dir` / `-md` | `embeddings_model` | Path to the HuggingFace-compatible embedding model directory |
-| `--model-name` / `-mn` | (none) | HuggingFace repo ID of the embedding model (for metadata recording) |
-| `--chunk` / `-c` | `380` | Chunk size in tokens |
-| `--overlap` / `-l` | `0` | Chunk overlap in tokens |
-| `--output` / `-o` | (required) | Vector DB output directory |
-| `--index` / `-i` | (required) | Index ID string |
-| `--vector-store-type` | `faiss` | Backend: `faiss`, `postgres`, `llamastack-faiss`, `llamastack-sqlite-vec` |
-| `--auto-chunking` | `False` | Delegate chunking to llama-stack runtime (lsc library only) |
-| `--hermetic-build` / `-hb` | `False` | Skip URL reachability checks |
-| `--workers` / `-w` | `None` | Number of workers for parallel document loading |
+17. The output image's config carries a minimal default env, `/bin/bash`
+    as CMD, and the labels `name`, `description`, `io.k8s.description`,
+    `io.k8s.display-name`, `io.openshift.tags`, and `summary`.
 
 ## Constraints
 
-1. The embedding model used to build an index must be identical to the model used by lightspeed-service for query embedding. A model mismatch produces meaningless similarity scores.
+1. The embedding model used to build an index must be identical to the
+   model used by lightspeed-service for query embedding. A model mismatch
+   produces meaningless similarity scores.
 
-2. FAISS indexes are loaded read-only by lightspeed-service. They must never be modified at runtime.
+2. FAISS indexes are loaded read-only by lightspeed-service. They must
+   never be modified at runtime.
 
-3. The `--auto-chunking` flag only applies to llama-stack backends. FAISS always uses manual (pre-split) chunking.
-
-4. PostgreSQL backend configuration is read from environment variables (`POSTGRES_USER`, `POSTGRES_PASSWORD`, `POSTGRES_HOST`, `POSTGRES_PORT`, `POSTGRES_DATABASE`), not CLI arguments.
-
-## Planned Changes
-
-- [REMOVED: OLS-1729] ~~Embedding model fine-tuning~~ -- superseded by OKP adoption; OCP docs no longer use FAISS embeddings.
-- [REMOVED: OLS-2294] ~~Add metadata generation stage~~ -- superseded by OKP adoption; OCP docs pipeline is deprecated.
-- [REMOVED: OLS-2903] ~~OKP-based RAG~~ -- completed; OKP is now the primary OCP docs retrieval mechanism via the RHOKP sidecar.
+3. The llama-index storage persistence format and faiss serialization must stay
+   compatible with the service's llama-index-core and faiss-cpu versions;
+   the tool's faiss version is pinned to match the service's.
