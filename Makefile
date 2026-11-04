@@ -39,6 +39,14 @@ update-rpm-lock:
 test-unit: ## Run runtime, dependency-tooling, and integration-harness regression tests
 	uv run --no-project --python 3.12 --with pyyaml --with packaging --with tomlkit python -m unittest discover -s tests/unit -v
 
+.PHONY: test-unit test-coverage
+test-coverage: ## Run existing unit suite and generate coverage.xml (no upload)
+	uv run --no-project --python 3.12 --with pyyaml --with packaging --with tomlkit \
+		--with 'coverage==7.13.4' python -m coverage run \
+		-m unittest discover -s tests/unit -v
+	uv run --no-project --python 3.12 --with 'coverage==7.13.4' python -m coverage report
+	uv run --no-project --python 3.12 --with 'coverage==7.13.4' python -m coverage xml -o coverage.xml
+
 .PHONY: test-resolver-image
 test-resolver-image: ## Include real forked-uv prefer-index resolution tests (requires Podman/Docker)
 	OLS_TEST_RESOLVER_IMAGE=1 $(MAKE) test-unit
