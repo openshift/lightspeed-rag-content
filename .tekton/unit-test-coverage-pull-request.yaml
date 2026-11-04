@@ -1,0 +1,158 @@
+apiVersion: tekton.dev/v1
+kind: PipelineRun
+metadata:
+  name: rag-content-unit-coverage-on-pull-request
+  namespace: crt-nshift-lightspeed-tenant
+  annotations:
+    build.appstudio.openshift.io/repo: https://github.com/openshift/lightspeed-rag-content?rev={{revision}}
+    build.appstudio.redhat.com/commit_sha: '{{revision}}'
+    build.appstudio.redhat.com/pull_request_number: '{{pull_request_number}}'
+    pipelinesascode.tekton.dev/on-cel-expression: event == "pull_request" && target_branch == "main"
+    pipelinesascode.tekton.dev/cancel-in-progress: "true"
+    pipelinesascode.tekton.dev/max-keep-runs: "3"
+  labels:
+    pipelines.appstudio.openshift.io/type: test
+spec:
+  params:
+    - name: source-url
+      value: '{{source_url}}'
+    - name: revision
+      value: '{{revision}}'
+    - name: branch
+      value: '{{source_branch}}'
+    - name: pr-number
+      value: '{{pull_request_number}}'
+    - name: job-type
+      value: presubmit
+  timeouts:
+    pipeline: 20m
+  taskRunTemplate:
+    serviceAccountName: build-pipeline-lightspeed-rag-tool
+  pipelineSpec:
+    params:
+      - name: source-url
+        type: string
+      - name: revision
+        type: string
+      - name: branch
+        type: string
+      - name: pr-number
+        type: string
+      - name: job-type
+        type: string
+    tasks:
+      - name: unit-coverage
+        params:
+          - name: source-url
+            value: $(params.source-url)
+          - name: revision
+            value: $(params.revision)
+          - name: branch
+            value: $(params.branch)
+          - name: pr-number
+            value: $(params.pr-number)
+          - name: job-type
+            value: $(params.job-type)
+        taskSpec:
+          params:
+            - name: source-url
+              type: string
+            - name: revision
+              type: string
+            - name: branch
+              type: string
+            - name: pr-number
+              type: string
+            - name: job-type
+              type: string
+          volumes:
+            - name: work
+              emptyDir: {}
+          stepTemplate:
+            image: registry.access.redhat.com/ubi9/python-312:latest
+            workingDir: /workspace
+            volumeMounts:
+              - name: work
+                mountPath: /workspace
+            env:
+              - name: HOME
+                value: /tmp
+              - name: UV_CACHE_DIR
+                value: /workspace/uv-cache
+          steps:
+            - name: checkout
+              env:
+                - name: SOURCE_URL
+                  value: $(params.source-url)
+                - name: REVISION
+                  value: $(params.revision)
+              script: |
+                #!/usr/bin/env bash
+                set -euo pipefail
+                # Public source: no GitHub credentials exposed to the test task.
+                # Omit the large committed model and documentation trees.
+                git clone --filter=blob:none --no-checkout "$SOURCE_URL" source
+                cd source
+                git sparse-checkout init --cone
+                git sparse-checkout set scripts byok tests .tekton config
+                git fetch origin "$REVISION"
+                git checkout --detach "$REVISION"
+                test "$(git rev-parse HEAD)" = "$REVISION"
+            - name: unit-tests
+              # Do not declare the clone destination as a workingDir: Tekton
+              # precreates working directories before checkout, potentially
+              # leaving source owned by a different user.
+              script: |
+                #!/usr/bin/env bash
+                set -euo pipefail
+                cd /workspace/source
+                python3.12 -m pip install --target /workspace/tools 'uv==0.10.0'
+                export PATH="/workspace/tools/bin:$PATH"
+                # Shell-based unit tests execute jq. Install its static binary
+                # without root, verifying against the pinned release checksum.
+                case "$(uname -m)" in
+                  x86_64)
+                    jq_arch=amd64
+                    jq_sha=020468de7539ce70ef1bceaf7cde2e8c4f2ca6c3afb84642aabc5c97d9fc2a0d
+                    ;;
+                  aarch64)
+                    jq_arch=arm64
+                    jq_sha=6bc62f25981328edd3cfcfe6fe51b073f2d7e7710d7ef7fcdac28d4e384fc3d4
+                    ;;
+                  *) echo "Unsupported jq architecture: $(uname -m)" >&2; exit 1 ;;
+                esac
+                curl --fail --silent --show-error --location --retry 3 \
+                  "https://github.com/jqlang/jq/releases/download/jq-1.8.1/jq-linux-${jq_arch}" \
+                  --output /workspace/tools/bin/jq
+                echo "$jq_sha  /workspace/tools/bin/jq" | sha256sum --check
+                chmod 0755 /workspace/tools/bin/jq
+                jq --version
+                make test-coverage
+            - name: upload-coverage
+              env:
+                # Only the upload step receives the Codecov token.
+                - name: CODECOV_TOKEN
+                  valueFrom:
+                    secretKeyRef:
+                      name: ols-codecov-token-lightspeed-rag-content
+                      key: CODECOV_TOKEN
+                - name: JOB_TYPE
+                  value: $(params.job-type)
+                - name: PULL_PULL_SHA
+                  value: $(params.revision)
+                - name: PULL_BASE_SHA
+                  value: $(params.revision)
+                - name: PULL_BASE_REF
+                  value: $(params.branch)
+                - name: PULL_NUMBER
+                  value: $(params.pr-number)
+                - name: REPO_OWNER
+                  value: openshift
+                - name: REPO_NAME
+                  value: lightspeed-rag-content
+              script: |
+                #!/usr/bin/env bash
+                set -euo pipefail
+                cd /workspace/source
+                export PATH="/workspace/tools/bin:$PATH"
+                bash scripts/codecov.sh coverage.xml unit
