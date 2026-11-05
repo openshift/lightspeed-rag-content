@@ -155,6 +155,10 @@ RUN if [ -f /cachi2/cachi2.env ]; then . /cachi2/cachi2.env; fi && \
     CGO_CFLAGS="-I/native/faiss/include-c-api -I/native/faiss/src -I/native/onnxruntime/include" \
     CGO_LDFLAGS="-L/native/faiss/lib -L/native/onnxruntime/lib -Wl,--start-group $ORT_ARCHIVES /native/openblas/lib/libopenblas.a $GOMP -Wl,--end-group /native/static-libs/libstdc++.a -Wl,-Bstatic -lgcc -Wl,-Bdynamic -lm -lpthread -ldl" \
     go build -mod=vendor -ldflags "-extldflags -static-libgcc" -o /out/byok-go ./cmd/byok-go && chmod +x /out/byok-go
+# Verify byok-go targets at most x86-64-v2 (no-op on non-amd64). The binary
+# is gcc-linked, so the ELF GNU_PROPERTY_X86_ISA_1_NEEDED note is present and
+# checked directly.
+RUN go build -mod=vendor -o /check-isa-level ./cmd/check-isa-level && /check-isa-level /out/byok-go
 
 COPY --from=output-base / /base-rootfs
 RUN mkdir -p /out && tar --sort=name --mtime=@0 --numeric-owner --owner=0 --group=0 \
