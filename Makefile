@@ -35,7 +35,7 @@ build-image: ## Build the container image from vendored artifacts
 # -----------------------------------------------------------------------------
 
 # Pure-Go packages (no native libraries needed)
-PURE_PKGS := $(shell go list ./internal/... 2>/dev/null | grep -vE "embed|faissidx")
+PURE_PKGS := $(shell go list ./internal/... ./cmd/check-isa-level 2>/dev/null | grep -vE "embed|faissidx")
 
 .PHONY: test
 test: ## Run pure-Go unit tests (no native libraries needed)
