@@ -20,9 +20,10 @@ import (
 	"debug/buildinfo"
 	"debug/elf"
 	"encoding/binary"
+	"errors"
 	"fmt"
+	"io"
 	"os"
-	"strconv"
 )
 
 const (
@@ -33,11 +34,17 @@ const (
 	isaBeyondV2              = isaV3 | isaV4
 )
 
+// errNoBuildInfo identifies binaries whose Go build information cannot be read.
+// Missing or invalid settings in readable build info must not use this fallback.
+var errNoBuildInfo = errors.New("no readable Go build info")
+
+// main checks the supplied binary and exits nonzero for incompatible or invalid inputs.
 func main() {
-	path := "manager"
-	if len(os.Args) > 1 {
-		path = os.Args[1]
+	if len(os.Args) != 2 {
+		fmt.Fprintf(os.Stderr, "usage: %s <binary-to-check>\n", os.Args[0])
+		os.Exit(2)
 	}
+	path := os.Args[1]
 	// The path comes from the command line: this is a build-time check tool
 	// run by CI on a binary it just built, so the input is trusted by design.
 	if _, err := os.Stat(path); err != nil { //nolint:gosec // G304: trusted CLI argument
@@ -49,18 +56,7 @@ func main() {
 		os.Exit(2)
 	}
 
-	// Dispatch on the target ELF's machine type so cross-builds are checked
-	// according to the binary's own architecture, not the build host's.
-	machine, err := elfMachine(path)
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "checking %s: %v\n", path, err)
-		os.Exit(2)
-	}
-	if machine != elf.EM_X86_64 {
-		os.Exit(0)
-	}
-
-	ok, reason, err := atMostX86_64_V2(path)
+	ok, reason, err := checkPath(path)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "checking %s: %v\n", path, err)
 		os.Exit(2)
@@ -70,6 +66,21 @@ func main() {
 		os.Exit(1)
 	}
 	os.Exit(0)
+}
+
+// checkPath verifies that the binary at path targets at most x86-64-v2. It
+// dispatches on the target ELF's machine type so cross-builds are checked
+// according to the binary's own architecture, not the build host's; non-x86-64
+// targets pass, as they have no x86-64 ISA level to verify.
+func checkPath(path string) (bool, string, error) {
+	machine, err := elfMachine(path)
+	if err != nil {
+		return false, "", err
+	}
+	if machine != elf.EM_X86_64 {
+		return true, "", nil
+	}
+	return atMostX86_64_V2(path)
 }
 
 // elfMachine returns the ELF machine type of the binary at path.
@@ -82,6 +93,7 @@ func elfMachine(path string) (elf.Machine, error) {
 	return f.Machine, nil
 }
 
+// atMostX86_64_V2 checks both the ELF ISA declaration and the Go codegen baseline.
 func atMostX86_64_V2(path string) (bool, string, error) {
 	val, found, err := getX86ISA1Needed(path)
 	if err != nil {
@@ -100,7 +112,11 @@ func atMostX86_64_V2(path string) (bool, string, error) {
 		noteReason := fmt.Sprintf("GNU_PROPERTY_X86_ISA_1_NEEDED=0x%x has v3/v4 bits", val)
 		goOK, goReason, goErr := goAmd64AtMostV2(path)
 		if goErr != nil {
-			return noteOK, noteReason, nil
+			if errors.Is(goErr, errNoBuildInfo) {
+				// Non-Go binary: only the ELF note governs.
+				return noteOK, noteReason, nil
+			}
+			return false, "", goErr
 		}
 		if !noteOK {
 			return false, noteReason, nil
@@ -124,21 +140,30 @@ func atMostX86_64_V2(path string) (bool, string, error) {
 func goAmd64AtMostV2(path string) (bool, string, error) {
 	info, err := buildinfo.ReadFile(path)
 	if err != nil {
-		return false, "", fmt.Errorf("reading build info (is this a Go binary?): %w", err)
+		// Preserve file access errors rather than treating them as a non-Go binary.
+		var pathErr *os.PathError
+		if errors.As(err, &pathErr) {
+			return false, "", fmt.Errorf("reading build info: %w", err)
+		}
+		return false, "", fmt.Errorf("%w: %w", errNoBuildInfo, err)
 	}
 	for _, setting := range info.Settings {
 		if setting.Key != "GOAMD64" {
 			continue
 		}
-		level, err := strconv.Atoi(setting.Value[1:]) // "v1" -> 1
-		if err != nil || level < 1 || level > 4 {
+		switch setting.Value {
+		case "v1", "v2":
+			return true, "", nil
+		case "v3", "v4":
+			return false, fmt.Sprintf("GOAMD64=%s build setting exceeds v2", setting.Value), nil
+		default:
 			return false, "", fmt.Errorf("unrecognized GOAMD64 build setting %q", setting.Value)
 		}
-		return level <= 2, fmt.Sprintf("GOAMD64=%s build setting exceeds v2", setting.Value), nil
 	}
 	return false, "", fmt.Errorf("GOAMD64 build setting not recorded in binary")
 }
 
+// getX86ISA1Needed reads the GNU ISA-needed property, reporting whether it exists.
 func getX86ISA1Needed(path string) (uint32, bool, error) {
 	f, err := elf.Open(path)
 	if err != nil {
@@ -146,29 +171,52 @@ func getX86ISA1Needed(path string) (uint32, bool, error) {
 	}
 	defer func() { _ = f.Close() }()
 
-	var noteSection *elf.Section
+	// Prefer the section named .note.gnu.property; otherwise search every
+	// SHT_NOTE section — the GNU property may live in any of them.
+	var candidates []*elf.Section
 	for _, s := range f.Sections {
 		if s.Name == ".note.gnu.property" {
-			noteSection = s
+			candidates = []*elf.Section{s}
 			break
 		}
 	}
-	if noteSection == nil {
+	if candidates == nil {
 		for _, s := range f.Sections {
 			if s.Type == elf.SHT_NOTE {
-				noteSection = s
-				break
+				candidates = append(candidates, s)
 			}
 		}
 	}
-	if noteSection == nil {
+	for _, s := range candidates {
+		val, found, err := parseNoteSection(s)
+		if err != nil {
+			return 0, false, err
+		}
+		if found {
+			return val, true, nil
+		}
+	}
+	return 0, false, nil
+}
+
+// maxNoteSectionSize bounds the buffer allocated for a note section: real
+// GNU property notes are tiny, but a corrupt ELF can declare an enormous
+// section size.
+const maxNoteSectionSize = 1 << 20
+
+// parseNoteSection reads one note section and returns the
+// GNU_PROPERTY_X86_ISA_1_NEEDED value when present. Zero-size sections are
+// skipped without error; oversized sections are rejected before allocating.
+func parseNoteSection(s *elf.Section) (uint32, bool, error) {
+	if s.Size == 0 {
 		return 0, false, nil
 	}
-
-	r := noteSection.Open()
-	data := make([]byte, noteSection.Size)
-	if _, err := r.Read(data); err != nil {
-		return 0, false, err
+	if s.Size > maxNoteSectionSize {
+		return 0, false, fmt.Errorf("note section %s: size %d exceeds limit %d", s.Name, s.Size, maxNoteSectionSize)
+	}
+	data := make([]byte, s.Size)
+	if _, err := io.ReadFull(s.Open(), data); err != nil {
+		return 0, false, fmt.Errorf("reading note section %s: %w", s.Name, err)
 	}
 
 	order := binary.LittleEndian
