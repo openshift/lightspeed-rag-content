@@ -8,7 +8,10 @@
 ARG GO_TOOLSET=registry.access.redhat.com/ubi9/go-toolset:latest
 ARG NATIVE_IMAGE=registry.access.redhat.com/ubi9/ubi:latest
 ARG TOOL_IMAGE=registry.access.redhat.com/ubi9/ubi-micro@sha256:5be877a2a280ae36eb9ab80ca4efb28bbf77c57abbba38137cdc37a03b8465e6
-ARG OUTPUT_BASE_IMAGE=registry.access.redhat.com/ubi9/ubi-minimal@sha256:6f3a78179e0b30b930a186e7f68a4af52e51bb82406c9653be10bddd624e40f5
+# ubi9-micro ships coreutils-single and bash, so the operator's BYOK init
+# container (sh -c "mkdir -p ... && cp -a ...") works unchanged; the base is
+# otherwise a pure data carrier for the FAISS index layer.
+ARG OUTPUT_BASE_IMAGE=registry.access.redhat.com/ubi9-micro:9.8-1791895366@sha256:5be877a2a280ae36eb9ab80ca4efb28bbf77c57abbba38137cdc37a03b8465e6
 
 # Customer output image base, flattened into the baked base layer.
 FROM ${OUTPUT_BASE_IMAGE} AS output-base
