@@ -158,6 +158,14 @@ RUN if [ -f /cachi2/cachi2.env ]; then . /cachi2/cachi2.env; fi && \
     CGO_CFLAGS="-I/native/faiss/include-c-api -I/native/faiss/src -I/native/onnxruntime/include" \
     CGO_LDFLAGS="-L/native/faiss/lib -L/native/onnxruntime/lib -Wl,--start-group $ORT_ARCHIVES /native/openblas/lib/libopenblas.a $GOMP -Wl,--end-group /native/static-libs/libstdc++.a -Wl,-Bstatic -lgcc -Wl,-Bdynamic -lm -lpthread -ldl" \
     go build -mod=vendor -ldflags "-extldflags -static-libgcc" -o /out/byok-go ./cmd/byok-go && chmod +x /out/byok-go
+# Vet the CGo-importing packages with the native headers available: the pure-Go
+# `make test` target skips them, so misplaced //go:debug directives and other
+# vet findings in cmd/byok-go would otherwise go unnoticed until runtime.
+# Vet type-checks cgo, so only the include paths are needed (no link flags).
+RUN if [ -f /cachi2/cachi2.env ]; then . /cachi2/cachi2.env; fi && \
+    CGO_ENABLED=1 \
+    CGO_CFLAGS="-I/native/faiss/include-c-api -I/native/faiss/src -I/native/onnxruntime/include" \
+    go vet -mod=vendor ./...
 # Verify byok-go targets at most x86-64-v2 (no-op on non-amd64). The binary
 # is gcc-linked, so the ELF GNU_PROPERTY_X86_ISA_1_NEEDED note is present and
 # checked directly.
