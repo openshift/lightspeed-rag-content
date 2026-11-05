@@ -5,6 +5,14 @@
 // internal/persist) is covered by Go's native FIPS 140-3 crypto provider.
 // The required CGo (faiss, onnxruntime) is not crypto-related and is
 // unaffected by FIPS mode; the runtime image contains no OpenSSL.
+
+// The go:debug directive sets fips140=on as the binary's default GODEBUG
+// setting: the Go native FIPS 140-3 crypto module is always active. An
+// explicit GODEBUG=fips140=off environment override can still disable it,
+// which the startup assertion below guards against on FIPS-enabled hosts.
+//
+//go:debug fips140=on
+
 package main
 
 import (
@@ -16,13 +24,6 @@ import (
 	"strings"
 )
 
-// The go:debug directive sets fips140=on as the binary's default GODEBUG
-// setting: the Go native FIPS 140-3 crypto module is always active. An
-// explicit GODEBUG=fips140=off environment override can still disable it,
-// which the startup assertion below guards against on FIPS-enabled hosts.
-//
-//go:debug fips140=on
-
 // checkFIPSMode verifies that the Go native FIPS 140-3 crypto provider is
 // active when the host OS is in FIPS mode. It aborts startup if the host
 // requires FIPS but the binary's crypto module is not enabled (e.g. GODEBUG
@@ -31,9 +32,16 @@ func checkFIPSMode() {
 	hostFIPSEnabled, err := hostFIPSMode()
 	if err != nil {
 		// Unexpected read failure (a missing file means the kernel has no
-		// FIPS support and is not an error). Treat the host as non-FIPS and
-		// log the failure for diagnosis.
-		fmt.Fprintln(os.Stderr, "cannot read host FIPS state; treating host as non-FIPS-enabled:", err)
+		// FIPS support and is not an error). The host FIPS state is unknown:
+		// if the FIPS module is active, FIPS-approved crypto is in use
+		// regardless of host state, so log and continue; otherwise a
+		// FIPS-enabled host cannot be ruled out — fail closed.
+		if fips140.Enabled() {
+			fmt.Fprintln(os.Stderr, "cannot read host FIPS state; Go FIPS module is active, continuing:", err)
+		} else {
+			fmt.Fprintln(os.Stderr, "cannot read host FIPS state and the Go FIPS 140 crypto module is not enabled; refusing to start:", err)
+			os.Exit(1)
+		}
 	}
 	switch {
 	case hostFIPSEnabled && !fips140.Enabled():
