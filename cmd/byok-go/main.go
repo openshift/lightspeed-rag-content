@@ -46,6 +46,8 @@ func maxSeqLength(modelDir string) int {
 }
 
 func main() {
+	checkFIPSMode()
+
 	inputDir := flag.String("i", "/markdown", "input directory with markdown content")
 	outTar := flag.String("o", "", "output container image archive path (default /output/$OUT_IMAGE_TAG.tar)")
 	tag := flag.String("tag", os.Getenv("OUT_IMAGE_TAG"), "repository tag for the output image (default byok-image)")
