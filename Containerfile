@@ -143,10 +143,15 @@ COPY --from=native /out/ /native/
 # statically too (-static-libgcc via -extldflags; -static-libstdc++ is
 # dropped by cgo's flag filter, so -Wl,-Bstatic is used instead). The
 # resulting binary depends only on glibc, which ubi9-micro provides.
+# Build with Go's native FIPS 140-3 crypto provider. GOFIPS140=certified
+# selects the certified FIPS module for the Go crypto packages (SHA-256
+# chunk hashing, random IDs); CGO stays enabled for the non-crypto ML
+# libraries (faiss, onnxruntime), which perform no cryptography. The binary
+# defaults to fips140=on (see the //go:debug directive in cmd/byok-go/fips.go).
 RUN if [ -f /cachi2/cachi2.env ]; then . /cachi2/cachi2.env; fi && \
     ORT_ARCHIVES="$(ls /native/onnxruntime/lib/*.a | grep -v libonnxruntime.a | tr '\n' ' ')" && \
     GOMP="$(ls /usr/lib/gcc/*/*/libgomp.a | head -1)" && \
-    CGO_ENABLED=1 \
+    CGO_ENABLED=1 GOFIPS140=certified \
     CGO_CFLAGS="-I/native/faiss/include-c-api -I/native/faiss/src -I/native/onnxruntime/include" \
     CGO_LDFLAGS="-L/native/faiss/lib -L/native/onnxruntime/lib -Wl,--start-group $ORT_ARCHIVES /native/openblas/lib/libopenblas.a $GOMP -Wl,--end-group /native/static-libs/libstdc++.a -Wl,-Bstatic -lgcc -Wl,-Bdynamic -lm -lpthread -ldl" \
     go build -mod=vendor -ldflags "-extldflags -static-libgcc" -o /out/byok-go ./cmd/byok-go && chmod +x /out/byok-go
