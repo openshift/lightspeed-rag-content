@@ -83,5 +83,15 @@ func ReadHostFIPSMode(path string) (bool, error) {
 	if err != nil {
 		return false, fmt.Errorf("reading %s: %w", path, err)
 	}
-	return strings.TrimSpace(string(b)) == "1", nil
+	switch v := strings.TrimSpace(string(b)); v {
+	case "1":
+		return true, nil
+	case "0":
+		return false, nil
+	default:
+		// Unexpected content means the host state is unknown; surface it as
+		// an error so evaluateFIPSState applies its unknown-state decision
+		// rather than silently treating the host as non-FIPS.
+		return false, fmt.Errorf("unexpected content in %s: %q", path, v)
+	}
 }

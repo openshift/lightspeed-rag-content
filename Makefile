@@ -19,12 +19,12 @@ all: build
 .PHONY: build
 build: ## Build the byok-go binary (stages native libs first)
 	eval "$$(scripts/stage-go-native.sh)" && \
-		CGO_ENABLED=1 go build -ldflags "$$GO_BUILD_LDFLAGS" -o $(BINARY) ./cmd/byok-go
+		CGO_ENABLED=1 GOFIPS140=certified go build -ldflags "$$GO_BUILD_LDFLAGS" -o $(BINARY) ./cmd/byok-go
 
 .PHONY: build-dev
 build-dev: ## Build the dev helper binary
 	eval "$$(scripts/stage-go-native.sh)" && \
-		CGO_ENABLED=1 go build -ldflags "$$GO_BUILD_LDFLAGS" -o byok-go-dev ./cmd/byok-go-dev
+		CGO_ENABLED=1 GOFIPS140=certified go build -ldflags "$$GO_BUILD_LDFLAGS" -o byok-go-dev ./cmd/byok-go-dev
 
 .PHONY: build-image
 build-image: ## Build the container image from vendored artifacts
