@@ -92,7 +92,7 @@ func TestReadHostFIPSMode(t *testing.T) {
 		{"enabled", "1\n", true},
 		{"enabled with whitespace", " 1 ", true},
 		{"disabled", "0\n", false},
-		{"garbage content means disabled", "garbage\n", false},
+		{"disabled with whitespace", " 0 ", false},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -105,6 +105,16 @@ func TestReadHostFIPSMode(t *testing.T) {
 			}
 		})
 	}
+
+	t.Run("garbage content is an unknown state", func(t *testing.T) {
+		path := filepath.Join(t.TempDir(), "garbage")
+		if err := os.WriteFile(path, []byte("garbage\n"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := ReadHostFIPSMode(path); err == nil {
+			t.Error("unexpected content must surface as an error so the unknown-state decision applies")
+		}
+	})
 
 	t.Run("missing file means non-FIPS host, not an error", func(t *testing.T) {
 		got, err := ReadHostFIPSMode(filepath.Join(dir, "does-not-exist"))
