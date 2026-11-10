@@ -59,7 +59,9 @@ podman unshare chmod 400 "$WORK_DIR/credentials/openai-api-key" 2>/dev/null \
 # ---------------------------------------------------------------------------
 echo "[byok-e2e] Running default CMD: $BYOK_TOOL_IMAGE"
 podman pull "$BYOK_TOOL_IMAGE"
-podman run --name "$TOOL_CONTAINER" \
+# --network=host: netavark cannot create a network namespace inside the
+# nested container in the Konflux VM (setns: Operation not permitted)
+podman run --name "$TOOL_CONTAINER" --network=host \
     -v "$WORK_DIR/markdown:/markdown" \
     -v "$WORK_DIR/output:/output" \
     -e OUT_IMAGE_TAG="$OUT_IMAGE_TAG" \
@@ -83,17 +85,16 @@ podman unshare chmod -R a+rX "$WORK_DIR/index" 2>/dev/null || chmod -R a+rX "$WO
 for file in default__vector_store.json docstore.json index_store.json metadata.json; do
     test -s "$WORK_DIR/index/$file"
 done
-python3 - "$WORK_DIR/index/metadata.json" <<'PY'
-import json
-import sys
-
-with open(sys.argv[1]) as source:
-    metadata = json.load(source)
-assert metadata["index-id"] == "byok-e2e-index", metadata
-assert metadata["embedding-dimension"] == 768, metadata
-assert metadata["total-embedded-files"] == 1, metadata
-assert metadata["vector-db"] == "faiss.IndexFlatIP", metadata
-PY
+jq -e '
+    .["index-id"] == "byok-e2e-index" and
+    .["embedding-dimension"] == 768 and
+    .["total-embedded-files"] == 1 and
+    .["vector-db"] == "faiss.IndexFlatIP"
+' "$WORK_DIR/index/metadata.json" >/dev/null || {
+    echo "[byok-e2e] metadata.json has unexpected content:" >&2
+    cat "$WORK_DIR/index/metadata.json" >&2
+    exit 1
+}
 cp "$WORK_DIR/index/metadata.json" "$ARTIFACT_DIR/metadata.json"
 
 # ---------------------------------------------------------------------------
@@ -138,5 +139,15 @@ HTTP_CODE="$(curl --silent --show-error --max-time 180 \
 # ---------------------------------------------------------------------------
 # 6. Assert the answer contains the recovery phrase and correct citation
 # ---------------------------------------------------------------------------
-python3 "$SCRIPT_DIR/validate_response.py" "$ARTIFACT_DIR/response.json"
+jq -e '
+    (.response | type == "string") and
+    (.response | ascii_downcase | contains("orbital-mango-731")) and
+    ([.referenced_documents[]? |
+        select(.doc_title == "Zyranex T7 OpenShift Runbook" and
+               .doc_url == "https://docs.quorbitex.example.com/openshift/zyranex-t7")] | length > 0)
+' "$ARTIFACT_DIR/response.json" >/dev/null || {
+    echo "[byok-e2e] Answer is missing the recovery phrase or the expected citation:" >&2
+    cat "$ARTIFACT_DIR/response.json" >&2
+    exit 1
+}
 echo "[byok-e2e] Customer BYOK workflow passed"
