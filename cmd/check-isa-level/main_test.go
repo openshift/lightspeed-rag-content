@@ -315,3 +315,86 @@ func TestCheckPathNoteTier(t *testing.T) {
 		}
 	})
 }
+
+// TestMain reruns the test binary as the CLI (via CHECK_ISA_LEVEL_MAIN_ARG)
+// so main()'s os.Exit paths can be exercised without killing the test run.
+func TestMain(m *testing.M) {
+	if arg, forced := os.LookupEnv("CHECK_ISA_LEVEL_MAIN_ARG"); forced {
+		if arg == "<no-arg>" {
+			os.Args = []string{"check-isa-level"}
+		} else {
+			os.Args = []string{"check-isa-level", arg}
+		}
+		main() // never returns for tested paths
+		os.Exit(0)
+	}
+	os.Exit(m.Run())
+}
+
+// runMain executes the test binary as the CLI with the given argument and
+// returns (exit code, stderr).
+func runMain(t *testing.T, arg string) (int, string) {
+	t.Helper()
+	cmd := exec.CommandContext(t.Context(), os.Args[0], "-test.run=^TestMain$")
+	cmd.Env = append(os.Environ(), "CHECK_ISA_LEVEL_MAIN_ARG="+arg)
+	var stderr bytes.Buffer
+	cmd.Stderr = &stderr
+	err := cmd.Run()
+	code := 0
+	if exit, ok := err.(*exec.ExitError); ok {
+		code = exit.ExitCode()
+	} else if err != nil {
+		t.Fatalf("running main subprocess: %v", err)
+	}
+	return code, stderr.String()
+}
+
+// TestMainUsage verifies a missing argument exits 2 with usage text.
+func TestMainUsage(t *testing.T) {
+	code, stderr := runMain(t, "<no-arg>")
+	if code != 2 || !strings.Contains(stderr, "usage:") {
+		t.Errorf("exit=%d stderr=%q, want exit 2 with usage", code, stderr)
+	}
+}
+
+// TestMainBinaryNotFound verifies a nonexistent path exits 2 with a clear message.
+func TestMainBinaryNotFound(t *testing.T) {
+	code, stderr := runMain(t, filepath.Join(t.TempDir(), "does-not-exist"))
+	if code != 2 || !strings.Contains(stderr, "binary not found") {
+		t.Errorf("exit=%d stderr=%q, want exit 2 with binary-not-found", code, stderr)
+	}
+}
+
+// TestMainNotAnELF verifies an unparseable file exits 2 (not a false pass).
+func TestMainNotAnELF(t *testing.T) {
+	notELF := filepath.Join(t.TempDir(), "not-an-elf")
+	os.WriteFile(notELF, []byte("definitely not an ELF file"), 0o644)
+	code, _ := runMain(t, notELF)
+	if code != 2 {
+		t.Errorf("exit=%d for non-ELF input, want 2", code)
+	}
+}
+
+// TestMainCompatibleBinary verifies a v1 Go binary exits 0 with no output.
+func TestMainCompatibleBinary(t *testing.T) {
+	if runtime.GOOS != "linux" && runtime.GOARCH != "amd64" {
+		t.Skip("fixture is built GOOS=linux but the checker runs on the host")
+	}
+	bin := buildFixture(t, pureGoMain, "GOARCH=amd64", "GOAMD64=v1")
+	code, stderr := runMain(t, bin)
+	if code != 0 || stderr != "" {
+		t.Errorf("exit=%d stderr=%q, want exit 0 with clean stderr", code, stderr)
+	}
+}
+
+// TestMainIncompatibleBinary verifies a v3 Go binary exits 1 with the reason.
+func TestMainIncompatibleBinary(t *testing.T) {
+	if runtime.GOOS != "linux" && runtime.GOARCH != "amd64" {
+		t.Skip("fixture is built GOOS=linux but the checker runs on the host")
+	}
+	bin := buildFixture(t, pureGoMain, "GOARCH=amd64", "GOAMD64=v3")
+	code, stderr := runMain(t, bin)
+	if code != 1 || !strings.Contains(stderr, "x86-64-v2") {
+		t.Errorf("exit=%d stderr=%q, want exit 1 mentioning x86-64-v2", code, stderr)
+	}
+}

@@ -2,9 +2,11 @@ package assemble
 
 import (
 	"archive/tar"
+	"bytes"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
@@ -191,5 +193,72 @@ func TestNormalizeTag(t *testing.T) {
 		if got := normalizeTag(in); got != want {
 			t.Errorf("normalizeTag(%q) = %q, want %q", in, got, want)
 		}
+	}
+}
+
+// TestAssembleOutputEmptyDataDir verifies the tool fails closed when the
+// vector db directory has no files.
+func TestAssembleOutputEmptyDataDir(t *testing.T) {
+	baseLayer, _ := fixture(t)
+	dataDir := t.TempDir() // exists but empty
+	dest := filepath.Join(t.TempDir(), "out.tar")
+	if err := AssembleOutput(dest, "byok-image", baseLayer, dataDir); err == nil {
+		t.Error("expected an error for an empty data directory")
+	}
+}
+
+// TestAssembleOutputMissingBaseLayer verifies the base layer path is checked.
+func TestAssembleOutputMissingBaseLayer(t *testing.T) {
+	_, dataDir := fixture(t)
+	dest := filepath.Join(t.TempDir(), "out.tar")
+	missing := filepath.Join(t.TempDir(), "no-such-layer.tar")
+	if err := AssembleOutput(dest, "byok-image", missing, dataDir); err == nil {
+		t.Error("expected an error for a missing base layer")
+	}
+}
+
+// TestAssembleOutputMissingDataDir verifies a nonexistent data directory is
+// reported as an error, not silently skipped.
+func TestAssembleOutputMissingDataDir(t *testing.T) {
+	baseLayer, _ := fixture(t)
+	dest := filepath.Join(t.TempDir(), "out.tar")
+	missing := filepath.Join(t.TempDir(), "no-such-dir")
+	if err := AssembleOutput(dest, "byok-image", baseLayer, missing); err == nil {
+		t.Error("expected an error for a missing data directory")
+	}
+}
+
+// TestAssembleOutputBaseLayerPreserved verifies the base layer bytes land in
+// the archive verbatim under their digest directory.
+func TestAssembleOutputBaseLayerPreserved(t *testing.T) {
+	baseLayer, _ := fixture(t)
+	baseBytes, _ := os.ReadFile(baseLayer)
+	baseDigest := sha256.Sum256(baseBytes)
+	dataDir := filepath.Join(t.TempDir(), "vector_db")
+	os.MkdirAll(dataDir, 0o755)
+	os.WriteFile(filepath.Join(dataDir, "metadata.json"), []byte("{}"), 0o644)
+	dest := filepath.Join(t.TempDir(), "out.tar")
+	if err := AssembleOutput(dest, "byok-image", baseLayer, dataDir); err != nil {
+		t.Fatalf("AssembleOutput: %v", err)
+	}
+	raw, _ := os.ReadFile(dest)
+	tr := tar.NewReader(strings.NewReader(string(raw)))
+	wantName := hex.EncodeToString(baseDigest[:]) + "/layer.tar"
+	found := false
+	for {
+		header, err := tr.Next()
+		if err != nil {
+			break
+		}
+		if header.Name == wantName {
+			found = true
+			got, _ := io.ReadAll(tr)
+			if !bytes.Equal(got, baseBytes) {
+				t.Errorf("base layer content modified in archive")
+			}
+		}
+	}
+	if !found {
+		t.Errorf("archive missing %s", wantName)
 	}
 }

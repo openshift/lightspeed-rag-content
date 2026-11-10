@@ -164,3 +164,42 @@ func TestWriteToolMetadata(t *testing.T) {
 		t.Errorf("metadata values wrong: %v", meta)
 	}
 }
+
+// TestNewUUID verifies RFC 4122 version 4 shape: 36 chars, version nibble 4,
+// variant nibble in [8, b], and uniqueness across a sample.
+func TestNewUUID(t *testing.T) {
+	seen := map[string]bool{}
+	for i := 0; i < 1000; i++ {
+		id := NewUUID()
+		if len(id) != 36 {
+			t.Fatalf("uuid length = %d, want 36 (%q)", len(id), id)
+		}
+		if id[14] != '4' {
+			t.Errorf("version nibble = %c, want 4 (%q)", id[14], id)
+		}
+		variant := id[19]
+		if variant < '8' || variant > 'b' {
+			t.Errorf("variant nibble = %c, want 8..b (%q)", variant, id)
+		}
+		for _, c := range id {
+			if c == '-' {
+				continue
+			}
+			if !(c >= '0' && c <= '9' || c >= 'a' && c <= 'f') {
+				t.Errorf("unexpected rune %q in uuid %q", c, id)
+			}
+		}
+		if seen[id] {
+			t.Fatalf("duplicate uuid generated: %q", id)
+		}
+		seen[id] = true
+	}
+}
+
+// TestHashText pins the digest to a known sha256 value.
+func TestHashText(t *testing.T) {
+	const want = "2cf24dba5fb0a30e26e83b2ac5b9e29e1b161e5c1fa7425e73043362938b9824" // sha256("hello")
+	if got := HashText("hello"); got != want {
+		t.Errorf("HashText(hello) = %s, want %s", got, want)
+	}
+}
