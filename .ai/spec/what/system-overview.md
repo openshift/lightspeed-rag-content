@@ -22,8 +22,9 @@ images are consumed by lightspeed-service at runtime.
 
 3. The tool produces customer RAG images as container image archives in
    the docker-archive (`docker save`) format — not by running a nested
-   container build. The output archive contains a minimal base layer plus
-   one data layer holding `/rag/vector_db`.
+   container build. The output archive is data-only: a single data layer
+   holding `/rag/vector_db`, no base layer and no entrypoint
+   (`0002-data-only-output-image.md`).
 
 4. The embedding model is `sentence-transformers/all-mpnet-base-v2` (ONNX
    export), 768-dimensional vectors, licensed under Apache 2.0.

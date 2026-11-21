@@ -23,4 +23,5 @@ What changes, risks, and follow-ups result.
 
 ## Recorded Decisions
 
-(None yet for the Go implementation.)
+- [0001](0001-static-native-linking.md) — static native linking
+- [0002](0002-data-only-output-image.md) — data-only, single-manifest customer output image

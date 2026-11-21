@@ -1,11 +1,22 @@
 package assemble
 
 // Container image archive assembly (docker-archive format) without a
-// container runtime: the customer output image is the baked ubi-minimal
-// base layer plus one layer holding /rag/vector_db, loadable with
-// `podman load`. Replaces the buildah build-and-push step of the original
-// Python tool (which had no archive code of its own; Containerfile.output
-// + buildah did this job), producing the same output layout.
+// container runtime: the customer output image is a single data layer
+// holding /rag/vector_db, loadable with `podman load`.
+//
+// The image is deliberately data-only (OLM-bundle style): it contains no
+// binaries from its own filesystem, and the consumer (the OLS operator's
+// RAG init containers) copies the index out with a binary staged from the
+// service image, never executing anything from this image. Because the
+// image is a single-platform manifest (not a manifest list), container
+// runtimes pull it on any node architecture without a platform filter —
+// the same property that lets OLM unpack amd64-only operator bundles on
+// any cluster. The config's "architecture" field is therefore nominal;
+// it is set to amd64 to keep the manifest a plain single-arch image.
+//
+// Replaces the buildah build-and-push step of the original Python tool
+// (which had no archive code of its own; Containerfile.output + buildah
+// did this job).
 
 import (
 	"archive/tar"
@@ -35,31 +46,26 @@ var outputLabels = map[string]string{
 
 // AssembleOutput writes the container image archive (docker-archive
 // format) tar for the generated vector db.
-func AssembleOutput(dest, tag, baseLayerPath, dataDir string) error {
+func AssembleOutput(dest, tag, dataDir string) error {
 	dataLayer, err := tarDirectory(dataDir, "rag/vector_db")
 	if err != nil {
 		return err
 	}
-	baseLayer, err := os.ReadFile(baseLayerPath)
-	if err != nil {
-		return err
-	}
 
-	baseDigest := digest(baseLayer)
 	dataDigest := digest(dataLayer)
-	diffIDs := []string{"sha256:" + baseDigest, "sha256:" + dataDigest}
+	diffIDs := []string{"sha256:" + dataDigest}
+	// architecture is nominal (see the package comment); the single
+	// data layer contains no architecture-specific content.
 	config := map[string]any{
 		"architecture": "amd64",
 		"os":           "linux",
 		"created":      "1970-01-01T00:00:00Z",
 		"config": map[string]any{
 			"Env":    outputEnv,
-			"Cmd":    []string{"/bin/bash"},
 			"Labels": outputLabels,
 		},
 		"rootfs": map[string]any{"type": "layers", "diff_ids": diffIDs},
 		"history": []map[string]any{
-			{"created": "1970-01-01T00:00:00Z", "created_by": "BYOK tool: output base"},
 			{"created": "1970-01-01T00:00:00Z", "created_by": "BYOK tool: COPY vector_db /rag/vector_db"},
 		},
 	}
@@ -71,7 +77,7 @@ func AssembleOutput(dest, tag, baseLayerPath, dataDir string) error {
 	manifest := map[string]any{
 		"Config":   configName,
 		"RepoTags": []string{normalizeTag(tag)},
-		"Layers":   []string{baseDigest + "/layer.tar", dataDigest + "/layer.tar"},
+		"Layers":   []string{dataDigest + "/layer.tar"},
 	}
 	manifestBytes, err := json.Marshal([]map[string]any{manifest})
 	if err != nil {
@@ -100,9 +106,6 @@ func AssembleOutput(dest, tag, baseLayerPath, dataDir string) error {
 		return err
 	}
 	if err := writeMember(dataDigest+"/layer.tar", dataLayer, 0o644); err != nil {
-		return err
-	}
-	if err := writeMember(baseDigest+"/layer.tar", baseLayer, 0o644); err != nil {
 		return err
 	}
 	if err := writeMember("manifest.json", manifestBytes, 0o644); err != nil {
