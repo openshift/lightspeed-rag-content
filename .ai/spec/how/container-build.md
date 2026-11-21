@@ -7,9 +7,6 @@ behavioral rules are in `what/container-build.md`.
 ## Containerfile Stages
 
 ```
-output-base   (ubi9-minimal, digest-pinned)
-    └─ flattened into base-layer.tar (rootfs tar with fixed metadata)
-
 native        (ubi9)
     ├─ OpenBLAS v0.3.29     — static-only build from submodule; serial,
     │                        pure-C (C_LAPACK=1, NOFORTRAN=1)
@@ -23,19 +20,19 @@ native        (ubi9)
     └─ licenses             — faiss/openblas/onnxruntime/deps → /out/licenses
 
 builder       (ubi9/go-toolset)
-    ├─ byok-go              — static CGO link: all native archives in
-    │                         --start-group, static libstdc++ (from the
-    │                         native stage) and -static-libgcc
-    └─ base-layer.tar       — flattened rootfs tar of output-base
+    └─ byok-go              — static CGO link: all native archives in
+                             --start-group, static libstdc++ (from the
+                             native stage) and -static-libgcc
 
 runtime       (ubi9-micro, digest-pinned)
     /opt/byok/              — mpnet.onnx, tokenizer.json, cl100k_base.tiktoken,
-                              sentence_bert_config.json, base-layer.tar, licenses/
+                              sentence_bert_config.json, licenses/
     /usr/local/bin/byok-go  — statically linked; needs only glibc
     CMD byok-go -i /markdown -o /output/$OUT_IMAGE_TAG.tar ...
 ```
 
-Key decisions (see also `decisions/0001-static-native-linking.md`):
+Key decisions (see also `decisions/0001-static-native-linking.md` and
+`decisions/0002-data-only-output-image.md`):
 
 - The native libraries are linked statically into `byok-go`: the runtime
   image ships a single binary plus the model, with no `/opt/byok/libs` and
@@ -50,8 +47,10 @@ Key decisions (see also `decisions/0001-static-native-linking.md`):
 - cgo's flag filter drops `-static-libstdc++`; the static libstdc++.a comes
   from the native stage (via `libstdc++-static` from CRB), and libgcc is
   made static through `go build -ldflags "-extldflags -static-libgcc"`.
-- The customer output base layer is baked at build time so the running tool
-  never needs `podman`/`buildah`/registry access to produce an image.
+- The customer output image is data-only (no baked base layer, no
+  entrypoint) so the running tool never needs `podman`/`buildah`/registry
+  access to produce an image, and the image is consumable on any node
+  architecture (see `decisions/0002-data-only-output-image.md`).
 - Cachi2 env (`/cachi2/cachi2.env`) is sourced when present so dnf resolves
   RPMs from the prefetch cache in hermetic Konflux builds.
 

@@ -2,55 +2,30 @@ package assemble
 
 import (
 	"archive/tar"
-	"bytes"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
-	"io"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 )
 
-func fixture(t *testing.T) (string, string) {
+func fixture(t *testing.T) string {
 	t.Helper()
 	dir := t.TempDir()
-	baseLayer := filepath.Join(dir, "base-layer.tar")
-	out := tarDirectoryBytes(t, map[string]string{"bin/sh": "#!/bin/sh\n"})
-	if err := os.WriteFile(baseLayer, out, 0o644); err != nil {
-		t.Fatal(err)
-	}
 	dataDir := filepath.Join(dir, "vector_db")
 	os.MkdirAll(dataDir, 0o755)
 	os.WriteFile(filepath.Join(dataDir, "metadata.json"), []byte(`{"index-id":"t"}`), 0o644)
 	os.WriteFile(filepath.Join(dataDir, "docstore.json"), []byte("{}"), 0o644)
-	return baseLayer, dataDir
-}
-
-func tarDirectoryBytes(t *testing.T, files map[string]string) []byte {
-	t.Helper()
-	path := filepath.Join(t.TempDir(), "layer.tar")
-	f, err := os.Create(path)
-	if err != nil {
-		t.Fatal(err)
-	}
-	tw := tar.NewWriter(f)
-	for name, content := range files {
-		tw.WriteHeader(&tar.Header{Name: name, Mode: 0o755, Size: int64(len(content))})
-		tw.Write([]byte(content))
-	}
-	tw.Close()
-	f.Close()
-	raw, _ := os.ReadFile(path)
-	return raw
+	return dataDir
 }
 
 func assembleFixture(t *testing.T) string {
 	t.Helper()
-	baseLayer, dataDir := fixture(t)
+	dataDir := fixture(t)
 	dest := filepath.Join(t.TempDir(), "out.tar")
-	if err := AssembleOutput(dest, "byok-image", baseLayer, dataDir); err != nil {
+	if err := AssembleOutput(dest, "byok-image", dataDir); err != nil {
 		t.Fatalf("AssembleOutput: %v", err)
 	}
 	return dest
@@ -83,8 +58,8 @@ func TestManifestIsArray(t *testing.T) {
 		t.Errorf("RepoTags = %v", manifest[0]["RepoTags"])
 	}
 	layers, _ := manifest[0]["Layers"].([]any)
-	if len(layers) != 2 {
-		t.Errorf("expected 2 layers, got %v", layers)
+	if len(layers) != 1 {
+		t.Errorf("expected 1 layer (data-only image), got %v", layers)
 	}
 }
 
@@ -125,9 +100,9 @@ func TestDiffIDsMatchLayers(t *testing.T) {
 
 // TestDataLayerPlacesVectorDB checks the layer layout: rag/vector_db/...
 func TestDataLayerPlacesVectorDB(t *testing.T) {
-	baseLayer, dataDir := fixture(t)
+	dataDir := fixture(t)
 	dest := filepath.Join(t.TempDir(), "out.tar")
-	if err := AssembleOutput(dest, "t", baseLayer, dataDir); err != nil {
+	if err := AssembleOutput(dest, "t", dataDir); err != nil {
 		t.Fatal(err)
 	}
 	raw, _ := os.ReadFile(dest)
@@ -175,6 +150,46 @@ func TestDataLayerPlacesVectorDB(t *testing.T) {
 	}
 }
 
+// TestDataOnlyImage guards the OLM-bundle-style contract: the image must not
+// carry an entrypoint/Cmd (nothing from it is ever executed) and must be a
+// single-platform manifest so runtimes pull it on any node architecture.
+func TestDataOnlyImage(t *testing.T) {
+	archive := assembleFixture(t)
+	raw, _ := os.ReadFile(archive)
+	tr := tar.NewReader(strings.NewReader(string(raw)))
+	members := map[string][]byte{}
+	for {
+		header, err := tr.Next()
+		if err != nil {
+			break
+		}
+		buf := make([]byte, header.Size)
+		tr.Read(buf)
+		members[header.Name] = buf
+	}
+	var manifest []map[string]any
+	json.Unmarshal(members["manifest.json"], &manifest)
+	var config map[string]any
+	json.Unmarshal(members[manifest[0]["Config"].(string)], &config)
+	if cfg, ok := config["config"].(map[string]any); ok {
+		if _, ok := cfg["Cmd"]; ok {
+			t.Error("data-only image must not declare a Cmd")
+		}
+		if _, ok := cfg["Entrypoint"]; ok {
+			t.Error("data-only image must not declare an Entrypoint")
+		}
+	} else {
+		t.Error("image config missing config section")
+	}
+	if arch, _ := config["architecture"].(string); arch != "amd64" {
+		t.Errorf("architecture = %q, want amd64 (single-manifest images are pulled on any arch)", arch)
+	}
+	layers := manifest[0]["Layers"].([]any)
+	if len(layers) != 1 {
+		t.Errorf("expected a single data layer, got %v", layers)
+	}
+}
+
 // TestAtomicWrite checks no temp file is left behind.
 func TestAtomicWrite(t *testing.T) {
 	archive := assembleFixture(t)
@@ -199,66 +214,19 @@ func TestNormalizeTag(t *testing.T) {
 // TestAssembleOutputEmptyDataDir verifies the tool fails closed when the
 // vector db directory has no files.
 func TestAssembleOutputEmptyDataDir(t *testing.T) {
-	baseLayer, _ := fixture(t)
 	dataDir := t.TempDir() // exists but empty
 	dest := filepath.Join(t.TempDir(), "out.tar")
-	if err := AssembleOutput(dest, "byok-image", baseLayer, dataDir); err == nil {
+	if err := AssembleOutput(dest, "byok-image", dataDir); err == nil {
 		t.Error("expected an error for an empty data directory")
-	}
-}
-
-// TestAssembleOutputMissingBaseLayer verifies the base layer path is checked.
-func TestAssembleOutputMissingBaseLayer(t *testing.T) {
-	_, dataDir := fixture(t)
-	dest := filepath.Join(t.TempDir(), "out.tar")
-	missing := filepath.Join(t.TempDir(), "no-such-layer.tar")
-	if err := AssembleOutput(dest, "byok-image", missing, dataDir); err == nil {
-		t.Error("expected an error for a missing base layer")
 	}
 }
 
 // TestAssembleOutputMissingDataDir verifies a nonexistent data directory is
 // reported as an error, not silently skipped.
 func TestAssembleOutputMissingDataDir(t *testing.T) {
-	baseLayer, _ := fixture(t)
 	dest := filepath.Join(t.TempDir(), "out.tar")
 	missing := filepath.Join(t.TempDir(), "no-such-dir")
-	if err := AssembleOutput(dest, "byok-image", baseLayer, missing); err == nil {
+	if err := AssembleOutput(dest, "byok-image", missing); err == nil {
 		t.Error("expected an error for a missing data directory")
-	}
-}
-
-// TestAssembleOutputBaseLayerPreserved verifies the base layer bytes land in
-// the archive verbatim under their digest directory.
-func TestAssembleOutputBaseLayerPreserved(t *testing.T) {
-	baseLayer, _ := fixture(t)
-	baseBytes, _ := os.ReadFile(baseLayer)
-	baseDigest := sha256.Sum256(baseBytes)
-	dataDir := filepath.Join(t.TempDir(), "vector_db")
-	os.MkdirAll(dataDir, 0o755)
-	os.WriteFile(filepath.Join(dataDir, "metadata.json"), []byte("{}"), 0o644)
-	dest := filepath.Join(t.TempDir(), "out.tar")
-	if err := AssembleOutput(dest, "byok-image", baseLayer, dataDir); err != nil {
-		t.Fatalf("AssembleOutput: %v", err)
-	}
-	raw, _ := os.ReadFile(dest)
-	tr := tar.NewReader(strings.NewReader(string(raw)))
-	wantName := hex.EncodeToString(baseDigest[:]) + "/layer.tar"
-	found := false
-	for {
-		header, err := tr.Next()
-		if err != nil {
-			break
-		}
-		if header.Name == wantName {
-			found = true
-			got, _ := io.ReadAll(tr)
-			if !bytes.Equal(got, baseBytes) {
-				t.Errorf("base layer content modified in archive")
-			}
-		}
-	}
-	if !found {
-		t.Errorf("archive missing %s", wantName)
 	}
 }

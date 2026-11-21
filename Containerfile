@@ -8,13 +8,9 @@
 ARG GO_TOOLSET=registry.access.redhat.com/ubi9/go-toolset:latest
 ARG NATIVE_IMAGE=registry.access.redhat.com/ubi9/ubi:latest
 ARG TOOL_IMAGE=registry.access.redhat.com/ubi9/ubi-micro@sha256:5be877a2a280ae36eb9ab80ca4efb28bbf77c57abbba38137cdc37a03b8465e6
-# ubi9-micro ships coreutils-single and bash, so the operator's BYOK init
-# container (sh -c "mkdir -p ... && cp -a ...") works unchanged; the base is
-# otherwise a pure data carrier for the FAISS index layer.
-ARG OUTPUT_BASE_IMAGE=registry.access.redhat.com/ubi9-micro:9.8-1791895366@sha256:5be877a2a280ae36eb9ab80ca4efb28bbf77c57abbba38137cdc37a03b8465e6
-
-# Customer output image base, flattened into the baked base layer.
-FROM ${OUTPUT_BASE_IMAGE} AS output-base
+# The customer output image is data-only (single /rag/vector_db layer, no
+# base layer): nothing from it is executed, and as a single-platform
+# manifest it is pullable on any node architecture (OLM-bundle style).
 
 # ---------------------------------------------------------------------------
 # Native stage: compile faiss and onnxruntime from git submodules.
@@ -130,8 +126,7 @@ RUN mkdir -p /out/licenses && \
     fi
 
 # ---------------------------------------------------------------------------
-# Builder: compile the cgo binary against the native stage; bake the
-# output base layer.
+# Builder: compile the cgo binary against the native stage.
 # ---------------------------------------------------------------------------
 FROM ${GO_TOOLSET} AS builder
 USER root
@@ -171,10 +166,6 @@ RUN if [ -f /cachi2/cachi2.env ]; then . /cachi2/cachi2.env; fi && \
 # checked directly.
 RUN go build -mod=vendor -o /check-isa-level ./cmd/check-isa-level && /check-isa-level /out/byok-go
 
-COPY --from=output-base / /base-rootfs
-RUN mkdir -p /out && tar --sort=name --mtime=@0 --numeric-owner --owner=0 --group=0 \
-      -cf /out/base-layer.tar -C /base-rootfs . && rm -rf /base-rootfs
-
 # ---------------------------------------------------------------------------
 # Runtime: ubi9-micro, no Python, no package manager. The byok-go binary
 # links the native libraries statically, so it needs nothing but glibc;
@@ -188,11 +179,10 @@ WORKDIR /workdir
 
 COPY --from=native /out/model/ /opt/byok/
 COPY --from=native /out/licenses/ /opt/byok/licenses/
-COPY --from=builder /out/base-layer.tar /opt/byok/base-layer.tar
 COPY --from=builder /out/byok-go /usr/local/bin/byok-go
 
 ENV OUT_IMAGE_TAG=$OUT_IMAGE_TAG
 ENV VECTOR_DB_INDEX=$VECTOR_DB_INDEX
 
 CMD byok-go -i /markdown -o /output/$OUT_IMAGE_TAG.tar -tag "$OUT_IMAGE_TAG" \
-    -id "$VECTOR_DB_INDEX" -model /opt/byok -base-layer /opt/byok/base-layer.tar
+    -id "$VECTOR_DB_INDEX" -model /opt/byok
