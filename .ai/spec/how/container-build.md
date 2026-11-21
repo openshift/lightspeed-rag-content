@@ -63,6 +63,11 @@ Key decisions (see also `decisions/0001-static-native-linking.md` and
   `third_party/onnxruntime-deps/` (abseil, protobuf, eigen, re2, etc.).
   `scripts/setup-ort-deps.sh` emits the `FETCHCONTENT_SOURCE_DIR_*` cmake
   flags. The protobuf utf8_range include path is added via CXXFLAGS.
+  The submodule URL points at the `syedriko/onnxruntime` mirror of the
+  v1.31.0 commit (`402979ac1b`): the upstream `microsoft/onnxruntime`
+  repository was removed in November 2026. The pinned commit SHA is
+  unchanged and identical to upstream's `v1.31.0` tag, so the build
+  content is unaffected.
 - OpenBLAS: `third_party/openblas` submodule, v0.3.29 — same major version
   family as the service's openblas runtime; built static/serial/pure-C.
 
