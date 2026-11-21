@@ -21,7 +21,7 @@ as a loader error.
 
 Compile faiss, onnxruntime, and OpenBLAS as static archives and link them
 into the `byok-go` executable. The runtime image ships only the binary, the
-embedding model, the baked output base layer, and license files. The only
+embedding model, and license files. The only
 shared-library dependency left is glibc (provided by ubi9-micro).
 
 Implementation notes:

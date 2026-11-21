@@ -8,12 +8,12 @@ build support, and CI/CD pipeline behavior.
 1. The tool image is built from the root `Containerfile`. It contains: the
    statically linked `byok-go` binary (native libraries are linked in; the
    only shared-library dependency is glibc), the embedding model
-   (mpnet.onnx, tokenizer, tiktoken ranks, sentence_bert config),
-   third-party license files, and the baked output base layer.
+   (mpnet.onnx, tokenizer, tiktoken ranks, sentence_bert config), and
+   third-party license files. (The baked output base layer was removed —
+   the customer output image is data-only; see `decisions/0002`.)
 
 2. The runtime stage is `ubi9-micro` (digest-pinned): no Python, no package
-   manager, no shipped native libraries. The model and base layer ship in
-   `/opt/byok`.
+   manager, no shipped native libraries. The model ships in `/opt/byok`.
 
 3. The tool image's CMD runs `byok-go` with the default mounts
    (`/markdown` in, `/output/$OUT_IMAGE_TAG.tar` out).
@@ -72,7 +72,6 @@ build support, and CI/CD pipeline behavior.
 | `GO_TOOLSET` | Build arg | `ubi9/go-toolset:latest` | Go builder stage image |
 | `NATIVE_IMAGE` | Build arg | `ubi9/ubi:latest` | Native compile stage image |
 | `TOOL_IMAGE` | Build arg | `ubi9-micro` (digest-pinned) | Runtime stage image |
-| `OUTPUT_BASE_IMAGE` | Build arg | `ubi9-minimal` (digest-pinned) | Customer output image base |
 | `OUT_IMAGE_TAG` | Build arg / env | `byok-image` | Tag for the output image |
 | `VECTOR_DB_INDEX` | Build arg / env | `vector_db_index` | Index ID string |
 | `model/mpnet.onnx.gz.*` | Files | — | Committed gzip chunks of the embedding model |
@@ -81,8 +80,8 @@ build support, and CI/CD pipeline behavior.
 
 ## Constraints
 
-1. The base images of the final stages (`TOOL_IMAGE`, `OUTPUT_BASE_IMAGE`)
-   are pinned by digest, not tag. Digest updates are managed by automated
+1. The base image of the final stage (`TOOL_IMAGE`) is
+   pinned by digest, not tag. Digest updates are managed by automated
    Konflux/Mintmaker PRs.
 
 2. The git submodules under `third_party/` must be initialized

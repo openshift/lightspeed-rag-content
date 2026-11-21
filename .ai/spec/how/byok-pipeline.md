@@ -72,12 +72,12 @@ are in `what/byok.md` and `what/embedding-pipeline.md`.
 
 ### 7. Output assembly (`internal/assemble`)
 
-- `AssembleOutput(dest, tag, baseLayerPath, dataDir)`:
+- `AssembleOutput(dest, tag, dataDir)`:
   - tars the vector DB directory as a single data layer rooted at
     `rag/vector_db` (sorted entries, epoch mtimes, root ownership);
-  - reads the baked ubi-minimal base layer shipped in the image;
   - builds the OCI image config (amd64/linux, epoch creation, minimal env,
-    `/bin/bash` CMD, BYOK labels) and a docker-archive-format manifest
+    BYOK labels, no CMD/entrypoint — the image is data-only) and a
+    docker-archive-format manifest
     (`manifest.json` with `Config`/`RepoTags`/`Layers`) with
     sha256 layer digests;
   - writes the archive to the output path.

@@ -53,7 +53,6 @@ func main() {
 	tag := flag.String("tag", os.Getenv("OUT_IMAGE_TAG"), "repository tag for the output image (default byok-image)")
 	indexID := flag.String("id", os.Getenv("VECTOR_DB_INDEX"), "index id (default vector_db_index)")
 	modelDir := flag.String("model", "/opt/byok", "directory with mpnet.onnx and tokenizer.json")
-	baseLayer := flag.String("base-layer", "/opt/byok/base-layer.tar", "baked output base layer")
 	threads := flag.Int("threads", defaultThreads, "onnxruntime intra-op threads")
 	flag.Parse()
 
@@ -147,7 +146,7 @@ func main() {
 		chunkTokens, chunkOverlap, len(docs), elapsed); err != nil {
 		fatal(err)
 	}
-	if err := assemble.AssembleOutput(*outTar, *tag, *baseLayer, vectorDB); err != nil {
+	if err := assemble.AssembleOutput(*outTar, *tag, vectorDB); err != nil {
 		fatal(err)
 	}
 
