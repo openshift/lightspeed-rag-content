@@ -123,8 +123,8 @@ podman run --rm --privileged --network=host \
     -e BYOK_TOOL_IMAGE -e OLS_SERVICE_IMAGE \
     -e REGISTRY_AUTH_FILE=/credentials/auth.json \
     -e ARTIFACT_DIR=/artifacts -e STORAGE_DRIVER=vfs \
-    registry.access.redhat.com/ubi9/ubi:latest \
-    bash -c 'set -euo pipefail; dnf -y install podman fuse-overlayfs jq curl-minimal;
+    registry.access.redhat.com/ubi9/podman:latest \
+    bash -c 'set -euo pipefail; dnf -y install jq;
       export OPENAI_API_KEY="$(< /credentials/openai-api-key)";
       bash /tests/integration-konflux/pipeline-konflux.sh' \
     2>&1 | tee artifacts/workflow.log
