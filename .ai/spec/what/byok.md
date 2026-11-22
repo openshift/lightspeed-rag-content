@@ -39,7 +39,13 @@ organization-specific knowledge alongside standard product documentation.
    `/output/{tag}.tar`. The output image contains the vector DB at
    `/rag/vector_db/`. The archive is assembled in-process, without
    a container runtime (no buildah, no nested build): the output image is
-   a baked base layer plus one data layer.
+   data-only — a single data layer, no base layer, no entrypoint or CMD
+   (the image's entrypoint and binaries are never executed; the consumer
+   stages its own copy tool). Because it is a single-platform
+   manifest (not a manifest list), runtimes pull it on any node
+   architecture; the OLS operator copies the index out with a binary
+   staged from the service image (OLM-bundle pattern). See decision
+   `0002-data-only-output-image.md`.
 
 9. Node filtering (whitespace-only chunk checks applied in other pipelines)
    is NOT applied in BYOK. All chunks from the splitter are included in the
@@ -65,7 +71,6 @@ organization-specific knowledge alongside standard product documentation.
 | `-tag` | `byok-image` | Repository tag for the output image |
 | `-id` | `vector_db_index` | Index ID string |
 | `-model` | `/opt/byok` | Directory with `mpnet.onnx`, `tokenizer.json`, `cl100k_base.tiktoken`, `sentence_bert_config.json` |
-| `-base-layer` | `/opt/byok/base-layer.tar` | Baked output base layer |
 | `-threads` | `4` | ONNX Runtime intra-op threads |
 
 ## Constraints

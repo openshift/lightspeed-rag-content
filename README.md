@@ -28,37 +28,28 @@ Produces `<output_dir>/my-byok-image.tar` — a container image archive
 
 The output image archive is assembled in pure Go by `internal/assemble` —
 no container runtime, no registry access, and no privileges are needed on
-the customer's machine. The trick is that the customer image's base
-filesystem is captured once, when the tool's own image is built:
+the customer's machine. The image is **data-only** (OLM-bundle style): a
+single layer holding `/rag/vector_db` (the llama_index persist file set
+from `internal/persist`, tarred by `internal/assemble`) with no base
+layer and no entrypoint. The image config and manifest are emitted
+directly, with epoch timestamps and sorted tar entries.
 
-```
-Containerfile (tool build, in Konflux)       byok-go (customer runtime)
-──────────────────────────────────────       ─────────────────────────
-ubi9/ubi-minimal (pulled by digest,
-  pinned in the OUTPUT_BASE_IMAGE ARG)
-        │ COPY --from=output-base /
-        ▼
-/base-rootfs/ (directory)
-        │ tar --sort=name --mtime=@0
-        │   --numeric-owner --owner=0 --group=0
-        ▼
-/opt/byok/base-layer.tar ──────────────► -base-layer flag ──► embedded as
-  (shipped inside the tool image)             the bottom layer of the
-                                               customer's output tar
-```
-
-At customer runtime, `byok-go` stacks two layers into the archive: the
-baked base layer plus one data layer holding `/rag/vector_db` (the llama_index
-persist file set from `internal/persist`, tarred by
-`internal/assemble`). The image config and manifest are emitted directly,
-with epoch timestamps and sorted tar entries.
-
-The Go code never refers to ubi-minimal or to any image — it only sees an
-opaque `layer.tar` behind the `-base-layer` flag. This indirection is what
-replaced the original Python pipeline's buildah build-and-push step (which
-needed a container runtime and a registry pull at customer runtime). Note
-that the base layer is fixed at tool-build time: it only refreshes when the
-tool image is rebuilt with a new `OUTPUT_BASE_IMAGE` digest.
+The image's entrypoint and binaries are never executed: the OLS
+operator's RAG init containers copy the index out using a complete
+copy tool staged from the OLS service image — the coreutils binary,
+its dynamic loader, and its shared libraries, invoked via the loader
+because the data-only image has no `/lib64` (the same pattern OLM
+uses to unpack operator bundles, where the equivalent `cpb` helper
+is statically linked; the staged loader still honors the image's
+`/etc/ld.so.preload`, so "nothing executes" is not absolute — but
+the image's entrypoint and binaries never run). And because the
+image is a single-platform manifest rather than a
+manifest list, container runtimes pull it on any node architecture
+without a platform filter — the same property that lets OLM pull
+amd64-only operator bundles on arm64/ppc64le/s390x clusters. This is
+what replaced the original Python pipeline's buildah build-and-push step
+(which needed a container runtime and a registry pull at customer
+runtime).
 
 ## Development
 
